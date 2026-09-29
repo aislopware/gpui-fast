@@ -131,6 +131,11 @@ unsafe fn build_classes() {
             let mut decl = ClassDecl::new("GPUIView", class!(NSView)).unwrap();
             decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
             decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(&Object, Sel));
+            decl.add_method(
+                sel!(hitTest:),
+                crate::fast::composition::gpui_view_hit_test
+                    as extern "C" fn(&Object, Sel, NSPoint) -> id,
+            );
 
             decl.add_method(
                 sel!(performKeyEquivalent:),
@@ -485,6 +490,7 @@ unsafe fn build_window_class(name: &'static str, superclass: &Class) -> *const C
         );
 
         decl.add_method(sel!(close), close_window as extern "C" fn(&Object, Sel));
+        crate::fast::composition::declare_window_methods(&mut decl);
 
         decl.add_method(
             sel!(draggingEntered:),
@@ -654,22 +660,22 @@ unsafe fn apply_simple_fullscreen_plan(
     }
 }
 
-struct MacWindowState {
+pub(crate) struct MacWindowState {
     handle: AnyWindowHandle,
     foreground_executor: ForegroundExecutor,
     background_executor: BackgroundExecutor,
-    native_window: id,
-    native_view: NonNull<Object>,
+    pub(crate) native_window: id,
+    pub(crate) native_view: NonNull<Object>,
     blurred_view: Option<id>,
-    background_appearance: WindowBackgroundAppearance,
+    pub(crate) background_appearance: WindowBackgroundAppearance,
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
     /// A vsync tick passed since the last immediate frame; see `immediate_frame`.
     immediate_frame_armed: bool,
-    renderer: renderer::Renderer,
+    pub(crate) renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
-    event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
+    pub(crate) event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
     activate_callback: Option<Box<dyn FnMut(bool)>>,
     visibility_callback: Option<Box<dyn FnMut(WindowVisibility)>>,
     // `None` until a callback is registered, so notifications during
@@ -941,7 +947,7 @@ impl MacWindowState {
         )
     }
 
-    fn content_size(&self) -> Size<Pixels> {
+    pub(crate) fn content_size(&self) -> Size<Pixels> {
         let NSSize { width, height, .. } =
             unsafe { NSView::frame(self.native_window.contentView()) }.size;
         size(px(width as f32), px(height as f32))
@@ -964,7 +970,7 @@ impl MacWindowState {
 
 unsafe impl Send for MacWindowState {}
 
-pub(crate) struct MacWindow(Arc<Mutex<MacWindowState>>, MainThreadMarker);
+pub(crate) struct MacWindow(pub(crate) Arc<Mutex<MacWindowState>>, MainThreadMarker);
 
 impl MacWindow {
     pub fn open(
@@ -2141,6 +2147,17 @@ impl PlatformWindow for MacWindow {
         this.renderer.draw(scene);
     }
 
+    fn create_native_host(
+        &self,
+        params: gpui::composition::NativeHostParams,
+    ) -> anyhow::Result<Rc<dyn gpui::composition::PlatformNativeHost>> {
+        self.create_native_host_impl(params)
+    }
+
+    fn present_natives(&self, scene: &gpui::Scene, natives: &gpui::composition::NativePresent) {
+        self.present_natives_impl(scene, natives)
+    }
+
     fn set_presented_frame_sink(&self, sink: Option<gpui::PresentedFrameSink>) {
         self.0.lock().renderer.set_presented_frame_sink(sink);
     }
@@ -2480,7 +2497,7 @@ unsafe fn is_gpui_window(window: id) -> bool {
     }
 }
 
-unsafe fn get_window_state(object: &Object) -> Arc<Mutex<MacWindowState>> {
+pub(crate) unsafe fn get_window_state(object: &Object) -> Arc<Mutex<MacWindowState>> {
     unsafe {
         let raw: *mut c_void = *object.get_ivar(WINDOW_STATE_IVAR);
         let rc1 = Arc::from_raw(raw as *mut Mutex<MacWindowState>);
@@ -2614,6 +2631,9 @@ unsafe fn transparent_cursor() -> id {
 }
 
 extern "C" fn handle_key_equivalent(this: &Object, _: Sel, native_event: id) -> BOOL {
+    if crate::fast::composition::native_has_keyboard(this) {
+        return NO;
+    }
     handle_key_event(this, native_event, true)
 }
 
@@ -2830,7 +2850,7 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
     }
 }
 
-extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
+pub(crate) extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
     let window_state = unsafe { get_window_state(this) };
     let weak_window_state = Arc::downgrade(&window_state);
     let mut lock = window_state.as_ref().lock();
@@ -3289,6 +3309,7 @@ extern "C" fn close_window(this: &Object, _: Sel) {
         if let Some(callback) = close_callback {
             callback();
         }
+        crate::fast::composition::window_closed(this as *const Object as id);
 
         let _: () = msg_send![super(this, class!(NSWindow)), close];
     }

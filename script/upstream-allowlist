@@ -26,4 +26,4 @@ crates/gpui/src/window/a11y.rs hunk=22 added=65 # Slopty: the a11y tree for test
 crates/gpui_apple/build.rs hunk=12 added=20 # Slopty: the iOS backend's shader build
 crates/gpui_apple/src/metal_renderer.rs any # Slopty: iOS rendering, video surfaces (Y'CbCr matrices, 10-bit, 4:4:4), presentation reports and pacing
 crates/gpui_apple/src/presentation_pacing.rs any # Slopty: frames kept from queueing in front of the display
-crates/gpui_macos/src/window.rs hunk=35 added=105 # Slopty: presentation reports and pacing, CursorStyle::None, covered windows drawn in test builds
+crates/gpui_macos/src/window.rs hunk=35 added=125 # Slopty: presentation reports and pacing, CursorStyle::None, covered windows drawn in test builds; composition: the GPUI view's hitTest:, the window's sendEvent:/makeFirstResponder:, two PlatformWindow forwards and the visibility bumps fast/composition.rs needs
