@@ -716,7 +716,7 @@ impl Showcase {
             .child(
                 switch("streaming", "Stream quotes", streaming, cx)
                     .tooltip(Tooltip::text(
-                        "Stream 8 quotes into the trading workspace 60 times a second",
+                        "Stream 16 quotes into the trading workspace 60 times a second",
                         Some("Q"),
                     ))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_streaming(window, cx))),

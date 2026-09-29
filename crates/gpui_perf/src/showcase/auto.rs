@@ -50,13 +50,13 @@ impl Scenario {
             Scenario::RefreshTable => "refreshing the data table's rows every 33 ms",
             Scenario::ScrollList => "scrolling a list of messages",
             Scenario::WorkspaceQuotes => {
-                "workspace: quotes streaming, 8 every 16 ms, to every panel"
+                "workspace: quotes streaming, 16 every 16 ms, to every panel"
             }
             Scenario::WorkspaceScroll => {
-                "workspace: scrolling the watchlist, with 2 quotes every 16 ms"
+                "workspace: scrolling the watchlist, with 8 quotes every 16 ms"
             }
             Scenario::WorkspaceHover => {
-                "workspace: hovering rows of the watchlist, with 2 quotes every 16 ms"
+                "workspace: hovering rows of the watchlist, with 8 quotes every 16 ms"
             }
         }
     }
@@ -236,7 +236,9 @@ impl AutoRun {
                     }
                     if let Some(workspace) = showcase.container.read(cx).workspace.clone() {
                         let quotes = match scenario {
-                            Scenario::WorkspaceScroll | Scenario::WorkspaceHover => 2,
+                            Scenario::WorkspaceScroll | Scenario::WorkspaceHover => {
+                                QUOTES_PER_TICK / 2
+                            }
                             _ => QUOTES_PER_TICK,
                         };
                         workspace.update(cx, |workspace, _| workspace.quotes_per_tick = quotes);

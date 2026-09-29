@@ -28,8 +28,15 @@ pub struct Theme {
     /// Gains and losses, always shown with a sign as well.
     pub success: Hsla,
     pub danger: Hsla,
-    /// Text on a `danger` fill, such as a count badge.
+    /// Text on a `danger` fill, such as a count badge, and on the other
+    /// colored fills: badges and company icons.
     pub danger_foreground: Hsla,
+    /// Markers that are neither gains nor losses: holdings, pre-market
+    /// sessions, alerts.
+    pub info: Hsla,
+    pub warning: Hsla,
+    /// A chart's series, such as its moving averages, in order.
+    pub series: [Hsla; 3],
     /// Which GPUI the showcase runs on, marked in the toolbar so that two
     /// windows side by side cannot be mistaken: upstream in red, gpui-fast
     /// in green, with `build_foreground` on either.
@@ -60,6 +67,13 @@ impl Theme {
             success: rgb(0x15803d).into(),
             danger: rgb(0xdc2626).into(),
             danger_foreground: rgb(0xffffff).into(),
+            info: rgb(0x2563eb).into(),
+            warning: rgb(0xd97706).into(),
+            series: [
+                rgb(0xca8a04).into(),
+                rgb(0x9333ea).into(),
+                rgb(0x0284c7).into(),
+            ],
             build_upstream: rgb(0xdc2626).into(),
             build_fast: rgb(0x16a34a).into(),
             build_foreground: rgb(0xffffff).into(),
@@ -84,6 +98,13 @@ impl Theme {
             success: rgb(0x4ade80).into(),
             danger: rgb(0xdc2626).into(),
             danger_foreground: rgb(0xffffff).into(),
+            info: rgb(0x60a5fa).into(),
+            warning: rgb(0xfbbf24).into(),
+            series: [
+                rgb(0xfacc15).into(),
+                rgb(0xc084fc).into(),
+                rgb(0x38bdf8).into(),
+            ],
             build_upstream: rgb(0xdc2626).into(),
             build_fast: rgb(0x16a34a).into(),
             build_foreground: rgb(0xffffff).into(),
