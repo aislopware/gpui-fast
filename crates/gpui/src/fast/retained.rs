@@ -36,8 +36,9 @@ pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
     window.mark_changed_retained_views_dirty(cx);
 }
 
-/// Marks `window` as drawn outside of its frames, which is what tells
-/// retained subtrees what changed since they were drawn, so that nothing is
+/// Prepares `window` for an element drawn outside of its frames, as
+/// [`crate::VisualTestContext::draw`] draws one. What tells retained subtrees
+/// what changed since they were drawn is the window's frames, so nothing is
 /// drawn again from an earlier frame.
 #[cfg(any(test, feature = "test-support"))]
 #[inline(always)]
@@ -1652,16 +1653,5 @@ impl HitboxId {
     pub(crate) fn hovered_now(self, window: &Window) -> bool {
         window.captured_hitbox == Some(self)
             || (!window.last_input_was_keyboard() && self.hit_test(window))
-    }
-}
-
-impl Window {
-    /// Prepares an element drawn outside of the window's frames, as
-    /// [`crate::VisualTestContext::draw`] draws one. What tells retained
-    /// subtrees what changed since they were drawn is the window's frames, so
-    /// nothing is drawn again from an earlier frame.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn draw_outside_frames(&mut self) {
-        self.refreshing = true;
     }
 }
