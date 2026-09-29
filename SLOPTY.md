@@ -118,6 +118,22 @@ Merged ahead of longbridge:
     Each file with such hunks has its count in `script/upstream-allowlist`. Our own
     hooks that didn't name it (`note_animation_frame_request`,
     `refresh_if_fonts_changed`) became `crate::fast::…` calls.
+  - GPUI Kit (aislopware `4596030b`) is not yet on this merge. At `057969e` and later,
+    ten of its tests fail with retention and pass with `GPUI_VIEW_RETENTION=0`. All of
+    them rely on the rules #10 changed:
+    - `input::element::tests::line_number_gap_widens_the_gutter_by_its_difference` sets
+      `line_number_gap` without a notify.
+    - Two `dock::tab_group` tests, three `dock::panel` tests and two `dock::tab_panel`
+      tests expect views to be built again by a draw after nothing was notified.
+    - `text::window_selection::tests::virtual_head_to_plain_exports_unpainted_{plain,source}_blocks`
+      never ends: one mouse move draws without end. In every frame, `TextView::paint`
+      registers its selection participant, `publish_snapshots` sets a changed snapshot,
+      and the subscriber notifies a `TextViewState`, which draws the next frame. This
+      was traced with backtraces on notify and emit. Why the snapshot never settles
+      when only notified views are built again is not yet known.
+
+    Those need GPUI Kit's side (notify where state changes, register participants that
+    were not painted) before its pin moves here.
 
 Ported from open zed pull requests, ahead of zed. Drop each at the zed import that
 brings it: take zed's version of the files, remove the pull request's line from
