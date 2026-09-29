@@ -44,3 +44,7 @@ crates/gpui_macros/src/styles.rs unmarked=1 # Slopty: CursorStyle::None's style 
 crates/gpui_macos/src/display_link.rs unmarked=1 # Slopty: whether the display link runs, for presentation pacing
 crates/gpui_macos/src/events.rs unmarked=2 # Slopty: a cancelled scroll or pinch is cancelled, not moved
 crates/gpui_platform/src/gpui_platform.rs unmarked=1 # Slopty: the iOS platform
+
+# Open zed pull requests ported ahead of zed (SLOPTY.md, "Ported from open zed pull
+# requests"). Each line goes when the zed import that brings the pull request lands.
+crates/gpui/src/gestures.rs hunk=54 added=88 unmarked=9 # zed #64239: a touch that catches a fling picks its own axis

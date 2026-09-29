@@ -119,6 +119,16 @@ Merged ahead of longbridge:
     hooks that didn't name it (`note_animation_frame_request`,
     `refresh_if_fonts_changed`) became `crate::fast::…` calls.
 
+Ported from open zed pull requests, ahead of zed. Drop each at the zed import that
+brings it: take zed's version of the files, remove the pull request's line from
+`script/upstream-allowlist`, and keep only what is listed here as ours.
+
+- zed #64239 (@huacnlee, head `3e74364c02`), "a touch that catches a fling picks its own
+  axis": a finger that stops a sideways fling and moves up scrolls up, where it used to
+  inherit the fling's axis and scroll nothing. `gestures.rs` only, applied as is. iOS is
+  covered: `gpui_ios` hands raw touches to the same `TouchGestureRecognizer`. Test:
+  `catching_a_fling_takes_the_axis_from_the_new_touch`.
+
 Added in this fork:
 
 - `1776aa2` test(gpui): a video surface shows the buffer its view holds, retained or not
