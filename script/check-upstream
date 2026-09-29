@@ -193,13 +193,63 @@ def diff_hunks(old, new, normalized=True):
     if normalized:
         old_lines = [normalize(line) for line in old_lines]
         new_lines = [normalize(line) for line in new_lines]
+    return [(len(added), removed) for added, removed in diff_hunk_lines(old_lines, new_lines)]
+
+
+def diff_hunk_lines(old_lines, new_lines):
+    """Returns `(added, removed)` for each hunk: the range of `new_lines` it adds, and how many
+    lines it removes."""
     matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
     hunks = []
     for group in matcher.get_grouped_opcodes(0):
-        added = sum(j2 - j1 for tag, _, _, j1, j2 in group if tag != "equal")
+        # Without context, a hunk's changes are adjacent: what it adds is one range.
+        added = range(group[0][3], group[-1][4])
         removed = sum(i2 - i1 for tag, i1, i2, _, _ in group if tag != "equal")
         hunks.append((added, removed))
     return hunks
+
+
+# Every hunk gpui-fast adds to an upstream Rust file names `fast` in a line it
+# adds — a path (`crate::fast::layout::...`, `#[path = "fast/..."]`, `mod
+# fast;`) or one of our identifiers named for it (`fast_layout`) — so whoever
+# merges upstream can tell our hooks from upstream's code. One mention covers
+# the hunk, since rustfmt may spread one hook over several lines. Exempt are
+# hunks that only remove lines, and hunks that only change `use` declarations
+# or blank lines, which follow from the code around them; lines that differ
+# only by visibility are not in the normalized diff at all.
+NAMES_FAST = re.compile(r"\bfast(\b|_)")
+USE = re.compile(r"^\s*(pub(\([\w:]+\))?\s+)?use\s")
+
+
+def use_lines(lines):
+    """The indices of `lines` that are part of a `use` declaration."""
+    found = set()
+    inside = False
+    for index, line in enumerate(lines):
+        inside = inside or bool(USE.match(line))
+        if inside:
+            found.add(index)
+            inside = ";" not in line
+    return found
+
+
+def unmarked_hunks(path, old, new):
+    """Finds the hunks of a changed upstream Rust file that add lines without naming `fast`.
+
+    Returns `(first line number, added lines)` for each.
+    """
+    if not path.endswith(".rs"):
+        return []
+    old_lines = [normalize(line) for line in old.decode("utf-8", errors="replace").splitlines()]
+    new_lines = new.decode("utf-8", errors="replace").splitlines()
+    imports = use_lines(new_lines)
+    found = []
+    for added, _ in diff_hunk_lines(old_lines, [normalize(line) for line in new_lines]):
+        if not added or all(index in imports or not new_lines[index].strip() for index in added):
+            continue
+        if not any(NAMES_FAST.search(new_lines[index]) for index in added):
+            found.append((added.start + 1, new_lines[added.start : added.stop]))
+    return found
 
 
 GLOB_FROM_FAST = re.compile(rb"\buse\s+[\w:]*\bfast(::\w+)*::\*")
@@ -267,6 +317,7 @@ def main():
 
     rows = []
     violations = 0
+    unmarked = []
     for path in changed:
         allowance = find_allowance(allowances, path)
         max_hunk = allowance.max_hunk if allowance and allowance.max_hunk is not None else args.max_hunk
@@ -306,6 +357,11 @@ def main():
                     problems.append(f"adds {added} > {max_added}")
                 if removed > max_removed:
                     problems.append(f"removes {removed} > {max_removed}")
+                marks = unmarked_hunks(path, old, new)
+                if marks:
+                    problems.append(f"{len(marks)} hunk(s) don't name fast")
+                    if not allowed_anything:
+                        unmarked.extend((f"{path}:{number}", lines) for number, lines in marks)
 
         if not problems:
             status = "ok" + (" (allow-listed)" if allowance else "")
@@ -331,6 +387,13 @@ def main():
         widths = [max(len(row[i]) for row in [headers, *rows]) for i in range(len(headers))]
         for row in [headers, tuple("-" * width for width in widths), *rows]:
             print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip())
+        print()
+
+    for location, lines in unmarked:
+        print(f"FAIL: {location}: hunk doesn't name `fast`; call `crate::fast::<topic>::...` explicitly")
+        for line in lines:
+            print(f"    + {line}")
+    if unmarked:
         print()
 
     globs = fast_globs(path for path in ours if os.path.isfile(os.path.join(ROOT, path)))

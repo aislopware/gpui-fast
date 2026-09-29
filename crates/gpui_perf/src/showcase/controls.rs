@@ -62,7 +62,7 @@ pub fn key(label: impl Into<SharedString>, cx: &App) -> impl IntoElement {
     let theme = theme(cx);
     div()
         .px_1()
-        .rounded_sm()
+        .rounded(theme.radius_sm)
         .border_1()
         .border_color(theme.border)
         .bg(theme.muted)
@@ -84,7 +84,7 @@ pub fn segment(
         .items_center()
         .h_6()
         .px_2()
-        .rounded(theme.radius - gpui::px(2.))
+        .rounded(theme.radius_sm)
         .text_color(theme.muted_foreground)
         .when(selected, |this| {
             this.bg(theme.background)
@@ -146,7 +146,7 @@ pub fn switch(
                 .h_4()
                 .p_0p5()
                 .rounded_full()
-                .bg(if on { theme.primary } else { theme.border })
+                .bg(if on { theme.primary } else { theme.input })
                 .when(on, |this| this.justify_end())
                 .child(div().size_3().rounded_full().bg(if on {
                     theme.primary_foreground

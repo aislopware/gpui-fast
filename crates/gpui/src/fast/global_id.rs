@@ -7,6 +7,23 @@ use crate::{ElementId, GlobalElementId};
 use collections::FxHashMap;
 use std::{mem, sync::Arc};
 
+/// What a [`GlobalElementId`] hashes to: the hash of its path, worked out once.
+pub(crate) type PathHash = u64;
+
+/// The global id of the element id stack of `window`, handed out again from
+/// the [`GlobalIdCache`] when it was handed out this frame or the last.
+#[inline(always)]
+pub(crate) fn current(window: &mut crate::Window) -> GlobalElementId {
+    window.global_ids.get(&window.element_id_stack)
+}
+
+/// A new global id for `path`, not handed out again.
+#[cfg(any(feature = "inspector", debug_assertions))]
+#[inline(always)]
+pub(crate) fn from_path(path: &[ElementId]) -> GlobalElementId {
+    GlobalElementId::new(Arc::from(path))
+}
+
 /// Element state is looked up by a [`GlobalElementId`] several times per
 /// element in every frame, and hashing its path of ids each time, names byte
 /// by byte, cost more than the lookups did. The path's hash is therefore worked
@@ -89,53 +106,59 @@ impl crate::Window {
     pub(crate) fn inspector_enabled(&self) -> bool {
         self.inspector.is_some()
     }
+}
 
-    /// `element`'s source location, if the inspector is open to find the
-    /// element by it.
-    ///
-    /// The path the inspector finds an element by is a copy of the whole
-    /// element id stack, so it is only built while the inspector is open.
-    /// Opening it refreshes the window.
-    pub(crate) fn inspected(
-        &self,
-        element: &impl crate::Element,
-    ) -> Option<&'static core::panic::Location<'static>> {
-        element
-            .source_location()
-            .filter(|_| self.inspector_enabled())
-    }
+/// `element`'s source location, if the inspector is open to find the
+/// element by it.
+///
+/// The path the inspector finds an element by is a copy of the whole
+/// element id stack, so it is only built while the inspector is open.
+/// Opening it refreshes the window.
+#[cfg(any(feature = "inspector", debug_assertions))]
+#[inline(always)]
+pub(crate) fn inspected(
+    window: &crate::Window,
+    element: &impl crate::Element,
+) -> Option<&'static core::panic::Location<'static>> {
+    element
+        .source_location()
+        .filter(|_| window.inspector_enabled())
+}
 
-    /// Lets go of the inspector's bookkeeping once it has been closed, so a
-    /// window without it open holds none.
-    pub(crate) fn release_closed_inspector_ids(&mut self) {
-        if self.inspector_enabled() {
-            return;
-        }
-        for frame in [&mut self.rendered_frame, &mut self.next_frame] {
-            frame.next_inspector_instance_ids = FxHashMap::default();
-            frame.inspector_hitboxes = FxHashMap::default();
-        }
+/// Lets go of the inspector's bookkeeping once it has been closed, so a
+/// window without it open holds none.
+#[cfg(any(feature = "inspector", debug_assertions))]
+#[inline(always)]
+pub(crate) fn release_closed_inspector_ids(window: &mut crate::Window) {
+    if window.inspector_enabled() {
+        return;
     }
+    for frame in [&mut window.rendered_frame, &mut window.next_frame] {
+        frame.next_inspector_instance_ids = FxHashMap::default();
+        frame.inspector_hitboxes = FxHashMap::default();
+    }
+}
 
-    /// Runs `f` with the inspector's state for the element `inspector_id`
-    /// names, if that is the element the inspector has selected, and does
-    /// nothing otherwise. See [`crate::Window::with_inspector_state`].
-    pub(crate) fn with_active_inspector_state<T: 'static, R>(
-        &mut self,
-        inspector_id: Option<&crate::InspectorElementId>,
-        cx: &mut crate::App,
-        f: impl FnOnce(&mut Option<T>, &mut Self) -> R,
-    ) -> Option<R> {
-        let inspector_id = inspector_id?;
-        let inspector = self.inspector.as_ref()?;
-        if inspector.read(cx).active_element_id() != Some(inspector_id) {
-            return None;
-        }
-        let inspector = inspector.clone();
-        Some(inspector.update(cx, |inspector, _cx| {
-            inspector.with_active_element_state(self, f)
-        }))
+/// Runs `f` with the inspector's state for the element `inspector_id`
+/// names, if that is the element the inspector has selected, and does
+/// nothing otherwise. See [`crate::Window::with_inspector_state`].
+#[cfg(any(feature = "inspector", debug_assertions))]
+#[inline]
+pub(crate) fn with_active_inspector_state<T: 'static, R>(
+    window: &mut crate::Window,
+    inspector_id: Option<&crate::InspectorElementId>,
+    cx: &mut crate::App,
+    f: impl FnOnce(&mut Option<T>, &mut crate::Window) -> R,
+) -> Option<R> {
+    let inspector_id = inspector_id?;
+    let inspector = window.inspector.as_ref()?;
+    if inspector.read(cx).active_element_id() != Some(inspector_id) {
+        return None;
     }
+    let inspector = inspector.clone();
+    Some(inspector.update(cx, |inspector, _cx| {
+        inspector.with_active_element_state(window, f)
+    }))
 }
 
 #[cfg(test)]

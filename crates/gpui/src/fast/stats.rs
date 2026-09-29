@@ -33,6 +33,10 @@ pub struct LayoutStats {
     /// Measured nodes whose element took over last frame's measurement, and
     /// were left clean rather than measured again.
     pub measurements_kept: u64,
+    /// Measured nodes whose element measured something else than last
+    /// frame's — other text — to the same sizes, and were left clean rather
+    /// than measured again by Taffy.
+    pub measurements_replayed: u64,
     /// Times Taffy actually invoked a measurement. A node can be measured more
     /// than once in a layout — for its intrinsic size and then for its final
     /// one — so this runs ahead of the number of measured nodes.
@@ -164,28 +168,30 @@ impl TaffyLayoutEngine {
         self.retention.stats = LayoutStats::default();
         self.retention.timed = true;
     }
+}
 
-    /// Starts counting the measurements of a layout computation.
-    pub(crate) fn begin_measure_tally(&self) -> MeasureTally {
-        let timed = self.retention.timed;
-        MeasureTally {
-            timed,
-            calls: 0,
-            time: Duration::ZERO,
-            compute_started_at: timed.then(Instant::now),
-        }
+/// Starts counting the measurements of a layout computation.
+#[inline(always)]
+pub(crate) fn begin_measure_tally(engine: &TaffyLayoutEngine) -> MeasureTally {
+    let timed = engine.retention.timed;
+    MeasureTally {
+        timed,
+        calls: 0,
+        time: Duration::ZERO,
+        compute_started_at: timed.then(Instant::now),
     }
+}
 
-    /// Folds what a layout computation measured into [`Self::stats`].
-    pub(crate) fn finish_measure_tally(&mut self, tally: MeasureTally) {
-        let stats = &mut self.retention.stats;
-        stats.compute_layout_calls += 1;
-        if let Some(started_at) = tally.compute_started_at {
-            stats.compute_layout_time += started_at.elapsed();
-        }
-        stats.measure_calls += tally.calls;
-        stats.measure_time += tally.time;
+/// Folds what a layout computation measured into [`TaffyLayoutEngine::stats`].
+#[inline(always)]
+pub(crate) fn finish_measure_tally(engine: &mut TaffyLayoutEngine, tally: MeasureTally) {
+    let stats = &mut engine.retention.stats;
+    stats.compute_layout_calls += 1;
+    if let Some(started_at) = tally.compute_started_at {
+        stats.compute_layout_time += started_at.elapsed();
     }
+    stats.measure_calls += tally.calls;
+    stats.measure_time += tally.time;
 }
 
 impl Window {
@@ -222,5 +228,45 @@ impl Window {
     #[cfg(any(test, feature = "test-support"))]
     pub fn layout_node_count(&self) -> usize {
         self.layout_engine.as_ref().unwrap().node_count()
+    }
+
+    /// The glyphs, icons, images and underlines of the most recently rendered
+    /// frame, one line each, with their bounds, clip and colour but not their
+    /// draw order or atlas tile, which two windows painting the same thing
+    /// may number differently. With [`Window::painted_quads`], for comparing
+    /// what two windows painted, text included.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn painted_sprites(&self) -> Vec<String> {
+        let scene = &self.rendered_frame.scene;
+        let mut lines = Vec::new();
+        lines.extend(scene.underlines.iter().map(|underline| {
+            format!(
+                "underline {:?} {:?} {:?} {:?} {:?}",
+                underline.bounds,
+                underline.content_mask,
+                underline.color,
+                underline.thickness,
+                underline.wavy
+            )
+        }));
+        lines.extend(scene.monochrome_sprites.iter().map(|sprite| {
+            format!(
+                "monochrome {:?} {:?} {:?}",
+                sprite.bounds, sprite.content_mask, sprite.color
+            )
+        }));
+        lines.extend(scene.subpixel_sprites.iter().map(|sprite| {
+            format!(
+                "subpixel {:?} {:?} {:?}",
+                sprite.bounds, sprite.content_mask, sprite.color
+            )
+        }));
+        lines.extend(scene.polychrome_sprites.iter().map(|sprite| {
+            format!(
+                "polychrome {:?} {:?} {:?}",
+                sprite.bounds, sprite.content_mask, sprite.grayscale
+            )
+        }));
+        lines
     }
 }

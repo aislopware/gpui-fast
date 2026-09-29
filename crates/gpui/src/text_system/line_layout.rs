@@ -454,7 +454,7 @@ impl WrappedLineLayout {
 pub(crate) struct LineLayoutCache {
     pub(crate) previous_frame: Mutex<FrameCache>,
     pub(crate) current_frame: RwLock<FrameCache>,
-    platform_text_system: Arc<dyn PlatformTextSystem>,
+    pub(crate) platform_text_system: Arc<dyn PlatformTextSystem>,
     pub(crate) shaping: crate::fast::text::LineShaping,
 }
 
@@ -477,7 +477,7 @@ pub(crate) struct FrameCache {
     pub(crate) used_wrapped_lines_by_hash: Vec<Arc<HashedCacheKey>>,
 }
 
-#[derive(Clone, Default, PartialEq, Debug)]
+#[derive(Clone, Default)]
 pub(crate) struct LineLayoutIndex {
     pub(crate) lines_index: usize,
     pub(crate) wrapped_lines_index: usize,
@@ -491,7 +491,7 @@ impl LineLayoutCache {
             previous_frame: Mutex::default(),
             current_frame: RwLock::default(),
             platform_text_system,
-            shaping: Default::default(),
+            shaping: crate::fast::text::LineShaping::default(),
         }
     }
 
@@ -660,9 +660,7 @@ impl LineLayoutCache {
             layout
         } else {
             let text = SharedString::from(text);
-            let mut layout =
-                self.shaping
-                    .shape_line(&*self.platform_text_system, &text, font_size, runs);
+            let mut layout = crate::fast::text::shape_line(self, &text, font_size, runs);
 
             if let Some(force_width) = force_width {
                 apply_force_width_to_layout(&mut layout, force_width);
@@ -809,9 +807,7 @@ impl LineLayoutCache {
         }
 
         let text = materialize_text();
-        let mut layout =
-            self.shaping
-                .shape_line(&*self.platform_text_system, &text, font_size, runs);
+        let mut layout = crate::fast::text::shape_line(self, &text, font_size, runs);
 
         if let Some(force_width) = force_width {
             apply_force_width_to_layout(&mut layout, force_width);

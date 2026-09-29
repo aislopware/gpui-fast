@@ -4,13 +4,14 @@ use crate::{
     AbsoluteLength, App, AvailableSpace, DefiniteLength, Edges, GridTemplate, LayoutId, Length,
     Pixels, Size, Style, TaffyLayoutEngine, Window,
     fast::stats::LayoutStats,
-    taffy::{EXPECT_MESSAGE, MeasureFn, NodeContext, ToTaffy as _},
+    taffy::{MeasureFn, NodeContext, ToTaffy as _},
     util::round_to_device_pixel,
 };
 use collections::{FxHashMap, FxHasher};
 use smallvec::SmallVec;
 use std::{
     any::Any,
+    cell::{Cell, RefCell},
     fmt::Debug,
     hash::{Hash as _, Hasher as _},
     mem,
@@ -18,13 +19,17 @@ use std::{
 };
 use taffy::TaffyTree;
 
+/// What a Taffy call that cannot fail by construction panics with, as
+/// upstream's layout engine does.
+const EXPECT_MESSAGE: &str = "we should avoid taffy layout errors by construction if possible";
+
 /// The retained half of a [`TaffyLayoutEngine`]: the nodes it keeps from one
 /// frame to the next, what it needs to tell whether a frame can leave them
 /// alone, and the counters describing the work it did.
 #[derive(Default)]
 pub(crate) struct LayoutRetention {
     /// Nodes surviving from earlier frames, keyed by their position in the
-    /// element tree. `Window::push_layout_key` derives the keys.
+    /// element tree. `push_layout_key` derives the keys.
     retained: FxHashMap<u64, RetainedNode>,
     /// Nodes allocated this frame that are not retained, because the caller had
     /// no key for them or because their key was already claimed. Released at
@@ -61,6 +66,9 @@ pub(crate) struct LayoutRetention {
     /// state the element made afresh, though it is expected to come out as
     /// before. See [`TaffyLayoutEngine::remeasures`].
     remeasures: u64,
+    /// The [`layout_fingerprint`] of the default style, which every text leaf
+    /// asks for, under the rem size and scale factor it was taken at.
+    default_fingerprint: Option<(Pixels, f32, u64)>,
 }
 
 /// Removes a node from the tree, and with it what its measurement captured.
@@ -108,6 +116,122 @@ struct RetainedNode {
     /// to take its measurement over from. See
     /// [`TaffyLayoutEngine::request_retained_carried_measured_layout`].
     measurement: Option<Rc<dyn Any>>,
+    /// The sizes Taffy has taken from the node since it was last dirtied,
+    /// for a new measurement to be checked against. See [`MeasureLog`].
+    measure_log: Option<Rc<MeasureLog>>,
+}
+
+/// The measurements Taffy took of one measured node since the node was last
+/// dirtied: the constraints of each and the size it came out at, in the
+/// order they were last taken.
+///
+/// Taffy caches a node's sizes under the constraints it computed them for,
+/// and reuses them until the node is dirtied. Any size it holds for the node
+/// was computed from one of these measurements, so a new measurement giving
+/// the same size under every one of them would leave all of it — the node's
+/// cache and those above it — exactly as it is. Recording stops, and the log
+/// can no longer vouch for anything, once it has more entries than a node
+/// measured under steady constraints ever needs.
+#[derive(Default)]
+pub(crate) struct MeasureLog {
+    entries: RefCell<SmallVec<[MeasureLogEntry; 4]>>,
+    overflowed: Cell<bool>,
+}
+
+/// One measurement in a [`MeasureLog`]: the known dimensions and available
+/// space it was taken under, and the size it gave.
+type MeasureLogEntry = (Size<Option<Pixels>>, Size<AvailableSpace>, Size<Pixels>);
+
+/// How many measurements a [`MeasureLog`] keeps before giving up. Taffy
+/// caches ten results per node.
+const MEASURE_LOG_CAPACITY: usize = 16;
+
+impl MeasureLog {
+    /// Records a measurement Taffy took, moving it to the end if one under the
+    /// same constraints was already recorded.
+    fn record(
+        &self,
+        known: Size<Option<Pixels>>,
+        available: Size<AvailableSpace>,
+        size: Size<Pixels>,
+    ) {
+        if self.overflowed.get() {
+            return;
+        }
+        let mut entries = self.entries.borrow_mut();
+        if let Some(ix) = entries
+            .iter()
+            .position(|(k, a, _)| *k == known && *a == available)
+        {
+            entries.remove(ix);
+        } else if entries.len() == MEASURE_LOG_CAPACITY {
+            self.overflowed.set(true);
+            entries.clear();
+            return;
+        }
+        entries.push((known, available, size));
+    }
+
+    /// Whether `measure` gives every recorded size under the constraints it
+    /// was recorded under. The measurements are taken again in the order they
+    /// were last taken, so what `measure` keeps of them is what the last one
+    /// left, as it would be had Taffy taken them.
+    fn replays(
+        &self,
+        measure: &mut impl FnMut(
+            Size<Option<Pixels>>,
+            Size<AvailableSpace>,
+            &mut Window,
+            &mut App,
+        ) -> Size<Pixels>,
+        stats: &mut LayoutStats,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        if self.overflowed.get() {
+            return false;
+        }
+        let entries = self.entries.borrow();
+        !entries.is_empty()
+            && entries.iter().all(|(known, available, size)| {
+                stats.measure_calls += 1;
+                measure(*known, *available, window, cx) == *size
+            })
+    }
+
+    /// `measure`, boxed for a node, recording what it measures into `log`.
+    fn logged(
+        log: &Rc<MeasureLog>,
+        mut measure: impl FnMut(
+            Size<Option<Pixels>>,
+            Size<AvailableSpace>,
+            &mut Window,
+            &mut App,
+        ) -> Size<Pixels>
+        + 'static,
+    ) -> Box<MeasureFn> {
+        let log = log.clone();
+        Box::new(move |known, available, window: &mut Window, cx: &mut App| {
+            let size = measure(known, available, window, cx);
+            log.record(known, available, size);
+            size
+        })
+    }
+}
+
+/// What an element made of the measurement the node it lays out was left
+/// with. See [`TaffyLayoutEngine::request_retained_carried_measured_layout`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Adopted {
+    /// The measurement does not stand for this element.
+    No,
+    /// The element took the measurement over, and measures the node from now
+    /// on: it differs from the element before it in something measuring it
+    /// again would use.
+    Measurement,
+    /// The element took the measurement over, and the node's closure measures
+    /// it as its own would: the node is left as it is.
+    Node,
 }
 
 /// What [`TaffyLayoutEngine::claim`] found for an element's key.
@@ -127,44 +251,6 @@ impl TaffyLayoutEngine {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn node_count(&self) -> usize {
         self.taffy.total_node_count()
-    }
-
-    /// Ends the frame for the retained nodes: releases nodes that no longer
-    /// appear in the element tree. See [`TaffyLayoutEngine::end_frame`].
-    ///
-    /// Nodes that were claimed this frame stay, along with their Taffy layout
-    /// caches, which is what lets the next frame skip recomputing the parts of
-    /// the tree that did not change.
-    pub(crate) fn release_unclaimed_nodes(&mut self) {
-        let retention = &mut self.retention;
-        retention.stats.frames += 1;
-
-        for id in retention.transient.drain(..) {
-            retention.unstretched_styles.remove(&id);
-            remove_node(&mut self.taffy, id);
-            retention.stats.nodes_freed += 1;
-        }
-
-        // In a steady frame every retained node was claimed, and there is
-        // nothing to sweep.
-        if retention.retained.len() != retention.claimed_this_frame {
-            let frame = retention.frame;
-            let taffy = &mut self.taffy;
-            let unstretched_styles = &mut retention.unstretched_styles;
-            let freed = &mut retention.stats.nodes_freed;
-            retention.retained.retain(|_, node| {
-                if node.claimed_in_frame == frame {
-                    return true;
-                }
-                unstretched_styles.remove(&node.id);
-                remove_node(taffy, node.id);
-                *freed += 1;
-                false
-            });
-        }
-
-        retention.claimed_this_frame = 0;
-        retention.frame += 1;
     }
 
     /// Takes the node retained under `key` for use in this frame.
@@ -256,6 +342,26 @@ impl TaffyLayoutEngine {
     /// retained and unclaimed this frame; otherwise keeps none of them and
     /// returns false. A subtree whose layout is reused without being requested
     /// again needs all of its nodes, just as they were.
+    /// The layouts last computed for the retained nodes `keys`, to tell once
+    /// layout is computed again whether it changed them. See
+    /// [`Self::layouts_unchanged`].
+    pub(crate) fn retained_layouts(&self, keys: &[u64]) -> Vec<(LayoutId, taffy::Layout)> {
+        keys.iter()
+            .filter_map(|key| self.retention.retained.get(key))
+            .filter_map(|node| Some((node.id, *self.taffy.layout(node.id.into()).ok()?)))
+            .collect()
+    }
+
+    /// Whether the nodes [`Self::retained_layouts`] returned still have the
+    /// layouts they had then.
+    pub(crate) fn layouts_unchanged(&self, layouts: &[(LayoutId, taffy::Layout)]) -> bool {
+        layouts.iter().all(|(id, layout)| {
+            self.taffy
+                .layout((*id).into())
+                .is_ok_and(|now| now == layout)
+        })
+    }
+
     pub(crate) fn try_keep_retained(&mut self, keys: &[u64]) -> bool {
         let frame = self.retention.frame;
         let all_there = keys.iter().all(|key| {
@@ -328,6 +434,7 @@ impl TaffyLayoutEngine {
                 measured,
                 style_fingerprint,
                 measurement: None,
+                measure_log: None,
             },
         );
         retention.claimed_this_frame += 1;
@@ -414,249 +521,136 @@ impl TaffyLayoutEngine {
             .expect(EXPECT_MESSAGE);
     }
 
-    /// Adds a node to the layout tree, reusing the one retained under `key`
-    /// when there is one. See [`TaffyLayoutEngine::request_layout`].
-    ///
-    /// `key` identifies this element's position in the element tree across
-    /// frames; `None` opts out of reuse, and the node is released at the end of
-    /// the frame.
-    pub(crate) fn request_retained_layout(
-        &mut self,
-        key: Option<u64>,
-        style: Style,
-        rem_size: Pixels,
-        scale_factor: f32,
-        children: &[LayoutId],
-    ) -> LayoutId {
-        let key = match self.claim(key) {
-            Claim::Reused(key, id) => {
-                self.apply_requested_style(key, id, &style, rem_size, scale_factor);
-                self.apply_children(key, id, children);
-                // A node that measured itself on an earlier frame no longer does.
-                if self
-                    .retention
-                    .retained
-                    .get(&key)
-                    .is_some_and(|node| node.measured)
-                {
-                    let node = self
-                        .retention
-                        .retained
-                        .get_mut(&key)
-                        .expect("a claimed key is always present");
-                    node.measured = false;
-                    node.measurement = None;
-                    self.taffy
-                        .set_node_context(id.into(), None)
-                        .expect(EXPECT_MESSAGE);
-                }
-                return id;
-            }
-            Claim::Vacant(key) => Some(key),
-            Claim::Unkeyed => None,
-        };
-
-        self.retention.stats.nodes_created += 1;
-        self.retention.layout_changes += 1;
-        let style_fingerprint = layout_fingerprint(&style, rem_size, scale_factor);
-        let taffy_style = style.to_taffy(rem_size, scale_factor);
-        let id: LayoutId = self
-            .taffy
-            .new_leaf(taffy_style)
-            .expect(EXPECT_MESSAGE)
-            .into();
-        if !children.is_empty() {
-            // A retained child can arrive here still listed under the parent
-            // it had last frame. `new_with_children` would leave it listed
-            // there, so when that parent's children were next rewritten the
-            // child would lose its parent link, and with it the offset
-            // `layout_bounds` adds up from its ancestors. `set_children`
-            // detaches each child from wherever it was first.
-            self.taffy
-                // This is safe because LayoutId is repr(transparent) to taffy::tree::NodeId.
-                .set_children(id.into(), LayoutId::to_taffy_slice(children))
-                .expect(EXPECT_MESSAGE);
-        }
-        self.retain(key, id, children, false, style_fingerprint);
-        id
-    }
-
-    /// Adds a self-measuring leaf to the layout tree, reusing the node retained
-    /// under `key` when there is one. See
-    /// [`TaffyLayoutEngine::request_measured_layout`].
-    ///
-    /// Nothing says what the measurement depends on, so a reused node is given
-    /// the new closure and dirtied, and `measure` is guaranteed to run.
-    pub(crate) fn request_retained_measured_layout(
-        &mut self,
-        key: Option<u64>,
-        style: Style,
-        rem_size: Pixels,
-        scale_factor: f32,
-        measure: impl FnMut(
-            Size<Option<Pixels>>,
-            Size<AvailableSpace>,
-            &mut Window,
-            &mut App,
-        ) -> Size<Pixels>
-        + 'static,
-    ) -> LayoutId {
-        let measure = Box::new(measure) as Box<MeasureFn>;
-        #[cfg(feature = "stacker")]
-        let measure = crate::taffy::StackSafe::new(measure);
-        self.retention.stats.measure_rebinds += 1;
-
-        let (key, id) = match self.claim(key) {
-            Claim::Reused(key, id) => (key, id),
-            claim => {
-                let key = match claim {
-                    Claim::Vacant(key) => Some(key),
-                    _ => None,
-                };
-                let style_fingerprint = layout_fingerprint(&style, rem_size, scale_factor);
-                let taffy_style = style.to_taffy(rem_size, scale_factor);
-                self.retention.stats.nodes_created += 1;
-                self.retention.layout_changes += 1;
-                let id: LayoutId = self
-                    .taffy
-                    .new_leaf_with_context(taffy_style, NodeContext { measure })
-                    .expect(EXPECT_MESSAGE)
-                    .into();
-                self.retain(key, id, &[], true, style_fingerprint);
-                return id;
-            }
-        };
-
-        self.apply_requested_style(key, id, &style, rem_size, scale_factor);
-        self.apply_children(key, id, &[]);
-
-        // Nothing says whether the measurement still stands, and what it
-        // produces lives in state the element made afresh this frame, so it
-        // has to be taken again.
-        self.retention.remeasures += 1;
-        if let Some(context) = self.taffy.get_node_context_mut(id.into()) {
-            context.measure = measure;
-        } else {
-            self.taffy
-                .set_node_context(id.into(), Some(NodeContext { measure }))
-                .expect(EXPECT_MESSAGE);
-        }
-        self.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
-        let node = self
-            .retention
-            .retained
-            .get_mut(&key)
-            .expect("a claimed key is always present");
-        node.measured = true;
-        node.measurement = None;
-
-        id
-    }
-
     /// Adds a self-measuring leaf to the layout tree as
-    /// [`Self::request_retained_measured_layout`] does, but lets the element
+    /// [`request_retained_measured_layout`] does, but lets the element
     /// take over the measurement of the node retained under `key`, rather
     /// than have it taken again.
     ///
-    /// The element measuring the node last frame left `memo` there; `adopt` is
-    /// given it and takes the measurement over if it still stands, in which
-    /// case the node is given the new closure without being dirtied, and keeps
-    /// what Taffy cached for it and the nodes above it. Either way this
-    /// element's `memo` is left for the next frame's.
-    pub(crate) fn request_retained_carried_measured_layout(
+    /// The element measuring the node last frame left what it measured from,
+    /// `state`, there; `adopt` is given this element's and that one, and takes
+    /// the measurement over if it still stands, in which case the node is not
+    /// dirtied, and keeps what Taffy cached for it and the nodes above it.
+    /// When `adopt` finds the node's measurement stands as it is, the node
+    /// keeps its closure and state too, and this element's `state` is dropped;
+    /// otherwise the node is given this element's, to measure it from and to
+    /// leave for the next frame's.
+    ///
+    /// When the measurement does not stand — a text element whose text
+    /// changed — the node is still left clean if `measure` gives every size
+    /// Taffy has taken from the node since it was last dirtied, under the
+    /// same constraints: what Taffy cached for the node, and for the nodes
+    /// above it, is then what measuring it afresh would produce. A price that
+    /// ticks in a cell keeps its width, and the row, the list and the window
+    /// around it are not laid out again. See [`MeasureLog`].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn request_retained_carried_measured_layout<S: 'static>(
         &mut self,
         key: Option<u64>,
-        style: Style,
         rem_size: Pixels,
         scale_factor: f32,
-        memo: Rc<dyn Any>,
-        adopt: impl FnOnce(&dyn Any) -> bool,
-        measure: impl FnMut(
+        state: S,
+        adopt: impl FnOnce(&S, &dyn Any) -> Adopted,
+        measure: impl Fn(
+            &S,
             Size<Option<Pixels>>,
             Size<AvailableSpace>,
             &mut Window,
             &mut App,
         ) -> Size<Pixels>
         + 'static,
+        window: &mut Window,
+        cx: &mut App,
     ) -> LayoutId {
+        // The leaf is laid out in the default style, whose fingerprint only
+        // changes with the rem size and the scale factor.
+        let style_fingerprint = match self.retention.default_fingerprint {
+            Some((rem, scale, fingerprint)) if rem == rem_size && scale == scale_factor => {
+                fingerprint
+            }
+            _ => {
+                let fingerprint = layout_fingerprint(&Style::default(), rem_size, scale_factor);
+                self.retention.default_fingerprint = Some((rem_size, scale_factor, fingerprint));
+                fingerprint
+            }
+        };
         let frame = self.retention.frame;
-        let previous = key
+        let reusable = key
             .and_then(|key| self.retention.retained.get(&key))
             .filter(|node| {
                 node.claimed_in_frame != frame
                     && node.measured
-                    && node.style_fingerprint == layout_fingerprint(&style, rem_size, scale_factor)
+                    && node.style_fingerprint == style_fingerprint
             })
-            .and_then(|node| node.measurement.clone());
-        if let Some(previous) = previous
-            && adopt(&*previous)
-            && let Claim::Reused(key, id) = self.claim(key)
-            && let Some(context) = self.taffy.get_node_context_mut(id.into())
-        {
-            let measure = Box::new(measure) as Box<MeasureFn>;
-            #[cfg(feature = "stacker")]
-            let measure = crate::taffy::StackSafe::new(measure);
-            context.measure = measure;
-            self.retention
-                .retained
-                .get_mut(&key)
-                .expect("a claimed key is always present")
-                .measurement = Some(memo);
-            self.retention.stats.measurements_kept += 1;
-            return id;
+            .map(|node| (node.measurement.clone(), node.measure_log.clone()));
+        if let Some((previous, log)) = reusable {
+            let adopted = previous.map_or(Adopted::No, |previous| adopt(&state, &*previous));
+            let kept = if adopted != Adopted::No {
+                self.retention.stats.measurements_kept += 1;
+                true
+            } else if let Some(log) = &log
+                && log.replays(
+                    &mut |known, available, window: &mut Window, cx: &mut App| {
+                        measure(&state, known, available, window, cx)
+                    },
+                    &mut self.retention.stats,
+                    window,
+                    cx,
+                )
+            {
+                self.retention.stats.measurements_replayed += 1;
+                true
+            } else {
+                false
+            };
+            if kept
+                && let Claim::Reused(key, id) = self.claim(key)
+                && let Some(context) = self.taffy.get_node_context_mut(id.into())
+            {
+                if adopted == Adopted::Node {
+                    return id;
+                }
+                let state = Rc::new(state);
+                let memo: Rc<dyn Any> = state.clone();
+                let log = log.unwrap_or_default();
+                let measure = MeasureLog::logged(&log, move |known, available, window, cx| {
+                    measure(&state, known, available, window, cx)
+                });
+                #[cfg(feature = "stacker")]
+                let measure = crate::taffy::StackSafe::new(measure);
+                context.measure = measure;
+                let node = self
+                    .retention
+                    .retained
+                    .get_mut(&key)
+                    .expect("a claimed key is always present");
+                node.measurement = Some(memo);
+                node.measure_log = Some(log);
+                return id;
+            }
         }
 
-        let id = self.request_retained_measured_layout(key, style, rem_size, scale_factor, measure);
+        let state = Rc::new(state);
+        let memo: Rc<dyn Any> = state.clone();
+        let measure = move |known, available, window: &mut Window, cx: &mut App| {
+            measure(&state, known, available, window, cx)
+        };
+        let log = Rc::<MeasureLog>::default();
+        let measure = MeasureLog::logged(&log, measure);
+        let id = request_retained_measured_layout(
+            self,
+            key,
+            &Style::default(),
+            rem_size,
+            scale_factor,
+            measure,
+        );
         if let Some(node) = key.and_then(|key| self.retention.retained.get_mut(&key))
             && node.id == id
         {
             node.measurement = Some(memo);
+            node.measure_log = Some(log);
         }
         id
-    }
-
-    /// Treats any `auto` dimension of the given node's style as filling `size`.
-    /// See [`TaffyLayoutEngine::stretch_auto_size_to_fill`].
-    ///
-    /// The style Taffy ends up holding is not the one the element asked for, and
-    /// the difference is not recoverable from the result — a stretched `auto`
-    /// looks exactly like an explicit length. The requested style is therefore
-    /// kept aside so the next frame compares like with like instead of
-    /// rewriting, and dirtying, the root on every frame.
-    pub(crate) fn stretch_retained_auto_size_to_fill(
-        &mut self,
-        id: LayoutId,
-        size: Size<Pixels>,
-        scale_factor: f32,
-    ) {
-        let retention = &mut self.retention;
-        let requested = match retention.unstretched_styles.get(&id) {
-            Some(requested) => requested,
-            None => self.taffy.style(id.into()).expect(EXPECT_MESSAGE),
-        };
-        let stretch_width = requested.size.width.is_auto();
-        let stretch_height = requested.size.height.is_auto();
-        if !stretch_width && !stretch_height {
-            return;
-        }
-
-        let requested = requested.clone();
-        let mut style = requested.clone();
-        if stretch_width {
-            style.size.width =
-                taffy::style::Dimension::length(round_to_device_pixel(size.width.0, scale_factor));
-        }
-        if stretch_height {
-            style.size.height =
-                taffy::style::Dimension::length(round_to_device_pixel(size.height.0, scale_factor));
-        }
-        if self.taffy.style(id.into()).expect(EXPECT_MESSAGE) != &style {
-            retention.stats.style_writes += 1;
-            self.taffy
-                .set_style(id.into(), style)
-                .expect(EXPECT_MESSAGE);
-        }
-        retention.unstretched_styles.insert(id, requested);
     }
 
     /// Lays out again the subtree under `id`, a node already placed by its
@@ -715,6 +709,261 @@ impl TaffyLayoutEngine {
         self.absolute_outer_origins.insert(id, origin);
         self.absolute_layout_bounds.insert(id, bounds);
     }
+}
+
+/// Ends the frame for the retained nodes: releases nodes that no longer
+/// appear in the element tree. See [`TaffyLayoutEngine::clear`].
+///
+/// Nodes that were claimed this frame stay, along with their Taffy layout
+/// caches, which is what lets the next frame skip recomputing the parts of
+/// the tree that did not change.
+#[inline]
+pub(crate) fn release_unclaimed_nodes(engine: &mut TaffyLayoutEngine) {
+    let retention = &mut engine.retention;
+    retention.stats.frames += 1;
+
+    for id in retention.transient.drain(..) {
+        retention.unstretched_styles.remove(&id);
+        remove_node(&mut engine.taffy, id);
+        retention.stats.nodes_freed += 1;
+    }
+
+    // In a steady frame every retained node was claimed, and there is
+    // nothing to sweep.
+    if retention.retained.len() != retention.claimed_this_frame {
+        let frame = retention.frame;
+        let taffy = &mut engine.taffy;
+        let unstretched_styles = &mut retention.unstretched_styles;
+        let freed = &mut retention.stats.nodes_freed;
+        retention.retained.retain(|_, node| {
+            if node.claimed_in_frame == frame {
+                return true;
+            }
+            unstretched_styles.remove(&node.id);
+            remove_node(taffy, node.id);
+            *freed += 1;
+            false
+        });
+    }
+
+    retention.claimed_this_frame = 0;
+    retention.frame += 1;
+}
+
+/// [`Window::request_layout`] for a style the caller keeps, and children it
+/// holds in a slice: neither is copied on the way to the layout engine, where
+/// the window's method takes a style of 600-odd bytes by value, and copies it
+/// at every call it passes through.
+#[inline]
+pub(crate) fn request_layout(
+    window: &mut Window,
+    style: &Style,
+    children: &[LayoutId],
+) -> LayoutId {
+    window.invalidator.debug_assert_prepaint();
+    let rem_size = window.rem_size();
+    let scale_factor = window.scale_factor();
+    let key = crate::fast::layout_key::layout_key(window);
+    request_retained_layout(
+        window.layout_engine.as_mut().unwrap(),
+        key,
+        style,
+        rem_size,
+        scale_factor,
+        children,
+    )
+}
+
+/// Adds a node to the layout tree, reusing the one retained under `key`
+/// when there is one. See [`TaffyLayoutEngine::request_layout`].
+///
+/// `key` identifies this element's position in the element tree across
+/// frames; `None` opts out of reuse, and the node is released at the end of
+/// the frame.
+#[inline]
+pub(crate) fn request_retained_layout(
+    engine: &mut TaffyLayoutEngine,
+    key: Option<u64>,
+    style: &Style,
+    rem_size: Pixels,
+    scale_factor: f32,
+    children: &[LayoutId],
+) -> LayoutId {
+    let key = match engine.claim(key) {
+        Claim::Reused(key, id) => {
+            engine.apply_requested_style(key, id, style, rem_size, scale_factor);
+            engine.apply_children(key, id, children);
+            // A node that measured itself on an earlier frame no longer does.
+            if engine
+                .retention
+                .retained
+                .get(&key)
+                .is_some_and(|node| node.measured)
+            {
+                let node = engine
+                    .retention
+                    .retained
+                    .get_mut(&key)
+                    .expect("a claimed key is always present");
+                node.measured = false;
+                node.measurement = None;
+                node.measure_log = None;
+                engine
+                    .taffy
+                    .set_node_context(id.into(), None)
+                    .expect(EXPECT_MESSAGE);
+            }
+            return id;
+        }
+        Claim::Vacant(key) => Some(key),
+        Claim::Unkeyed => None,
+    };
+
+    engine.retention.stats.nodes_created += 1;
+    engine.retention.layout_changes += 1;
+    let style_fingerprint = layout_fingerprint(style, rem_size, scale_factor);
+    let taffy_style = style.to_taffy(rem_size, scale_factor);
+    let id: LayoutId = engine
+        .taffy
+        .new_leaf(taffy_style)
+        .expect(EXPECT_MESSAGE)
+        .into();
+    if !children.is_empty() {
+        // A retained child can arrive here still listed under the parent
+        // it had last frame. `new_with_children` would leave it listed
+        // there, so when that parent's children were next rewritten the
+        // child would lose its parent link, and with it the offset
+        // `layout_bounds` adds up from its ancestors. `set_children`
+        // detaches each child from wherever it was first.
+        engine
+            .taffy
+            // This is safe because LayoutId is repr(transparent) to taffy::tree::NodeId.
+            .set_children(id.into(), LayoutId::to_taffy_slice(children))
+            .expect(EXPECT_MESSAGE);
+    }
+    engine.retain(key, id, children, false, style_fingerprint);
+    id
+}
+
+/// Adds a engine-measuring leaf to the layout tree, reusing the node retained
+/// under `key` when there is one. See
+/// [`TaffyLayoutEngine::request_measured_layout`].
+///
+/// Nothing says what the measurement depends on, so a reused node is given
+/// the new closure and dirtied, and `measure` is guaranteed to run.
+#[inline]
+pub(crate) fn request_retained_measured_layout(
+    engine: &mut TaffyLayoutEngine,
+    key: Option<u64>,
+    style: &Style,
+    rem_size: Pixels,
+    scale_factor: f32,
+    measure: impl FnMut(
+        Size<Option<Pixels>>,
+        Size<AvailableSpace>,
+        &mut Window,
+        &mut App,
+    ) -> Size<Pixels>
+    + 'static,
+) -> LayoutId {
+    let measure = Box::new(measure) as Box<MeasureFn>;
+    #[cfg(feature = "stacker")]
+    let measure = crate::taffy::StackSafe::new(measure);
+    engine.retention.stats.measure_rebinds += 1;
+
+    let (key, id) = match engine.claim(key) {
+        Claim::Reused(key, id) => (key, id),
+        claim => {
+            let key = match claim {
+                Claim::Vacant(key) => Some(key),
+                _ => None,
+            };
+            let style_fingerprint = layout_fingerprint(style, rem_size, scale_factor);
+            let taffy_style = style.to_taffy(rem_size, scale_factor);
+            engine.retention.stats.nodes_created += 1;
+            engine.retention.layout_changes += 1;
+            let id: LayoutId = engine
+                .taffy
+                .new_leaf_with_context(taffy_style, NodeContext { measure })
+                .expect(EXPECT_MESSAGE)
+                .into();
+            engine.retain(key, id, &[], true, style_fingerprint);
+            return id;
+        }
+    };
+
+    engine.apply_requested_style(key, id, style, rem_size, scale_factor);
+    engine.apply_children(key, id, &[]);
+
+    // Nothing says whether the measurement still stands, and what it
+    // produces lives in state the element made afresh this frame, so it
+    // has to be taken again.
+    engine.retention.remeasures += 1;
+    if let Some(context) = engine.taffy.get_node_context_mut(id.into()) {
+        context.measure = measure;
+    } else {
+        engine
+            .taffy
+            .set_node_context(id.into(), Some(NodeContext { measure }))
+            .expect(EXPECT_MESSAGE);
+    }
+    engine.taffy.mark_dirty(id.into()).expect(EXPECT_MESSAGE);
+    let node = engine
+        .retention
+        .retained
+        .get_mut(&key)
+        .expect("a claimed key is always present");
+    node.measured = true;
+    node.measurement = None;
+    node.measure_log = None;
+
+    id
+}
+
+/// Treats any `auto` dimension of the given node's style as filling `size`.
+/// See [`TaffyLayoutEngine::stretch_auto_size_to_fill`].
+///
+/// The style Taffy ends up holding is not the one the element asked for, and
+/// the difference is not recoverable from the result — a stretched `auto`
+/// looks exactly like an explicit length. The requested style is therefore
+/// kept aside so the next frame compares like with like instead of
+/// rewriting, and dirtying, the root on every frame.
+#[inline]
+pub(crate) fn stretch_retained_auto_size_to_fill(
+    engine: &mut TaffyLayoutEngine,
+    id: LayoutId,
+    size: Size<Pixels>,
+    scale_factor: f32,
+) {
+    let retention = &mut engine.retention;
+    let requested = match retention.unstretched_styles.get(&id) {
+        Some(requested) => requested,
+        None => engine.taffy.style(id.into()).expect(EXPECT_MESSAGE),
+    };
+    let stretch_width = requested.size.width.is_auto();
+    let stretch_height = requested.size.height.is_auto();
+    if !stretch_width && !stretch_height {
+        return;
+    }
+
+    let requested = requested.clone();
+    let mut style = requested.clone();
+    if stretch_width {
+        style.size.width =
+            taffy::style::Dimension::length(round_to_device_pixel(size.width.0, scale_factor));
+    }
+    if stretch_height {
+        style.size.height =
+            taffy::style::Dimension::length(round_to_device_pixel(size.height.0, scale_factor));
+    }
+    if engine.taffy.style(id.into()).expect(EXPECT_MESSAGE) != &style {
+        retention.stats.style_writes += 1;
+        engine
+            .taffy
+            .set_style(id.into(), style)
+            .expect(EXPECT_MESSAGE);
+    }
+    retention.unstretched_styles.insert(id, requested);
 }
 
 /// A hash of everything in `style` that its conversion to a Taffy style reads,

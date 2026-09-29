@@ -148,7 +148,7 @@ impl UniformListScrollHandle {
     /// If the item is out of view, it scrolls the minimum amount to bring it into view according
     /// to the strategy.
     pub fn scroll_to_item(&self, ix: usize, strategy: ScrollStrategy) {
-        self.0.borrow().base_handle.changed();
+        crate::fast::dependencies::scroll_handle_changed(&self.0.borrow().base_handle);
         self.0.borrow_mut().deferred_scroll_to_item = Some(DeferredScrollToItem {
             item_index: ix,
             strategy,
@@ -162,7 +162,7 @@ impl UniformListScrollHandle {
     /// This uses strict scrolling: the item will always be scrolled to match the strategy position,
     /// even if it's already visible. Use this when you need precise positioning.
     pub fn scroll_to_item_strict(&self, ix: usize, strategy: ScrollStrategy) {
-        self.0.borrow().base_handle.changed();
+        crate::fast::dependencies::scroll_handle_changed(&self.0.borrow().base_handle);
         self.0.borrow_mut().deferred_scroll_to_item = Some(DeferredScrollToItem {
             item_index: ix,
             strategy,
@@ -182,7 +182,7 @@ impl UniformListScrollHandle {
     /// - `ScrollStrategy::Center`: Shrinks from top, centers item in the reduced viewport
     /// - `ScrollStrategy::Bottom`: Shrinks from bottom, positions item at the new bottom
     pub fn scroll_to_item_with_offset(&self, ix: usize, strategy: ScrollStrategy, offset: usize) {
-        self.0.borrow().base_handle.changed();
+        crate::fast::dependencies::scroll_handle_changed(&self.0.borrow().base_handle);
         self.0.borrow_mut().deferred_scroll_to_item = Some(DeferredScrollToItem {
             item_index: ix,
             strategy,
@@ -207,7 +207,7 @@ impl UniformListScrollHandle {
         strategy: ScrollStrategy,
         offset: usize,
     ) {
-        self.0.borrow().base_handle.changed();
+        crate::fast::dependencies::scroll_handle_changed(&self.0.borrow().base_handle);
         self.0.borrow_mut().deferred_scroll_to_item = Some(DeferredScrollToItem {
             item_index: ix,
             strategy,
@@ -509,7 +509,13 @@ impl Element for UniformList {
                                 AvailableSpace::Definite(available_width),
                                 AvailableSpace::Definite(item_height),
                             );
-                            item.layout_as_list_item(ix, available_space, window, cx);
+                            crate::fast::layout_key::layout_as_list_item(
+                                &mut item,
+                                ix,
+                                available_space,
+                                window,
+                                cx,
+                            );
                             item.prepaint_at(item_origin, window, cx);
                             frame_state.items.push(item);
                         }

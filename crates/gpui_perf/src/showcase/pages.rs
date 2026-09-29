@@ -1,7 +1,7 @@
 //! The pages the showcase scrolls: a page of component sections inside the
 //! container that owns the scrolled area, as GPUI Kit's `StoryContainer` does;
-//! a data table refreshed by a timer; and a list of messages of different
-//! heights.
+//! a data table refreshed by a timer; a list of messages of different
+//! heights; and the trading workspace, in `workspace.rs`.
 
 use std::time::Duration;
 
@@ -15,6 +15,7 @@ use super::{
     app_state::app_state,
     controls::Tooltip,
     theme::{Theme, theme},
+    workspace::{Workspace, grouped},
 };
 
 pub const TABLE_ROWS: usize = 5_000;
@@ -26,6 +27,7 @@ pub enum PageKind {
     Components,
     Table,
     List,
+    Workspace,
 }
 
 /// The scrolled area around the page being shown. Scrolling it notifies this
@@ -36,8 +38,11 @@ pub struct Container {
     table_page: Option<Entity<TablePage>>,
     pub table: Option<Entity<Table>>,
     pub messages: Option<Entity<MessageList>>,
+    pub workspace: Option<Entity<Workspace>>,
     showing: PageKind,
     pub refreshing: bool,
+    /// Whether the workspace's quotes are streaming.
+    pub streaming: bool,
     /// The page's name, which the root view reads for its header, as GPUI
     /// Kit's gallery reads its stories'.
     pub title: SharedString,
@@ -51,8 +56,10 @@ impl Container {
             table_page: None,
             table: None,
             messages: None,
+            workspace: None,
             showing: PageKind::Components,
             refreshing: false,
+            streaming: false,
             title: SharedString::default(),
         }
     }
@@ -80,6 +87,9 @@ impl Container {
             PageKind::List if self.messages.is_none() => {
                 self.messages = Some(cx.new(|_| MessageList::new()));
             }
+            PageKind::Workspace if self.workspace.is_none() => {
+                self.workspace = Some(cx.new(Workspace::new));
+            }
             PageKind::Components => self.page.update(cx, |page, cx| {
                 page.seed = seed;
                 cx.notify();
@@ -95,10 +105,21 @@ impl Container {
             self.refreshing = page.update(cx, |page, cx| page.toggle_refresh(window, cx));
         }
     }
+
+    /// Starts or stops streaming the workspace's quotes.
+    pub fn toggle_streaming(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(workspace) = &self.workspace {
+            self.streaming =
+                workspace.update(cx, |workspace, cx| workspace.toggle_stream(window, cx));
+        }
+    }
 }
 
 impl Render for Container {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        if let (PageKind::Workspace, Some(workspace)) = (self.showing, &self.workspace) {
+            return div().flex_1().min_h_0().child(workspace.clone());
+        }
         let content: AnyElement = match (self.showing, &self.table_page, &self.messages) {
             (PageKind::Table, Some(table_page), _) => div()
                 .size_full()
@@ -225,7 +246,7 @@ fn section(
                 .items_center()
                 .justify_center()
                 .p_4()
-                .rounded(theme.radius * 1.5)
+                .rounded(theme.radius_lg)
                 .border_1()
                 .border_color(theme.border)
                 .child(
@@ -267,17 +288,17 @@ fn button(section_ix: usize, item: usize, theme: &Theme) -> impl IntoElement {
         .on_click(|_, _, _| {})
         .child(label);
     match item % 3 {
-        // Default.
+        // Default: filled, so that it reads apart from the outline button.
         0 => base
             .border_1()
             .border_color(theme.border)
-            .bg(theme.background)
-            .hover(|this| this.bg(theme.accent))
-            .active(|this| this.bg(theme.muted)),
+            .bg(theme.secondary)
+            .hover(|this| this.bg(theme.secondary_hover))
+            .active(|this| this.bg(theme.secondary_hover)),
         // Outline.
         1 => base
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.input)
             .hover(|this| this.bg(theme.accent))
             .active(|this| this.bg(theme.muted)),
         // Ghost.
@@ -303,7 +324,8 @@ fn avatar(section_ix: usize, item: usize, unread: usize, theme: &Theme) -> impl 
                 .items_center()
                 .justify_center()
                 .text_sm()
-                .text_color(theme.danger_foreground)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.avatar_foreground)
                 .child(["JL", "AB", "ZY", "MK"][item % 4]),
         )
         .when(unread > 0, |this| {
@@ -367,7 +389,7 @@ fn input(
         .border_color(if focused {
             theme.foreground
         } else {
-            theme.border
+            theme.input
         })
         .text_sm()
         .text_color(theme.muted_foreground)
@@ -418,7 +440,7 @@ fn toggle(
                 .h_4()
                 .p_0p5()
                 .rounded_full()
-                .bg(if on { theme.primary } else { theme.border })
+                .bg(if on { theme.primary } else { theme.input })
                 .when(on, |this| this.justify_end())
                 .child(div().size_3().rounded_full().bg(if on {
                     theme.primary_foreground
@@ -577,7 +599,7 @@ impl Render for Table {
             .min_h_0()
             .flex()
             .flex_col()
-            .rounded(theme.radius * 1.5)
+            .rounded(theme.radius_lg)
             .border_1()
             .border_color(theme.border)
             .overflow_hidden()
@@ -631,7 +653,7 @@ fn row(ix: usize, stock: &Stock, compact: bool, theme: &Theme) -> impl IntoEleme
             format!("{:+.2}%", stock.change * 100. / stock.price).into(),
             Some(change_color),
         ),
-        (stock.volume.to_string().into(), None),
+        (grouped(stock.volume as f64, 0).into(), None),
         (format!("{:.2}", stock.high).into(), None),
         (format!("{:.2}", stock.low).into(), None),
     ];
@@ -724,6 +746,7 @@ impl Render for MessageList {
             let message = &this.read(cx).messages[ix];
             div()
                 .flex()
+                .w_full()
                 .gap_3()
                 .px_6()
                 .py_3()
@@ -740,7 +763,8 @@ impl Render for MessageList {
                         // data, not a token.
                         .bg(hsla(message.hue, 0.45, 0.55, 1.))
                         .text_xs()
-                        .text_color(theme.danger_foreground)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.avatar_foreground)
                         .child(message.initials.clone()),
                 )
                 .child(

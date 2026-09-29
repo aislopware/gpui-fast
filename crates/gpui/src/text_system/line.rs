@@ -20,7 +20,7 @@ pub struct GlyphRasterData {
 }
 
 /// Set the text decoration for a run of text.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct DecorationRun {
     /// The length of the run in utf-8 bytes.
     pub len: u32,
@@ -368,7 +368,6 @@ fn paint_line(
         let mut color = black();
         let mut current_underline: Option<(Point<Pixels>, UnderlineStyle)> = None;
         let mut current_strikethrough: Option<(Point<Pixels>, StrikethroughStyle)> = None;
-        let text_system = cx.text_system().clone();
         let content_mask = window.content_mask();
         let mut glyph_painter = crate::fast::glyphs::LineGlyphPainter::new(window);
         let mut glyph_origin = point(
@@ -386,7 +385,8 @@ fn paint_line(
         let mut max_glyph_size = size(px(0.), px(0.));
         let mut first_glyph_x = origin.x;
         for (run_ix, run) in layout.runs.iter().enumerate() {
-            max_glyph_size = text_system.bounding_box(run.font_id, layout.font_size).size;
+            max_glyph_size =
+                crate::fast::glyphs::bounding_box(window, cx, run.font_id, layout.font_size).size;
 
             for (glyph_ix, glyph) in run.glyphs.iter().enumerate() {
                 glyph_origin.x += glyph.position.x - prev_glyph_position.x;
@@ -543,7 +543,8 @@ fn paint_line(
                             layout.font_size,
                         )?;
                     } else {
-                        glyph_painter.paint_glyph(
+                        crate::fast::glyphs::LineGlyphPainter::paint_glyph(
+                            &mut glyph_painter,
                             window,
                             glyph_origin + baseline_offset + vertical_offset,
                             run.font_id,
@@ -600,6 +601,9 @@ fn paint_line_background(
     window: &mut Window,
     cx: &mut App,
 ) -> Result<()> {
+    if crate::fast::glyphs::has_no_background(decoration_runs) {
+        return Ok(());
+    }
     let line_bounds = Bounds::new(
         origin,
         size(

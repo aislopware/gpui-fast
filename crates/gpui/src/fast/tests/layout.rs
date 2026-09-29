@@ -587,3 +587,70 @@ fn retaining_layout_nodes_does_not_grow_the_tree_over_time() {
         "two rows should not need {settled} layout nodes"
     );
 }
+
+/// Text wrapped in a narrow box, above a probe that lands below it.
+struct WrappedText {
+    text: SharedString,
+    probe: Rc<Cell<Bounds<Pixels>>>,
+}
+
+impl Render for WrappedText {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let probe = self.probe.clone();
+        div()
+            .flex()
+            .flex_col()
+            .child(div().w(px(40.)).child(self.text.clone()))
+            .child(canvas(move |bounds, _, _| probe.set(bounds), |_, _, _, _| {}).h(px(5.)))
+    }
+}
+
+/// Text that changed but measures what it measured before, under every
+/// constraint it was measured under, leaves its node and the nodes above it
+/// clean; text that wraps differently does not. Either way the frame is the
+/// one a window drawing from scratch draws.
+#[test]
+fn changed_text_measuring_the_same_leaves_its_layout_alone() {
+    let mut cx = TestAppContext::single();
+    let probe = Rc::new(Cell::new(Bounds::default()));
+    let window = cx.add_window({
+        let probe = probe.clone();
+        move |_, _| WrappedText {
+            text: "aaaa bbbb cccc dddd".into(),
+            probe,
+        }
+    });
+    draw_frame(&mut cx, window.into());
+    let from_scratch = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            let retained = window.describe_rendered_frame();
+            window.forget_retained_state();
+            window.draw(cx).clear(cx);
+            (retained, window.describe_rendered_frame())
+        })
+        .unwrap()
+    };
+
+    let wrapped = probe.get();
+    let same_shape = change_and_draw(&mut cx, window, |view| {
+        view.text = "eeee ffff gggg hhhh".into()
+    });
+    assert_eq!(
+        (same_shape.measure_rebinds, same_shape.measurements_replayed),
+        (0, 1),
+        "{same_shape:?}"
+    );
+    assert_eq!(probe.get(), wrapped);
+    let (retained, fresh) = from_scratch(&mut cx);
+    assert_eq!(retained, fresh);
+
+    let unwrapped = change_and_draw(&mut cx, window, |view| view.text = "e".into());
+    assert_eq!(
+        (unwrapped.measure_rebinds, unwrapped.measurements_replayed),
+        (1, 0),
+        "{unwrapped:?}"
+    );
+    assert!(probe.get().origin.y < wrapped.origin.y);
+    let (retained, fresh) = from_scratch(&mut cx);
+    assert_eq!(retained, fresh);
+}

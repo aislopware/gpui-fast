@@ -25,12 +25,13 @@ use crate::fast::retained::{EnclosingRetained, OpenPaint};
 use crate::fast::retained::{
     PaintStatus, RetainedSubtree, ViewLayoutState, ViewPrepaint, ViewPrepaintState,
 };
+use crate::fast::text_style::TextStyleStack;
 use crate::key_dispatch::{DispatchNodeId, DispatchTree};
 use crate::window::DeferredDraw;
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
     AnyView, App, ContentMask, ElementId, EntityId, FocusId, GlobalElementId, HitboxId, LayoutId,
-    Pixels, Point, TextStyleRefinement, View, ViewElement, Window,
+    Pixels, Point, StyleRefinement, View, ViewElement, Window,
 };
 use collections::FxHashSet;
 use smallvec::SmallVec;
@@ -40,6 +41,23 @@ use std::{mem, ops::Range};
 /// its own. Empty for a view that is not an entity or an [`AnyView`].
 #[derive(Default)]
 pub(crate) struct RebuildHandle(Option<AnyView>);
+
+/// `view` drawn as a cached view laid out at `style`, as
+/// [`AnyView::cached`](crate::AnyView::cached) and
+/// [`Entity::cached`](crate::Entity::cached) draw it, kept as `any` so that it
+/// can be built again on its own.
+#[inline(always)]
+pub(crate) fn cached<V: View>(view: V, any: AnyView, style: StyleRefinement) -> ViewElement<V> {
+    ViewElement::new(view).rebuildable(any).cached(style)
+}
+
+/// `view` drawn as a view that can be built again on its own, kept as `any`,
+/// as [`Entity::into_element`](crate::IntoElement::into_element) and
+/// [`AnyView::into_element`](crate::IntoElement::into_element) draw it.
+#[inline(always)]
+pub(crate) fn rebuildable<V: View>(view: V, any: AnyView) -> ViewElement<V> {
+    ViewElement::new(view).rebuildable(any)
+}
 
 impl<V: View> ViewElement<V> {
     /// Keeps `view`, which renders what this element does, to build it again
@@ -56,9 +74,11 @@ pub(crate) struct Rebuild {
     /// The layout key its element was requested under, which its own key,
     /// and the keys of its nodes, are derived from.
     parent_layout_key: u64,
-    text_style_stack: Vec<TextStyleRefinement>,
+    text_style_stack: TextStyleStack,
     element_offset: Point<Pixels>,
     rem_size: Pixels,
+    /// The style it is laid out at, when it is a cached view.
+    cached_style: Option<StyleRefinement>,
 }
 
 impl Rebuild {
@@ -75,6 +95,7 @@ impl Window {
     pub(crate) fn rebuild_here(
         &self,
         handle: &RebuildHandle,
+        cached_style: Option<&StyleRefinement>,
         parent_layout_key: Option<u64>,
     ) -> Option<Rebuild> {
         if !self.image_cache_stack.is_empty() {
@@ -86,6 +107,7 @@ impl Window {
             text_style_stack: self.text_style_stack.clone(),
             element_offset: self.element_offset(),
             rem_size: self.rem_size(),
+            cached_style: cached_style.cloned(),
         })
     }
 }
@@ -142,8 +164,14 @@ impl Prebuilt {
         window: &mut Window,
         cx: &mut App,
     ) -> ViewPrepaintState {
-        self.view
-            .prepaint_view(global_id, bounds, &mut self.layout, window, cx)
+        crate::fast::retained::prepaint_view(
+            &mut self.view,
+            global_id,
+            bounds,
+            &mut self.layout,
+            window,
+            cx,
+        )
     }
 
     pub(crate) fn paint(
@@ -153,14 +181,29 @@ impl Prebuilt {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.view.paint_view(global_id, prepaint, window, cx)
+        crate::fast::retained::paint_view(&mut self.view, global_id, prepaint, window, cx)
     }
+}
+
+/// How a gap built again asked to be laid out, against last frame.
+enum GapLayout {
+    /// As it was.
+    Unchanged,
+    /// At the node it had, with something inside it laid out differently.
+    Changed,
+    /// At another node.
+    NewRoot,
 }
 
 /// A view drawn from last frame around the nested views built again in it.
 pub(crate) struct Splice {
     previous: usize,
     gaps: Vec<Gap>,
+    /// When a gap was laid out differently from last frame, the layouts the
+    /// view's own nodes had then, which have to come out of this frame's
+    /// layout the same for it to be drawn around the gap. See
+    /// [`Window::splice_layout_holds`].
+    held: Vec<(LayoutId, taffy::Layout)>,
 }
 
 impl Splice {
@@ -185,7 +228,7 @@ pub(crate) struct SplicedPrepaint {
 /// a nested view is built where it was.
 struct Inherited {
     element_id_stack: SmallVec<[ElementId; 32]>,
-    text_style_stack: Vec<TextStyleRefinement>,
+    text_style_stack: TextStyleStack,
     content_mask_stack: Vec<ContentMask<Pixels>>,
     element_offset_stack: Vec<Point<Pixels>>,
     rem_size_override_stack: SmallVec<[Pixels; 8]>,
@@ -258,7 +301,7 @@ impl Window {
         let layout = record.layout.as_ref()?;
         if layout.rem_size != self.rem_size()
             || layout.text_style != self.text_style()
-            || cx.dependencies_changed(&record.own_dependencies)
+            || cx.dependencies_changed(&record.own_dependencies, self.inside_notified_view())
             || !self.hovers_unchanged(&record.own_hovers)
         {
             return None;
@@ -285,16 +328,12 @@ impl Window {
             return None;
         }
 
-        let gap_keys: FxHashSet<u64> = gaps
-            .iter()
-            .flat_map(|&gap| records[gap].layout.as_ref().unwrap().keys.iter().copied())
-            .collect();
-        let kept: Vec<u64> = layout
-            .keys
-            .iter()
-            .copied()
-            .filter(|key| !gap_keys.contains(key))
-            .collect();
+        let kept = kept_keys(
+            &layout.keys,
+            gaps.iter()
+                .map(|&gap| records[gap].layout.as_ref().unwrap().keys.as_slice()),
+            &mut self.retained_state.splice_keys,
+        );
         let element_states = layout.element_states.clone();
         let dependencies = record.dependencies.clone();
         let engine = self.layout_engine.as_mut().unwrap();
@@ -302,17 +341,26 @@ impl Window {
             return None;
         }
 
+        // A gap laid out differently from last frame, at the node it had,
+        // changes only what is inside it unless the view's own nodes come out
+        // of layout differently too, which is checked once layout is
+        // computed. A gap at another node changes the view's own tree.
         let mut built = Vec::with_capacity(gaps.len());
         let mut unchanged = true;
+        let mut same_roots = true;
         for gap in gaps {
-            let (gap, gap_unchanged) = self.lay_out_gap(gap, cx)?;
+            let (gap, gap_layout) = self.lay_out_gap(gap, cx)?;
             built.push(gap);
-            if !gap_unchanged {
-                unchanged = false;
-                break;
+            match gap_layout {
+                GapLayout::Unchanged => {}
+                GapLayout::Changed => unchanged = false,
+                GapLayout::NewRoot => {
+                    same_roots = false;
+                    break;
+                }
             }
         }
-        if !unchanged {
+        if !same_roots {
             // The view around them is built after all; the views built so
             // far are taken over by their elements there, not built twice.
             self.layout_engine.as_mut().unwrap().release_kept(&kept);
@@ -324,16 +372,33 @@ impl Window {
             .accessed_element_states
             .extend(element_states);
         cx.replay_dependencies(&dependencies);
+        let held = if unchanged {
+            Vec::new()
+        } else {
+            self.layout_engine.as_ref().unwrap().retained_layouts(&kept)
+        };
         Some(Splice {
             previous,
             gaps: built,
+            held,
         })
     }
 
+    /// Whether the view `splice` draws around its gaps came out of this
+    /// frame's layout as it did last frame, so that what it drew around them
+    /// still stands. Checked once layout is computed, when a gap was laid out
+    /// differently.
+    pub(crate) fn splice_layout_holds(&self, splice: &Splice) -> bool {
+        self.layout_engine
+            .as_ref()
+            .unwrap()
+            .layouts_unchanged(&splice.held)
+    }
+
     /// Builds the view last frame's record `record` stands for again, where
-    /// it was, and lays it out, returning it and whether it asked for the
-    /// layout it had.
-    fn lay_out_gap(&mut self, record: usize, cx: &mut App) -> Option<(Gap, bool)> {
+    /// it was, and lays it out, returning it and how its layout compares with
+    /// the one it had.
+    fn lay_out_gap(&mut self, record: usize, cx: &mut App) -> Option<(Gap, GapLayout)> {
         let nested = &self.rendered_frame.retained.records[record];
         let rebuild = nested.rebuild.clone()?;
         let root = nested.layout.as_ref()?.root;
@@ -352,15 +417,22 @@ impl Window {
         let dependency_recording = cx.begin_recording_dependencies();
         let inherited = self.enter_gap(&global_id, &rebuild, context.content_mask, context.opacity);
         let mut view = ViewElement::new(rebuild.view.clone()).rebuildable(rebuild.view.clone());
+        view.cached_style = rebuild.cached_style.clone();
         // What its element's request for layout does, inside the view around
         // it.
         let (layout_id, layout, layout_key) =
             self.with_parent_layout_key(rebuild.parent_layout_key, |window| {
-                let layout_key = window.push_layout_key(Some(&element_id));
+                let layout_key =
+                    crate::fast::layout_key::push_layout_key(window, Some(&element_id));
                 window.element_id_stack.push(element_id.clone());
-                let (layout_id, layout) = view.request_view_layout(Some(&global_id), window, cx);
+                let (layout_id, layout) = crate::fast::retained::request_view_layout(
+                    &mut view,
+                    Some(&global_id),
+                    window,
+                    cx,
+                );
                 window.element_id_stack.pop();
-                window.pop_layout_key();
+                crate::fast::layout_key::pop_layout_key(window);
                 (layout_id, layout, layout_key)
             });
         self.leave_gap(inherited);
@@ -370,10 +442,16 @@ impl Window {
         let claimed = self.finish_recording_claimed_layout_keys(recording);
 
         let engine = self.layout_engine.as_ref().unwrap();
-        let unchanged = layout_id == root
-            && engine.layout_changes() == changes
+        let gap_layout = if layout_id != root {
+            GapLayout::NewRoot
+        } else if engine.layout_changes() == changes
             && engine.remeasures() == remeasures
-            && engine.transient_count() == transient;
+            && engine.transient_count() == transient
+        {
+            GapLayout::Unchanged
+        } else {
+            GapLayout::Changed
+        };
         Some((
             Gap {
                 record,
@@ -387,7 +465,7 @@ impl Window {
                 dependencies,
                 prepainted: None,
             },
-            unchanged,
+            gap_layout,
         ))
     }
 
@@ -447,22 +525,20 @@ impl Window {
         splice: Splice,
         cx: &mut App,
     ) -> ViewPrepaint {
-        let Splice { previous, mut gaps } = splice;
+        let Splice {
+            previous, mut gaps, ..
+        } = splice;
         let writes_now = cx.entities.write_generation();
         let source = &self.rendered_frame.retained;
         let record = &source.records[previous];
         let prepaint_range = record.prepaint_range.clone();
         let last = previous + record.nested;
-        let gap_layout_keys: FxHashSet<u64> = gaps
-            .iter()
-            .flat_map(|gap| source.records[gap.record].layout_keys.iter().copied())
-            .collect();
-        let kept_layout_keys: Vec<u64> = record
-            .layout_keys
-            .iter()
-            .copied()
-            .filter(|key| !gap_layout_keys.contains(key))
-            .collect();
+        let kept_layout_keys = kept_keys(
+            &record.layout_keys,
+            gaps.iter()
+                .map(|gap| &*source.records[gap.record].layout_keys),
+            &mut self.retained_state.splice_keys,
+        );
         let mut own = copy_record(record, prepaint_range.clone(), 0);
         // Painted by `splice_paint`, if at all.
         own.paint = PaintStatus::Unpainted;
@@ -495,30 +571,46 @@ impl Window {
 
             let segment_start = self.prepaint_index();
             self.copy_prepaint_segment(cursor.clone()..gap_range.start.clone(), &mut dispatch);
-            copied.extend(self.copy_records(
+            self.copy_records(
                 next_record..gap.record,
                 &cursor,
                 &segment_start,
-                segment,
-                index,
-            ));
+                (segment, index),
+                &mut copied,
+            );
 
-            // The gap hangs off the dispatch node it hung off last frame.
+            // The gap hangs off the dispatch node it hung off last frame: its
+            // element's own node, which its element pushed before the view
+            // began and which was copied with the stretch before it. Pushing
+            // another would nest the gap one node deeper every frame.
             let parent =
                 self.rendered_frame.dispatch_tree.nodes[gap_range.start.dispatch_tree_index].parent;
             dispatch.unwind_to(parent, &mut self.next_frame.dispatch_tree);
+            let copied_node = parent
+                .and_then(|parent| dispatch.copied(parent))
+                .filter(|&node| self.next_frame.dispatch_tree.active_node_id() == Some(node));
             let inherited =
                 self.enter_gap(&gap_id, &rebuild, context.content_mask, context.opacity);
             // What its element's prepaint does, inside the view around it.
             let bounds = self.layout_bounds(gap.layout_id);
             self.element_id_stack.push(gap.element_id());
-            let node = self.next_frame.dispatch_tree.push_node();
-            let scope = self.enter_prepaint_layout_scope(gap.layout_key);
-            let prepaint =
-                gap.view
-                    .prepaint_view(Some(&gap.global_id), bounds, &mut gap.layout, self, cx);
-            self.exit_prepaint_layout_scope(scope);
-            self.next_frame.dispatch_tree.pop_node();
+            let node = match copied_node {
+                Some(node) => node,
+                None => self.next_frame.dispatch_tree.push_node(),
+            };
+            let scope = crate::fast::layout_key::enter_prepaint_scope(self, gap.layout_key);
+            let prepaint = crate::fast::retained::prepaint_view(
+                &mut gap.view,
+                Some(&gap.global_id),
+                bounds,
+                &mut gap.layout,
+                self,
+                cx,
+            );
+            crate::fast::layout_key::exit_prepaint_scope(self, scope);
+            if copied_node.is_none() {
+                self.next_frame.dispatch_tree.pop_node();
+            }
             self.element_id_stack.pop();
             gap.prepainted = Some((node, prepaint));
             self.leave_gap(inherited);
@@ -529,13 +621,13 @@ impl Window {
         let segment = gaps.len();
         let segment_start = self.prepaint_index();
         self.copy_prepaint_segment(cursor.clone()..prepaint_range.end, &mut dispatch);
-        copied.extend(self.copy_records(
+        self.copy_records(
             next_record..last + 1,
             &cursor,
             &segment_start,
-            segment,
-            index,
-        ));
+            (segment, index),
+            &mut copied,
+        );
         dispatch.close(&mut self.next_frame.dispatch_tree);
         let end = self.prepaint_index();
 
@@ -634,19 +726,19 @@ impl Window {
 
     /// Copies last frame's records `records`, whose prepaint was copied from
     /// `from` on to `to`, into this frame inside the spliced view `anchor`,
-    /// returning where they went and `segment`, for their paint to be shifted
-    /// by it.
+    /// adding to `copied` where they went and `segment`, for their paint to
+    /// be shifted by it.
     fn copy_records(
         &mut self,
         records: Range<usize>,
         from: &PrepaintStateIndex,
         to: &PrepaintStateIndex,
-        segment: usize,
-        anchor: usize,
-    ) -> Vec<(usize, usize)> {
+        (segment, anchor): (usize, usize),
+        copied: &mut Vec<(usize, usize)>,
+    ) {
         let source = &self.rendered_frame.retained;
         let target = &mut self.next_frame.retained;
-        let mut copied = Vec::with_capacity(records.len());
+        copied.reserve(records.len());
         for index in records {
             let record = &source.records[index];
             let prepaint_range = record.prepaint_range.start.shifted(from, to)
@@ -658,7 +750,6 @@ impl Window {
             }
             copied.push((target.push(copy), segment));
         }
-        copied
     }
 
     /// Paints the view [`Window::splice_prepaint`] prepainted: last frame's
@@ -704,8 +795,13 @@ impl Window {
             if let Some((node, prepaint)) = gap.prepainted.as_mut() {
                 self.element_id_stack.push(element_id);
                 self.next_frame.dispatch_tree.set_active_node(*node);
-                gap.view
-                    .paint_view(Some(&gap.global_id), prepaint, self, cx);
+                crate::fast::retained::paint_view(
+                    &mut gap.view,
+                    Some(&gap.global_id),
+                    prepaint,
+                    self,
+                    cx,
+                );
                 self.element_id_stack.pop();
             }
             self.leave_gap(inherited);
@@ -730,10 +826,12 @@ impl Window {
 
         // Its hovers: its own, the copied records', and the gaps' new ones,
         // which painting them added.
-        let gap_hovers = self.retained_state.hover_dependencies[hovers_start..].to_vec();
-        let mut hovers = own_hovers.to_vec();
+        let gap_hovers = &self.retained_state.hover_dependencies[hovers_start..];
+        let mut hovers =
+            Vec::with_capacity(own_hovers.len() + copied_hovers.len() + gap_hovers.len());
+        hovers.extend_from_slice(&own_hovers);
         hovers.extend_from_slice(&copied_hovers);
-        hovers.extend_from_slice(&gap_hovers);
+        hovers.extend_from_slice(gap_hovers);
         let record = &mut self.next_frame.retained.records[*index];
         record.paint_range = start..end;
         record.paint = PaintStatus::Painted { source: None };
@@ -743,9 +841,7 @@ impl Window {
 
         // As for a view drawn from last frame, a hover found changed only now
         // builds it on the next frame.
-        let mut copied_checked = own_hovers.to_vec();
-        copied_checked.extend_from_slice(&copied_hovers);
-        if !self.hovers_unchanged(&copied_checked) {
+        if !(self.hovers_unchanged(&own_hovers) && self.hovers_unchanged(&copied_hovers)) {
             self.retained_state
                 .subtrees_dirty_next_frame
                 .extend(self.retained_state.subtree_stack.iter().cloned());
@@ -792,7 +888,8 @@ fn copy_record(
 }
 
 /// The entity of the view whose element has the id `id`.
-fn view_entity(id: &GlobalElementId) -> Option<EntityId> {
+#[inline(always)]
+pub(crate) fn view_entity(id: &GlobalElementId) -> Option<EntityId> {
     match id.0.last()? {
         ElementId::View(entity) => Some(*entity),
         _ => None,
@@ -820,23 +917,7 @@ impl OpenDispatchCopy {
         focus: Option<FocusId>,
     ) -> bool {
         self.stretches.push((range.clone(), target.len()));
-        let mut contains_focus = false;
-        for index in range {
-            let node = &mut source.nodes[index];
-            while let Some(&open) = self.open.last() {
-                if node.parent == Some(open) {
-                    break;
-                }
-                self.open.pop();
-                target.pop_node();
-            }
-            self.open.push(DispatchNodeId(index));
-            if node.focus_id.is_some() && node.focus_id == focus {
-                contains_focus = true;
-            }
-            target.move_node(node);
-        }
-        contains_focus
+        crate::fast::dispatch::copy_nodes(target, source, range, Some(&mut self.open), focus)
     }
 
     /// Closes open nodes until the innermost is `parent`, or none is.
@@ -856,11 +937,95 @@ impl OpenDispatchCopy {
 
     /// Where last frame's node `node`, which was copied, is now.
     fn refresh(&self, node: DispatchNodeId) -> DispatchNodeId {
+        self.copied(node)
+            .expect("a copied deferred draw hangs off a copied node")
+    }
+
+    /// Where last frame's node `node` is now, if it was copied.
+    fn copied(&self, node: DispatchNodeId) -> Option<DispatchNodeId> {
         let (range, start) = self
             .stretches
             .iter()
-            .find(|(range, _)| range.contains(&node.0))
-            .expect("a copied deferred draw hangs off a copied node");
-        DispatchNodeId(node.0 - range.start + start)
+            .find(|(range, _)| range.contains(&node.0))?;
+        Some(DispatchNodeId(node.0 - range.start + start))
     }
+}
+
+/// `keys` without the keys of `gaps`, in their order: the layout nodes a view
+/// drawn from last frame keeps, besides those of the nested views built
+/// again in it.
+///
+/// Keys are recorded in the order they are claimed, so a nested view's keys
+/// usually lie in the view's in one stretch, and the gaps' stretches follow
+/// one another as the gaps do. When they do, only the keys outside those
+/// stretches can be kept, and only those are looked up; when the stretches
+/// cover every key, none is kept and nothing is looked up. Otherwise the
+/// gaps' keys are gathered into `scratch`, which keeps its room from one
+/// splice to the next.
+pub(crate) fn kept_keys<'a>(
+    keys: &[u64],
+    gaps: impl Iterator<Item = &'a [u64]> + Clone,
+    scratch: &mut FxHashSet<u64>,
+) -> Vec<u64> {
+    scratch.clear();
+    let mut outside: SmallVec<[Range<usize>; 4]> = SmallVec::new();
+    let mut cursor = 0;
+    let mut in_stretches = true;
+    for gap in gaps.clone() {
+        let Some(&first) = gap.first() else {
+            continue;
+        };
+        let start = keys[cursor..]
+            .iter()
+            .position(|&key| key == first)
+            .map(|offset| cursor + offset);
+        match start {
+            Some(start) if keys.get(start..start + gap.len()) == Some(gap) => {
+                if start > cursor {
+                    outside.push(cursor..start);
+                }
+                cursor = start + gap.len();
+            }
+            _ => {
+                in_stretches = false;
+                break;
+            }
+        }
+    }
+
+    if !in_stretches {
+        scratch.extend(gaps.flatten().copied());
+        let kept = keys
+            .iter()
+            .copied()
+            .filter(|key| !scratch.contains(key))
+            .collect();
+        scratch.clear();
+        return kept;
+    }
+    if cursor < keys.len() {
+        outside.push(cursor..keys.len());
+    }
+    if outside.is_empty() {
+        return Vec::new();
+    }
+    // A key outside the stretches may still be a gap's, recorded twice.
+    scratch.extend(
+        outside
+            .iter()
+            .flat_map(|range| keys[range.clone()].iter().copied()),
+    );
+    for key in gaps.flatten() {
+        scratch.remove(key);
+        if scratch.is_empty() {
+            break;
+        }
+    }
+    let kept = outside
+        .iter()
+        .flat_map(|range| keys[range.clone()].iter().copied())
+        .filter(|key| scratch.contains(key))
+        .collect();
+    scratch.clear();
+    kept
 }

@@ -210,6 +210,9 @@ fn run_example() {
                     size(px(1400.), px(900.)),
                     cx,
                 ))),
+                // Not capped at 30 fps while unfocused, so that what is
+                // measured doesn't depend on focus.
+                inactive_frame_interval: None,
                 ..Default::default()
             },
             |_, cx| {

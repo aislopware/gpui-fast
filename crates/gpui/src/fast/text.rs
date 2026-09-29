@@ -1,21 +1,24 @@
 //! Where a reused range of shaped lines falls in a new frame, text measurements
 //! carried from one frame to the next, and shaping statistics.
 
+use crate::fast::layout::Adopted;
 use crate::{
     App, AvailableSpace, DecorationRun, FontRun, FrameCache, Hsla, LayoutId, LineLayout,
-    LineLayoutIndex, Pixels, PlatformTextSystem, SharedString, Size, StrikethroughStyle, Style,
-    TextLayout, TextLayoutInner, TextOverflow, TextRun, TextStyle, TruncateFrom, UnderlineStyle,
-    WhiteSpace, Window, WindowTextSystem, WrappedLine,
+    LineLayoutCache, LineLayoutIndex, Pixels, PlatformTextSystem, SharedString, Size,
+    StrikethroughStyle, TextLayout, TextLayoutInner, TextOverflow, TextRun, TextStyle,
+    TruncateFrom, UnderlineStyle, WhiteSpace, Window, WindowTextSystem, WrappedLine,
 };
-use collections::FxHashMap;
+use collections::{FxHashMap, FxHasher};
 use gpui_util::ResultExt as _;
+use parking_lot::Mutex;
 use scheduler::Instant;
 use smallvec::SmallVec;
 use std::{
     any::Any,
     borrow::Cow,
+    cell::RefCell,
     cmp,
-    hash::Hash,
+    hash::{Hash, Hasher},
     mem,
     rc::Rc,
     sync::Arc,
@@ -30,12 +33,18 @@ use std::{
 /// at the same place compares its own against them.
 pub(crate) struct TextMeasureInputs {
     text: SharedString,
-    /// Plain text is one run, kept inline.
-    runs: SmallVec<[TextRun; 1]>,
-    text_style: TextStyle,
+    /// The runs the element was given, or none for plain text, which is one
+    /// run in the text style: that run is only made when the text has to be
+    /// shaped, rather than copying the style's font into every element.
+    runs: Vec<TextRun>,
+    /// The text style in effect, shared with the window's text style stack
+    /// and every other element under the same refinements.
+    text_style: Rc<TextStyle>,
     font_size: Pixels,
     line_height: Pixels,
-    layout: TextLayout,
+    /// The layout of the element whose inputs these are, or of a later one
+    /// that took the measurement over while leaving the node with these.
+    layout: RefCell<TextLayout>,
 }
 
 /// The decorations of a run: what it is painted with, and what shaping splits
@@ -56,6 +65,33 @@ fn decoration_of(
     )
 }
 
+/// The decorations of plain text in `style`, as [`decoration_of`] its run.
+fn style_decoration(
+    style: &TextStyle,
+) -> (
+    Hsla,
+    Option<Hsla>,
+    Option<UnderlineStyle>,
+    Option<StrikethroughStyle>,
+) {
+    (
+        style.color,
+        style.background_color,
+        style.underline,
+        style.strikethrough,
+    )
+}
+
+/// Whether two text styles have the same font: `style.font() ==
+/// other.font()`, without making either font.
+fn same_font(style: &TextStyle, other: &TextStyle) -> bool {
+    style.font_family == other.font_family
+        && style.font_features == other.font_features
+        && style.font_fallbacks == other.font_fallbacks
+        && style.font_weight == other.font_weight
+        && style.font_style == other.font_style
+}
+
 impl TextMeasureInputs {
     /// Whether text truncates, in which case it is shaped from a rewritten
     /// string whose runs no longer line up with these.
@@ -63,13 +99,27 @@ impl TextMeasureInputs {
         self.text_style.text_overflow.is_some()
     }
 
+    /// Whether this is plain text: one run in the text style.
+    fn plain(&self) -> bool {
+        self.runs.is_empty()
+    }
+
+    /// The runs the text is shaped and painted with.
+    fn runs(&self) -> Cow<'_, [TextRun]> {
+        if self.plain() {
+            Cow::Owned(vec![self.text_style.to_run(self.text.len())])
+        } else {
+            Cow::Borrowed(&self.runs)
+        }
+    }
+
     /// Whether `self` is shaped as `other` is: the same text, sizes, fonts and
     /// wrapping, and decoration changing in the same places, since shaping
     /// splits font runs wherever it changes. What it is painted with may
     /// differ; see [`Self::decorated_as`].
     fn shapes_as(&self, other: &Self) -> bool {
-        fn runs(inputs: &TextMeasureInputs) -> impl Iterator<Item = &TextRun> {
-            inputs.runs.iter().filter(|run| run.len > 0)
+        fn runs(runs: &[TextRun]) -> impl Iterator<Item = &TextRun> {
+            runs.iter().filter(|run| run.len > 0)
         }
         fn joins_previous<'a>(
             runs: impl Iterator<Item = &'a TextRun>,
@@ -81,30 +131,42 @@ impl TextMeasureInputs {
                     .is_some_and(|previous| previous == decoration_of(run))
             })
         }
-        let (style, other_style) = (&self.text_style, &other.text_style);
-        self.text == other.text
+        let (style, other_style) = (&*self.text_style, &*other.text_style);
+        if !(self.text == other.text
             && self.font_size == other.font_size
             && self.line_height == other.line_height
             && style.white_space == other_style.white_space
             && style.line_clamp == other_style.line_clamp
             && style.text_overflow == other_style.text_overflow
             // Only truncation reads the style's own font.
-            && (!self.truncates() || style.font() == other_style.font())
-            && runs(self).count() == runs(other).count()
-            && runs(self)
-                .zip(runs(other))
+            && (!self.truncates() || same_font(style, other_style)))
+        {
+            return false;
+        }
+        if self.plain() && other.plain() {
+            // One run each, as long as the text, unless there is no text.
+            return self.text.is_empty() || same_font(style, other_style);
+        }
+        let (self_runs, other_runs) = (self.runs(), other.runs());
+        runs(&self_runs).count() == runs(&other_runs).count()
+            && runs(&self_runs)
+                .zip(runs(&other_runs))
                 .all(|(run, other)| run.len == other.len && run.font == other.font)
-            && joins_previous(runs(self)).eq(joins_previous(runs(other)))
+            && joins_previous(runs(&self_runs)).eq(joins_previous(runs(&other_runs)))
     }
 
     /// Whether `self` is painted with what `other` is.
     fn decorated_as(&self, other: &Self) -> bool {
-        self.runs
+        if self.plain() && other.plain() {
+            return self.text.is_empty()
+                || style_decoration(&self.text_style) == style_decoration(&other.text_style);
+        }
+        let (self_runs, other_runs) = (self.runs(), other.runs());
+        self_runs
             .iter()
             .filter(|run| run.len > 0)
             .map(decoration_of)
-            .eq(other
-                .runs
+            .eq(other_runs
                 .iter()
                 .filter(|run| run.len > 0)
                 .map(decoration_of))
@@ -118,65 +180,70 @@ impl TextMeasureInputs {
 /// for it, with every node above it: a view built again would have all of its
 /// text measured and laid out again, though none of it changed. When last
 /// frame's element at this place measured text shaped the same way, its
-/// measurement is copied into this one's layout instead, repainted with this
+/// measurement is carried into this one's layout instead, repainted with this
 /// one's decorations if only they changed, and the node is left clean,
-/// keeping what Taffy cached for it. The new closure is still installed, for
-/// when Taffy measures it again under other constraints.
+/// keeping what Taffy cached for it.
+///
+/// If only the decorations changed, the node is given this element's inputs
+/// to measure from when Taffy measures it again under other constraints.
+/// Otherwise it keeps last frame's, which measure it the same way, only
+/// keeping the measurement in this element's layout from now on: rebuilding
+/// the closure and the inputs of every unchanged text element, and dropping
+/// last frame's, was most of what it cost.
+#[inline]
 pub(crate) fn layout_text(
     layout: &TextLayout,
     text: SharedString,
     runs: Option<Vec<TextRun>>,
     window: &mut Window,
+    cx: &mut App,
 ) -> LayoutId {
-    let text_style = window.text_style();
+    let text_style = crate::fast::text_style::text_style(window);
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let line_height = window.pixel_snap(
         text_style
             .line_height
             .to_pixels(font_size.into(), window.rem_size()),
     );
-    let runs = match runs {
-        Some(runs) => SmallVec::from_vec(runs),
-        None => SmallVec::from_buf([text_style.to_run(text.len())]),
-    };
-    let inputs = Rc::new(TextMeasureInputs {
+    let inputs = TextMeasureInputs {
         text,
-        runs,
+        runs: runs.unwrap_or_default(),
         text_style,
         font_size,
         line_height,
-        layout: layout.clone(),
-    });
-    let adopt = {
-        let inputs = inputs.clone();
-        move |previous: &dyn Any| {
-            let Some(previous) = previous.downcast_ref::<TextMeasureInputs>() else {
-                return false;
-            };
-            if !previous.shapes_as(&inputs) {
-                return false;
-            }
-            let recolored = !previous.decorated_as(&inputs);
-            if recolored && inputs.truncates() {
-                return false;
-            }
-            let Some(mut inner) = take_measurement(&previous.layout) else {
-                return false;
-            };
-            if recolored {
-                update_decoration_runs(&mut inner.lines, &inputs.runs);
-            }
-            *inputs.layout.0.borrow_mut() = Some(inner);
-            true
-        }
+        layout: RefCell::new(layout.clone()),
     };
-    let measure = {
-        let inputs = inputs.clone();
-        move |known_dimensions, available_space, window: &mut Window, cx: &mut App| {
-            measure_text(&inputs, known_dimensions, available_space, window, cx)
-        }
+    window.request_carried_measured_layout(inputs, adopt_measurement, measure_text, cx)
+}
+
+/// Takes over the measurement `previous` left, if it stands for `inputs`. See
+/// [`layout_text`].
+fn adopt_measurement(inputs: &TextMeasureInputs, previous: &dyn Any) -> Adopted {
+    let Some(previous) = previous.downcast_ref::<TextMeasureInputs>() else {
+        return Adopted::No;
     };
-    window.request_carried_measured_layout(inputs, adopt, measure)
+    if !previous.shapes_as(inputs) {
+        return Adopted::No;
+    }
+    let recolored = !previous.decorated_as(inputs);
+    if recolored && inputs.truncates() {
+        return Adopted::No;
+    }
+    let Some(mut inner) = carry_measurement(&previous.layout.borrow()) else {
+        return Adopted::No;
+    };
+    let layout = inputs.layout.borrow();
+    if recolored {
+        update_decoration_runs(&mut inner.lines, &inputs.runs());
+        *layout.0.borrow_mut() = Some(inner);
+        Adopted::Measurement
+    } else {
+        *layout.0.borrow_mut() = Some(inner);
+        // The node keeps `previous`, which now keeps its measurement where
+        // this element looks for it.
+        *previous.layout.borrow_mut() = layout.clone();
+        Adopted::Node
+    }
 }
 
 /// Measures text under the constraints Taffy offers, keeping the result in
@@ -200,12 +267,13 @@ fn measure_text(
 ) -> Size<Pixels> {
     let TextMeasureInputs {
         text,
-        runs,
+        runs: _,
         text_style,
         font_size,
         line_height,
         layout,
     } = inputs;
+    let layout = &*layout.borrow();
     let (font_size, line_height) = (*font_size, *line_height);
     let wrap_width = if text_style.white_space == WhiteSpace::Normal {
         known_dimensions.width.or(match available_space.width {
@@ -241,6 +309,8 @@ fn measure_text(
         return size;
     }
 
+    let runs = inputs.runs();
+    let runs = &*runs;
     let (text, runs) = if let Some(truncate_width) = truncate_width {
         let (truncation_affix, truncate_from) = match text_style.text_overflow.clone() {
             Some(TextOverflow::Truncate(affix)) => (affix, TruncateFrom::End),
@@ -270,7 +340,7 @@ fn measure_text(
         {
             // Truncation sums per-character advances, which overestimates the
             // shaped width, so text that fits once shaped is not truncated.
-            (text.clone(), Cow::Borrowed(&runs[..]))
+            (text.clone(), Cow::Borrowed(runs))
         } else {
             line_wrapper.truncate_line(
                 text.clone(),
@@ -281,7 +351,7 @@ fn measure_text(
             )
         }
     } else {
-        (text.clone(), Cow::Borrowed(&runs[..]))
+        (text.clone(), Cow::Borrowed(runs))
     };
     let len = text.len();
 
@@ -370,18 +440,22 @@ pub(crate) fn update_decoration_runs(lines: &mut [WrappedLine], runs: &[TextRun]
     }
 }
 
-/// What `layout`'s measurement left, without where it was last painted, for
-/// this frame's element to take over. Last frame's element is gone, so when
-/// nothing but its measurement holds its layout any more, the measurement is
-/// moved out rather than copied, line by line; otherwise it is copied, and
-/// whatever holds the layout still finds it.
-fn take_measurement(layout: &TextLayout) -> Option<TextLayoutInner> {
+/// What the measurement kept in `layout` left, without where it was last
+/// painted, for another element's layout to take over.
+///
+/// Last frame's element is usually gone by now, and its layout only held by
+/// what it left for this frame's, in which case the measurement is moved out
+/// of it rather than copied line by line. Something may still hold it (an
+/// element kept by a view reused as it was, say, or a caller's clone of a
+/// `StyledText`'s layout), and then it is copied, so it still answers.
+fn carry_measurement(layout: &TextLayout) -> Option<TextLayoutInner> {
     if Rc::strong_count(&layout.0) == 1 {
         let mut inner = layout.0.borrow_mut().take()?;
         inner.bounds = None;
-        return Some(inner);
+        Some(inner)
+    } else {
+        layout.0.borrow().as_ref().map(copy_measurement)
     }
-    layout.0.borrow().as_ref().map(copy_measurement)
 }
 
 /// A copy of what a measurement left, without where it was last painted.
@@ -408,36 +482,42 @@ fn copy_measurement(inner: &TextLayoutInner) -> TextLayoutInner {
 impl Window {
     /// Requests a self-measuring leaf, as [`Window::request_measured_layout`]
     /// does, whose measurement can be carried over from the element at the
-    /// same place last frame. `adopt` is given what that element left in
-    /// `memo`, and takes its measurement over if it still stands.
-    pub(crate) fn request_carried_measured_layout(
+    /// same place last frame. `adopt` is given `state` and what that element
+    /// measured from, and takes its measurement over if it still stands.
+    /// Otherwise `measure` may be run here, to tell whether it measures what
+    /// the node was measured at before. See
+    /// `TaffyLayoutEngine::request_retained_carried_measured_layout`.
+    pub(crate) fn request_carried_measured_layout<S: 'static>(
         &mut self,
-        memo: Rc<dyn Any>,
-        adopt: impl FnOnce(&dyn Any) -> bool,
+        state: S,
+        adopt: impl FnOnce(&S, &dyn Any) -> Adopted,
         measure: impl Fn(
+            &S,
             Size<Option<Pixels>>,
             Size<AvailableSpace>,
             &mut Window,
             &mut App,
         ) -> Size<Pixels>
         + 'static,
+        cx: &mut App,
     ) -> LayoutId {
         self.invalidator.debug_assert_prepaint();
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
-        let key = self.layout_key();
-        self.layout_engine
-            .as_mut()
-            .unwrap()
-            .request_retained_carried_measured_layout(
-                key,
-                Style::default(),
-                rem_size,
-                scale_factor,
-                memo,
-                adopt,
-                measure,
-            )
+        let key = crate::fast::layout_key::layout_key(self);
+        let mut layout_engine = self.layout_engine.take().unwrap();
+        let id = layout_engine.request_retained_carried_measured_layout(
+            key,
+            rem_size,
+            scale_factor,
+            state,
+            adopt,
+            measure,
+            self,
+            cx,
+        );
+        self.layout_engine = Some(layout_engine);
+        id
     }
 }
 
@@ -518,8 +598,16 @@ impl LineLayoutIndex {
 
 /// Counts the lines the line layout cache hands to the platform to be shaped,
 /// because neither this frame nor the last one had them, and times them.
+///
+/// The line layout cache only remembers the lines of this frame and the last
+/// one. Numbers that change every frame, like prices, keep coming back to
+/// values they had a few frames ago, and a row scrolled out comes back with
+/// the same text. So the lines shaped recently are kept here too, in
+/// [`RecentShapes`], and a line found there is copied instead of shaped again.
 #[derive(Default)]
 pub(crate) struct LineShaping {
+    /// Lines shaped lately, answered without asking the platform again.
+    recent: Mutex<RecentShapes>,
     /// Lines handed to the platform to be shaped. See [`LineShaping::stats`].
     lines_shaped: AtomicU64,
     /// Time spent in those calls, in nanoseconds.
@@ -549,8 +637,27 @@ impl LineShaping {
         self.shape_timed.store(true, Ordering::Relaxed);
     }
 
-    /// Shapes a line the cache does not have, counting it.
+    /// Shapes a line the cache does not have, counting it, unless it was
+    /// shaped lately and can be copied from [`RecentShapes`].
     pub(crate) fn shape_line(
+        &self,
+        platform_text_system: &dyn PlatformTextSystem,
+        text: &str,
+        font_size: Pixels,
+        runs: &[FontRun],
+    ) -> LineLayout {
+        let hash = RecentShapes::hash(text, font_size, runs);
+        if let Some(layout) = self.recent.lock().get(hash, text, font_size, runs) {
+            return layout;
+        }
+        let layout = self.shape_line_uncached(platform_text_system, text, font_size, runs);
+        self.recent
+            .lock()
+            .insert(hash, text, font_size, runs, copy_layout(&layout));
+        layout
+    }
+
+    fn shape_line_uncached(
         &self,
         platform_text_system: &dyn PlatformTextSystem,
         text: &str,
@@ -568,6 +675,238 @@ impl LineShaping {
     }
 }
 
+/// Bumped whenever fonts are added to a text system, which can change how a
+/// line already shaped would shape now (a fallback font it lacked).
+static FONTS_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Called when fonts are added to a text system, so no line shaped before is
+/// taken from [`RecentShapes`] again.
+#[inline(always)]
+pub(crate) fn fonts_changed() {
+    FONTS_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// How many glyphs the lines of one generation of [`RecentShapes`] may hold
+/// before it becomes the old one, which bounds what it keeps to about a
+/// megabyte. Between one and two generations' worth of the most recently used
+/// lines are remembered: some two thousand short numbers, or a few hundred
+/// lines of prose.
+pub(crate) const RECENT_GLYPHS_PER_GENERATION: usize = 16 * 1024;
+
+/// A line shaped lately: what it was shaped from, and what that gave.
+struct RecentShape {
+    text: Box<str>,
+    font_size: Pixels,
+    runs: SmallVec<[FontRun; 1]>,
+    layout: LineLayout,
+}
+
+/// The lines shaped lately, in two generations: lines are added to the
+/// current one, and a line found in the old one moves to the current one.
+/// When the current generation is full, the old one is dropped and the
+/// current one takes its place, so the lines not used for the longest go.
+#[derive(Default)]
+pub(crate) struct RecentShapes {
+    current: FxHashMap<u64, SmallVec<[RecentShape; 1]>>,
+    /// The glyphs in `current`, counting each line at least as one.
+    current_glyphs: usize,
+    old: FxHashMap<u64, SmallVec<[RecentShape; 1]>>,
+    fonts_generation: u64,
+}
+
+impl crate::Window {
+    /// Forgets the lines this window's text system shaped lately, so that a
+    /// test sees what the line layout cache alone keeps.
+    #[cfg(test)]
+    pub(crate) fn forget_recent_shapes(&self) {
+        let shaping = &self.text_system().line_layout_cache.shaping;
+        *shaping.recent.lock() = RecentShapes::default();
+    }
+}
+
+impl RecentShapes {
+    pub(crate) fn hash(text: &str, font_size: Pixels, runs: &[FontRun]) -> u64 {
+        let mut hasher = FxHasher::default();
+        text.hash(&mut hasher);
+        font_size.0.to_bits().hash(&mut hasher);
+        runs.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub(crate) fn get(
+        &mut self,
+        hash: u64,
+        text: &str,
+        font_size: Pixels,
+        runs: &[FontRun],
+    ) -> Option<LineLayout> {
+        let fonts_generation = FONTS_GENERATION.load(Ordering::Relaxed);
+        if fonts_generation != self.fonts_generation {
+            self.current.clear();
+            self.current_glyphs = 0;
+            self.old.clear();
+            self.fonts_generation = fonts_generation;
+            return None;
+        }
+        let matches = |shape: &RecentShape| {
+            &*shape.text == text
+                && shape.font_size.0.to_bits() == font_size.0.to_bits()
+                && shape.runs.as_slice() == runs
+        };
+        if let Some(shape) = self
+            .current
+            .get(&hash)
+            .and_then(|shapes| shapes.iter().find(|shape| matches(shape)))
+        {
+            return Some(copy_layout(&shape.layout));
+        }
+        let shapes = self.old.get_mut(&hash)?;
+        let ix = shapes.iter().position(matches)?;
+        let shape = shapes.swap_remove(ix);
+        if shapes.is_empty() {
+            self.old.remove(&hash);
+        }
+        let layout = copy_layout(&shape.layout);
+        self.push(hash, shape);
+        Some(layout)
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        hash: u64,
+        text: &str,
+        font_size: Pixels,
+        runs: &[FontRun],
+        layout: LineLayout,
+    ) {
+        if self.fonts_generation != FONTS_GENERATION.load(Ordering::Relaxed) {
+            return;
+        }
+        self.push(
+            hash,
+            RecentShape {
+                text: text.into(),
+                font_size,
+                runs: SmallVec::from(runs),
+                layout,
+            },
+        );
+    }
+
+    fn push(&mut self, hash: u64, shape: RecentShape) {
+        if self.current_glyphs >= RECENT_GLYPHS_PER_GENERATION {
+            self.old = mem::take(&mut self.current);
+            self.current_glyphs = 0;
+        }
+        self.current_glyphs += shape
+            .layout
+            .runs
+            .iter()
+            .map(|run| run.glyphs.len())
+            .sum::<usize>()
+            .max(1);
+        self.current.entry(hash).or_default().push(shape);
+    }
+}
+
+/// A copy of a shaped line. (`LineLayout` is public, and cloning it isn't
+/// part of upstream's API.)
+fn copy_layout(layout: &LineLayout) -> LineLayout {
+    // Destructured, so that a field upstream adds can't be missed here.
+    let LineLayout {
+        font_size,
+        width,
+        ascent,
+        descent,
+        runs,
+        len,
+    } = layout;
+    LineLayout {
+        font_size: *font_size,
+        width: *width,
+        ascent: *ascent,
+        descent: *descent,
+        runs: runs.clone(),
+        len: *len,
+    }
+}
+
+/// Shapes a line `cache` does not have, counting it. See [`LineShaping`].
+#[inline(always)]
+pub(crate) fn shape_line(
+    cache: &LineLayoutCache,
+    text: &str,
+    font_size: Pixels,
+    runs: &[FontRun],
+) -> LineLayout {
+    cache
+        .shaping
+        .shape_line(&*cache.platform_text_system, text, font_size, runs)
+}
+
+/// The decoration runs of a line about to be measured. Most lines carry one
+/// decoration run, and highlighted ones a handful; reserving for the worst
+/// case, as upstream does, allocated two kilobytes on every measurement, which
+/// is much of what a short line costs.
+#[inline(always)]
+pub(crate) fn decoration_runs() -> Vec<DecorationRun> {
+    Vec::with_capacity(4)
+}
+
+/// Whether two decoration runs decorate alike, so a line measured with one
+/// can be reused for the other.
+impl PartialEq for DecorationRun {
+    fn eq(&self, other: &Self) -> bool {
+        // Destructured, so that a field upstream adds can't be missed here.
+        let DecorationRun {
+            len,
+            color,
+            background_color,
+            underline,
+            strikethrough,
+        } = self;
+        *len == other.len
+            && *color == other.color
+            && *background_color == other.background_color
+            && *underline == other.underline
+            && *strikethrough == other.strikethrough
+    }
+}
+
+/// Where each of the line layout cache's lists stood, compared to tell
+/// whether a reused range of lines is the one recorded.
+impl PartialEq for LineLayoutIndex {
+    fn eq(&self, other: &Self) -> bool {
+        let LineLayoutIndex {
+            lines_index,
+            wrapped_lines_index,
+            lines_by_hash_index,
+            wrapped_lines_by_hash_index,
+        } = self;
+        *lines_index == other.lines_index
+            && *wrapped_lines_index == other.wrapped_lines_index
+            && *lines_by_hash_index == other.lines_by_hash_index
+            && *wrapped_lines_by_hash_index == other.wrapped_lines_by_hash_index
+    }
+}
+
+impl std::fmt::Debug for LineLayoutIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let LineLayoutIndex {
+            lines_index,
+            wrapped_lines_index,
+            lines_by_hash_index,
+            wrapped_lines_by_hash_index,
+        } = self;
+        f.debug_struct("LineLayoutIndex")
+            .field("lines_index", lines_index)
+            .field("wrapped_lines_index", wrapped_lines_index)
+            .field("lines_by_hash_index", lines_by_hash_index)
+            .field("wrapped_lines_by_hash_index", wrapped_lines_by_hash_index)
+            .finish()
+    }
+}
+
 impl WindowTextSystem {
     /// Lines shaped by the platform, and the time that took, since the last
     /// [`Self::reset_shaping_stats`]. Lines answered from the cache do not count.
@@ -581,4 +920,96 @@ impl WindowTextSystem {
     pub(crate) fn reset_shaping_stats(&self) {
         self.line_layout_cache.shaping.reset()
     }
+}
+
+/// How many fonts [`resolve_font`] remembers, most recently resolved last.
+const RESOLVED_FONTS: usize = 16;
+
+/// A font resolved lately: the text system that resolved it, the fonts
+/// generation it was resolved in, the font asked for and what it resolved to.
+struct ResolvedFont {
+    text_system: std::sync::Weak<dyn PlatformTextSystem>,
+    generation: u64,
+    font: crate::Font,
+    font_id: crate::FontId,
+}
+
+thread_local! {
+    static RESOLVED: std::cell::RefCell<SmallVec<[ResolvedFont; RESOLVED_FONTS]>> =
+        const { std::cell::RefCell::new(SmallVec::new_const()) };
+}
+
+/// Resolves `font` as [`TextSystem::resolve_font`] does, remembering the few
+/// fonts resolved lately: every run of every line shaped asks for its font,
+/// and looking it up hashes the font and takes a lock each time, where a
+/// frame's text uses a handful of fonts.
+#[inline]
+pub(crate) fn resolve_font(text_system: &crate::TextSystem, font: &crate::Font) -> crate::FontId {
+    let generation = FONTS_GENERATION.load(Ordering::Relaxed);
+    let platform = &text_system.platform_text_system;
+    let remembered = RESOLVED.with_borrow(|resolved| {
+        resolved.iter().rev().find_map(|entry| {
+            (entry.generation == generation
+                && entry.text_system.strong_count() > 0
+                && std::ptr::addr_eq(entry.text_system.as_ptr(), Arc::as_ptr(platform))
+                && entry.font == *font)
+                .then_some(entry.font_id)
+        })
+    });
+    if let Some(font_id) = remembered {
+        return font_id;
+    }
+    let font_id = resolve_font_uncached(text_system, font);
+    RESOLVED.with_borrow_mut(|resolved| {
+        if resolved.len() == RESOLVED_FONTS {
+            resolved.remove(0);
+        }
+        resolved.push(ResolvedFont {
+            text_system: Arc::downgrade(platform),
+            generation,
+            font: font.clone(),
+            font_id,
+        });
+    });
+    font_id
+}
+
+/// [`TextSystem::resolve_font`]: the font, or else the first of the
+/// fallbacks that resolves — in the weight and style asked for, with the
+/// features asked for, where the fallback family has them.
+///
+/// Upstream resolves a fallback as the fallback stack names it, plain: text
+/// asked for in bold came out regular, and with its features — tabular
+/// numerals, say — dropped, so digits of a family that isn't installed took
+/// their proportional widths, and a ticking price changed width, and laid
+/// out its row again, every time it changed.
+fn resolve_font_uncached(text_system: &crate::TextSystem, font: &crate::Font) -> crate::FontId {
+    if let Ok(font_id) = text_system.font_id(font) {
+        return font_id;
+    }
+    for fallback in &text_system.fallback_font_stack {
+        let as_asked = crate::Font {
+            family: fallback.family.clone(),
+            features: font.features.clone(),
+            fallbacks: font.fallbacks.clone(),
+            weight: font.weight,
+            style: font.style,
+        };
+        if let Ok(font_id) = text_system.font_id(&as_asked) {
+            return font_id;
+        }
+        if let Ok(font_id) = text_system.font_id(fallback) {
+            return font_id;
+        }
+    }
+    panic!(
+        "failed to resolve font '{}' or any of the fallbacks: {}",
+        font.family,
+        text_system
+            .fallback_font_stack
+            .iter()
+            .map(|fallback| fallback.family.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 }

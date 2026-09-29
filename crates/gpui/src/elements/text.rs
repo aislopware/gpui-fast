@@ -629,9 +629,9 @@ impl TextLayout {
         text: SharedString,
         runs: Option<Vec<TextRun>>,
         window: &mut Window,
-        _: &mut App,
+        fast_cx: &mut App,
     ) -> LayoutId {
-        crate::fast::text::layout_text(self, text, runs, window)
+        crate::fast::text::layout_text(self, text, runs, window, fast_cx)
     }
 
     fn prepaint(&self, bounds: Bounds<Pixels>, text: &str) {
@@ -656,7 +656,7 @@ impl TextLayout {
 
         let line_height = element_state.line_height;
         let mut line_origin = bounds.origin;
-        let text_style = window.text_style();
+        let text_style = crate::fast::text_style::text_paint_style(window);
         for line in &element_state.lines {
             line.paint_background(
                 line_origin,
