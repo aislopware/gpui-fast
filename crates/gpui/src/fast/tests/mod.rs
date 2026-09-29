@@ -8,3 +8,4 @@ mod retained;
 mod retained_bench;
 mod support;
 mod surface;
+mod text;
