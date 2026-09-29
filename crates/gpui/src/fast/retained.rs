@@ -62,6 +62,9 @@ pub(crate) struct RetainedSubtrees {
     /// The records whose prepaint is under way, innermost last.
     pub(crate) open: Vec<usize>,
     pub(crate) reused_any: bool,
+    /// The elements drawn this frame that can be drawn again from it. See
+    /// [`crate::fast::element`].
+    pub(crate) elements: crate::fast::element::ElementRecords,
 }
 
 pub(crate) struct RetainedSubtree {
@@ -90,6 +93,10 @@ pub(crate) struct RetainedSubtree {
     /// How to build this subtree again on its own, where it was, when the
     /// subtree around it is drawn from last frame.
     pub(crate) rebuild: Option<Rc<Rebuild>>,
+    /// The element records drawn inside it, in this frame's
+    /// [`crate::fast::element::ElementRecords`], carried along when it is
+    /// drawn again from last frame.
+    pub(crate) element_records: Range<u32>,
 }
 
 pub(crate) enum PaintStatus {
@@ -148,6 +155,7 @@ pub(crate) struct RetainedRecording {
     index: Option<usize>,
     dependencies: DependencyRecording,
     layout_keys: usize,
+    element_records: u32,
 }
 
 /// A retained subtree being painted. See [`Window::begin_retained_paint`].
@@ -198,11 +206,23 @@ pub(crate) struct RetainedState {
     /// nothing that was, is drawn again from what it drew then. See
     /// [`Window::set_view_retention`].
     pub(crate) view_retention: bool,
+    /// Whether an element built this frame as it was built on the last one
+    /// is drawn again from what it drew then. See [`crate::fast::element`].
+    pub(crate) element_retention: bool,
     /// Records reads of the pointer and modifier keys while views are drawn.
     pub(crate) ambient_reads: crate::fast::dependencies::AmbientReads,
     /// Room to sort out the layout keys a spliced view keeps, kept from one
     /// splice to the next. See [`crate::fast::splice`].
     pub(crate) splice_keys: FxHashSet<u64>,
+    /// Room to gather the layout keys an element drawn again from last frame
+    /// keeps. See [`crate::fast::element`].
+    pub(crate) element_keys: Vec<u64>,
+    /// How many elements whose layout is being requested skip being
+    /// compared with last frame's, with everything nested in them.
+    pub(crate) skipping_elements: u32,
+    /// How many elements whose layout is being requested are recorded, so
+    /// that those nested in them are recorded with them.
+    pub(crate) recording_elements: u32,
 }
 
 impl RetainedState {
@@ -218,7 +238,12 @@ impl RetainedState {
             prebuilt: FxHashMap::default(),
             notified_entities: FxHashSet::default(),
             view_retention: std::env::var("GPUI_VIEW_RETENTION").map_or(true, |value| value != "0"),
+            element_retention: std::env::var("GPUI_ELEMENT_RETENTION")
+                .map_or(true, |value| value != "0"),
             splice_keys: FxHashSet::default(),
+            element_keys: Vec::new(),
+            skipping_elements: 0,
+            recording_elements: 0,
         }
     }
 
@@ -342,6 +367,7 @@ impl RetainedSubtrees {
         self.by_id.clear();
         self.open.clear();
         self.reused_any = false;
+        self.elements.clear();
     }
 
     /// Whether any subtree was drawn from last frame.
@@ -656,6 +682,34 @@ impl Window {
         } else {
             0
         };
+        // The element records drawn inside it go along with it, so that its
+        // elements can be drawn from last frame when it is next built.
+        let source_elements = source.records[previous].element_records.clone();
+        let elements = if copied_whole {
+            crate::fast::element::carry_records(
+                &source.elements,
+                &mut target.elements,
+                source_elements.clone(),
+                &prepaint_range.start,
+                &start,
+            )
+        } else {
+            0..0
+        };
+        // A nested record whose elements were not carried along with it, as
+        // a view's are not through a splice, carries none.
+        let carry_elements = |range: &Range<u32>| {
+            if copied_whole
+                && !range.is_empty()
+                && source_elements.start <= range.start
+                && range.end <= source_elements.end
+            {
+                range.start - source_elements.start + elements.start
+                    ..range.end - source_elements.start + elements.start
+            } else {
+                0..0
+            }
+        };
         for index in previous..=previous + nested {
             let record = &source.records[index];
             let paint = match record.paint {
@@ -692,6 +746,7 @@ impl Window {
                 layout_keys: record.layout_keys.clone(),
                 layout: record.layout.clone(),
                 rebuild: record.rebuild.clone(),
+                element_records: carry_elements(&record.element_records),
             });
         }
         anchor
@@ -714,10 +769,19 @@ impl Window {
         let copied_whole = end == source.end.shifted(&source.start, &start);
         debug_assert!(copied_whole, "a reused paint range changed length");
         let record = &mut self.next_frame.retained.records[index];
-        record.paint_range = start..end;
+        record.paint_range = start.clone()..end;
         record.paint = PaintStatus::Painted {
-            source: copied_whole.then_some(source.start),
+            source: copied_whole.then_some(source.start.clone()),
         };
+        let element_records = record.element_records.clone();
+        if copied_whole {
+            crate::fast::element::place_carried_paint(
+                &mut self.next_frame.retained.elements,
+                element_records,
+                &source.start,
+                &start,
+            );
+        }
 
         // The hovers were checked against last frame's hitboxes; this
         // frame's could put something over the subtree. That is found out
@@ -785,6 +849,7 @@ impl Window {
                 layout_keys: Rc::new([]),
                 layout: None,
                 rebuild: None,
+                element_records: 0..0,
             });
             retained.open.push(index);
             index
@@ -794,6 +859,7 @@ impl Window {
             index,
             dependencies: cx.begin_recording_dependencies(),
             layout_keys: self.record_claimed_layout_keys(),
+            element_records: self.next_frame.retained.elements.len(),
         }
     }
 
@@ -841,6 +907,7 @@ impl Window {
         record.layout_keys = layout_keys.into();
         record.layout = layout;
         record.rebuild = rebuild.map(Rc::new);
+        record.element_records = recording.element_records..retained.elements.len();
         Some(index)
     }
 

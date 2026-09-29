@@ -65,8 +65,8 @@ use std::{
 /// contents", or an old node being destroyed and a new node being created.
 #[derive(Debug, Clone)]
 pub struct Text {
-    id: Option<ElementId>,
-    text: SharedString,
+    pub(crate) id: Option<ElementId>,
+    pub(crate) text: SharedString,
 }
 
 impl Text {

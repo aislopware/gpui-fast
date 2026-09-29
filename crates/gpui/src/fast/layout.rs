@@ -66,6 +66,10 @@ pub(crate) struct LayoutRetention {
     /// state the element made afresh, though it is expected to come out as
     /// before. See [`TaffyLayoutEngine::remeasures`].
     remeasures: u64,
+    /// The nodes Taffy measured this frame, whose measurement may have
+    /// changed what they hold since, though not their size. See
+    /// [`crate::fast::element`].
+    pub(crate) measured: collections::FxHashSet<LayoutId>,
     /// The [`layout_fingerprint`] of the default style, which every text leaf
     /// asks for, under the rem size and scale factor it was taken at.
     default_fingerprint: Option<(Pixels, f32, u64)>,
@@ -294,6 +298,19 @@ impl TaffyLayoutEngine {
             retention.claimed_key_log.clear();
         }
         keys
+    }
+
+    /// Ends the recording started at `start`, as
+    /// [`Self::finish_recording_claimed_keys`] does, returning how many keys
+    /// it saw rather than the keys.
+    pub(crate) fn finish_counting_claimed_keys(&mut self, start: usize) -> usize {
+        let retention = &mut self.retention;
+        let count = retention.claimed_key_log.len() - start;
+        retention.open_key_recordings -= 1;
+        if retention.open_key_recordings == 0 {
+            retention.claimed_key_log.clear();
+        }
+        count
     }
 
     /// Keeps the nodes retained under `keys` for another frame without
@@ -748,6 +765,7 @@ pub(crate) fn release_unclaimed_nodes(engine: &mut TaffyLayoutEngine) {
 
     retention.claimed_this_frame = 0;
     retention.frame += 1;
+    retention.measured.clear();
 }
 
 /// [`Window::request_layout`] for a style the caller keeps, and children it

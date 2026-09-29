@@ -84,6 +84,39 @@ accepts text, its selection, the bounds of a range — through
 `ElementInputHandler`. Those calls update the input's entity, but do not
 count as changing it unless it notifies while it is asked.
 
+### Elements
+
+A view that changed is rendered again and builds every element it holds, but
+most of them are usually built just as they were. Once built, each `div` and
+piece of plain text is compared with the element built at its place last
+frame — found by its layout key, as its layout node is — and one built the
+same way, everything nested in it included, is drawn again from last frame:
+its layout nodes are kept rather than requested, and its dispatch nodes and
+primitives are copied. What it was built with is compared exactly: a `div`'s
+style refinement, element id and children, text's text. Where it is drawn is
+compared too: bounds, content mask, opacity, text style and rem size. An
+element that differs is built as upstream builds it, but the elements nested
+in it are compared on their own, so a quote row whose price changed builds
+the row and the price and draws its other cells from last frame.
+
+Only elements whose output is fully decided by what they were built with take
+part: a `div` with a listener, focus, scroll, hover or active style, a
+tooltip, a group or a cursor, or holding any other kind of element, is built
+as upstream builds it, and so is everything around it, though what is nested
+in it can still be drawn again. Text a layout measured again this frame is
+built again, since it may break into other lines at the same size.
+
+An element nested in no other that is recorded is recorded only once it is
+drawn twice in a row in the same place, and one nested in a recorded element
+that moves is recorded only as moving: rows under a scroll, or below rows
+inserted above them, could never be drawn again from last frame, and are not
+compared and recorded every frame for nothing. The records of such an element
+and of those nested in it are frozen, once it is painted, into one subtree
+shared from frame to frame, which drawing it again takes over as it is. The
+code is in `crates/gpui/src/fast/element.rs`.
+
+`GPUI_ELEMENT_RETENTION=0` turns this off, leaving view retention on.
+
 ### Records per retained subtree
 
 Each frame keeps a record per retained subtree: where its hitboxes, dispatch
@@ -164,6 +197,11 @@ A retained frame has to be the frame drawing from scratch would have produced.
   scratch, and requires every frame to match. It covers sibling, nested and
   deferred views notified alone, a model read without being observed, and a
   global, and asserts that views really were reused.
+- `crates/gpui/src/fast/tests/element_oracle.rs` does the same for elements
+  drawn again inside views rendered every frame: keyed and unkeyed rows
+  inserted, removed and moved, components, interactive elements among plain
+  ones, inherited text styles, opacity and clips, scrolling, focus and
+  deferred draws, comparing the dispatch tree, listeners and focus too.
 - `crates/gpui/src/fast/tests/retained.rs` covers reuse, rebuilding when a
   dependency or a hover changes, moved views and retention turned off.
 - `cargo run -p gpui_perf --release -- --headless --verify` compares the quads,
@@ -208,6 +246,14 @@ times:
 ```sh
 cargo run -p gpui_perf --example views_frames --release -- 60 64 2
 GPUI_VIEW_RETENTION=0 cargo run -p gpui_perf --example views_frames --release -- 60 64 2
+```
+
+A headless benchmark of a 100-row quote board rendered every frame, with
+element retention on and off, is in
+`crates/gpui/src/fast/tests/element_bench.rs`:
+
+```sh
+cargo test -p gpui --lib --release element_bench -- --ignored --nocapture
 ```
 
 A headless benchmark of 60 panel views × 64 labels is in

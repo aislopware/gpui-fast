@@ -884,6 +884,8 @@ fn copy_record(
         layout_keys: record.layout_keys.clone(),
         layout: record.layout.clone(),
         rebuild: record.rebuild.clone(),
+        // Its elements' records are not carried through a splice.
+        element_records: 0..0,
     }
 }
 
