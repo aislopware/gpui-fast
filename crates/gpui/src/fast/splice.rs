@@ -25,12 +25,13 @@ use crate::fast::retained::{EnclosingRetained, OpenPaint};
 use crate::fast::retained::{
     PaintStatus, RetainedSubtree, ViewLayoutState, ViewPrepaint, ViewPrepaintState,
 };
+use crate::fast::text_style::TextStyleStack;
 use crate::key_dispatch::{DispatchNodeId, DispatchTree};
 use crate::window::DeferredDraw;
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
     AnyView, App, ContentMask, ElementId, EntityId, FocusId, GlobalElementId, HitboxId, LayoutId,
-    Pixels, Point, StyleRefinement, TextStyleRefinement, View, ViewElement, Window,
+    Pixels, Point, StyleRefinement, View, ViewElement, Window,
 };
 use collections::FxHashSet;
 use smallvec::SmallVec;
@@ -73,7 +74,7 @@ pub(crate) struct Rebuild {
     /// The layout key its element was requested under, which its own key,
     /// and the keys of its nodes, are derived from.
     parent_layout_key: u64,
-    text_style_stack: Vec<TextStyleRefinement>,
+    text_style_stack: TextStyleStack,
     element_offset: Point<Pixels>,
     rem_size: Pixels,
     /// The style it is laid out at, when it is a cached view.
@@ -227,7 +228,7 @@ pub(crate) struct SplicedPrepaint {
 /// a nested view is built where it was.
 struct Inherited {
     element_id_stack: SmallVec<[ElementId; 32]>,
-    text_style_stack: Vec<TextStyleRefinement>,
+    text_style_stack: TextStyleStack,
     content_mask_stack: Vec<ContentMask<Pixels>>,
     element_offset_stack: Vec<Point<Pixels>>,
     rem_size_override_stack: SmallVec<[Pixels; 8]>,

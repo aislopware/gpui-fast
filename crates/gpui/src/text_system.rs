@@ -96,6 +96,7 @@ impl TextSystem {
 
     /// Add a font's data to the text system.
     pub fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
+        crate::fast::text::fonts_changed();
         self.platform_text_system.add_fonts(fonts)
     }
 

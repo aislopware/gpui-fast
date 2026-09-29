@@ -39,7 +39,6 @@ use itertools::FoldWhile::{Continue, Done};
 use itertools::Itertools;
 use parking_lot::RwLock;
 use raw_window_handle::{HandleError, HasDisplayHandle, HasWindowHandle};
-use refineable::Refineable;
 use scheduler::Instant;
 use slotmap::SlotMap;
 use smallvec::SmallVec;
@@ -969,7 +968,7 @@ pub(crate) struct DeferredDraw {
     pub(crate) priority: usize,
     pub(crate) parent_node: DispatchNodeId,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
-    pub(crate) text_style_stack: Vec<TextStyleRefinement>,
+    pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
     pub(crate) content_mask: Option<ContentMask<Pixels>>,
     pub(crate) rem_size: Pixels,
     pub(crate) element: Option<AnyElement>,
@@ -1173,7 +1172,8 @@ pub struct Window {
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
     pub(crate) global_ids: crate::fast::global_id::GlobalIdCache,
     pub(crate) retained_state: crate::fast::retained::RetainedState,
-    pub(crate) text_style_stack: Vec<TextStyleRefinement>,
+    pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
+    pub(crate) fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
@@ -2041,7 +2041,8 @@ impl Window {
             element_id_stack: SmallVec::default(),
             global_ids: crate::fast::global_id::GlobalIdCache::default(),
             retained_state: crate::fast::retained::RetainedState::new(cx),
-            text_style_stack: Vec::new(),
+            text_style_stack: crate::fast::text_style::TextStyleStack::default(),
+            fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache::default(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
             content_mask_stack: Vec::new(),
@@ -2351,11 +2352,7 @@ impl Window {
 
     /// The current text style. Which is composed of all the style refinements provided to `with_text_style`.
     pub fn text_style(&self) -> TextStyle {
-        let mut style = TextStyle::default();
-        for refinement in &self.text_style_stack {
-            style.refine(refinement);
-        }
-        style
+        (*crate::fast::text_style::text_style(self)).clone()
     }
 
     /// Check if the platform window is maximized.

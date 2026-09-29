@@ -609,6 +609,9 @@ fn paint_line_background(
         ),
     );
     window.paint_layer(line_bounds, |window| {
+        if crate::fast::glyphs::has_no_background(decoration_runs) {
+            return Ok(());
+        }
         let mut decoration_runs = decoration_runs.iter();
         let mut wraps = wrap_boundaries.iter().peekable();
         let mut run_end = 0;

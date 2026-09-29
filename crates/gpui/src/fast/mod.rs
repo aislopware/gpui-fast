@@ -26,6 +26,7 @@ pub(crate) mod scene;
 pub(crate) mod splice;
 pub(crate) mod stats;
 pub(crate) mod text;
+pub(crate) mod text_style;
 
 #[cfg(test)]
 mod tests;

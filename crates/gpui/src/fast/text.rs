@@ -7,15 +7,16 @@ use crate::{
     StrikethroughStyle, Style, TextLayout, TextLayoutInner, TextOverflow, TextRun, TextStyle,
     TruncateFrom, UnderlineStyle, WhiteSpace, Window, WindowTextSystem, WrappedLine,
 };
-use collections::FxHashMap;
+use collections::{FxHashMap, FxHasher};
 use gpui_util::ResultExt as _;
+use parking_lot::Mutex;
 use scheduler::Instant;
 use smallvec::SmallVec;
 use std::{
     any::Any,
     borrow::Cow,
     cmp,
-    hash::Hash,
+    hash::{Hash, Hasher},
     mem,
     rc::Rc,
     sync::Arc,
@@ -511,8 +512,16 @@ impl LineLayoutIndex {
 
 /// Counts the lines the line layout cache hands to the platform to be shaped,
 /// because neither this frame nor the last one had them, and times them.
+///
+/// The line layout cache only remembers the lines of this frame and the last
+/// one. Numbers that change every frame, like prices, keep coming back to
+/// values they had a few frames ago, and a row scrolled out comes back with
+/// the same text. So the lines shaped recently are kept here too, in
+/// [`RecentShapes`], and a line found there is copied instead of shaped again.
 #[derive(Default)]
 pub(crate) struct LineShaping {
+    /// Lines shaped lately, answered without asking the platform again.
+    recent: Mutex<RecentShapes>,
     /// Lines handed to the platform to be shaped. See [`LineShaping::stats`].
     lines_shaped: AtomicU64,
     /// Time spent in those calls, in nanoseconds.
@@ -542,8 +551,27 @@ impl LineShaping {
         self.shape_timed.store(true, Ordering::Relaxed);
     }
 
-    /// Shapes a line the cache does not have, counting it.
+    /// Shapes a line the cache does not have, counting it, unless it was
+    /// shaped lately and can be copied from [`RecentShapes`].
     pub(crate) fn shape_line(
+        &self,
+        platform_text_system: &dyn PlatformTextSystem,
+        text: &str,
+        font_size: Pixels,
+        runs: &[FontRun],
+    ) -> LineLayout {
+        let hash = RecentShapes::hash(text, font_size, runs);
+        if let Some(layout) = self.recent.lock().get(hash, text, font_size, runs) {
+            return layout;
+        }
+        let layout = self.shape_line_uncached(platform_text_system, text, font_size, runs);
+        self.recent
+            .lock()
+            .insert(hash, text, font_size, runs, copy_layout(&layout));
+        layout
+    }
+
+    fn shape_line_uncached(
         &self,
         platform_text_system: &dyn PlatformTextSystem,
         text: &str,
@@ -558,6 +586,152 @@ impl LineShaping {
                 .fetch_add(started_at.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
         layout
+    }
+}
+
+/// Bumped whenever fonts are added to a text system, which can change how a
+/// line already shaped would shape now (a fallback font it lacked).
+static FONTS_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Called when fonts are added to a text system, so no line shaped before is
+/// taken from [`RecentShapes`] again.
+#[inline(always)]
+pub(crate) fn fonts_changed() {
+    FONTS_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// How many glyphs the lines of one generation of [`RecentShapes`] may hold
+/// before it becomes the old one, which bounds what it keeps to about a
+/// megabyte. Between one and two generations' worth of the most recently used
+/// lines are remembered: some two thousand short numbers, or a few hundred
+/// lines of prose.
+pub(crate) const RECENT_GLYPHS_PER_GENERATION: usize = 16 * 1024;
+
+/// A line shaped lately: what it was shaped from, and what that gave.
+struct RecentShape {
+    text: Box<str>,
+    font_size: Pixels,
+    runs: SmallVec<[FontRun; 1]>,
+    layout: LineLayout,
+}
+
+/// The lines shaped lately, in two generations: lines are added to the
+/// current one, and a line found in the old one moves to the current one.
+/// When the current generation is full, the old one is dropped and the
+/// current one takes its place, so the lines not used for the longest go.
+#[derive(Default)]
+pub(crate) struct RecentShapes {
+    current: FxHashMap<u64, SmallVec<[RecentShape; 1]>>,
+    /// The glyphs in `current`, counting each line at least as one.
+    current_glyphs: usize,
+    old: FxHashMap<u64, SmallVec<[RecentShape; 1]>>,
+    fonts_generation: u64,
+}
+
+impl RecentShapes {
+    pub(crate) fn hash(text: &str, font_size: Pixels, runs: &[FontRun]) -> u64 {
+        let mut hasher = FxHasher::default();
+        text.hash(&mut hasher);
+        font_size.0.to_bits().hash(&mut hasher);
+        runs.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub(crate) fn get(
+        &mut self,
+        hash: u64,
+        text: &str,
+        font_size: Pixels,
+        runs: &[FontRun],
+    ) -> Option<LineLayout> {
+        let fonts_generation = FONTS_GENERATION.load(Ordering::Relaxed);
+        if fonts_generation != self.fonts_generation {
+            self.current.clear();
+            self.current_glyphs = 0;
+            self.old.clear();
+            self.fonts_generation = fonts_generation;
+            return None;
+        }
+        let matches = |shape: &RecentShape| {
+            &*shape.text == text
+                && shape.font_size.0.to_bits() == font_size.0.to_bits()
+                && shape.runs.as_slice() == runs
+        };
+        if let Some(shape) = self
+            .current
+            .get(&hash)
+            .and_then(|shapes| shapes.iter().find(|shape| matches(shape)))
+        {
+            return Some(copy_layout(&shape.layout));
+        }
+        let shapes = self.old.get_mut(&hash)?;
+        let ix = shapes.iter().position(matches)?;
+        let shape = shapes.swap_remove(ix);
+        if shapes.is_empty() {
+            self.old.remove(&hash);
+        }
+        let layout = copy_layout(&shape.layout);
+        self.push(hash, shape);
+        Some(layout)
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        hash: u64,
+        text: &str,
+        font_size: Pixels,
+        runs: &[FontRun],
+        layout: LineLayout,
+    ) {
+        if self.fonts_generation != FONTS_GENERATION.load(Ordering::Relaxed) {
+            return;
+        }
+        self.push(
+            hash,
+            RecentShape {
+                text: text.into(),
+                font_size,
+                runs: SmallVec::from(runs),
+                layout,
+            },
+        );
+    }
+
+    fn push(&mut self, hash: u64, shape: RecentShape) {
+        if self.current_glyphs >= RECENT_GLYPHS_PER_GENERATION {
+            self.old = mem::take(&mut self.current);
+            self.current_glyphs = 0;
+        }
+        self.current_glyphs += shape
+            .layout
+            .runs
+            .iter()
+            .map(|run| run.glyphs.len())
+            .sum::<usize>()
+            .max(1);
+        self.current.entry(hash).or_default().push(shape);
+    }
+}
+
+/// A copy of a shaped line. (`LineLayout` is public, and cloning it isn't
+/// part of upstream's API.)
+fn copy_layout(layout: &LineLayout) -> LineLayout {
+    // Destructured, so that a field upstream adds can't be missed here.
+    let LineLayout {
+        font_size,
+        width,
+        ascent,
+        descent,
+        runs,
+        len,
+    } = layout;
+    LineLayout {
+        font_size: *font_size,
+        width: *width,
+        ascent: *ascent,
+        descent: *descent,
+        runs: runs.clone(),
+        len: *len,
     }
 }
 

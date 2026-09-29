@@ -9,3 +9,4 @@ mod retained;
 mod retained_bench;
 mod support;
 mod text;
+mod text_shaping;
