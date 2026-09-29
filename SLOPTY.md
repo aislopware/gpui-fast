@@ -69,6 +69,10 @@ Added in this fork:
 
 - `1776aa2` test(gpui): a video surface shows the buffer its view holds, retained or not
 - `4d0009e` gpui: build a view that asked for an animation frame on the next frame drawn
+- window composition (branch `composition`): native views and layers placed by GPUI's
+  scene under its Metal layer with holes, transactional frames, pointer and keyboard
+  bridged, on macOS and iOS, and `VideoLayer` for video that needs no GPUI frame; see
+  [docs/composition.md](docs/composition.md)
 
 ### Candidates for longbridge
 
@@ -83,6 +87,13 @@ Generic to gpui-fast, not to Slopty, and worth a pull request to longbridge/gpui
   upstream's).
 - the commit adding this file, which also lets `script/check-upstream` accept the patches
   above (`script/upstream-allowlist`, the "Slopty's patches" section)
+- window composition's platform-neutral part (`crates/gpui/src/fast/composition/`, the
+  scene, present and hit-test hooks) and its macOS side: generic to any GPUI app that
+  embeds a web view or a video layer, and an alternative to zed#62379's overlay bands that
+  also orders GPUI content between natives;
+- the destination-alpha blend fix in `gpui_apple`'s pipelines (`OneMinusSourceAlpha`
+  instead of `One`): a non-opaque window's alpha is wrong without it, and an opaque one
+  renders bit-identically with it. Also a candidate for zed itself.
 
 `crates/gpui_ios` is ours, like `crates/gpui_perf` is gpui-fast's: it is a workspace member
 but not in `UPSTREAM`'s `tracked` list, so `script/check-upstream` does not look at it.
