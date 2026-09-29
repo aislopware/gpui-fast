@@ -128,6 +128,17 @@ brings it: take zed's version of the files, remove the pull request's line from
   inherit the fling's axis and scroll nothing. `gestures.rs` only, applied as is. iOS is
   covered: `gpui_ios` hands raw touches to the same `TouchGestureRecognizer`. Test:
   `catching_a_fling_takes_the_axis_from_the_new_touch`.
+- zed #63469 (head `943c6c15e2`), "size-dependent glyph padding": a glyph's raster bounds
+  get a left margin of `ceil(font_size × 0.03 × scale)` device pixels, 1 to 5, and 1 on the
+  other sides, because CoreGraphics draws a size-specific font whose ink reaches farther
+  left than font-kit's bounds. Applied as is to `gpui_macos` with its two tests
+  (`test_system_zero_raster_bounds_do_not_clip`, `test_system_zero_matches_appkit`, run
+  with `--features font-kit`). At 14 pt and 2× the margin is 1 px, as before.
+  - Ours, kept when the import drops the macOS part: the same bounds in `gpui_ios`
+    (`ios/text_system.rs`), which had no margin at all. Its test
+    `glyph_raster_bounds_do_not_clip` rasterizes a bold tabular `0` at 12 to 48 pt and 3×
+    and compares the ink with a buffer 8 px larger all round; without the margin it fails
+    at 24 pt. It runs on the simulator (see "Testing gpui_ios on the simulator").
 
 Added in this fork:
 
@@ -333,6 +344,24 @@ For our patches: `window.rs` (`paint_glyph_scaled` sits next to gpui-fast's
 and dependency) and `Cargo.lock`. `git am -3` needs the preimage blobs from the zed fork;
 write them into this repository first (`git -C ../zed-main cat-file blob <sha> | git
 hash-object -w --stdin` for every `index` line of `format-patch --full-index`).
+
+## Testing gpui_ios on the simulator
+
+`gpui_ios`'s tests that need UIKit or CoreText build for `aarch64-apple-ios-sim` and run
+inside a booted simulator. `core-video` pulls in `cgl`, which links `OpenGL.framework`,
+absent on iOS; a test binary links against a stub whose install name is a library the
+simulator has (`/usr/lib/libobjc.A.dylib`), since nothing calls into it:
+
+```sh
+mkdir -p /tmp/iosstub/OpenGL.framework
+printf -- "--- !tapi-tbd\ntbd-version: 4\ntargets: [ arm64-ios-simulator ]\ninstall-name: '/usr/lib/libobjc.A.dylib'\n...\n" \
+  > /tmp/iosstub/OpenGL.framework/OpenGL.tbd
+CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUSTFLAGS="-C target-cpu=apple-m1 -C link-arg=-F/tmp/iosstub" \
+  cargo test -p gpui_ios --features test-support --target aarch64-apple-ios-sim --lib --no-run
+xcrun simctl boot <device>
+xcrun simctl spawn <device> target/aarch64-apple-ios-sim/debug/deps/gpui_ios-<hash>
+xcrun simctl shutdown <device>
+```
 
 ## Building inside Slopty's checkout
 

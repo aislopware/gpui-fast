@@ -34,7 +34,7 @@ use font_kit::{
     sources::mem::MemSource,
 };
 use gpui::{
-    Bounds, DevicePixels, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
+    Bounds, DevicePixels, Edges, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
     FontStyle, FontWeight, GlyphId, LineLayout, Pixels, PlatformTextSystem, RenderGlyphParams,
     Result, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString, Size, TextRenderingMode,
     point, px, size,
@@ -338,13 +338,28 @@ impl IosTextSystemState {
     fn raster_bounds(&self, params: &RenderGlyphParams) -> Result<Bounds<DevicePixels>> {
         let font = &self.fonts[params.font_id.0];
         let scale = Transform2F::from_scale(params.scale_factor);
-        Ok(recti_to_bounds_device_pixels(font.raster_bounds(
+        let bounds = recti_to_bounds_device_pixels(font.raster_bounds(
             params.glyph_id.0,
             params.font_size.into(),
             scale,
             HintingOptions::None,
             font_kit::canvas::RasterizationOptions::GrayscaleAa,
-        )?))
+        )?);
+
+        // As on macOS (zed #63469): font-kit scales typographic bounds from the base font,
+        // while CoreGraphics renders a size-specific font whose ink can extend farther left.
+        // One device pixel on the other sides leaves room for antialiasing.
+        let left_padding = DevicePixels(
+            (params.font_size.as_f32() * 0.03 * params.scale_factor)
+                .ceil()
+                .clamp(1., 5.) as i32,
+        );
+        Ok(bounds.extend(Edges {
+            top: DevicePixels(1),
+            right: DevicePixels(1),
+            bottom: DevicePixels(1),
+            left: left_padding,
+        }))
     }
 
     fn rasterize_glyph(
@@ -771,6 +786,75 @@ mod lenient_font_attributes {
             assert!(!reference.is_null(), "Attempted to create a NULL object.");
             let reference = CFRetain(reference as *const ::std::os::raw::c_void) as CFStringRef;
             TCFType::wrap_under_create_rule(reference)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IosTextSystem;
+    use gpui::{
+        Bounds, DevicePixels, FontFeatures, FontRun, PlatformTextSystem, RenderGlyphParams, Size,
+        font, point, px,
+    };
+    use std::sync::Arc;
+
+    fn zero_params(fonts: &IosTextSystem, font_size: f32) -> RenderGlyphParams {
+        let mut font = font(".SystemUIFont").bold();
+        font.features = FontFeatures(Arc::new(vec![("tnum".into(), 1)]));
+        let font_id = fonts.font_id(&font).unwrap();
+        let layout = fonts.layout_line("0", px(font_size), &[FontRun { font_id, len: 1 }]);
+        RenderGlyphParams {
+            font_id,
+            glyph_id: layout.runs[0].glyphs[0].id,
+            font_size: px(font_size),
+            subpixel_variant: point(0, 0),
+            scale_factor: 3.,
+            is_emoji: false,
+            subpixel_rendering: false,
+            dilation: 0,
+        }
+    }
+
+    /// The pixels `params` rasterizes to in `bounds`, placed in `reference`'s frame.
+    fn ink_in(
+        fonts: &IosTextSystem,
+        params: &RenderGlyphParams,
+        bounds: Bounds<DevicePixels>,
+        reference: Bounds<DevicePixels>,
+    ) -> Vec<u8> {
+        let (Size { width, .. }, pixels) = fonts.rasterize_glyph(params, bounds).unwrap();
+        let offset = bounds.origin - reference.origin;
+        let mut placed = vec![0; (reference.size.width.0 * reference.size.height.0) as usize];
+        for y in 0..reference.size.height.0 {
+            for x in 0..reference.size.width.0 {
+                let (inner_x, inner_y) = (x - offset.x.0, y - offset.y.0);
+                if (0..bounds.size.width.0).contains(&inner_x)
+                    && (0..bounds.size.height.0).contains(&inner_y)
+                {
+                    placed[(y * reference.size.width.0 + x) as usize] =
+                        pixels[(inner_y * width.0 + inner_x) as usize];
+                }
+            }
+        }
+        placed
+    }
+
+    /// A glyph rasterized in the bounds the text system picks has all the ink it has in a
+    /// buffer eight pixels larger on every side, from terminal sizes to large headings: the
+    /// antialiased edges and the size-specific font's left overhang are not cut off.
+    #[test]
+    fn glyph_raster_bounds_do_not_clip() {
+        let fonts = IosTextSystem::new();
+        for font_size in [12., 14., 17., 24., 48.] {
+            let params = zero_params(&fonts, font_size);
+            let bounds = fonts.glyph_raster_bounds(&params).unwrap();
+            let reference = bounds.dilate(DevicePixels(8));
+            assert_eq!(
+                ink_in(&fonts, &params, bounds, reference),
+                ink_in(&fonts, &params, reference, reference),
+                "{font_size}px"
+            );
         }
     }
 }

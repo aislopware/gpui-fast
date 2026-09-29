@@ -48,3 +48,5 @@ crates/gpui_platform/src/gpui_platform.rs unmarked=1 # Slopty: the iOS platform
 # Open zed pull requests ported ahead of zed (SLOPTY.md, "Ported from open zed pull
 # requests"). Each line goes when the zed import that brings the pull request lands.
 crates/gpui/src/gestures.rs hunk=54 added=88 unmarked=9 # zed #64239: a touch that catches a fling picks its own axis
+crates/gpui_macos/Cargo.toml hunk=9 # zed #63469: AppKit features for the glyph raster test
+crates/gpui_macos/src/text_system.rs hunk=194 added=220 unmarked=2 # zed #63469: a size-dependent left margin in glyph raster bounds, and its AppKit test
