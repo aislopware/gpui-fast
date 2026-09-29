@@ -825,3 +825,78 @@ impl WindowTextSystem {
         self.line_layout_cache.shaping.reset()
     }
 }
+
+/// How many fonts [`resolve_font`] remembers, most recently resolved last.
+const RESOLVED_FONTS: usize = 16;
+
+/// A font resolved lately: the text system that resolved it, the fonts
+/// generation it was resolved in, the font asked for and what it resolved to.
+struct ResolvedFont {
+    text_system: std::sync::Weak<dyn PlatformTextSystem>,
+    generation: u64,
+    font: crate::Font,
+    font_id: crate::FontId,
+}
+
+thread_local! {
+    static RESOLVED: std::cell::RefCell<SmallVec<[ResolvedFont; RESOLVED_FONTS]>> =
+        const { std::cell::RefCell::new(SmallVec::new_const()) };
+}
+
+/// Resolves `font` as [`TextSystem::resolve_font`] does, remembering the few
+/// fonts resolved lately: every run of every line shaped asks for its font,
+/// and looking it up hashes the font and takes a lock each time, where a
+/// frame's text uses a handful of fonts.
+#[inline]
+pub(crate) fn resolve_font(text_system: &crate::TextSystem, font: &crate::Font) -> crate::FontId {
+    let generation = FONTS_GENERATION.load(Ordering::Relaxed);
+    let platform = &text_system.platform_text_system;
+    let remembered = RESOLVED.with_borrow(|resolved| {
+        resolved.iter().rev().find_map(|entry| {
+            (entry.generation == generation
+                && entry.text_system.strong_count() > 0
+                && std::ptr::addr_eq(entry.text_system.as_ptr(), Arc::as_ptr(platform))
+                && entry.font == *font)
+                .then_some(entry.font_id)
+        })
+    });
+    if let Some(font_id) = remembered {
+        return font_id;
+    }
+    let font_id = resolve_font_uncached(text_system, font);
+    RESOLVED.with_borrow_mut(|resolved| {
+        if resolved.len() == RESOLVED_FONTS {
+            resolved.remove(0);
+        }
+        resolved.push(ResolvedFont {
+            text_system: Arc::downgrade(platform),
+            generation,
+            font: font.clone(),
+            font_id,
+        });
+    });
+    font_id
+}
+
+/// Upstream's [`TextSystem::resolve_font`]: the font, or else the first of
+/// the fallbacks that resolves.
+fn resolve_font_uncached(text_system: &crate::TextSystem, font: &crate::Font) -> crate::FontId {
+    if let Ok(font_id) = text_system.font_id(font) {
+        return font_id;
+    }
+    for fallback in &text_system.fallback_font_stack {
+        if let Ok(font_id) = text_system.font_id(fallback) {
+            return font_id;
+        }
+    }
+    panic!(
+        "failed to resolve font '{}' or any of the fallbacks: {}",
+        font.family,
+        text_system
+            .fallback_font_stack
+            .iter()
+            .map(|fallback| fallback.family.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+}

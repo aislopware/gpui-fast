@@ -20,7 +20,6 @@ use anyhow::{Context as _, anyhow};
 use collections::FxHashMap;
 use core::fmt;
 use derive_more::{Add, Deref, FromStr, Sub};
-use itertools::Itertools;
 use parking_lot::{Mutex, RwLock, RwLockUpgradableReadGuard};
 use smallvec::{SmallVec, smallvec};
 use std::{
@@ -49,13 +48,13 @@ pub const SUBPIXEL_VARIANTS_Y: u8 = 1;
 
 /// The GPUI text rendering sub system.
 pub struct TextSystem {
-    platform_text_system: Arc<dyn PlatformTextSystem>,
+    pub(crate) platform_text_system: Arc<dyn PlatformTextSystem>,
     font_ids_by_font: RwLock<FxHashMap<Font, Result<FontId>>>,
     font_metrics: RwLock<FxHashMap<FontId, FontMetrics>>,
     raster_bounds: RwLock<FxHashMap<RenderGlyphParams, Bounds<DevicePixels>>>,
     wrapper_pool: Mutex<FxHashMap<FontIdWithSize, Vec<LineWrapper>>>,
     font_runs_pool: Mutex<Vec<Vec<FontRun>>>,
-    fallback_font_stack: SmallVec<[Font; 2]>,
+    pub(crate) fallback_font_stack: SmallVec<[Font; 2]>,
 }
 
 impl TextSystem {
@@ -101,7 +100,7 @@ impl TextSystem {
     }
 
     /// Get the FontId for the configure font family and style.
-    fn font_id(&self, font: &Font) -> Result<FontId> {
+    pub(crate) fn font_id(&self, font: &Font) -> Result<FontId> {
         fn clone_font_id_result(font_id: &Result<FontId>) -> Result<FontId> {
             match font_id {
                 Ok(font_id) => Ok(*font_id),
@@ -143,23 +142,7 @@ impl TextSystem {
     ///
     /// Panics if the font and none of the fallbacks can be resolved.
     pub fn resolve_font(&self, font: &Font) -> FontId {
-        if let Ok(font_id) = self.font_id(font) {
-            return font_id;
-        }
-        for fallback in &self.fallback_font_stack {
-            if let Ok(font_id) = self.font_id(fallback) {
-                return font_id;
-            }
-        }
-
-        panic!(
-            "failed to resolve font '{}' or any of the fallbacks: {}",
-            font.family,
-            self.fallback_font_stack
-                .iter()
-                .map(|fallback| &fallback.family)
-                .join(", ")
-        );
+        crate::fast::text::resolve_font(self, font)
     }
 
     /// Prewarm any system font caches needed to shape text.
