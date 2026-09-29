@@ -39,6 +39,23 @@ pub(crate) struct Painted {
     /// in drawing order into the kind's list and left them in painting
     /// order in the sort scratch.
     gathered: [bool; KINDS],
+    /// For each kind, the order the last scene finished put it in, which
+    /// passes between the two scenes with the entries (see
+    /// [`take_orderings`]).
+    sorts: [Sorted; KINDS],
+}
+
+/// The keys a kind's primitives were sorted by, and the order sorting put
+/// them in: a frame giving every primitive the key it had last frame needs
+/// no sorting, only the same gathering.
+#[derive(Default)]
+pub(crate) struct Sorted {
+    /// Each primitive's key and index, packed `key << 32 | index`, in
+    /// painting order.
+    keys: Vec<u64>,
+    /// `keys` in drawing order, if they were sorted into it; empty when
+    /// they were in drawing order already, or too wide to pack.
+    order: Vec<u64>,
 }
 
 const KINDS: usize = 8;
@@ -113,6 +130,7 @@ pub(crate) fn push_primitive(scene: &mut Scene, primitive: &Primitive) {
 pub(crate) fn take_orderings(next: &mut Scene, rendered: &mut Scene) {
     next.primitive_bounds
         .take_previous(&mut rendered.primitive_bounds);
+    mem::swap(&mut next.fast_painted.sorts, &mut rendered.fast_painted.sorts);
 }
 
 /// What [`Scene::replay`] does: draws the paint operations `range` of
@@ -233,8 +251,6 @@ fn replay_primitive(scene: &mut Scene, previous: &Scene, at: PrimitiveAt, entry:
 /// that a frame does not allocate megabytes to put what it drew in order.
 #[derive(Default)]
 pub(crate) struct SortScratch {
-    /// Each item's key and index, packed `key << 32 | index`.
-    order: Vec<u64>,
     /// The other half of the radix sort's double buffer.
     swap: Vec<u64>,
     shadows: Vec<Shadow>,
@@ -260,38 +276,60 @@ pub(crate) struct SortScratch {
 /// left where they are.
 fn sort_by_gathering<T: Clone>(
     items: &mut Vec<T>,
-    order: &mut Vec<u64>,
+    sorted: &mut Sorted,
     swap: &mut Vec<u64>,
     gathered: &mut Vec<T>,
     key: impl Fn(&T) -> u64,
 ) -> bool {
     if items.len() < 2 {
+        sorted.keys.clear();
+        sorted.order.clear();
         return false;
     }
-    order.clear();
-    let mut sorted = true;
+    let mut same = sorted.keys.len() == items.len() && !sorted.order.is_empty();
+    sorted.keys.resize(items.len(), 0);
+    let mut in_order = true;
     let mut previous = 0;
     let mut max = 0;
-    for (index, item) in items.iter().enumerate() {
+    for ((index, item), packed) in items.iter().enumerate().zip(&mut sorted.keys) {
         let key = key(item);
-        sorted &= key >= previous;
+        in_order &= key >= previous;
         previous = key;
         max = max.max(key);
-        order.push(key << 32 | index as u64);
+        let key = key << 32 | index as u64;
+        same &= *packed == key;
+        *packed = key;
     }
-    if sorted {
+    if in_order {
+        sorted.order.clear();
         return false;
     }
-    if max <= u32::MAX as u64 {
-        radix_sort_keys(order, swap, u64::BITS - max.leading_zeros());
-    } else {
+    if max > u32::MAX as u64 {
         // Never in practice: a key wider than 32 bits, which the packing
-        // cut. Sorted by comparison instead, keys taken afresh.
-        order.sort_unstable_by_key(|&packed| {
+        // cut. Sorted by comparison instead, keys taken afresh, and not
+        // kept, since keys cut alike may differ.
+        sorted.order.clear();
+        swap.clear();
+        swap.extend_from_slice(&sorted.keys);
+        swap.sort_unstable_by_key(|&packed| {
             let index = packed as u32;
             (key(&items[index as usize]), index)
         });
+        gather(items, swap, gathered);
+        return true;
     }
+    if !same {
+        sorted.order.clear();
+        sorted.order.extend_from_slice(&sorted.keys);
+        radix_sort_keys(&mut sorted.order, swap, u64::BITS - max.leading_zeros());
+    }
+    gather(items, &sorted.order, gathered);
+    true
+}
+
+/// Puts `items` in the order of the indices packed in `order`, through
+/// `gathered`.
+fn gather<T: Clone>(items: &mut Vec<T>, order: &[u64], gathered: &mut Vec<T>) {
     gathered.clear();
     gathered.extend(
         order
@@ -299,7 +337,6 @@ fn sort_by_gathering<T: Clone>(
             .map(|&packed| items[packed as u32 as usize].clone()),
     );
     mem::swap(items, gathered);
-    true
 }
 
 /// Sorts `packed` by the `bits` of key above each index, stably: a least
@@ -415,12 +452,13 @@ impl Scene {
 #[inline]
 pub(crate) fn sort_in_drawing_order(scene: &mut Scene) {
     let scratch = &mut scene.sort_scratch;
-    let gathered = &mut scene.fast_painted.gathered;
+    let painted = &mut scene.fast_painted;
     macro_rules! sort {
         ($field:ident, $kind:expr, $key:expr) => {{
-            gathered[kind_index($kind)] = sort_by_gathering(
+            let kind = kind_index($kind);
+            painted.gathered[kind] = sort_by_gathering(
                 &mut scene.$field,
-                &mut scratch.order,
+                &mut painted.sorts[kind],
                 &mut scratch.swap,
                 &mut scratch.$field,
                 $key,
@@ -469,7 +507,7 @@ pub(crate) fn sort_in_drawing_order(scene: &mut Scene) {
 
 #[cfg(test)]
 mod tests {
-    use super::sort_by_gathering;
+    use super::{Sorted, sort_by_gathering};
     use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 
     /// Sorts as a stable sort by key does, whether the keys are narrow, wide
@@ -477,7 +515,7 @@ mod tests {
     #[test]
     fn sorting_by_gathering_is_a_stable_sort_by_key() {
         let mut rng = StdRng::seed_from_u64(7);
-        let (mut order, mut swap, mut gathered) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut sorted, mut swap, mut gathered) = (Sorted::default(), Vec::new(), Vec::new());
         for (len, max_key) in [
             (0, 1),
             (1, 1),
@@ -496,11 +534,44 @@ mod tests {
                 }
                 let mut expected = items.clone();
                 expected.sort_by_key(|item| item.0);
-                sort_by_gathering(&mut items, &mut order, &mut swap, &mut gathered, |item| {
+                sort_by_gathering(&mut items, &mut sorted, &mut swap, &mut gathered, |item| {
                     item.0
                 });
                 assert_eq!(items, expected, "{len} items, keys up to {max_key}");
             }
+        }
+    }
+
+    /// A sort given the keys it was last given reuses the order it found
+    /// for them, and one given any other keys, the same number of them, one
+    /// changed, or cut alike from wider keys, sorts afresh.
+    #[test]
+    fn sorting_the_keys_of_last_time_puts_items_in_order_as_before() {
+        let mut rng = StdRng::seed_from_u64(11);
+        let (mut sorted, mut swap, mut gathered) = (Sorted::default(), Vec::new(), Vec::new());
+        let mut keys: Vec<u64> = (0..2_000).map(|_| rng.random_range(0..6)).collect();
+        for round in 0..40 {
+            match round % 5 {
+                0 => {}
+                1 => {
+                    let at = rng.random_range(0..keys.len());
+                    keys[at] = rng.random_range(0..6);
+                }
+                2 => keys.truncate(keys.len() - rng.random_range(0..3)),
+                3 => {
+                    // Alike once cut to 32 bits.
+                    let at = rng.random_range(0..keys.len());
+                    keys[at] ^= 1 << 40;
+                }
+                _ => keys.push(rng.random_range(0..6)),
+            }
+            let mut items: Vec<(u64, usize)> = keys.iter().copied().zip(0..).collect();
+            let mut expected = items.clone();
+            expected.sort_by_key(|item| item.0);
+            sort_by_gathering(&mut items, &mut sorted, &mut swap, &mut gathered, |item| {
+                item.0
+            });
+            assert_eq!(items, expected, "round {round}");
         }
     }
 }
