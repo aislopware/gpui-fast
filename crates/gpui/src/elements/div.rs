@@ -3037,7 +3037,7 @@ impl Interactivity {
                         move |event: &KeyDownEvent, phase, window, _cx| {
                             if phase.bubble() && !window.default_prevented() {
                                 let stroke = &event.keystroke;
-                                let is_activation_key = (stroke.key.eq("enter")
+                                let is_activation_key = (crate::fast::keypad::is_enter(stroke)
                                     || stroke.key.eq("space"))
                                     && !stroke.modifiers.modified();
                                 *pending_keyboard_down.borrow_mut() =
@@ -3053,7 +3053,7 @@ impl Interactivity {
                         move |event: &KeyUpEvent, phase, window, cx| {
                             if phase.bubble() && !window.default_prevented() {
                                 let stroke = &event.keystroke;
-                                let keyboard_button = if stroke.key.eq("enter") {
+                                let keyboard_button = if crate::fast::keypad::is_enter(stroke) {
                                     Some(KeyboardButton::Enter)
                                 } else if stroke.key.eq("space") {
                                     Some(KeyboardButton::Space)

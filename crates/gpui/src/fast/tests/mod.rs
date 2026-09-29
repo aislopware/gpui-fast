@@ -2,6 +2,7 @@
 
 mod dependencies;
 mod global_id;
+mod keypad;
 mod layout;
 mod line_breaks;
 mod oracle;

@@ -13,6 +13,9 @@ use gpui::{KeyDownEvent, Keystroke, Modifiers, PlatformInput};
 ///
 /// UIKeyboardHIDUsage values are based on the USB HID specification.
 pub fn key_code_to_string(code: u32) -> String {
+    if let Some(name) = crate::hardware_keyboard::keypad_key(code) {
+        return name.to_string();
+    }
     match code {
         // Letters (0x04-0x1D = a-z)
         0x04..=0x1D => {
@@ -103,7 +106,7 @@ pub fn key_code_to_key_down(key_code: u32, modifier_flags: u32) -> PlatformInput
     let key_char = if key.len() == 1 {
         Some(key.clone())
     } else {
-        None
+        crate::hardware_keyboard::keypad_text(key_code).map(str::to_string)
     };
 
     let keystroke = Keystroke {
@@ -126,7 +129,7 @@ pub fn key_code_to_key_up(key_code: u32, modifier_flags: u32) -> PlatformInput {
     let key_char = if key.len() == 1 {
         Some(key.clone())
     } else {
-        None
+        crate::hardware_keyboard::keypad_text(key_code).map(str::to_string)
     };
 
     let keystroke = Keystroke {

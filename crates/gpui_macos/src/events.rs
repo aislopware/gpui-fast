@@ -82,7 +82,7 @@ pub fn key_to_native(key: &str) -> Cow<'_, str> {
     Cow::Owned(String::from_utf16(&[code]).unwrap())
 }
 
-unsafe fn read_modifiers(native_event: id) -> Modifiers {
+pub(crate) unsafe fn read_modifiers(native_event: id) -> Modifiers {
     unsafe {
         let modifiers = native_event.modifierFlags();
         let control = modifiers.contains(NSEventModifierFlags::NSControlKeyMask);
@@ -344,6 +344,9 @@ pub(crate) unsafe fn platform_input_from_native(
 unsafe fn parse_keystroke(native_event: id) -> Keystroke {
     unsafe {
         use cocoa::appkit::*;
+        if let Some(keystroke) = crate::fast::keypad::keystroke(native_event) {
+            return keystroke;
+        }
 
         let characters = native_event
             .charactersIgnoringModifiers()
@@ -510,12 +513,12 @@ fn always_use_command_layout() -> bool {
     chars_for_modified_key(0, CMD_MOD).is_ascii()
 }
 
-const NO_MOD: u32 = 0;
+pub(crate) const NO_MOD: u32 = 0;
 const CMD_MOD: u32 = 1;
-const SHIFT_MOD: u32 = 2;
+pub(crate) const SHIFT_MOD: u32 = 2;
 const OPTION_MOD: u32 = 8;
 
-fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
+pub(crate) fn chars_for_modified_key(code: CGKeyCode, modifiers: u32) -> String {
     // Values from: https://github.com/phracker/MacOSX-SDKs/blob/master/MacOSX10.6.sdk/System/Library/Frameworks/Carbon.framework/Versions/A/Frameworks/HIToolbox.framework/Versions/A/Headers/Events.h#L126
     // shifted >> 8 for UCKeyTranslate
     const CG_SPACE_KEY: u16 = 49;

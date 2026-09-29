@@ -110,6 +110,7 @@ impl Keystroke {
         }
 
         target.inner.modifiers == self.modifiers && target.inner.key == self.key
+            || crate::fast::keypad::matches_main_key(self, target)
     }
 
     /// key syntax is:
@@ -249,6 +250,9 @@ impl Keystroke {
                 "space" => Some(" ".into()),
                 "tab" => Some("\t".into()),
                 "enter" => Some("\n".into()),
+                key if crate::fast::keypad::main_key(key).is_some() => {
+                    crate::fast::keypad::simulated_char(key)
+                }
                 key if !is_printable_key(key) || key.is_empty() => None,
                 key => {
                     if self.modifiers.shift {

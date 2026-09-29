@@ -196,6 +196,17 @@ const fn us_pair(usage: u32) -> Option<(char, char)> {
         0x36 => (',', '<'),
         0x37 => ('.', '>'),
         0x38 => ('/', '?'),
+        0x54 => ('/', '/'),
+        0x55 => ('*', '*'),
+        0x56 => ('-', '-'),
+        0x57 => ('+', '+'),
+        0x59..=0x61 => {
+            let digit = (b'1' + (usage - 0x59) as u8) as char;
+            (digit, digit)
+        }
+        0x62 => ('0', '0'),
+        0x63 => ('.', '.'),
+        0x67 => ('=', '='),
         _ => return None,
     })
 }
@@ -371,6 +382,21 @@ mod tests {
         assert!(
             keystroke(&us_key(0xE3, COMMAND)).is_none(),
             "a modifier key itself"
+        );
+        let kp7 = keystroke(&us_key(0x5F, 0)).unwrap();
+        assert_eq!(
+            (kp7.key.as_str(), kp7.key_char.as_deref()),
+            ("kp7", Some("7"))
+        );
+        let cmd_kp_add = keystroke(&us_key(0x57, COMMAND)).unwrap();
+        assert_eq!(
+            (cmd_kp_add.key.as_str(), cmd_kp_add.key_char),
+            ("kpadd", None)
+        );
+        let kp_enter = keystroke(&us_key(0x58, 0)).unwrap();
+        assert_eq!(
+            (kp_enter.key.as_str(), kp_enter.key_char.as_deref()),
+            ("kpenter", Some("\n"))
         );
     }
 }

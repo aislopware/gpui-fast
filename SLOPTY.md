@@ -176,6 +176,36 @@ brings it: take zed's version of the files, remove the pull request's line from
   resumes where that line's alignment starts it, not at the box's left edge. The
   last line's end is found the same way. Applied as is to `line.rs` with its test
   `test_wrapped_decorations_follow_text_align`.
+- zed #63402 (@tournierjc, head `5597b58097`), "numpad digit identity": keypad digits are
+  `kp0` to `kp9` rather than `0` to `9`. Its Linux and Windows hunks are applied as is,
+  but not compiled here, since this Mac has no Linux or Windows toolchain. Its macOS
+  hunk is widened. Ours, kept when the import brings the pull request:
+  - macOS (`gpui_macos/src/fast/keypad.rs`, by `kVK_ANSI_Keypad*` code) and iOS
+    (`gpui_ios/src/hardware_keyboard.rs`, by HID usage) name the whole keypad:
+    `kp0` to `kp9`, `kpadd`, `kpsubtract`, `kpmultiply`, `kpdivide`, `kpdecimal`,
+    `kpequal` and `kpenter`, the XKB `KP_*` names without the underscore.
+    - The clear key keeps its old name.
+    - Enter carries `\n`, as the main enter does. The other keys carry what they type
+      unless ctrl, cmd, fn or alt is held; Shift stays on the keystroke.
+    - On iOS, keypad digits and operators are still typed by the text system while
+      editing, and keypad enter is dispatched as enter is.
+    - iOS's older `key_code_to_string` FFI path names them too.
+  - `gpui/src/fast/keypad.rs` keeps every existing binding working.
+    - `Keystroke::should_match` lets a keypad key match a binding for its main twin
+      with the same modifiers, as it did when the two shared a name: `kp5` matches
+      `5`, `cmd-kpadd` matches `cmd-+`, and `kpenter` matches `enter`.
+    - A binding for the keypad key itself ranks by the keymap's usual order: deeper
+      context first, then the later-added binding.
+    - A focused element's enter activation also takes `kpenter`.
+    - A simulated `kpN` types its digit.
+  - Tests: `fast::tests::keypad` (gpui), `fast::keypad` (gpui_macos, through real
+    `NSEvent`s) and `hardware_keyboard`/`described` (gpui_ios, on the host). The macOS
+    cases share one test, because the Text Input Sources calls that spell a key abort
+    when two test threads make them at once.
+  - Consumers that compare `key == "enter"` or map key names themselves have to learn
+    the `kp*` names. In GPUI Kit that is the questionnaire's keyboard handling. In
+    Slopty it is `slopty-ui`'s `keys::key_code`, where `kp*` is `Unidentified` until
+    it maps them to the numpad codes.
 
 Added in this fork:
 
