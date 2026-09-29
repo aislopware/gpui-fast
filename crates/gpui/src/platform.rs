@@ -1572,8 +1572,7 @@ impl AtlasBackend for HeadlessAtlasBackend {
         size: Size<DevicePixels>,
         _bytes: &[u8],
     ) -> Result<AtlasTile> {
-        self.next_id += 1;
-        let texture_id = self.next_id;
+        let texture_id = crate::fast::headless_atlas::texture(kind);
         self.next_id += 1;
         let tile_id = self.next_id;
         Ok(AtlasTile {

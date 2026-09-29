@@ -20,6 +20,7 @@ pub(crate) mod dispatch;
 pub(crate) mod element;
 pub(crate) mod global_id;
 pub(crate) mod glyphs;
+pub(crate) mod headless_atlas;
 pub(crate) mod interactivity;
 pub(crate) mod keypad;
 pub(crate) mod layout;
