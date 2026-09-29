@@ -38,7 +38,7 @@
 //! have the dock and the selection layer write their state only when it
 //! changes, which retained views need to draw them from last frame.
 
-use std::{cell::Cell, ops::Range};
+use std::{cell::Cell, ops::Range, rc::Rc};
 
 use gpui::{
     AnyView, App, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
@@ -56,6 +56,7 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             kind: Kind::Quotes,
             quiet: false,
             uncached: false,
+            row_views: false,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-hover",
@@ -63,6 +64,7 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             kind: Kind::Hover,
             quiet: false,
             uncached: false,
+            row_views: false,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-scroll",
@@ -70,6 +72,7 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             kind: Kind::Scroll,
             quiet: false,
             uncached: false,
+            row_views: false,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-quiet-quotes",
@@ -77,6 +80,7 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             kind: Kind::Quotes,
             quiet: true,
             uncached: false,
+            row_views: false,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-quiet-hover",
@@ -84,6 +88,7 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             kind: Kind::Hover,
             quiet: true,
             uncached: false,
+            row_views: false,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-uncached-hover",
@@ -91,6 +96,7 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             kind: Kind::Hover,
             quiet: true,
             uncached: true,
+            row_views: false,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-uncached-scroll",
@@ -98,6 +104,31 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             kind: Kind::Scroll,
             quiet: true,
             uncached: true,
+            row_views: false,
+        }),
+        Box::new(WorkspaceScenario {
+            name: "workspace-rowviews-quotes",
+            description: "workspace-quiet-quotes, with every watchlist row a view of its own that holds its quote and is notified alone when it ticks.",
+            kind: Kind::Quotes,
+            quiet: true,
+            uncached: false,
+            row_views: true,
+        }),
+        Box::new(WorkspaceScenario {
+            name: "workspace-rowviews-hover",
+            description: "workspace-quiet-hover, with every watchlist row a view of its own that holds its quote and is notified alone when it ticks.",
+            kind: Kind::Hover,
+            quiet: true,
+            uncached: false,
+            row_views: true,
+        }),
+        Box::new(WorkspaceScenario {
+            name: "workspace-rowviews-scroll",
+            description: "workspace-quiet-scroll, with every watchlist row a view of its own that holds its quote and is notified alone when it ticks.",
+            kind: Kind::Scroll,
+            quiet: true,
+            uncached: false,
+            row_views: true,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-quiet-scroll",
@@ -105,6 +136,7 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             kind: Kind::Scroll,
             quiet: true,
             uncached: false,
+            row_views: false,
         }),
     ]
 }
@@ -145,6 +177,10 @@ struct WorkspaceScenario {
     /// Whether the tab groups draw their active panel as a plain view rather
     /// than a cached one, as GPUI Kit's tab panel does.
     uncached: bool,
+    /// Whether every watchlist row is a view of its own, holding its quote
+    /// and notified alone when it ticks, rather than rows the watchlist
+    /// renders from the quote store.
+    row_views: bool,
 }
 
 impl crate::Scenario for WorkspaceScenario {
@@ -159,7 +195,8 @@ impl crate::Scenario for WorkspaceScenario {
     fn build(&self, window: &mut Window, cx: &mut App) -> AnyView {
         let quiet = self.quiet;
         let uncached = self.uncached;
-        let root = cx.new(|cx| Workspace::new(window, quiet, uncached, cx));
+        let row_views = self.row_views;
+        let root = cx.new(|cx| Workspace::new(window, quiet, uncached, row_views, cx));
         let focus = root.read(cx).search.read(cx).focus.clone();
         window.focus(&focus, cx);
         root.into()
@@ -167,12 +204,13 @@ impl crate::Scenario for WorkspaceScenario {
 
     fn step(&self, root: &AnyView, frame: usize, window: &mut Window, cx: &mut App) {
         let workspace: Entity<Workspace> = root.clone().downcast().unwrap();
-        let (store, feed, status) = {
+        let (store, feed, status, rows) = {
             let workspace = workspace.read(cx);
             (
                 workspace.store.clone(),
                 workspace.feed.clone(),
                 workspace.status.clone(),
+                workspace.rows.clone(),
             )
         };
         let quotes = match self.kind {
@@ -186,6 +224,13 @@ impl crate::Scenario for WorkspaceScenario {
                 cx.notify();
                 event
             });
+            if let Some(rows) = &rows {
+                let row = store.read(cx).row(symbol);
+                rows[symbol].update(cx, |view, cx| {
+                    view.row = row;
+                    cx.notify();
+                });
+            }
             feed.update(cx, |_, cx| cx.emit(event));
         }
         if frame.is_multiple_of(30) {
@@ -374,6 +419,17 @@ impl QuoteStore {
         }
     }
 
+    /// A store of symbol `ix` alone, for a watchlist row that holds its own.
+    fn row(&self, ix: usize) -> QuoteStore {
+        QuoteStore {
+            quotes: vec![self.quotes[ix]],
+            names: vec![self.names[ix].clone()],
+            codes: vec![self.codes[ix].clone()],
+            markets: vec![self.markets[ix]],
+            sparks: vec![self.sparks[ix].clone()],
+        }
+    }
+
     fn tick(&mut self, symbol: usize, frame: usize) -> QuoteEvent {
         let quote = &mut self.quotes[symbol];
         let step = ((frame * 31 + symbol * 17) % 21) as f64 - 10.;
@@ -511,10 +567,19 @@ struct Workspace {
     _hidden: Vec<Entity<HiddenPanel>>,
     /// See [`WorkspaceScenario::quiet`].
     quiet: bool,
+    /// The watchlist's rows, when each is a view. See
+    /// [`WorkspaceScenario::row_views`].
+    rows: Option<Rc<Vec<Entity<RowView>>>>,
 }
 
 impl Workspace {
-    fn new(window: &mut Window, quiet: bool, uncached: bool, cx: &mut Context<Self>) -> Self {
+    fn new(
+        window: &mut Window,
+        quiet: bool,
+        uncached: bool,
+        row_views: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let store = cx.new(|_| QuoteStore::new());
         let feed = cx.new(|_| MarketFeed);
         let search = cx.new(|cx| SearchBox {
@@ -522,7 +587,19 @@ impl Workspace {
             text: String::new(),
         });
 
-        let watchlist: AnyView = cx.new(|cx| Watchlist::new(store.clone(), &feed, cx)).into();
+        let rows = row_views.then(|| {
+            Rc::new(
+                (0..SYMBOLS)
+                    .map(|ix| {
+                        let row = store.read(cx).row(ix);
+                        cx.new(|_| RowView { ix, row })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        });
+        let watchlist: AnyView = cx
+            .new(|cx| Watchlist::new(store.clone(), rows.clone(), &feed, cx))
+            .into();
         let detail: AnyView = cx
             .new(|cx| QuoteDetail::new(store.clone(), &feed, cx))
             .into();
@@ -582,6 +659,7 @@ impl Workspace {
                     })
                 })
                 .collect(),
+            rows,
             store,
             feed,
             search,
@@ -1051,20 +1129,35 @@ impl Render for TabGroup {
 /// rows.
 struct Watchlist {
     store: Entity<QuoteStore>,
+    /// Its rows, when each is a view, which it then doesn't render again for
+    /// a quote. See [`WorkspaceScenario::row_views`].
+    rows: Option<Rc<Vec<Entity<RowView>>>>,
     scroll: UniformListScrollHandle,
-    _subscriptions: [Subscription; 2],
+    _subscriptions: Vec<Subscription>,
 }
 
 impl Watchlist {
-    fn new(store: Entity<QuoteStore>, feed: &Entity<MarketFeed>, cx: &mut Context<Self>) -> Self {
+    fn new(
+        store: Entity<QuoteStore>,
+        rows: Option<Rc<Vec<Entity<RowView>>>>,
+        feed: &Entity<MarketFeed>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let observe = rows
+            .is_none()
+            .then(|| cx.observe(&store, |_, _, cx| cx.notify()));
         Self {
+            rows,
             _subscriptions: [
-                cx.observe(&store, |_, _, cx| cx.notify()),
+                observe,
                 // Its alerts check every quote; nothing to show for most.
-                cx.subscribe(feed, |_, _, event: &QuoteEvent, _| {
+                Some(cx.subscribe(feed, |_, _, event: &QuoteEvent, _| {
                     let _ = event.volume;
-                }),
-            ],
+                })),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             store,
             scroll: UniformListScrollHandle::new(),
         }
@@ -1141,6 +1234,7 @@ fn sort_arrows(sorted: Option<bool>) -> impl IntoElement {
 impl Render for Watchlist {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let store = self.store.clone();
+        let rows = self.rows.clone();
         div()
             .size_full()
             .flex()
@@ -1211,9 +1305,14 @@ impl Render for Watchlist {
                     "watchlist-rows",
                     SYMBOLS,
                     cx.processor(move |_, range: Range<usize>, _, cx| {
+                        if let Some(rows) = &rows {
+                            return range
+                                .map(|ix| rows[ix].clone().into_any_element())
+                                .collect();
+                        }
                         let store = store.read(cx);
                         range
-                            .map(|ix| watchlist_row(ix, store).into_any_element())
+                            .map(|ix| watchlist_row(ix, store, ix).into_any_element())
                             .collect()
                     }),
                 )
@@ -1223,8 +1322,22 @@ impl Render for Watchlist {
     }
 }
 
-fn watchlist_row(ix: usize, store: &QuoteStore) -> impl IntoElement {
-    let quote = store.quotes[ix];
+/// A watchlist row as a view of its own, holding its symbol's quote. See
+/// [`WorkspaceScenario::row_views`].
+struct RowView {
+    ix: usize,
+    row: QuoteStore,
+}
+
+impl Render for RowView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        watchlist_row(self.ix, &self.row, 0)
+    }
+}
+
+/// Row `ix` of the watchlist, showing the symbol at `slot` in `store`.
+fn watchlist_row(ix: usize, store: &QuoteStore, slot: usize) -> impl IntoElement {
+    let quote = store.quotes[slot];
     let change = quote.last - quote.prev_close;
     let color = up_color(change);
     let pre_change = quote.pre_market - quote.prev_close;
@@ -1249,7 +1362,7 @@ fn watchlist_row(ix: usize, store: &QuoteStore) -> impl IntoElement {
             Some(pre_color),
         ),
     ];
-    let market = store.markets[ix];
+    let market = store.markets[slot];
     let icons = [INFO, WARNING, SERIES[1], SERIES[2]];
     let badges = [
         (ix.is_multiple_of(4), "H", INFO),
@@ -1282,7 +1395,7 @@ fn watchlist_row(ix: usize, store: &QuoteStore) -> impl IntoElement {
                 .child(
                     div()
                         .font_weight(FontWeight::MEDIUM)
-                        .child(store.codes[ix].clone()),
+                        .child(store.codes[slot].clone()),
                 ),
         )
         .child(
@@ -1301,7 +1414,7 @@ fn watchlist_row(ix: usize, store: &QuoteStore) -> impl IntoElement {
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()
-                        .child(store.names[ix].clone()),
+                        .child(store.names[slot].clone()),
                 )
                 .children(badges.into_iter().filter(|(shown, _, _)| *shown).map(
                     |(_, letter, color)| {
@@ -1354,7 +1467,7 @@ fn watchlist_row(ix: usize, store: &QuoteStore) -> impl IntoElement {
             ),
         )
         .child(watchlist_cell(14).child(sparkline(
-            store.sparks[ix].clone(),
+            store.sparks[slot].clone(),
             quote.prev_close as f32,
             color,
         )))
