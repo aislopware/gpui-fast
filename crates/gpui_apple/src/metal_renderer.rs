@@ -4,7 +4,8 @@ use block2::RcBlock;
 use core_graphics::geometry::CGSize;
 use gpui::{
     AtlasTextureId, Background, Bounds, ContentMask, DevicePixels, PaintSurface, Path, Point,
-    PresentedFrame, PresentedFrameSink, PrimitiveBatch, ScaledPixels, Scene, Size, point, size,
+    PresentedFrame, PresentedFrameSink, PrimitiveBatch, ScaledPixels, Scene, Size,
+    composition::ComposedBatch, point, size,
 };
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
 use image::RgbaImage;
@@ -141,6 +142,26 @@ impl InstanceBufferPool {
     }
 }
 
+/// How the drawing pipelines blend alpha: "over", so the drawable's alpha is the coverage of
+/// what was drawn, and a native under a hole shows through exactly as much as GPUI left
+/// uncovered. An opaque drawable's alpha stays 1 either way.
+fn destination_alpha_blend_factor() -> metal::MTLBlendFactor {
+    #[cfg(test)]
+    if composition_tests::LEGACY_ALPHA_BLEND.get() {
+        return metal::MTLBlendFactor::One;
+    }
+    metal::MTLBlendFactor::OneMinusSourceAlpha
+}
+
+/// The pixel format of the drawables the renderer draws into.
+fn drawable_pixel_format() -> MTLPixelFormat {
+    #[cfg(test)]
+    if let Some(format) = composition_tests::DRAWABLE_PIXEL_FORMAT.get() {
+        return format;
+    }
+    MTLPixelFormat::BGRA8Unorm
+}
+
 /// Until the platform names the display's refresh, assume the fastest Apple panel's.
 const DEFAULT_REFRESH: Duration = Duration::from_micros(8_333);
 
@@ -168,6 +189,8 @@ pub struct MetalRenderer {
     path_sprites_pipeline_state: metal::RenderPipelineState,
     shadows_pipeline_state: metal::RenderPipelineState,
     quads_pipeline_state: metal::RenderPipelineState,
+    /// Draws the holes natives cut: quads that clear what is under them.
+    holes_pipeline_state: metal::RenderPipelineState,
     underlines_pipeline_state: metal::RenderPipelineState,
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     polychrome_sprites_pipeline_state: metal::RenderPipelineState,
@@ -211,7 +234,8 @@ fn observe_presentation(
         let drawable = unsafe { metal::DrawableRef::from_ptr(drawable.as_ptr().cast()) };
         let frame = PresentedFrame {
             submitted_at,
-            presented_at: host_time_to_instant(drawable.presented_time()),
+            presented_at: host_time_to_instant(drawable.presented_time())
+                .or_else(|| presented_at_callback().then(Instant::now)),
         };
         presentations.lock().push(frame);
         if let Some(sink) = &sink {
@@ -223,6 +247,17 @@ fn observe_presentation(
     unsafe {
         drawable.add_presented_handler(&*RcBlock::as_ptr(&handler).cast());
     }
+}
+
+/// Whether a drawable shown without a presentation time counts as shown when its presented
+/// handler runs (`GPUI_PRESENTED_AT_CALLBACK=1`). A display that never reports scan-out, such
+/// as a virtual display a remote-desktop host drives, gives every drawable a `presentedTime` of
+/// zero; measurements there can only take the callback as the glass. Not for production: a
+/// dropped drawable's handler runs too.
+fn presented_at_callback() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED
+        .get_or_init(|| std::env::var("GPUI_PRESENTED_AT_CALLBACK").is_ok_and(|value| value == "1"))
 }
 
 /// Converts a Core Animation host time (`CACurrentMediaTime` seconds, as `presentedTime`
@@ -382,13 +417,14 @@ impl MetalRenderer {
             MTLPixelFormat::BGRA8Unorm,
             PATH_SAMPLE_COUNT,
         );
+        let target_format = drawable_pixel_format();
         let path_sprites_pipeline_state = build_path_sprite_pipeline_state(
             &device,
             &library,
             "path_sprites",
             "path_sprite_vertex",
             "path_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            target_format,
         );
         let shadows_pipeline_state = build_pipeline_state(
             &device,
@@ -396,7 +432,7 @@ impl MetalRenderer {
             "shadows",
             "shadow_vertex",
             "shadow_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            target_format,
         );
         let quads_pipeline_state = build_pipeline_state(
             &device,
@@ -404,15 +440,16 @@ impl MetalRenderer {
             "quads",
             "quad_vertex",
             "quad_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            target_format,
         );
+        let holes_pipeline_state = build_hole_pipeline_state(&device, &library, target_format);
         let underlines_pipeline_state = build_pipeline_state(
             &device,
             &library,
             "underlines",
             "underline_vertex",
             "underline_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            target_format,
         );
         let monochrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -420,7 +457,7 @@ impl MetalRenderer {
             "monochrome_sprites",
             "monochrome_sprite_vertex",
             "monochrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            target_format,
         );
         let polychrome_sprites_pipeline_state = build_pipeline_state(
             &device,
@@ -428,7 +465,7 @@ impl MetalRenderer {
             "polychrome_sprites",
             "polychrome_sprite_vertex",
             "polychrome_sprite_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            target_format,
         );
         #[cfg(any(target_os = "macos", target_os = "ios"))]
         let surfaces_pipeline_state = build_pipeline_state(
@@ -437,7 +474,7 @@ impl MetalRenderer {
             "surfaces",
             "surface_vertex",
             "surface_fragment",
-            MTLPixelFormat::BGRA8Unorm,
+            target_format,
         );
 
         let command_queue = device.new_command_queue();
@@ -463,6 +500,7 @@ impl MetalRenderer {
             path_sprites_pipeline_state,
             shadows_pipeline_state,
             quads_pipeline_state,
+            holes_pipeline_state,
             underlines_pipeline_state,
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
@@ -498,6 +536,10 @@ impl MetalRenderer {
 
     pub fn sprite_atlas(&self) -> &Arc<MetalAtlas> {
         &self.sprite_atlas
+    }
+
+    pub fn presents_with_transaction(&self) -> bool {
+        self.presents_with_transaction
     }
 
     pub fn set_presents_with_transaction(&mut self, presents_with_transaction: bool) {
@@ -849,7 +891,14 @@ impl MetalRenderer {
             Some(metal::MTLClearColor::new(0., 0., 0., alpha)),
         );
 
-        for batch in scene.batches() {
+        for batch in scene.composed_batches() {
+            let batch = match batch {
+                ComposedBatch::Primitives(batch) => batch,
+                ComposedBatch::Holes(range) => {
+                    self.draw_holes(range, instance_bindings, viewport_size, command_encoder);
+                    continue;
+                }
+            };
             match batch {
                 PrimitiveBatch::Shadows(range) => {
                     self.draw_shadows(range, instance_bindings, viewport_size, command_encoder)
@@ -1073,6 +1122,48 @@ impl MetalRenderer {
             6,
             quads.len() as u64,
             quads.start as u64,
+        );
+    }
+
+    /// Draws the holes `range` of the scene's natives: each clears GPUI's pixels under it
+    /// by its coverage times the native's opacity, so the native under GPUI's layer shows.
+    fn draw_holes(
+        &self,
+        holes: Range<usize>,
+        instance_bindings: &InstanceBindings,
+        viewport_size: Size<DevicePixels>,
+        command_encoder: &metal::RenderCommandEncoderRef,
+    ) {
+        if holes.is_empty() {
+            return;
+        }
+        command_encoder.set_render_pipeline_state(&self.holes_pipeline_state);
+        command_encoder.set_vertex_buffer(
+            QuadInputIndex::Vertices as u64,
+            Some(&self.unit_vertices),
+            0,
+        );
+        command_encoder.set_vertex_buffer(
+            QuadInputIndex::Quads as u64,
+            Some(&instance_bindings.holes.buffer),
+            instance_bindings.holes.offset as u64,
+        );
+        command_encoder.set_fragment_buffer(
+            QuadInputIndex::Quads as u64,
+            Some(&instance_bindings.holes.buffer),
+            instance_bindings.holes.offset as u64,
+        );
+        command_encoder.set_vertex_bytes(
+            QuadInputIndex::ViewportSize as u64,
+            mem::size_of_val(&viewport_size) as u64,
+            &viewport_size as *const Size<DevicePixels> as *const _,
+        );
+        command_encoder.draw_primitives_instanced_base_instance(
+            metal::MTLPrimitiveType::Triangle,
+            0,
+            6,
+            holes.len() as u64,
+            holes.start as u64,
         );
     }
 
@@ -1541,6 +1632,10 @@ fn ycbcr_to_rgb(matrix: YCbCrMatrix, layout: SurfaceLayout) -> [[f32; 4]; 4] {
 }
 
 #[cfg(test)]
+#[path = "fast/composition_tests.rs"]
+mod composition_tests;
+
+#[cfg(test)]
 mod ycbcr_tests {
     use super::{MetalRenderer, SampleDepth, SurfaceLayout, YCbCrMatrix, ycbcr_to_rgb};
     use core_foundation::{base::TCFType, dictionary::CFDictionary, string::CFString};
@@ -1884,7 +1979,40 @@ fn build_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::SourceAlpha);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    color_attachment.set_destination_alpha_blend_factor(destination_alpha_blend_factor());
+
+    device
+        .new_render_pipeline_state(&descriptor)
+        .expect("could not create render pipeline state")
+}
+
+/// The quad shader drawing into `destination × (1 − source alpha)`, in colour and alpha:
+/// a hole whose source alpha is its coverage times the native's opacity.
+fn build_hole_pipeline_state(
+    device: &metal::DeviceRef,
+    library: &metal::LibraryRef,
+    pixel_format: MTLPixelFormat,
+) -> metal::RenderPipelineState {
+    let vertex_fn = library
+        .get_function("quad_vertex", None)
+        .expect("error locating vertex function");
+    let fragment_fn = library
+        .get_function("quad_fragment", None)
+        .expect("error locating fragment function");
+
+    let descriptor = metal::RenderPipelineDescriptor::new();
+    descriptor.set_label("holes");
+    descriptor.set_vertex_function(Some(vertex_fn.as_ref()));
+    descriptor.set_fragment_function(Some(fragment_fn.as_ref()));
+    let color_attachment = descriptor.color_attachments().object_at(0).unwrap();
+    color_attachment.set_pixel_format(pixel_format);
+    color_attachment.set_blending_enabled(true);
+    color_attachment.set_rgb_blend_operation(metal::MTLBlendOperation::Add);
+    color_attachment.set_alpha_blend_operation(metal::MTLBlendOperation::Add);
+    color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::Zero);
+    color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::Zero);
+    color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     device
         .new_render_pipeline_state(&descriptor)
@@ -1918,7 +2046,7 @@ fn build_path_sprite_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::One);
+    color_attachment.set_destination_alpha_blend_factor(destination_alpha_blend_factor());
 
     device
         .new_render_pipeline_state(&descriptor)
@@ -1972,6 +2100,7 @@ struct InstanceBinding {
 
 struct InstanceBindings {
     quads: InstanceBinding,
+    holes: InstanceBinding,
     shadows: InstanceBinding,
     underlines: InstanceBinding,
     monochrome_sprites: InstanceBinding,
@@ -1983,6 +2112,7 @@ struct InstanceBindings {
 fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<InstanceBindings> {
     Ok(InstanceBindings {
         quads: writer.write(&scene.quads)?,
+        holes: writer.write(&scene.natives().holes)?,
         shadows: writer.write(&scene.shadows)?,
         underlines: writer.write(&scene.underlines)?,
         monochrome_sprites: writer.write(&scene.monochrome_sprites)?,
