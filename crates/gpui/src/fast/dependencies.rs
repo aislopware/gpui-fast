@@ -59,7 +59,7 @@ pub(crate) fn note_global_removed<G: 'static>(cx: &mut App) {
 
 /// Stamps a change to the global of type `global_type`, as its observers are
 /// about to be notified.
-#[inline]
+#[inline(always)]
 pub(crate) fn global_changed(cx: &mut App, global_type: TypeId) {
     cx.dependencies.global_changed(global_type);
 }
@@ -121,7 +121,7 @@ impl AmbientReads {
 
 /// Notes, for any recording that is open, that `window`'s pointer position
 /// was read.
-#[inline]
+#[inline(always)]
 pub(crate) fn read_pointer(window: &crate::Window) {
     window
         .retained_state
@@ -131,7 +131,7 @@ pub(crate) fn read_pointer(window: &crate::Window) {
 
 /// Notes, for any recording that is open, that `window`'s modifier keys or
 /// caps lock were read.
-#[inline]
+#[inline(always)]
 pub(crate) fn read_keys(window: &crate::Window) {
     window.retained_state.ambient_reads.note::<ambient::Keys>();
 }
@@ -336,7 +336,7 @@ impl App {
 
 /// Records, for any recording that is open, that the state `version`
 /// belongs to was read as it is now.
-#[inline]
+#[inline(always)]
 pub(crate) fn note_state_read(cx: &App, version: &StateVersion) {
     if cx.entities.is_recording() {
         cx.dependencies
@@ -348,7 +348,7 @@ pub(crate) fn note_state_read(cx: &App, version: &StateVersion) {
 
 /// Records, for any recording that is open, that the global of type
 /// `global` was read.
-#[inline]
+#[inline(always)]
 pub(crate) fn note_global_read(cx: &App, global: TypeId) {
     if cx.entities.is_recording() {
         cx.dependencies.global_read_log.borrow_mut().push(global);
@@ -498,7 +498,7 @@ impl EntityMap {
 
 /// Records, for any recording that is open, that `entity_id` was
 /// accessed.
-#[inline]
+#[inline(always)]
 pub(crate) fn note_access(entities: &EntityMap, entity_id: EntityId) {
     if entities.access_log.recordings.get() > 0 {
         let mut log = entities.access_log.access_log.borrow_mut();
@@ -517,7 +517,7 @@ pub(crate) fn note_access(entities: &EntityMap, entity_id: EntityId) {
 /// entity is asked something ([`Entity::query`]): nothing else tells
 /// whether it changed what the entity holds. One alone, outside drawing,
 /// changes nothing a view could have read.
-#[inline]
+#[inline(always)]
 pub(crate) fn note_notify(entities: &mut EntityMap, entity_id: EntityId) {
     let log = &mut entities.access_log;
     if log.updated_unnotified.remove(&entity_id)
@@ -571,7 +571,7 @@ pub(crate) fn note_update(entities: &mut EntityMap, entity_id: EntityId) {
 
 /// Marks the next lease of `entity_id` as the framework rendering it, not
 /// a write to it. See [`note_update`].
-#[inline]
+#[inline(always)]
 pub(crate) fn render_next(entities: &mut EntityMap, entity_id: EntityId) {
     entities.access_log.rendering = Some(entity_id);
 }
@@ -580,6 +580,7 @@ pub(crate) fn render_next(entities: &mut EntityMap, entity_id: EntityId) {
 /// whether it accepts text or where its selection is, every frame. Unlike
 /// [`Entity::update`], this does not count as changing what the entity holds,
 /// unless it notifies while it is asked.
+#[inline(always)]
 pub(crate) fn query<T: 'static, R>(
     entity: &Entity<T>,
     cx: &mut App,

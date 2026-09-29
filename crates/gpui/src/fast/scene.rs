@@ -109,6 +109,7 @@ impl Scene {
 /// Sprites of one order are grouped by the atlas texture they come from:
 /// a batch draws from one texture, and tile ids, which each texture
 /// numbers from zero, would interleave them.
+#[inline]
 pub(crate) fn sort_in_drawing_order(scene: &mut Scene) {
     let scratch = &mut scene.sort_scratch;
     macro_rules! sort {

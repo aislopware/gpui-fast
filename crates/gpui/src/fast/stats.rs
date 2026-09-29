@@ -167,6 +167,7 @@ impl TaffyLayoutEngine {
 }
 
 /// Starts counting the measurements of a layout computation.
+#[inline(always)]
 pub(crate) fn begin_measure_tally(engine: &TaffyLayoutEngine) -> MeasureTally {
     let timed = engine.retention.timed;
     MeasureTally {
@@ -178,6 +179,7 @@ pub(crate) fn begin_measure_tally(engine: &TaffyLayoutEngine) -> MeasureTally {
 }
 
 /// Folds what a layout computation measured into [`TaffyLayoutEngine::stats`].
+#[inline(always)]
 pub(crate) fn finish_measure_tally(engine: &mut TaffyLayoutEngine, tally: MeasureTally) {
     let stats = &mut engine.retention.stats;
     stats.compute_layout_calls += 1;

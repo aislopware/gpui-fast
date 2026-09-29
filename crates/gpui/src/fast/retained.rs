@@ -30,6 +30,7 @@ use std::{any::TypeId, cell::RefCell, mem, ops::Range, rc::Rc};
 
 /// Starts drawing a window's roots: its phase timing, and the views marked
 /// dirty for what they read. See [`Window::mark_changed_retained_views_dirty`].
+#[inline(always)]
 pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
     window.fast_layout.phase_times.begin();
     window.mark_changed_retained_views_dirty(cx);
@@ -39,12 +40,14 @@ pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
 /// retained subtrees what changed since they were drawn, so that nothing is
 /// drawn again from an earlier frame.
 #[cfg(any(test, feature = "test-support"))]
+#[inline(always)]
 pub(crate) fn draw_outside_frames(window: &mut Window) {
     window.refreshing = true;
 }
 
 /// The retained subtrees being prepainted right now, for something deferred
 /// from them to be counted as theirs.
+#[inline(always)]
 pub(crate) fn enclosing_retained(window: &Window) -> EnclosingRetained {
     window.next_frame.retained.open_records()
 }
@@ -994,6 +997,7 @@ impl Window {
 /// inserted, which upstream's [`Window::reuse_paint`] leaves out: a subtree
 /// drawn again from last frame would otherwise lose the window controls it
 /// painted.
+#[inline(always)]
 pub(crate) fn reuse_window_control_hitboxes(window: &mut Window, range: &Range<PaintIndex>) {
     window.next_frame.window_control_hitboxes.extend(
         window.rendered_frame.window_control_hitboxes[range.start.fast_window_control_hitboxes_index
@@ -1005,6 +1009,7 @@ pub(crate) fn reuse_window_control_hitboxes(window: &mut Window, range: &Range<P
 
 /// The retained subtrees around the element being painted, for a listener
 /// to mark if what it listens for changes the element's look.
+#[inline(always)]
 pub(crate) fn enclosing_retained_subtrees(window: &Window) -> SmallVec<[GlobalElementId; 2]> {
     window
         .retained_state
@@ -1020,7 +1025,7 @@ pub(crate) fn enclosing_retained_subtrees(window: &Window) -> SmallVec<[GlobalEl
 ///
 /// Returns the answer when it is noted, having worked it out to note it,
 /// and `None` when nothing is being drawn to note it for.
-#[inline]
+#[inline(always)]
 pub(crate) fn note_hover_read(window: &Window, hitbox: HitboxId) -> Option<bool> {
     if window.retained_state.subtree_stack.is_empty() {
         return None;
@@ -1039,6 +1044,7 @@ pub(crate) fn note_hover_read(window: &Window, hitbox: HitboxId) -> Option<bool>
 /// listener notifies the view it is in, which marks the views around it
 /// dirty, so they are drawn from last frame around it where they can be
 /// rather than built again.
+#[inline(always)]
 pub(crate) fn invalidate_retained_subtrees(window: &mut Window, subtrees: &[GlobalElementId]) {
     window
         .retained_state
@@ -1053,6 +1059,7 @@ pub(crate) fn invalidate_retained_subtrees(window: &mut Window, subtrees: &[Glob
 /// Opacity only affects what is painted, but a retained subtree inside is
 /// drawn again from what it painted only if it would be painted at the
 /// opacity it was, which prepaint decides.
+#[inline(always)]
 pub(crate) fn push_element_opacity(window: &mut Window, opacity: Option<f32>) -> f32 {
     window.invalidator.debug_assert_paint_or_prepaint();
     let previous_opacity = window.element_opacity;
@@ -1063,6 +1070,7 @@ pub(crate) fn push_element_opacity(window: &mut Window, opacity: Option<f32>) ->
 }
 
 /// Goes back to the opacity [`push_element_opacity`] returned.
+#[inline(always)]
 pub(crate) fn pop_element_opacity(window: &mut Window, previous_opacity: f32) {
     window.element_opacity = previous_opacity;
 }
@@ -1070,6 +1078,7 @@ pub(crate) fn pop_element_opacity(window: &mut Window, previous_opacity: f32) {
 /// Starts prepainting the deferred draw at `deferred_draw_ix` as a part of
 /// the retained subtrees it was deferred from, though it is drawn after
 /// them: what it listens for marks them, and what it reads is theirs.
+#[inline]
 pub(crate) fn begin_deferred_prepaint(
     window: &mut Window,
     deferred_draw_ix: usize,
@@ -1096,6 +1105,7 @@ pub(crate) fn begin_deferred_prepaint(
 /// Starts painting a deferred draw as a part of the retained subtrees it
 /// was deferred from, though it is painted after them: an interaction in
 /// it marks them, and what it reads and is hovered by is theirs.
+#[inline]
 pub(crate) fn begin_deferred_paint(
     window: &mut Window,
     enclosing: &EnclosingRetained,
@@ -1120,6 +1130,7 @@ pub(crate) fn begin_deferred_paint(
 
 /// Ends `recording`, adding what the deferred draw read, and the hovers it
 /// was painted by, to the retained subtrees it was deferred from.
+#[inline]
 pub(crate) fn finish_deferred(
     window: &mut Window,
     recording: Option<DeferredRetainedRecording>,
@@ -1150,6 +1161,7 @@ pub(crate) fn finish_deferred(
 
 /// Ends the retained bookkeeping of the frame being drawn, before it
 /// becomes the rendered frame.
+#[inline]
 pub(crate) fn finish_retained_frame(window: &mut Window) {
     window.retained_state.prebuilt.clear();
     window.retained_state.dirty_subtrees =
@@ -1541,6 +1553,7 @@ impl<V: View> ViewElement<V> {
 /// Lays the view out as [`crate::Element::request_layout`] does, drawing it
 /// again from last frame when it is retained and nothing it depends on
 /// changed.
+#[inline(always)]
 pub(crate) fn request_view_layout<V: View>(
     view: &mut ViewElement<V>,
     global_id: Option<&GlobalElementId>,
@@ -1553,6 +1566,7 @@ pub(crate) fn request_view_layout<V: View>(
 
 /// Prepaints the view as [`crate::Element::prepaint`] does, following up on how
 /// [`request_view_layout`] laid it out.
+#[inline(always)]
 pub(crate) fn prepaint_view<V: View>(
     view: &mut ViewElement<V>,
     global_id: Option<&GlobalElementId>,
@@ -1566,6 +1580,7 @@ pub(crate) fn prepaint_view<V: View>(
 }
 
 /// Paints the view as [`crate::Element::paint`] does.
+#[inline(always)]
 pub(crate) fn paint_view<V: View>(
     view: &mut ViewElement<V>,
     global_id: Option<&GlobalElementId>,

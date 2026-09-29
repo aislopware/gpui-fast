@@ -12,13 +12,14 @@ pub(crate) type PathHash = u64;
 
 /// The global id of the element id stack of `window`, handed out again from
 /// the [`GlobalIdCache`] when it was handed out this frame or the last.
-#[inline]
+#[inline(always)]
 pub(crate) fn current(window: &mut crate::Window) -> GlobalElementId {
     window.global_ids.get(&window.element_id_stack)
 }
 
 /// A new global id for `path`, not handed out again.
 #[cfg(any(feature = "inspector", debug_assertions))]
+#[inline(always)]
 pub(crate) fn from_path(path: &[ElementId]) -> GlobalElementId {
     GlobalElementId::new(Arc::from(path))
 }
@@ -114,6 +115,7 @@ impl crate::Window {
 /// element id stack, so it is only built while the inspector is open.
 /// Opening it refreshes the window.
 #[cfg(any(feature = "inspector", debug_assertions))]
+#[inline(always)]
 pub(crate) fn inspected(
     window: &crate::Window,
     element: &impl crate::Element,
@@ -126,6 +128,7 @@ pub(crate) fn inspected(
 /// Lets go of the inspector's bookkeeping once it has been closed, so a
 /// window without it open holds none.
 #[cfg(any(feature = "inspector", debug_assertions))]
+#[inline(always)]
 pub(crate) fn release_closed_inspector_ids(window: &mut crate::Window) {
     if window.inspector_enabled() {
         return;
@@ -140,6 +143,7 @@ pub(crate) fn release_closed_inspector_ids(window: &mut crate::Window) {
 /// names, if that is the element the inspector has selected, and does
 /// nothing otherwise. See [`crate::Window::with_inspector_state`].
 #[cfg(any(feature = "inspector", debug_assertions))]
+#[inline]
 pub(crate) fn with_active_inspector_state<T: 'static, R>(
     window: &mut crate::Window,
     inspector_id: Option<&crate::InspectorElementId>,

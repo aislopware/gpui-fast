@@ -45,6 +45,7 @@ pub(crate) struct RebuildHandle(Option<AnyView>);
 /// [`AnyView::cached`](crate::AnyView::cached) and
 /// [`Entity::cached`](crate::Entity::cached) draw it, kept as `any` so that it
 /// can be built again on its own.
+#[inline(always)]
 pub(crate) fn cached<V: View>(view: V, any: AnyView, style: StyleRefinement) -> ViewElement<V> {
     ViewElement::new(view).rebuildable(any).cached(style)
 }
@@ -52,6 +53,7 @@ pub(crate) fn cached<V: View>(view: V, any: AnyView, style: StyleRefinement) -> 
 /// `view` drawn as a view that can be built again on its own, kept as `any`,
 /// as [`Entity::into_element`](crate::IntoElement::into_element) and
 /// [`AnyView::into_element`](crate::IntoElement::into_element) draw it.
+#[inline(always)]
 pub(crate) fn rebuildable<V: View>(view: V, any: AnyView) -> ViewElement<V> {
     ViewElement::new(view).rebuildable(any)
 }
@@ -883,6 +885,7 @@ fn copy_record(
 }
 
 /// The entity of the view whose element has the id `id`.
+#[inline(always)]
 pub(crate) fn view_entity(id: &GlobalElementId) -> Option<EntityId> {
     match id.0.last()? {
         ElementId::View(entity) => Some(*entity),

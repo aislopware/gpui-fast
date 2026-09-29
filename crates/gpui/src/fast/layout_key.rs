@@ -175,6 +175,7 @@ impl Window {
 /// `None` while no element tree is being walked — layout requested from the
 /// prepaint phase, as uniform lists do when sizing their items, arrives
 /// here. Those nodes are not reused.
+#[inline(always)]
 pub(crate) fn layout_key(window: &Window) -> Option<u64> {
     window.fast_layout.key_stack.last().map(|frame| frame.key)
 }
@@ -191,6 +192,7 @@ pub(crate) fn layout_key(window: &Window) -> Option<u64> {
 /// Because the parent's key is always mixed in, a key encodes the whole
 /// ancestor path, and a node can never be matched to an element that has
 /// moved to a different parent.
+#[inline]
 pub(crate) fn push_layout_key(window: &mut Window, id: Option<&ElementId>) -> u64 {
     let layout = &mut window.fast_layout;
     let component = match id {
@@ -237,6 +239,7 @@ pub(crate) fn push_layout_key(window: &mut Window, id: Option<&ElementId>) -> u6
 /// renumber every item and rebuild every item's layout nodes. Keyed under
 /// the element that lays them out, an item carrying an [`ElementId`] keeps
 /// its nodes wherever it moves within its list.
+#[inline(always)]
 pub(crate) fn enter_prepaint_scope(window: &mut Window, layout_key: u64) -> (u64, u32) {
     let layout = &mut window.fast_layout;
     (
@@ -246,6 +249,7 @@ pub(crate) fn enter_prepaint_scope(window: &mut Window, layout_key: u64) -> (u64
 }
 
 /// Restores what [`enter_prepaint_scope`] replaced.
+#[inline(always)]
 pub(crate) fn exit_prepaint_scope(window: &mut Window, enclosing: (u64, u32)) {
     (
         window.fast_layout.prepaint_scope,
@@ -254,6 +258,7 @@ pub(crate) fn exit_prepaint_scope(window: &mut Window, enclosing: (u64, u32)) {
 }
 
 /// Ends the element most recently begun by [`push_layout_key`].
+#[inline(always)]
 pub(crate) fn pop_layout_key(window: &mut Window) {
     window.fast_layout.key_stack.pop();
 }
@@ -270,6 +275,7 @@ pub(crate) fn pop_layout_key(window: &mut Window) {
 /// is left as it was. An item with an id of its own keeps being matched by
 /// that, so one keyed by its data still keeps its nodes when items are
 /// inserted ahead of it.
+#[inline(always)]
 pub(crate) fn layout_as_list_item(
     element: &mut AnyElement,
     index: usize,

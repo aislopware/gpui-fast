@@ -122,6 +122,7 @@ impl TextMeasureInputs {
 /// one's decorations if only they changed, and the node is left clean,
 /// keeping what Taffy cached for it. The new closure is still installed, for
 /// when Taffy measures it again under other constraints.
+#[inline]
 pub(crate) fn layout_text(
     layout: &TextLayout,
     text: SharedString,
@@ -555,7 +556,7 @@ impl LineShaping {
 }
 
 /// Shapes a line `cache` does not have, counting it. See [`LineShaping`].
-#[inline]
+#[inline(always)]
 pub(crate) fn shape_line(
     cache: &LineLayoutCache,
     text: &str,
@@ -571,7 +572,7 @@ pub(crate) fn shape_line(
 /// decoration run, and highlighted ones a handful; reserving for the worst
 /// case, as upstream does, allocated two kilobytes on every measurement, which
 /// is much of what a short line costs.
-#[inline]
+#[inline(always)]
 pub(crate) fn decoration_runs() -> Vec<DecorationRun> {
     Vec::with_capacity(4)
 }

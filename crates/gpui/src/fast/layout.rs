@@ -527,6 +527,7 @@ impl TaffyLayoutEngine {
 /// Nodes that were claimed this frame stay, along with their Taffy layout
 /// caches, which is what lets the next frame skip recomputing the parts of
 /// the tree that did not change.
+#[inline]
 pub(crate) fn release_unclaimed_nodes(engine: &mut TaffyLayoutEngine) {
     let retention = &mut engine.retention;
     retention.stats.frames += 1;
@@ -565,6 +566,7 @@ pub(crate) fn release_unclaimed_nodes(engine: &mut TaffyLayoutEngine) {
 /// `key` identifies this element's position in the element tree across
 /// frames; `None` opts out of reuse, and the node is released at the end of
 /// the frame.
+#[inline]
 pub(crate) fn request_retained_layout(
     engine: &mut TaffyLayoutEngine,
     key: Option<u64>,
@@ -634,6 +636,7 @@ pub(crate) fn request_retained_layout(
 ///
 /// Nothing says what the measurement depends on, so a reused node is given
 /// the new closure and dirtied, and `measure` is guaranteed to run.
+#[inline]
 pub(crate) fn request_retained_measured_layout(
     engine: &mut TaffyLayoutEngine,
     key: Option<u64>,
@@ -709,6 +712,7 @@ pub(crate) fn request_retained_measured_layout(
 /// looks exactly like an explicit length. The requested style is therefore
 /// kept aside so the next frame compares like with like instead of
 /// rewriting, and dirtying, the root on every frame.
+#[inline]
 pub(crate) fn stretch_retained_auto_size_to_fill(
     engine: &mut TaffyLayoutEngine,
     id: LayoutId,
