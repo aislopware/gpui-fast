@@ -21,8 +21,10 @@ Two upstreams feed it:
   `2db56fa` (`zed: import bd747337`, zed `bd747337d7be`).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
-  longbridge commit merged is `f6e82b4` (#13, "keep carried lines in the line cache, and
-  measure text in fast/"), in `4c13f16`; before it `ac1c226` (#12), in `751acaf`.
+  longbridge commit merged is `49c1cfa` (#14, "allocate less per frame for carried text
+  measurements and retained records"), in `8a52ff0`; before it `f6e82b4` (#13, "keep
+  carried lines in the line cache, and measure text in fast/"), in `4c13f16`, and
+  `ac1c226` (#12), in `751acaf`.
 - longbridge's open PR #10 ("keep views retained in a real GPUI Kit application",
   branch `retained-real-apps`, head `fd23405`) is merged ahead of longbridge, in the
   commit "Merge longbridge/gpui-fast#10 (fd23405) into Slopty's fork". When longbridge
@@ -240,10 +242,26 @@ Added in this fork:
 - `4d0009e` gpui: build a view that asked for an animation frame on the next frame drawn
 - the commit after `4c13f16`: a spliced view builds every nested view that is out of
   date, not only the notified ones, and leaves its record up to date as of the splice
-- window composition (branch `composition` at `20c3f9b`, merged into `main`): native views and layers placed by GPUI's
-  scene under its Metal layer with holes, transactional frames, pointer and keyboard
-  bridged, on macOS and iOS, and `VideoLayer` for video that needs no GPUI frame; see
-  [docs/composition.md](docs/composition.md)
+- window composition, on `main` since `a9ae469` (the `composition` branch at `20c3f9b`,
+  merged whole; the branch is no longer needed): native views and layers placed by
+  GPUI's scene under its Metal layer with holes, transactional frames, pointer and
+  keyboard bridged, on macOS and iOS, and `VideoLayer` for video that needs no GPUI
+  frame; see [docs/composition.md](docs/composition.md). Merged after longbridge#10:
+  - Conflicts: `fast/scene.rs` (#10 made `sort_in_drawing_order` a free function; the
+    natives are sorted at its end), `window.rs` (the composition field beside #10's
+    `TextStyleStack` and `GlyphBoundsCache`), the oracle's panels (a native, then #10's
+    cached or plain leaf), `gpui_perf/Cargo.toml`, `script/upstream-allowlist`.
+  - #10's check fails a hunk of an upstream file that does not name `fast`, so
+    composition's present, cursor, scene clear and replay hooks call
+    `crate::fast::composition::…` free functions (`1895aa5`).
+  - Composition does not rely on an update without a notify. A placement is a scene
+    operation, replayed with the view that painted it; a native's view that moves is
+    built again, like any moved view, and places the native where it now is, even when
+    only a sibling view was notified
+    (`a_native_follows_its_view_when_only_a_sibling_view_is_notified`). Focus from the
+    platform goes through `Window::focus`, which refreshes the window. `VideoLayer`
+    touches no entity: its thread presents into its own layer, and the window draws no
+    frame for it.
 
 ### Candidates for longbridge
 
@@ -319,6 +337,12 @@ Retained Mode draws a view from the last frame while nothing it read changed
   the view for the next frame, which is then built again and asks again.
 - **`CursorStyle::None`, the outline style, `paint_glyph_scaled`**: painted into the frame's
   cursor styles and scene, which a retained view's replay copies.
+- **Natives** (`native_view`, `Window::paint_native`): the placement is painted into
+  the scene, so a view drawn from the last frame places its native again as it was, and
+  the platform is not called. A native no view placed in a frame is hidden. What moves
+  a native is layout, which builds the moved view again; nothing has to be notified
+  for the native's own sake. The oracle places natives in its panels and compares them
+  with frames drawn from scratch.
 
 To rule retention in or out, run with `GPUI_VIEW_RETENTION=0`.
 

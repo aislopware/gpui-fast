@@ -135,7 +135,7 @@ mailbox, is drawn the moment the previous one is shown, and is replaced by a new
 
 ## How Slopty adopts it
 
-Slopty pins this branch and depends on `gpui_apple` directly on Apple targets for
+Slopty pins this fork's `main`, where composition was merged, and depends on `gpui_apple` directly on Apple targets for
 `VideoLayer`.
 
 - **Browser tile** (`slopty-platform::web`, `slopty-ui::browser`): the tile creates one
