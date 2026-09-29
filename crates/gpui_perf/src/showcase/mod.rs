@@ -656,12 +656,13 @@ impl Showcase {
                 div()
                     .flex()
                     .items_center()
+                    .flex_shrink_0()
                     .h_6()
                     .px_2()
                     .rounded(theme(cx).radius)
                     .bg(build)
                     .text_color(build_foreground)
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(FontWeight::MEDIUM)
                     .child(backend::GPUI),
             )
             .when(self.spinning, |this| this.child(spinner(cx)))
@@ -913,6 +914,7 @@ impl Render for Showcase {
             .flex_col()
             .bg(theme.background)
             .text_color(theme.foreground)
+            .font_features(theme.numbers.clone())
             .child(self.toolbar(window, cx))
             .child(
                 div()

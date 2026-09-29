@@ -143,7 +143,9 @@ pub fn status_bar(stats: &Stats, cx: &App) -> impl IntoElement {
             .flex_shrink_0()
             .h_7()
             .px_4()
-            .gap_4()
+            .gap_3()
+            .overflow_hidden()
+            .whitespace_nowrap()
             .border_t_1()
             .border_color(theme.border)
             .bg(theme.sidebar)
@@ -165,6 +167,7 @@ pub fn status_bar(stats: &Stats, cx: &App) -> impl IntoElement {
         let field = |label: &'static str, values: Vec<gpui::AnyElement>| {
             div()
                 .flex()
+                .flex_shrink_0()
                 .items_center()
                 .gap_1()
                 .child(label)

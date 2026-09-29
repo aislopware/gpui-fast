@@ -15,7 +15,7 @@ use super::{
     app_state::app_state,
     controls::Tooltip,
     theme::{Theme, theme},
-    workspace::Workspace,
+    workspace::{Workspace, grouped},
 };
 
 pub const TABLE_ROWS: usize = 5_000;
@@ -246,7 +246,7 @@ fn section(
                 .items_center()
                 .justify_center()
                 .p_4()
-                .rounded(theme.radius * 1.5)
+                .rounded(theme.radius_lg)
                 .border_1()
                 .border_color(theme.border)
                 .child(
@@ -288,17 +288,17 @@ fn button(section_ix: usize, item: usize, theme: &Theme) -> impl IntoElement {
         .on_click(|_, _, _| {})
         .child(label);
     match item % 3 {
-        // Default.
+        // Default: filled, so that it reads apart from the outline button.
         0 => base
             .border_1()
             .border_color(theme.border)
-            .bg(theme.background)
-            .hover(|this| this.bg(theme.accent))
-            .active(|this| this.bg(theme.muted)),
+            .bg(theme.secondary)
+            .hover(|this| this.bg(theme.secondary_hover))
+            .active(|this| this.bg(theme.secondary_hover)),
         // Outline.
         1 => base
             .border_1()
-            .border_color(theme.border)
+            .border_color(theme.input)
             .hover(|this| this.bg(theme.accent))
             .active(|this| this.bg(theme.muted)),
         // Ghost.
@@ -324,7 +324,8 @@ fn avatar(section_ix: usize, item: usize, unread: usize, theme: &Theme) -> impl 
                 .items_center()
                 .justify_center()
                 .text_sm()
-                .text_color(theme.danger_foreground)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme.avatar_foreground)
                 .child(["JL", "AB", "ZY", "MK"][item % 4]),
         )
         .when(unread > 0, |this| {
@@ -388,7 +389,7 @@ fn input(
         .border_color(if focused {
             theme.foreground
         } else {
-            theme.border
+            theme.input
         })
         .text_sm()
         .text_color(theme.muted_foreground)
@@ -439,7 +440,7 @@ fn toggle(
                 .h_4()
                 .p_0p5()
                 .rounded_full()
-                .bg(if on { theme.primary } else { theme.border })
+                .bg(if on { theme.primary } else { theme.input })
                 .when(on, |this| this.justify_end())
                 .child(div().size_3().rounded_full().bg(if on {
                     theme.primary_foreground
@@ -598,7 +599,7 @@ impl Render for Table {
             .min_h_0()
             .flex()
             .flex_col()
-            .rounded(theme.radius * 1.5)
+            .rounded(theme.radius_lg)
             .border_1()
             .border_color(theme.border)
             .overflow_hidden()
@@ -652,7 +653,7 @@ fn row(ix: usize, stock: &Stock, compact: bool, theme: &Theme) -> impl IntoEleme
             format!("{:+.2}%", stock.change * 100. / stock.price).into(),
             Some(change_color),
         ),
-        (stock.volume.to_string().into(), None),
+        (grouped(stock.volume as f64, 0).into(), None),
         (format!("{:.2}", stock.high).into(), None),
         (format!("{:.2}", stock.low).into(), None),
     ];
@@ -745,6 +746,7 @@ impl Render for MessageList {
             let message = &this.read(cx).messages[ix];
             div()
                 .flex()
+                .w_full()
                 .gap_3()
                 .px_6()
                 .py_3()
@@ -761,7 +763,8 @@ impl Render for MessageList {
                         // data, not a token.
                         .bg(hsla(message.hue, 0.45, 0.55, 1.))
                         .text_xs()
-                        .text_color(theme.danger_foreground)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(theme.avatar_foreground)
                         .child(message.initials.clone()),
                 )
                 .child(

@@ -42,7 +42,7 @@ use gpui::{
     AnyView, Bounds, Context, ElementInputHandler, Entity, EntityInputHandler, EventEmitter,
     FocusHandle, FontWeight, Global, Hsla, IntoElement, PathBuilder, Pixels, Render, SharedString,
     StyleRefinement, Subscription, Task, UTF16Selection, UniformListScrollHandle, Window, canvas,
-    div, fill, point, prelude::*, px, relative, size, uniform_list,
+    div, fill, point, prelude::*, px, relative, rems, size, transparent_black, uniform_list,
 };
 
 use super::theme::{Theme, theme};
@@ -264,7 +264,7 @@ fn change_color(change: f64, theme: &Theme) -> Hsla {
 }
 
 /// `value` to `decimals` places, its thousands grouped: `1,053.980`.
-fn grouped(value: f64, decimals: usize) -> String {
+pub fn grouped(value: f64, decimals: usize) -> String {
     let text = format!("{:.*}", decimals, value.abs());
     let (whole, fraction) = text.split_once('.').unwrap_or((&text, ""));
     let mut out = String::with_capacity(text.len() + whole.len() / 3 + 1);
@@ -442,21 +442,46 @@ impl Workspace {
     }
 }
 
-/// A square icon: a letter on a colored fill, standing in for the icons and
-/// logos a real application draws as SVGs.
-fn letter_icon(letter: &'static str, side: Pixels, fill: Hsla, theme: &Theme) -> gpui::Div {
+/// A square icon, `side` rems wide: a letter on a fill, standing in for the
+/// icons and logos a real application draws as SVGs.
+fn letter_icon(
+    letter: &'static str,
+    side: f32,
+    fill: Hsla,
+    color: Hsla,
+    theme: &Theme,
+) -> gpui::Div {
     div()
         .flex()
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .size(side)
-        .rounded(px(4.))
+        .size(rems(side))
+        .rounded(theme.radius_sm)
         .bg(fill)
-        .text_color(theme.danger_foreground)
-        .text_size(side * 0.6)
+        .text_color(color)
+        .text_size(rems(side * 0.6))
         .font_weight(FontWeight::SEMIBOLD)
         .child(letter)
+}
+
+/// One of a row of choices, such as the toolbar's destinations, the
+/// watchlist's groups or the chart's periods. Every row of them shows the
+/// selected one the same way: a quiet fill, the foreground color and a
+/// heavier weight, rather than the primary color, which the workspace keeps
+/// for nothing but its mark.
+fn chip(label: &'static str, selected: bool, theme: &Theme) -> gpui::Div {
+    div()
+        .flex_shrink_0()
+        .px_2()
+        .rounded(theme.radius_sm)
+        .when(selected, |this| {
+            this.bg(theme.secondary)
+                .text_color(theme.foreground)
+                .font_weight(FontWeight::MEDIUM)
+        })
+        .when(!selected, |this| this.text_color(theme.muted_foreground))
+        .child(label)
 }
 
 impl Render for Workspace {
@@ -521,7 +546,10 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(letter_icon("T", px(22.), theme.info, theme).mr_2())
+                    .child(
+                        letter_icon("T", 1.5, theme.primary, theme.primary_foreground, theme)
+                            .mr_2(),
+                    )
                     .children(
                         [
                             "Watchlist",
@@ -535,15 +563,7 @@ impl Workspace {
                         .into_iter()
                         .enumerate()
                         .map(|(ix, title)| {
-                            div()
-                                .px_2()
-                                .py_1()
-                                .rounded(theme.radius)
-                                .when(ix == 0, |this| {
-                                    this.bg(theme.accent).font_weight(FontWeight::MEDIUM)
-                                })
-                                .when(ix != 0, |this| this.text_color(theme.muted_foreground))
-                                .child(title)
+                            chip(title, ix == 0, theme).py_1().rounded(theme.radius)
                         }),
                     ),
             )
@@ -562,8 +582,20 @@ impl Workspace {
                             .child(div().size_2().rounded_full().bg(theme.success))
                             .child("US Market Open"),
                     )
-                    .child(letter_icon("!", px(20.), theme.muted, theme))
-                    .child(letter_icon("*", px(20.), theme.muted, theme))
+                    .child(letter_icon(
+                        "!",
+                        1.25,
+                        theme.secondary,
+                        theme.muted_foreground,
+                        theme,
+                    ))
+                    .child(letter_icon(
+                        "*",
+                        1.25,
+                        theme.secondary,
+                        theme.muted_foreground,
+                        theme,
+                    ))
                     .child(
                         div()
                             .text_color(theme.muted_foreground)
@@ -574,7 +606,8 @@ impl Workspace {
                             .size_6()
                             .rounded_full()
                             .bg(theme.series[1])
-                            .text_color(theme.danger_foreground)
+                            .text_color(theme.avatar_foreground)
+                            .font_weight(FontWeight::MEDIUM)
                             .flex()
                             .items_center()
                             .justify_center()
@@ -611,9 +644,10 @@ fn icon_sidebar(theme: &Theme) -> impl IntoElement {
                         .when(ix == 0, |this| this.bg(theme.sidebar_accent))
                         .child(letter_icon(
                             letter,
-                            px(18.),
+                            1.125,
+                            transparent_black(),
                             if ix == 0 {
-                                theme.info
+                                theme.foreground
                             } else {
                                 theme.muted_foreground
                             },
@@ -622,7 +656,13 @@ fn icon_sidebar(theme: &Theme) -> impl IntoElement {
                 }),
         )
         .child(div().flex_1())
-        .child(letter_icon("?", px(18.), theme.muted_foreground, theme))
+        .child(letter_icon(
+            "?",
+            1.125,
+            transparent_black(),
+            theme.muted_foreground,
+            theme,
+        ))
 }
 
 /// Reads the selection global, as the selection handles' overlay does.
@@ -666,7 +706,7 @@ impl Render for SearchBox {
             .border_color(if focused {
                 theme.foreground
             } else {
-                theme.border
+                theme.input
             })
             .text_color(theme.muted_foreground)
             .child(if self.text.is_empty() {
@@ -778,7 +818,16 @@ struct DockArea {
 impl DockArea {
     /// The resizable panel in slot `ix`, sharing its column's height with
     /// its neighbours in proportion to `grow` until it has been laid out.
-    fn panel(&self, ix: usize, grow: f32, cx: &Context<Self>) -> impl IntoElement + use<> {
+    /// A panel draws the hairline to its trailing side and below it, except
+    /// against the window's edge or the last in its column: two neighbours
+    /// never both draw the line between them.
+    fn panel(
+        &self,
+        ix: usize,
+        grow: f32,
+        edges: Edges,
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
         let border = theme(cx).border;
         let resize = self.resize.clone();
         let basis = self.resize.read(cx).sizes[ix].size.height;
@@ -788,7 +837,8 @@ impl DockArea {
             .min_h_0()
             .min_w_0()
             .when(basis > px(0.), |this| this.flex_basis(basis.min(px(2000.))))
-            .border_1()
+            .when(!edges.last_column, |this| this.border_r_1())
+            .when(!edges.last_in_column, |this| this.border_b_1())
             .border_color(border);
         panel.style().flex_grow = Some(grow);
         panel
@@ -814,6 +864,30 @@ impl DockArea {
     }
 }
 
+/// Where a dock panel sits, for which of its hairlines it draws.
+#[derive(Clone, Copy)]
+struct Edges {
+    last_column: bool,
+    last_in_column: bool,
+}
+
+const MIDDLE: Edges = Edges {
+    last_column: false,
+    last_in_column: false,
+};
+const BOTTOM: Edges = Edges {
+    last_column: false,
+    last_in_column: true,
+};
+const RIGHT: Edges = Edges {
+    last_column: true,
+    last_in_column: false,
+};
+const BOTTOM_RIGHT: Edges = Edges {
+    last_column: true,
+    last_in_column: true,
+};
+
 impl Render for DockArea {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let column = |width: Option<Pixels>| {
@@ -826,17 +900,17 @@ impl Render for DockArea {
             .size_full()
             .flex()
             .flex_row()
-            .child(column(None).child(self.panel(0, 1., cx)))
+            .child(column(None).child(self.panel(0, 1., BOTTOM, cx)))
             .child(
                 column(Some(px(460.)))
-                    .child(self.panel(1, 1., cx))
-                    .child(self.panel(2, 1.2, cx)),
+                    .child(self.panel(1, 1., MIDDLE, cx))
+                    .child(self.panel(2, 1.2, BOTTOM, cx)),
             )
             .child(
                 column(Some(px(380.)))
-                    .child(self.panel(3, 1., cx))
-                    .child(self.panel(4, 1.6, cx))
-                    .child(self.panel(5, 0.7, cx)),
+                    .child(self.panel(3, 1., RIGHT, cx))
+                    .child(self.panel(4, 1.6, RIGHT, cx))
+                    .child(self.panel(5, 0.7, BOTTOM_RIGHT, cx)),
             )
     }
 }
@@ -878,15 +952,14 @@ impl Render for TabGroup {
                             .items_center()
                             .h_full()
                             .px_3()
+                            // The selected tab is told by its own surface,
+                            // joined to the panel below, and its weight.
                             .when(active, |this| {
-                                this.font_weight(FontWeight::MEDIUM)
-                                    .bg(theme.background)
-                                    .border_b_2()
-                                    .border_color(theme.foreground)
+                                this.font_weight(FontWeight::MEDIUM).bg(theme.background)
                             })
                             .when(!active, |this| {
                                 this.text_color(theme.muted_foreground)
-                                    .hover(|this| this.bg(theme.accent))
+                                    .hover(|this| this.bg(theme.secondary_hover))
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.active = ix;
@@ -1017,7 +1090,7 @@ impl Render for Watchlist {
                     .items_center()
                     .gap_1()
                     .h_8()
-                    .px_2()
+                    .px_1()
                     .text_xs()
                     .children(
                         [
@@ -1031,23 +1104,14 @@ impl Render for Watchlist {
                         ]
                         .into_iter()
                         .enumerate()
-                        .map(|(ix, group)| {
-                            div()
-                                .px_2()
-                                .py(px(2.))
-                                .rounded(theme.radius)
-                                .when(ix == 0, |this| {
-                                    this.bg(theme.primary).text_color(theme.primary_foreground)
-                                })
-                                .when(ix != 0, |this| this.text_color(theme.muted_foreground))
-                                .child(group)
-                        }),
+                        .map(|(ix, group)| chip(group, ix == 0, theme).py_0p5()),
                     )
                     .child(div().flex_1())
                     .child(
                         div()
+                            .pr_2()
                             .text_color(theme.muted_foreground)
-                            .child("Sorted by % Chg · Edit"),
+                            .child("Sorted by % Chg"),
                     ),
             )
             .child(
@@ -1056,6 +1120,7 @@ impl Render for Watchlist {
                     .flex_shrink_0()
                     .items_center()
                     .h_8()
+                    .px_1()
                     .bg(theme.muted)
                     .border_y_1()
                     .border_color(theme.border)
@@ -1132,11 +1197,12 @@ fn watchlist_row(ix: usize, store: &QuoteStore, theme: &Theme) -> impl IntoEleme
         ),
     ];
     let market = store.markets[ix];
-    let icons = [theme.info, theme.warning, theme.series[1], theme.series[2]];
+    // Holdings, pre-market and options: classifications, so neutral marks
+    // that the gains and losses around them do not have to compete with.
     let badges = [
-        (ix.is_multiple_of(4), "H", theme.info),
-        (ix % 3 == 1, "P", theme.warning),
-        (ix % 5 == 2, "O", theme.series[1]),
+        (ix.is_multiple_of(4), "H"),
+        (ix % 3 == 1, "P"),
+        (ix % 5 == 2, "O"),
     ];
     let range = ((quote.last - quote.low_52) / (quote.high_52 - quote.low_52)).clamp(0., 1.);
     div()
@@ -1144,6 +1210,7 @@ fn watchlist_row(ix: usize, store: &QuoteStore, theme: &Theme) -> impl IntoEleme
         .flex()
         .items_center()
         .h(WATCHLIST_ROW_HEIGHT)
+        .px_1()
         .border_b_1()
         .border_color(theme.border)
         .when(ix % 2 == 1, |this| this.bg(theme.stripe))
@@ -1154,15 +1221,11 @@ fn watchlist_row(ix: usize, store: &QuoteStore, theme: &Theme) -> impl IntoEleme
                 .child(
                     div()
                         .flex_shrink_0()
-                        .px(px(3.))
-                        .rounded(px(2.))
-                        .bg(if market == "US" {
-                            theme.info
-                        } else {
-                            theme.danger
-                        })
-                        .text_color(theme.danger_foreground)
-                        .text_size(px(9.))
+                        .px_0p5()
+                        .rounded(theme.radius_sm)
+                        .bg(theme.secondary)
+                        .text_color(theme.muted_foreground)
+                        .text_xs()
                         .child(market),
                 )
                 .child(
@@ -1177,8 +1240,9 @@ fn watchlist_row(ix: usize, store: &QuoteStore, theme: &Theme) -> impl IntoEleme
                 .child(
                     letter_icon(
                         ["A", "B", "C", "D", "E", "F", "G", "H"][ix % 8],
-                        px(18.),
-                        icons[ix % icons.len()],
+                        1.125,
+                        theme.secondary,
+                        theme.muted_foreground,
                         theme,
                     )
                     .rounded_full(),
@@ -1190,21 +1254,25 @@ fn watchlist_row(ix: usize, store: &QuoteStore, theme: &Theme) -> impl IntoEleme
                         .overflow_hidden()
                         .child(store.names[ix].clone()),
                 )
-                .children(badges.into_iter().filter(|(shown, _, _)| *shown).map(
-                    |(_, letter, color)| {
-                        div()
-                            .flex()
-                            .flex_shrink_0()
-                            .items_center()
-                            .justify_center()
-                            .size(px(14.))
-                            .rounded(px(3.))
-                            .bg(color.opacity(0.2))
-                            .text_color(color)
-                            .text_size(px(9.))
-                            .child(letter)
-                    },
-                )),
+                .children(
+                    badges
+                        .into_iter()
+                        .filter(|(shown, _)| *shown)
+                        .map(|(_, letter)| {
+                            div()
+                                .flex()
+                                .flex_shrink_0()
+                                .items_center()
+                                .justify_center()
+                                .size_4()
+                                .rounded(theme.radius_sm)
+                                .border_1()
+                                .border_color(theme.input)
+                                .text_color(theme.muted_foreground)
+                                .text_xs()
+                                .child(letter)
+                        }),
+                ),
         )
         .children(numbers.into_iter().enumerate().map(|(ix, (text, color))| {
             watchlist_cell(ix + 2)
@@ -1213,10 +1281,12 @@ fn watchlist_row(ix: usize, store: &QuoteStore, theme: &Theme) -> impl IntoEleme
         }))
         .child(
             watchlist_cell(13).child(
+                // Where the price sits in its 52-week range: a position, not
+                // a gain or a loss, so drawn without their colors.
                 div()
                     .relative()
                     .w_full()
-                    .h(px(4.))
+                    .h_1()
                     .rounded_full()
                     .bg(theme.muted)
                     .child(
@@ -1227,15 +1297,15 @@ fn watchlist_row(ix: usize, store: &QuoteStore, theme: &Theme) -> impl IntoEleme
                             .h_full()
                             .w(relative(range as f32))
                             .rounded_full()
-                            .bg(color.opacity(0.5)),
+                            .bg(theme.input),
                     )
                     .child(
                         div()
                             .absolute()
-                            .top(px(-2.))
+                            .top_neg_0p5()
                             .left(relative(range as f32))
-                            .w(px(2.))
-                            .h(px(8.))
+                            .w_0p5()
+                            .h_2()
                             .bg(theme.foreground),
                     ),
             ),
@@ -1288,7 +1358,7 @@ fn sparkline(points: Vec<f32>, baseline: f32, color: Hsla) -> impl IntoElement {
         },
     )
     .w_full()
-    .h(px(20.))
+    .h_5()
 }
 
 /// The selected symbol's price, change and a grid of statistics.
@@ -1384,7 +1454,7 @@ impl Render for QuoteDetail {
                     .child(
                         div()
                             .px_1()
-                            .rounded(px(3.))
+                            .rounded(theme.radius_sm)
                             .bg(theme.success.opacity(0.15))
                             .text_color(theme.success)
                             .text_xs()
@@ -1399,7 +1469,7 @@ impl Render for QuoteDetail {
                     .text_color(color)
                     .child(
                         div()
-                            .text_3xl()
+                            .text_2xl()
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(price(quote.last)),
                     )
@@ -1430,13 +1500,16 @@ impl Render for QuoteDetail {
                     .flex()
                     .flex_wrap()
                     .text_xs()
-                    .children(stats.into_iter().map(|(label, value)| {
+                    // Two columns with one gutter between them, so that the
+                    // right column's values end on the panel's edge.
+                    .children(stats.into_iter().enumerate().map(|(ix, (label, value))| {
                         div()
                             .flex()
                             .justify_between()
                             .w_1_2()
-                            .py(px(1.))
-                            .pr_4()
+                            .py_0p5()
+                            .when(ix % 2 == 0, |this| this.pr_3())
+                            .when(ix % 2 == 1, |this| this.pl_3())
                             .child(div().text_color(theme.muted_foreground).child(label))
                             .child(value)
                     })),
@@ -1678,34 +1751,30 @@ impl Render for Chart {
                     .flex()
                     .flex_shrink_0()
                     .items_center()
-                    .gap_1()
+                    .gap_0p5()
                     .h_7()
-                    .px_2()
+                    .px_1()
                     .children(
                         ["1m", "5m", "15m", "30m", "1h", "D", "W", "M", "Y"]
                             .into_iter()
-                            .map(|period| {
-                                div()
-                                    .px_1()
-                                    .rounded(px(3.))
-                                    .when(period == "D", |this| {
-                                        this.bg(theme.accent).font_weight(FontWeight::MEDIUM)
-                                    })
-                                    .when(period != "D", |this| {
-                                        this.text_color(theme.muted_foreground)
-                                    })
-                                    .child(period)
-                            }),
+                            .map(|period| chip(period, period == "D", theme)),
                     )
                     .child(div().flex_1())
-                    .child(div().text_color(theme.muted_foreground).child("MA · VOL")),
+                    .child(
+                        div()
+                            .pr_2()
+                            .text_color(theme.muted_foreground)
+                            .child("MA · VOL"),
+                    ),
             )
             .child(
                 div()
                     .flex()
                     .flex_shrink_0()
                     .gap_3()
-                    .px_2()
+                    .px_3()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
                     .children(averages.iter().zip(AVERAGES).zip(theme.series).map(
                         |((average, period), color)| {
                             div()
@@ -1726,7 +1795,8 @@ impl Render for Chart {
                     .relative()
                     .flex_1()
                     .min_h_0()
-                    .m_2()
+                    .mx_3()
+                    .my_2()
                     .child(
                         canvas(
                             |_, _, _| {},
@@ -1759,9 +1829,13 @@ impl Render for Chart {
                                     .top(relative(last_at))
                                     .left_0()
                                     .px_1()
-                                    .rounded(px(2.))
+                                    .rounded(theme.radius_sm)
                                     .bg(change_color(change, theme))
-                                    .text_color(theme.danger_foreground)
+                                    .text_color(if change >= 0. {
+                                        theme.success_foreground
+                                    } else {
+                                        theme.danger_foreground
+                                    })
                                     .child(price(last.close)),
                             ),
                     )
@@ -1850,8 +1924,8 @@ impl Render for OrderBook {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .h(px(20.))
-                        .px_2()
+                        .h_5()
+                        .px_1()
                         .child(
                             div()
                                 .absolute()
@@ -1869,9 +1943,14 @@ impl Render for OrderBook {
                                 .child(format!("{}", ix + 1)),
                         )
                         .child(div().flex_1().text_color(color).child(price(value)))
-                        .child(amount(size))
+                        // Sizes and order counts keep trailing-aligned lanes,
+                        // so that levels compare down the column.
+                        .child(div().flex().justify_end().w_12().child(amount(size)))
                         .child(
                             div()
+                                .flex()
+                                .justify_end()
+                                .w_6()
                                 .text_color(theme.muted_foreground)
                                 .child(format!("({})", (ix * 7 + book.updates) % 30 + 1)),
                         )
@@ -1882,7 +1961,8 @@ impl Render for OrderBook {
             .flex()
             .flex_col()
             .gap_1()
-            .p_2()
+            .px_2()
+            .py_2()
             .text_xs()
             .overflow_hidden()
             .child(
@@ -1890,6 +1970,7 @@ impl Render for OrderBook {
                     .flex()
                     .items_center()
                     .gap_2()
+                    .px_1()
                     .child(
                         div()
                             .text_color(theme.success)
@@ -1899,7 +1980,7 @@ impl Render for OrderBook {
                         div()
                             .flex()
                             .flex_1()
-                            .h(px(4.))
+                            .h_1()
                             .rounded_full()
                             .overflow_hidden()
                             .child(div().h_full().w(relative(ratio)).bg(theme.success))
@@ -1985,7 +2066,7 @@ impl Render for TimeAndSales {
                         .flex()
                         .items_center()
                         .gap_1()
-                        .h(px(18.))
+                        .h(rems(1.125))
                         .child(div().text_color(theme.muted_foreground).child(format!(
                             "{:02}:{:02}:{:02}",
                             trade.time / 3_600,
@@ -2007,7 +2088,7 @@ impl Render for TimeAndSales {
                                 .justify_end()
                                 .child(grouped(trade.size as f64, 0)),
                         )
-                        .child(div().w(px(3.)).h_3().bg(color))
+                        .child(div().w_0p5().h_3().rounded_full().bg(color))
                 }))
         };
         let (left, right) = self.trades.split_at(TRADES / 2);
@@ -2015,8 +2096,9 @@ impl Render for TimeAndSales {
             .size_full()
             .flex()
             .flex_row()
-            .gap_3()
-            .p_2()
+            .gap_4()
+            .px_3()
+            .py_2()
             .text_xs()
             .overflow_hidden()
             .child(column(left))
@@ -2111,14 +2193,14 @@ impl Render for TradeStats {
                     },
                 )
                 .flex_shrink_0()
-                .size(px(112.)),
+                .size(rems(7.)),
             )
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .gap(px(2.))
+                    .gap_0p5()
                     .children(self.buckets.iter().zip(BUCKETS).zip(colors).map(
                         |((value, label), color)| {
                             div()
@@ -2132,7 +2214,7 @@ impl Render for TradeStats {
                                         .text_color(theme.muted_foreground)
                                         .child(label),
                                 )
-                                .child(amount(*value))
+                                .child(div().flex().justify_end().w_16().child(amount(*value)))
                                 .child(
                                     div()
                                         .w_12()
@@ -2146,7 +2228,10 @@ impl Render for TradeStats {
                         div()
                             .flex()
                             .justify_between()
+                            .mt_1()
                             .pt_1()
+                            .border_t_1()
+                            .border_color(theme.border)
                             .child("Net inflow")
                             .child(
                                 div()
@@ -2210,6 +2295,8 @@ impl Render for StatusBar {
             .items_center()
             .gap_4()
             .px_3()
+            .overflow_hidden()
+            .whitespace_nowrap()
             .border_t_1()
             .border_color(theme.border)
             .text_xs()
