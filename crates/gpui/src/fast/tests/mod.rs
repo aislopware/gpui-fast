@@ -15,6 +15,7 @@ mod path_cache;
 mod retained;
 mod retained_bench;
 mod scene_order;
+mod scroll;
 mod splice;
 mod support;
 mod surface;

@@ -572,6 +572,7 @@ struct Momentum {
     duration: Duration,
     /// Distance already emitted along `direction`, in pixels.
     emitted_distance: f32,
+    fast_phase: TouchPhase,
 }
 
 impl TouchGestureRecognizer {
@@ -591,7 +592,7 @@ impl TouchGestureRecognizer {
         self.handle_event_at(event, Instant::now())
     }
 
-    fn handle_event_at(
+    pub(crate) fn handle_event_at(
         &mut self,
         event: &TouchEvent,
         now: Instant,
@@ -600,11 +601,10 @@ impl TouchGestureRecognizer {
         match event.phase {
             TouchPhase::Started => {
                 let caught_fling = if let Some(momentum) = self.momentum.take() {
-                    recognized.push(RecognizedTouchGesture::Scroll(scroll_event(
-                        momentum.position,
-                        Point::default(),
-                        TouchPhase::Ended,
-                    )));
+                    recognized.push(RecognizedTouchGesture::Scroll(
+                        scroll_event(momentum.position, Point::default(), TouchPhase::Ended)
+                            .fast_momentum(TouchPhase::Ended),
+                    ));
                     true
                 } else {
                     false
@@ -845,6 +845,7 @@ impl TouchGestureRecognizer {
                                 started_at: now,
                                 duration,
                                 emitted_distance,
+                                fast_phase: TouchPhase::Started,
                             });
                         }
                     }
@@ -995,7 +996,7 @@ impl TouchGestureRecognizer {
         self.tick_momentum_at(Instant::now())
     }
 
-    fn tick_momentum_at(&mut self, now: Instant) -> Option<RecognizedTouchGesture> {
+    pub(crate) fn tick_momentum_at(&mut self, now: Instant) -> Option<RecognizedTouchGesture> {
         let momentum = self.momentum.as_mut()?;
         let elapsed = now.duration_since(momentum.started_at);
         let distance = self
@@ -1011,19 +1012,16 @@ impl TouchGestureRecognizer {
             px(momentum.direction.y * step),
         );
         let position = momentum.position;
+        let fast_phase = mem::replace(&mut momentum.fast_phase, TouchPhase::Moved);
         if elapsed >= momentum.duration {
             self.momentum = None;
-            Some(RecognizedTouchGesture::Scroll(scroll_event(
-                position,
-                delta,
-                TouchPhase::Ended,
-            )))
+            Some(RecognizedTouchGesture::Scroll(
+                scroll_event(position, delta, TouchPhase::Ended).fast_momentum(TouchPhase::Ended),
+            ))
         } else {
-            Some(RecognizedTouchGesture::Scroll(scroll_event(
-                position,
-                delta,
-                TouchPhase::Moved,
-            )))
+            Some(RecognizedTouchGesture::Scroll(
+                scroll_event(position, delta, TouchPhase::Moved).fast_momentum(fast_phase),
+            ))
         }
     }
 }
@@ -1038,6 +1036,7 @@ fn scroll_event(
         delta: ScrollDelta::Pixels(delta),
         modifiers: Modifiers::default(),
         touch_phase,
+        momentum_phase: None,
     }
 }
 

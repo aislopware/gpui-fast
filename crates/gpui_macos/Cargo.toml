@@ -74,8 +74,11 @@ objc2-app-kit = { workspace = true, features = [
     "NSAttributedString",
     "NSBitmapImageRep",
     "NSColor",
+    "NSEvent",
     "NSFont",
     "NSGraphicsContext",
     "NSImageRep",
     "NSStringDrawing",
+    "objc2-core-graphics",
 ] }
+objc2-core-graphics = { workspace = true, features = ["CGEvent", "CGEventTypes"] }

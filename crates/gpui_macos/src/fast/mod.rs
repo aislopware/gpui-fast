@@ -8,6 +8,7 @@
 //! tests — is written here, one file per topic.
 
 pub(crate) mod keypad;
+pub(crate) mod scroll;
 #[cfg(feature = "font-kit")]
 pub(crate) mod text_system;
 

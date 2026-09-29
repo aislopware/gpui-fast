@@ -531,6 +531,12 @@ pub struct ScrollWheelEvent {
 
     /// The phase of the touch event.
     pub touch_phase: TouchPhase,
+
+    /// The phase of the scrolling the platform carries on after the fingers lift:
+    /// `Started` with its first step, `Moved`, and `Ended` with its last or once a new
+    /// touch stops it. `None` while a finger or a wheel drives the scroll, so that a wheel
+    /// reporting no phases, as smooth-scrolling mice do, is told apart from momentum.
+    pub momentum_phase: Option<TouchPhase>,
 }
 
 impl Sealed for ScrollWheelEvent {}

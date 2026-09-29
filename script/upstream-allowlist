@@ -41,6 +41,12 @@ crates/gpui_apple/src/metal_atlas.rs unmarked=4 # Slopty: shared atlas storage w
 crates/gpui_linux/src/linux/platform.rs hunk=9 unmarked=2 # Slopty: CursorStyle::None; zed #63402: keypad digits named kp0 to kp9
 crates/gpui_linux/src/linux/wayland.rs unmarked=1 # Slopty: CursorStyle::None
 crates/gpui_web/src/platform.rs unmarked=1 # Slopty: CursorStyle::None
+crates/gpui/src/interactive.rs unmarked=1 # Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), the field
+crates/gpui/src/app/test_app.rs unmarked=1 # Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None in simulate_scroll
+crates/gpui_web/src/events.rs unmarked=1 # Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None from the browser
+crates/gpui_linux/src/linux/wayland/client.rs unmarked=2 # Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None from Wayland
+crates/gpui_linux/src/linux/x11/client.rs unmarked=1 # Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None from X11
+crates/gpui_windows/src/direct_manipulation.rs unmarked=2 # Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None from Direct Manipulation
 crates/gpui_macros/src/styles.rs unmarked=1 # Slopty: CursorStyle::None's style method
 crates/gpui_macos/src/display_link.rs unmarked=1 # Slopty: whether the display link runs, for presentation pacing
 crates/gpui_macos/src/events.rs unmarked=2 # Slopty: a cancelled scroll or pinch is cancelled, not moved
@@ -48,11 +54,11 @@ crates/gpui_platform/src/gpui_platform.rs unmarked=1 # Slopty: the iOS platform
 
 # Open zed pull requests ported ahead of zed (SLOPTY.md, "Ported from open zed pull
 # requests"). Each line goes when the zed import that brings the pull request lands.
-crates/gpui/src/gestures.rs hunk=54 added=88 unmarked=9 # zed #64239: a touch that catches a fling picks its own axis
-crates/gpui_macos/Cargo.toml hunk=9 # zed #63469: AppKit features for the glyph raster test
+crates/gpui/src/gestures.rs hunk=54 added=102 removed=23 unmarked=9 # zed #64239: a touch that catches a fling picks its own axis; Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None in scroll_event
+crates/gpui_macos/Cargo.toml hunk=12 # zed #63469: AppKit features for the glyph raster test; Slopty: AppKit and CoreGraphics event features for the momentum test
 crates/gpui_macos/src/text_system.rs hunk=194 added=220 unmarked=2 # zed #63469: a size-dependent left margin in glyph raster bounds, and its AppKit test
 crates/gpui/src/text_system/line_wrapper.rs hunk=29 added=62 removed=160 unmarked=8 # zed #64624: wrap_line breaks where UAX #14 allows; its break opportunities come from fast::line_breaks
 crates/gpui/src/text_system/line_layout.rs hunk=30 added=44 removed=34 unmarked=6 # zed #64624: compute_wrap_boundaries breaks where UAX #14 allows; its break opportunities come from fast::line_breaks
-crates/gpui_windows/src/events.rs hunk=10 unmarked=1 # zed #63402: keypad digits named kp0 to kp9
+crates/gpui_windows/src/events.rs hunk=10 unmarked=3 # zed #63402: keypad digits named kp0 to kp9; Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None from Windows
 crates/gpui/src/app.rs hunk=9 removed=23 unmarked=2 # zed #64866: Application::with_activation_policy and App::set_activation_policy, and the import list rustfmt reflows
 crates/gpui_macos/src/platform.rs hunk=13 added=50 unmarked=7 # zed #64866: the activation policy, Accessory applied before the run loop and Regular at launch as before

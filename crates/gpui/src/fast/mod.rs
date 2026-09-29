@@ -29,6 +29,7 @@ pub(crate) mod line_breaks;
 pub(crate) mod path_cache;
 pub(crate) mod retained;
 pub(crate) mod scene;
+pub(crate) mod scroll;
 pub(crate) mod splice;
 pub(crate) mod stats;
 pub(crate) mod text;

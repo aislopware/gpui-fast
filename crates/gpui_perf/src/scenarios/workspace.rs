@@ -272,6 +272,7 @@ impl crate::Scenario for WorkspaceScenario {
                         )),
                         modifiers: Default::default(),
                         touch_phase: TouchPhase::Moved,
+                        momentum_phase: None,
                     }
                     .to_platform_input(),
                     cx,
