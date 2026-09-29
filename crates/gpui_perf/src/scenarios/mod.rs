@@ -5,5 +5,6 @@ pub mod form;
 pub mod layout;
 pub mod list;
 pub mod settings;
+pub mod strip;
 pub mod table;
 pub mod workspace;
