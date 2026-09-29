@@ -3,7 +3,8 @@
 **An experimental project exploring Retained Mode and window composition for
 GPUI.**
 
-- **Retained Mode**: redraw only what changed since the last frame.
+- **Retained Mode**: redraw only what changed since the last frame. How it
+  works, and why it is built this way: [Architecture](docs/architecture.md).
 - **Window composition** (coming next): native views such as a WebView drawn
   inside a GPUI window, with GPUI's popovers, menus and dialogs still above
   them. We plan to bring the work proposed in
@@ -26,17 +27,19 @@ Every change here keeps to two rules:
 ## Retained Mode
 
 [GPUI](https://gpui.rs), the UI framework of the [Zed](https://github.com/zed-industries/zed)
-editor, draws in immediate mode: when a frame is requested, it renders every
-view, builds a fresh layout tree, lays it out, shapes its text, and paints the
-frame again, even when almost nothing changed. gpui-fast keeps what the last
+editor, draws in immediate mode: outside subtrees an application explicitly
+caches, a frame renders every view, builds a fresh layout tree, lays it out,
+shapes its text, and paints the frame again, even when almost nothing changed. gpui-fast keeps what the last
 frame worked out and redoes only what changed since. The existing GPUI API is
 unchanged, so applications draw less without rewriting their UI code; state
 read from outside entities, globals and list or scroll state needs a
 `cx.notify()`, as described below.
 
-A frame walks the element tree three times: **build** renders views and asks
-for layout, **prepaint** computes layout and places elements, **paint** turns
-them into the scene handed to the GPU. Upstream does all three from scratch.
+A frame walks the element tree three times: **request_layout** renders views
+and asks for layout, **prepaint** computes layout and places elements,
+**paint** turns them into the scene handed to the GPU. Upstream normally
+does all three from scratch, except where an explicitly cached view is
+reused.
 gpui-fast retains two things:
 
 | What is retained | Drawn again from the last frame while                                                                                                                                                                                                                                           |
@@ -47,7 +50,8 @@ gpui-fast retains two things:
 Hover, scrolling, bounds, content masks and window refreshes invalidate
 exactly what they affect, without the application doing anything. Retention
 can be turned off, for comparison or debugging, with `GPUI_VIEW_RETENTION=0`.
-[`docs/retained-mode.md`](docs/retained-mode.md) describes how it works.
+[`docs/retained-mode.md`](docs/retained-mode.md) describes how it works, and
+[`docs/architecture.md`](docs/architecture.md) why it is built this way.
 
 What it is worth, in headless CPU time per frame for a window of 60 panel
 views with 64 labels each, in release builds on Linux:
@@ -107,10 +111,9 @@ drawing incrementally and one from scratch, and requires every frame to match.
 gpui-fast is for trying Retained Mode out, and for measuring it on real
 applications; expect its internals to change as the experiment goes on, but
 not its API: the public API is upstream's, and code written for upstream GPUI
-compiles here untouched. One thing to know: state a view's render reads
-outside entities and globals — an `Rc<RefCell<..>>`, the time,
-`window.modifiers()` — needs a `cx.notify()` when it changes, as it already
-does for a cached view.
+compiles here untouched. One thing to know: state a view's render reads that
+gpui-fast cannot observe — an `Rc<RefCell<..>>` outside an entity, the time —
+needs a `cx.notify()` when it changes, as it already does for a cached view.
 
 Point a project at it in place of upstream GPUI:
 
