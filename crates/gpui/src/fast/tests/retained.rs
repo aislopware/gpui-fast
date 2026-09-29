@@ -776,8 +776,9 @@ fn a_view_is_rendered_again_when_a_model_it_read_was_updated_without_a_notify() 
 }
 
 /// A view built again keeps the measurements of the text that did not
-/// change, rather than measuring and laying it out again, and measures the
-/// text that did.
+/// change, rather than measuring and laying it out again. Text that changed
+/// is measured again, but leaves its node clean when it measures the same
+/// under every constraint Taffy measured it under, and dirties it otherwise.
 #[test]
 fn text_that_did_not_change_keeps_its_measurement() {
     let mut cx = TestAppContext::single();
@@ -812,11 +813,31 @@ fn text_that_did_not_change_keeps_its_measurement() {
         first.label = 9;
         cx.notify();
     });
+    draw_siblings(&mut cx, s.window);
+    let after_change = stats(&mut cx);
+    assert_eq!(
+        (
+            after_change.measure_rebinds,
+            after_change.measurements_replayed
+        ),
+        (0, 1),
+        "changed text of the same size leaves its node clean"
+    );
+
+    reset(&mut cx);
+    s.first.update(&mut cx, |first, cx| {
+        first.label = 12345;
+        cx.notify();
+    });
     let changed = draw_siblings(&mut cx, s.window);
     let after_change = stats(&mut cx);
     assert_eq!(
-        after_change.measure_rebinds, 1,
-        "changed text is measured again"
+        (
+            after_change.measure_rebinds,
+            after_change.measurements_replayed
+        ),
+        (1, 0),
+        "changed text of another size is measured again"
     );
 
     cx.update_window(s.window.into(), |_, window, _| {

@@ -127,6 +127,14 @@ the new element takes a copy of that measurement and the node is left clean.
 A view built again, because it moved or because the view around it was
 notified, is then not laid out again unless something in it changed.
 
+Text that did change — a price ticking in a table cell — is measured again,
+but not by Taffy. Each measured node keeps the constraints Taffy measured it
+under since it was last dirtied, and the size each gave. The new text is
+measured under the same constraints, in the same order; when every size comes
+out the same, what Taffy cached for the node and every node above it still
+holds, and the node is left clean. Only text whose size changed dirties its
+row, its list and the window above it.
+
 ## What an application needs to know
 
 Nothing, as long as what a view's render reads lives in entities, globals and

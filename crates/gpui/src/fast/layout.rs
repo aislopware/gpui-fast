@@ -11,6 +11,7 @@ use collections::{FxHashMap, FxHasher};
 use smallvec::SmallVec;
 use std::{
     any::Any,
+    cell::{Cell, RefCell},
     fmt::Debug,
     hash::{Hash as _, Hasher as _},
     mem,
@@ -112,6 +113,107 @@ struct RetainedNode {
     /// to take its measurement over from. See
     /// [`TaffyLayoutEngine::request_retained_carried_measured_layout`].
     measurement: Option<Rc<dyn Any>>,
+    /// The sizes Taffy has taken from the node since it was last dirtied,
+    /// for a new measurement to be checked against. See [`MeasureLog`].
+    measure_log: Option<Rc<MeasureLog>>,
+}
+
+/// The measurements Taffy took of one measured node since the node was last
+/// dirtied: the constraints of each and the size it came out at, in the
+/// order they were last taken.
+///
+/// Taffy caches a node's sizes under the constraints it computed them for,
+/// and reuses them until the node is dirtied. Any size it holds for the node
+/// was computed from one of these measurements, so a new measurement giving
+/// the same size under every one of them would leave all of it — the node's
+/// cache and those above it — exactly as it is. Recording stops, and the log
+/// can no longer vouch for anything, once it has more entries than a node
+/// measured under steady constraints ever needs.
+#[derive(Default)]
+pub(crate) struct MeasureLog {
+    entries: RefCell<SmallVec<[MeasureLogEntry; 4]>>,
+    overflowed: Cell<bool>,
+}
+
+/// One measurement in a [`MeasureLog`]: the known dimensions and available
+/// space it was taken under, and the size it gave.
+type MeasureLogEntry = (Size<Option<Pixels>>, Size<AvailableSpace>, Size<Pixels>);
+
+/// How many measurements a [`MeasureLog`] keeps before giving up. Taffy
+/// caches ten results per node.
+const MEASURE_LOG_CAPACITY: usize = 16;
+
+impl MeasureLog {
+    /// Records a measurement Taffy took, moving it to the end if one under the
+    /// same constraints was already recorded.
+    fn record(
+        &self,
+        known: Size<Option<Pixels>>,
+        available: Size<AvailableSpace>,
+        size: Size<Pixels>,
+    ) {
+        if self.overflowed.get() {
+            return;
+        }
+        let mut entries = self.entries.borrow_mut();
+        if let Some(ix) = entries
+            .iter()
+            .position(|(k, a, _)| *k == known && *a == available)
+        {
+            entries.remove(ix);
+        } else if entries.len() == MEASURE_LOG_CAPACITY {
+            self.overflowed.set(true);
+            entries.clear();
+            return;
+        }
+        entries.push((known, available, size));
+    }
+
+    /// Whether `measure` gives every recorded size under the constraints it
+    /// was recorded under. The measurements are taken again in the order they
+    /// were last taken, so what `measure` keeps of them is what the last one
+    /// left, as it would be had Taffy taken them.
+    fn replays(
+        &self,
+        measure: &mut impl FnMut(
+            Size<Option<Pixels>>,
+            Size<AvailableSpace>,
+            &mut Window,
+            &mut App,
+        ) -> Size<Pixels>,
+        stats: &mut LayoutStats,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        if self.overflowed.get() {
+            return false;
+        }
+        let entries = self.entries.borrow();
+        !entries.is_empty()
+            && entries.iter().all(|(known, available, size)| {
+                stats.measure_calls += 1;
+                measure(*known, *available, window, cx) == *size
+            })
+    }
+
+    /// `measure`, boxed for a node, recording what it measures into `log`.
+    fn logged(
+        log: &Rc<MeasureLog>,
+        mut measure: impl FnMut(
+            Size<Option<Pixels>>,
+            Size<AvailableSpace>,
+            &mut Window,
+            &mut App,
+        ) -> Size<Pixels>
+        + 'static,
+    ) -> Box<MeasureFn> {
+        let log = log.clone();
+        Box::new(move |known, available, window: &mut Window, cx: &mut App| {
+            let size = measure(known, available, window, cx);
+            log.record(known, available, size);
+            size
+        })
+    }
 }
 
 /// What [`TaffyLayoutEngine::claim`] found for an element's key.
@@ -314,6 +416,7 @@ impl TaffyLayoutEngine {
                 measured,
                 style_fingerprint,
                 measurement: None,
+                measure_log: None,
             },
         );
         retention.claimed_this_frame += 1;
@@ -410,6 +513,15 @@ impl TaffyLayoutEngine {
     /// case the node is given the new closure without being dirtied, and keeps
     /// what Taffy cached for it and the nodes above it. Either way this
     /// element's `memo` is left for the next frame's.
+    ///
+    /// When the measurement does not stand — a text element whose text
+    /// changed — the node is still left clean if `measure` gives every size
+    /// Taffy has taken from the node since it was last dirtied, under the
+    /// same constraints: what Taffy cached for the node, and for the nodes
+    /// above it, is then what measuring it afresh would produce. A price that
+    /// ticks in a cell keeps its width, and the row, the list and the window
+    /// around it are not laid out again. See [`MeasureLog`].
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn request_retained_carried_measured_layout(
         &mut self,
         key: Option<u64>,
@@ -418,47 +530,66 @@ impl TaffyLayoutEngine {
         scale_factor: f32,
         memo: Rc<dyn Any>,
         adopt: impl FnOnce(&dyn Any) -> bool,
-        measure: impl FnMut(
+        mut measure: impl FnMut(
             Size<Option<Pixels>>,
             Size<AvailableSpace>,
             &mut Window,
             &mut App,
         ) -> Size<Pixels>
         + 'static,
+        window: &mut Window,
+        cx: &mut App,
     ) -> LayoutId {
         let frame = self.retention.frame;
-        let previous = key
+        let reusable = key
             .and_then(|key| self.retention.retained.get(&key))
             .filter(|node| {
                 node.claimed_in_frame != frame
                     && node.measured
                     && node.style_fingerprint == layout_fingerprint(&style, rem_size, scale_factor)
             })
-            .and_then(|node| node.measurement.clone());
-        if let Some(previous) = previous
-            && adopt(&*previous)
-            && let Claim::Reused(key, id) = self.claim(key)
-            && let Some(context) = self.taffy.get_node_context_mut(id.into())
-        {
-            let measure = Box::new(measure) as Box<MeasureFn>;
-            #[cfg(feature = "stacker")]
-            let measure = crate::taffy::StackSafe::new(measure);
-            context.measure = measure;
-            self.retention
-                .retained
-                .get_mut(&key)
-                .expect("a claimed key is always present")
-                .measurement = Some(memo);
-            self.retention.stats.measurements_kept += 1;
-            return id;
+            .map(|node| (node.measurement.clone(), node.measure_log.clone()));
+        if let Some((previous, log)) = reusable {
+            let kept = if previous.is_some_and(|previous| adopt(&*previous)) {
+                self.retention.stats.measurements_kept += 1;
+                true
+            } else if let Some(log) = &log
+                && log.replays(&mut measure, &mut self.retention.stats, window, cx)
+            {
+                self.retention.stats.measurements_replayed += 1;
+                true
+            } else {
+                false
+            };
+            if kept
+                && let Claim::Reused(key, id) = self.claim(key)
+                && let Some(context) = self.taffy.get_node_context_mut(id.into())
+            {
+                let log = log.unwrap_or_default();
+                let measure = MeasureLog::logged(&log, measure);
+                #[cfg(feature = "stacker")]
+                let measure = crate::taffy::StackSafe::new(measure);
+                context.measure = measure;
+                let node = self
+                    .retention
+                    .retained
+                    .get_mut(&key)
+                    .expect("a claimed key is always present");
+                node.measurement = Some(memo);
+                node.measure_log = Some(log);
+                return id;
+            }
         }
 
+        let log = Rc::<MeasureLog>::default();
+        let measure = MeasureLog::logged(&log, measure);
         let id =
             request_retained_measured_layout(self, key, style, rem_size, scale_factor, measure);
         if let Some(node) = key.and_then(|key| self.retention.retained.get_mut(&key))
             && node.id == id
         {
             node.measurement = Some(memo);
+            node.measure_log = Some(log);
         }
         id
     }
@@ -593,6 +724,7 @@ pub(crate) fn request_retained_layout(
                     .expect("a claimed key is always present");
                 node.measured = false;
                 node.measurement = None;
+                node.measure_log = None;
                 engine
                     .taffy
                     .set_node_context(id.into(), None)
@@ -700,6 +832,7 @@ pub(crate) fn request_retained_measured_layout(
         .expect("a claimed key is always present");
     node.measured = true;
     node.measurement = None;
+    node.measure_log = None;
 
     id
 }

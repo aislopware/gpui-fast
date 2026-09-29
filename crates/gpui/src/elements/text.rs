@@ -629,9 +629,9 @@ impl TextLayout {
         text: SharedString,
         runs: Option<Vec<TextRun>>,
         window: &mut Window,
-        _: &mut App,
+        fast_cx: &mut App,
     ) -> LayoutId {
-        crate::fast::text::layout_text(self, text, runs, window)
+        crate::fast::text::layout_text(self, text, runs, window, fast_cx)
     }
 
     fn prepaint(&self, bounds: Bounds<Pixels>, text: &str) {

@@ -2,10 +2,10 @@
 //! carried from one frame to the next, and shaping statistics.
 
 use crate::{
-    App, AvailableSpace, DecorationRun, FontRun, FrameCache, Hsla, LayoutId, LineLayout, LineLayoutCache,
-    LineLayoutIndex, Pixels, PlatformTextSystem, SharedString, Size, StrikethroughStyle, Style,
-    TextLayout, TextLayoutInner, TextOverflow, TextRun, TextStyle, TruncateFrom, UnderlineStyle,
-    WhiteSpace, Window, WindowTextSystem, WrappedLine,
+    App, AvailableSpace, DecorationRun, FontRun, FrameCache, Hsla, LayoutId, LineLayout,
+    LineLayoutCache, LineLayoutIndex, Pixels, PlatformTextSystem, SharedString, Size,
+    StrikethroughStyle, Style, TextLayout, TextLayoutInner, TextOverflow, TextRun, TextStyle,
+    TruncateFrom, UnderlineStyle, WhiteSpace, Window, WindowTextSystem, WrappedLine,
 };
 use collections::FxHashMap;
 use gpui_util::ResultExt as _;
@@ -128,6 +128,7 @@ pub(crate) fn layout_text(
     text: SharedString,
     runs: Option<Vec<TextRun>>,
     window: &mut Window,
+    cx: &mut App,
 ) -> LayoutId {
     let text_style = window.text_style();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
@@ -177,7 +178,7 @@ pub(crate) fn layout_text(
             measure_text(&inputs, known_dimensions, available_space, window, cx)
         }
     };
-    window.request_carried_measured_layout(inputs, adopt, measure)
+    window.request_carried_measured_layout(inputs, adopt, measure, cx)
 }
 
 /// Measures text under the constraints Taffy offers, keeping the result in
@@ -396,7 +397,9 @@ impl Window {
     /// Requests a self-measuring leaf, as [`Window::request_measured_layout`]
     /// does, whose measurement can be carried over from the element at the
     /// same place last frame. `adopt` is given what that element left in
-    /// `memo`, and takes its measurement over if it still stands.
+    /// `memo`, and takes its measurement over if it still stands. Otherwise
+    /// `measure` may be run here, to tell whether it measures what the node
+    /// was measured at before.
     pub(crate) fn request_carried_measured_layout(
         &mut self,
         memo: Rc<dyn Any>,
@@ -408,23 +411,26 @@ impl Window {
             &mut App,
         ) -> Size<Pixels>
         + 'static,
+        cx: &mut App,
     ) -> LayoutId {
         self.invalidator.debug_assert_prepaint();
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
         let key = crate::fast::layout_key::layout_key(self);
-        self.layout_engine
-            .as_mut()
-            .unwrap()
-            .request_retained_carried_measured_layout(
-                key,
-                Style::default(),
-                rem_size,
-                scale_factor,
-                memo,
-                adopt,
-                measure,
-            )
+        let mut layout_engine = self.layout_engine.take().unwrap();
+        let id = layout_engine.request_retained_carried_measured_layout(
+            key,
+            Style::default(),
+            rem_size,
+            scale_factor,
+            memo,
+            adopt,
+            measure,
+            self,
+            cx,
+        );
+        self.layout_engine = Some(layout_engine);
+        id
     }
 }
 

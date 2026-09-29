@@ -33,6 +33,10 @@ pub struct LayoutStats {
     /// Measured nodes whose element took over last frame's measurement, and
     /// were left clean rather than measured again.
     pub measurements_kept: u64,
+    /// Measured nodes whose element measured something else than last
+    /// frame's — other text — to the same sizes, and were left clean rather
+    /// than measured again by Taffy.
+    pub measurements_replayed: u64,
     /// Times Taffy actually invoked a measurement. A node can be measured more
     /// than once in a layout — for its intrinsic size and then for its final
     /// one — so this runs ahead of the number of measured nodes.
