@@ -4,6 +4,7 @@ mod dependencies;
 mod global_id;
 mod layout;
 mod oracle;
+mod path_cache;
 mod retained;
 mod retained_bench;
 mod support;
