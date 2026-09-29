@@ -48,8 +48,15 @@ where
     /// The bounds inserted since the tree was last cleared, in order, each
     /// with the ordering it was given.
     recorded: Vec<(Bounds<U>, u32)>,
-    /// What `recorded` held when the tree was cleared.
+    /// What was inserted when the last frame was drawn: `recorded` as it
+    /// was when the tree was cleared, or as another tree left it (see
+    /// [`BoundsTree::take_previous`]).
     previous: Vec<(Bounds<U>, u32)>,
+    /// While replaying, the entry of `previous` the next insert stands for:
+    /// each entry of `previous` is matched with at most one insert, in
+    /// order, and the entries passed over or matched again are among the
+    /// bounds that changed.
+    cursor: usize,
     /// Whether the tree is still being replayed rather than built: every
     /// ordering since it was cleared has been found without it, and it is
     /// built from `recorded` once that stops paying.
@@ -432,6 +439,7 @@ where
         self.max = None;
         std::mem::swap(&mut self.previous, &mut self.recorded);
         self.recorded.clear();
+        self.cursor = 0;
         self.replaying = true;
         self.changed.clear();
         self.replay_search_budget = REPLAY_SEARCH_BUDGET;
@@ -466,6 +474,78 @@ where
         ordering
     }
 
+    /// Inserts `bounds` again, which last frame inserted as its entry
+    /// `position`, for a primitive drawn again from last frame, and returns
+    /// its ordering: last frame's, unless something it meets changed.
+    ///
+    /// The entry is matched with this insert whether it is the one the
+    /// cursor is at or not. The entries between the cursor and it, passed
+    /// over or matched with an earlier insert, go among the bounds that
+    /// changed, as one bounds holding them all. Should the entry not be
+    /// what it is said to be, `bounds` is inserted as any other.
+    pub fn insert_replayed(&mut self, position: usize, bounds: Bounds<U>) -> u32 {
+        let Some(ordering) = self
+            .previous
+            .get(position)
+            .filter(|(previous, _)| *previous == bounds)
+            .map(|(_, ordering)| *ordering)
+        else {
+            return self.insert(bounds);
+        };
+        if self.replaying && position != self.cursor {
+            let (from, to) = if position > self.cursor {
+                (self.cursor, position)
+            } else {
+                (position, self.cursor.min(self.previous.len()))
+            };
+            match hold(self.previous[from..to].iter().map(|(bounds, _)| bounds)) {
+                Held::Nothing => {}
+                Held::All(held) => self.changed.push(&held),
+                Held::Unbounded => {
+                    self.replaying = false;
+                    self.build_from_recorded();
+                }
+            }
+            self.cursor = position;
+        }
+        if self.replaying {
+            if let Some(ordering) = self.replay_matched(&bounds, ordering) {
+                self.recorded.push((bounds, ordering));
+                return ordering;
+            }
+            self.replaying = false;
+            self.build_from_recorded();
+        }
+        let ordering = self.find_max_ordering(&bounds) + 1;
+        self.add(&bounds, ordering);
+        self.recorded.push((bounds, ordering));
+        ordering
+    }
+
+    /// The ordering of bounds matched with the entry at the cursor, which
+    /// was given `ordering`, or `None` once finding it would cost more than
+    /// building the tree.
+    fn replay_matched(&mut self, bounds: &Bounds<U>, ordering: u32) -> Option<u32> {
+        if !self.changed.might_meet(bounds) {
+            self.cursor += 1;
+            return Some(ordering);
+        }
+        self.replay(bounds)
+    }
+
+    /// How many bounds were inserted since the tree was cleared.
+    pub fn len(&self) -> usize {
+        self.recorded.len()
+    }
+
+    /// Takes what `other` inserted as what the last frame inserted, handing
+    /// it what this tree held there. Two frames take turns drawing into two
+    /// scenes, so the one cleared to draw next last drew the frame before
+    /// the last.
+    pub fn take_previous(&mut self, other: &mut Self) {
+        std::mem::swap(&mut self.previous, &mut other.recorded);
+    }
+
     /// The ordering `bounds` is given while the tree is being replayed, or
     /// `None` once finding it without the tree would cost more than building
     /// the tree.
@@ -478,7 +558,8 @@ where
     /// worked out from what has been inserted so far, and if that differs
     /// from last time, the bounds join the ones that changed.
     fn replay(&mut self, bounds: &Bounds<U>) -> Option<u32> {
-        let previous = self.previous.get(self.recorded.len());
+        let previous = self.previous.get(self.cursor);
+        self.cursor += 1;
         if let Some((previous_bounds, ordering)) = previous
             && previous_bounds == bounds
         {
@@ -581,6 +662,91 @@ where
     }
 }
 
+/// What one bounds can stand for of several, as far as meeting others goes.
+enum Held<U>
+where
+    U: Clone + Debug + Default + PartialEq,
+{
+    /// None of them can meet anything: each has an edge that is not a
+    /// number.
+    Nothing,
+    /// A bounds that meets whatever any of them meets.
+    All(Bounds<U>),
+    /// No bounds can: the one holding them all would reach so far that its
+    /// far edges round short of theirs, or come out as not a number.
+    Unbounded,
+}
+
+/// The bounds standing for every one of `bounds` among the ones that
+/// changed: the smallest holding them all.
+///
+/// Bounds meet another only when each of their edges compares with its
+/// edges, which an edge that is not a number never does, so bounds with
+/// such an edge are left out. Every other one has its near edges at or
+/// past the held bounds' and its far edges at or short of them, so it meets
+/// only what the held bounds meet, once their far edges, worked out again
+/// from origin and size, are checked to still reach as far.
+fn hold<'a, U>(bounds: impl Iterator<Item = &'a Bounds<U>>) -> Held<U>
+where
+    U: 'a
+        + Clone
+        + Debug
+        + Default
+        + PartialEq
+        + PartialOrd
+        + Add<U, Output = U>
+        + Sub<Output = U>
+        + Into<f64>,
+{
+    let mut extent: Option<[U; 4]> = None;
+    for bounds in bounds {
+        let [left, top] = [bounds.origin.x.clone(), bounds.origin.y.clone()];
+        let right = left.clone() + bounds.size.width.clone();
+        let bottom = top.clone() + bounds.size.height.clone();
+        let edges = [left, top, right, bottom];
+        if edges.iter().any(|edge| Into::<f64>::into(edge.clone()).is_nan()) {
+            continue;
+        }
+        extent = Some(match extent {
+            None => edges,
+            Some([l, t, r, b]) => {
+                let [left, top, right, bottom] = edges;
+                [
+                    if left < l { left } else { l },
+                    if top < t { top } else { t },
+                    if right > r { right } else { r },
+                    if bottom > b { bottom } else { b },
+                ]
+            }
+        });
+    }
+    let Some([left, top, right, bottom]) = extent else {
+        return Held::Nothing;
+    };
+    let held = Bounds {
+        origin: crate::Point {
+            x: left.clone(),
+            y: top.clone(),
+        },
+        size: crate::Size {
+            width: right.clone() - left,
+            height: bottom.clone() - top,
+        },
+    };
+    let reach_x = held.origin.x.clone() + held.size.width.clone();
+    let reach_y = held.origin.y.clone() + held.size.height.clone();
+    let reaches = |reach: U, edge: U| {
+        matches!(
+            reach.partial_cmp(&edge),
+            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+        )
+    };
+    if !reaches(reach_x, right) || !reaches(reach_y, bottom) {
+        return Held::Unbounded;
+    }
+    Held::All(held)
+}
+
 impl<U> Default for BoundsTree<U>
 where
     U: Clone + Debug + Default + PartialEq,
@@ -597,6 +763,7 @@ where
             max: None,
             recorded: Vec::new(),
             previous: Vec::new(),
+            cursor: 0,
             replaying: false,
             changed: ChangedBounds {
                 bounds: Vec::new(),
@@ -930,6 +1097,76 @@ mod tests {
                     assert_eq!(tree.insert(*bounds), expected, "seed {seed}: {bounds:?}");
                     inserted.push((*bounds, expected));
                 }
+            }
+        }
+    }
+
+    /// A scene drawing parts of the last frame again inserts their bounds
+    /// naming the entries they were last time, in runs that start anywhere:
+    /// ahead of the last entry matched, behind it, or on it again, with
+    /// bounds of its own between the runs and entries changed or given the
+    /// wrong position. Every ordering is still what inserting the frame
+    /// afresh gives, for bounds of every awkward kind too.
+    #[test]
+    fn replaying_entries_out_of_order_gives_what_inserting_it_would() {
+        let awkward = |rng: &mut rand::rngs::StdRng| {
+            let mut bounds = random_bounds(rng);
+            match rng.random_range(0..40) {
+                0 => bounds.origin.x = f32::NAN,
+                1 => bounds.origin.y = f32::NEG_INFINITY,
+                2 => bounds.size.width = f32::INFINITY,
+                3 => bounds.size.height = -rng.random_range(0.0..20.0),
+                4 => bounds.origin.x = f32::NEG_INFINITY,
+                _ => {}
+            }
+            bounds
+        };
+        for seed in 1..=500 {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            let mut tree = BoundsTree::default();
+            let count = rng.random_range(1..=150);
+            let mut last: Vec<_> = (0..count).map(|_| awkward(&mut rng)).collect();
+            fill(&mut tree, &last);
+            for _ in 0..4 {
+                tree.clear();
+                let mut inserted: Vec<(Bounds<f32>, u32)> = Vec::new();
+                let mut frame = Vec::new();
+                while frame.len() < count + 20 && rng.random_range(0..12) != 0 {
+                    let mut run = rng.random_range(0..last.len());
+                    for _ in 0..rng.random_range(1..=20) {
+                        let (position, bounds) = match rng.random_range(0..12) {
+                            0 => (run, awkward(&mut rng)),
+                            1 => (rng.random_range(0..last.len() + 5), last[run]),
+                            2 => (usize::MAX, awkward(&mut rng)),
+                            _ => (run, last[run]),
+                        };
+                        let expected = inserted
+                            .iter()
+                            .filter_map(|(other, order)| {
+                                other.intersects(&bounds).then_some(*order)
+                            })
+                            .max()
+                            .unwrap_or(0)
+                            + 1;
+                        let ordering = if position == usize::MAX {
+                            tree.insert(bounds)
+                        } else {
+                            tree.insert_replayed(position, bounds)
+                        };
+                        assert_eq!(ordering, expected, "seed {seed}");
+                        inserted.push((bounds, expected));
+                        frame.push(bounds);
+                        run += 1;
+                        if run == last.len() {
+                            break;
+                        }
+                    }
+                }
+                if frame.is_empty() {
+                    frame.push(awkward(&mut rng));
+                    tree.insert(frame[0]);
+                }
+                last = frame;
             }
         }
     }

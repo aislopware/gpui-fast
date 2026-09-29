@@ -52,6 +52,7 @@ pub struct Scene {
     pub surfaces: Vec<PaintSurface>,
     pub(crate) sort_scratch: crate::fast::scene::SortScratch,
     pub(crate) composition: crate::fast::composition::SceneComposition,
+    pub(crate) fast_painted: crate::fast::scene::Painted,
 }
 
 #[expect(missing_docs)]
@@ -69,6 +70,7 @@ impl Scene {
         self.polychrome_sprites.clear();
         self.surfaces.clear();
         crate::fast::composition::scene::clear(self);
+        crate::fast::scene::clear(self);
     }
 
     pub fn len(&self) -> usize {
@@ -78,13 +80,12 @@ impl Scene {
     pub fn push_layer(&mut self, bounds: Bounds<ScaledPixels>) {
         let order = self.primitive_bounds.insert(bounds);
         self.layer_stack.push(order);
-        self.paint_operations
-            .push(PaintOperation::StartLayer(bounds));
+        crate::fast::scene::push_entered(self, PaintOperation::StartLayer(bounds));
     }
 
     pub fn pop_layer(&mut self) {
         self.layer_stack.pop();
-        self.paint_operations.push(PaintOperation::EndLayer);
+        crate::fast::scene::push(self, PaintOperation::EndLayer);
     }
 
     pub fn insert_primitive(&mut self, primitive: impl Into<Primitive>) {
@@ -137,21 +138,11 @@ impl Scene {
                 self.surfaces.push(surface.clone());
             }
         }
-        self.paint_operations
-            .push(PaintOperation::Primitive(primitive));
+        crate::fast::scene::push_primitive(self, &primitive);
     }
 
     pub fn replay(&mut self, range: Range<usize>, prev_scene: &Scene) {
-        for operation in &prev_scene.paint_operations[range] {
-            match operation {
-                PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
-                PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
-                PaintOperation::EndLayer => self.pop_layer(),
-                PaintOperation::Native(placement) => {
-                    crate::fast::composition::scene::replay(self, placement)
-                }
-            }
-        }
+        crate::fast::scene::replay(self, range, prev_scene);
     }
 
     pub fn finish(&mut self) {
@@ -208,10 +199,10 @@ pub(crate) enum PrimitiveKind {
 }
 
 pub(crate) enum PaintOperation {
-    Primitive(Primitive),
+    Primitive(crate::fast::scene::PrimitiveAt),
     StartLayer(Bounds<ScaledPixels>),
     EndLayer,
-    Native(crate::fast::composition::NativePlacement),
+    Native(Box<crate::fast::composition::NativePlacement>),
 }
 
 #[derive(Clone)]

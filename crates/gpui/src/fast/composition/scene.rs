@@ -115,8 +115,7 @@ impl Scene {
         }
         self.composition.holes.push(placement.hole());
         self.composition.placements.push(placement.clone());
-        self.paint_operations
-            .push(PaintOperation::Native(placement));
+        crate::fast::scene::push(self, PaintOperation::Native(Box::new(placement)));
     }
 
     /// The bounds of the innermost paint layer still open.

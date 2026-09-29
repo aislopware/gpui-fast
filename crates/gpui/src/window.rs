@@ -3444,6 +3444,10 @@ impl Window {
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
         self.next_frame.clear();
+        crate::fast::scene::take_orderings(
+            &mut self.next_frame.scene,
+            &mut self.rendered_frame.scene,
+        );
         let current_focus_path = self.rendered_frame.focus_path();
         let current_window_active = self.rendered_frame.window_active;
         let mut focus_before_listeners = self.focus;
