@@ -749,7 +749,7 @@ pub trait Styled: Sized {
     }
 
     /// Draws a ring outside this element's border, clear of it by the outline's offset.
-    fn outline(mut self, outline: crate::Outline) -> Self {
+    fn outline_ring(mut self, outline: crate::Outline) -> Self {
         self.style().outline = Some(outline);
         self
     }

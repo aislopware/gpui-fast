@@ -5650,7 +5650,7 @@ mod tests {
                     .w(px(40.))
                     .h(px(20.))
                     .rounded(px(6.))
-                    .outline(crate::Outline {
+                    .outline_ring(crate::Outline {
                         color: crate::red(),
                         width: px(2.),
                         offset: px(2.),
