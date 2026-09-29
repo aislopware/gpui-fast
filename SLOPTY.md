@@ -287,8 +287,32 @@ brings it: take zed's version of the files, remove the pull request's line from
     is checked by building and clippy only.
   - The `Platform` method's default does nothing, which iOS keeps.
 
+Merged ahead of longbridge, and not yet merged there:
+
+- longbridge/gpui-fast#17 at `fbeb4f9` ("draw unchanged elements again from the last
+  frame inside rebuilt views"), merged whole as `139b12e`. The only conflict was
+  `script/upstream-allowlist` (`div.rs` removes 50 lines, not 45). What we added on
+  top, all in `fast/`, is listed in [docs/retained-mode.md](docs/retained-mode.md)
+  ("Elements"): svgs and accessibility fields eligible (`d1df001`), probation looked
+  up before the walk (`3b1c671`), and text kept wrapped measured unwrapped for a
+  probe with no width (`542eeda`). #17 costs 3 to 8% on screens where everything
+  moves (`layout-text`, `layout-panel`, `table-virtual-scroll`); `3b1c671` takes back
+  part of it. When longbridge merges its own version, keep ours where it differs and
+  the tests named there pass.
+
 Added in this fork:
 
+- `4105616` perf(gpui): the scene's primitives sorted by an 11-bit radix sort of packed
+  keys, a kind already in order left as it is, sprites no longer ordered by atlas tile
+  (docs/architecture.md, "Orderings")
+- `817e345` perf(gpui): a `ShapedLine` keeps four decoration runs inline, not 32
+- `dfb5ad0` test(gpui): the test window records where it was asked to put the input
+  method's candidate window (`TestAppContext::ime_positions`)
+- `2e199c6` feat(gpui): `ScrollWheelEvent::momentum_phase`. macOS reads it from
+  `NSEvent.momentumPhase`, and the touch recognizer's fling steps carry it too.
+  Windows, Linux and the web send `None`: Direct Manipulation's inertia could be
+  mapped, but it is untested here. Consumers that build a `ScrollWheelEvent` without
+  `..Default::default()` have to add the field.
 - `1776aa2` test(gpui): a video surface shows the buffer its view holds, retained or not
 - `4d0009e` gpui: build a view that asked for an animation frame on the next frame drawn
 - the commit after `4c13f16`: a spliced view builds every nested view that is out of
@@ -347,6 +371,9 @@ Generic to gpui-fast, not to Slopty, and worth a pull request to longbridge/gpui
     (`mark_changed_retained_views_dirty`), which covers the first fix for entities,
     globals and states, but not for hovers; the gap test stays as it is. `checked_at`
     and `deferred_out_of_date` are still needed with #10.
+- what we added to longbridge#17 (above), the radix scene sort `4105616`, the decoration
+  runs `817e345` and the test window's IME record `dfb5ad0`; `2e199c6` is a candidate
+  for zed itself;
 - the element-state fixes made while merging longbridge#10 (above): a spliced view keeps
   neither its gaps' element states nor last frame's whole layout.
 - the commit adding this file, which also lets `script/check-upstream` accept the patches
