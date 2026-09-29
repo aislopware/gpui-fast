@@ -628,6 +628,16 @@ pub(crate) struct RecentShapes {
     fonts_generation: u64,
 }
 
+impl crate::Window {
+    /// Forgets the lines this window's text system shaped lately, so that a
+    /// test sees what the line layout cache alone keeps.
+    #[cfg(test)]
+    pub(crate) fn forget_recent_shapes(&self) {
+        let shaping = &self.text_system().line_layout_cache.shaping;
+        *shaping.recent.lock() = RecentShapes::default();
+    }
+}
+
 impl RecentShapes {
     pub(crate) fn hash(text: &str, font_size: Pixels, runs: &[FontRun]) -> u64 {
         let mut hasher = FxHasher::default();
