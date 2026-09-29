@@ -1798,11 +1798,11 @@ pub fn div() -> Div {
 
 /// A [`Div`] element, the all-in-one element for building complex UIs in GPUI
 pub struct Div {
-    interactivity: Interactivity,
-    children: SmallVec<[StackSafe<AnyElement>; 2]>,
-    prepaint_listener: Option<Box<dyn Fn(Vec<Bounds<Pixels>>, &mut Window, &mut App) + 'static>>,
-    image_cache: Option<Box<dyn ImageCacheProvider>>,
-    prepaint_order_fn: Option<Box<dyn Fn(&mut Window, &mut App) -> SmallVec<[usize; 8]>>>,
+    pub(crate) interactivity: Interactivity,
+    pub(crate) children: SmallVec<[StackSafe<AnyElement>; 2]>,
+    pub(crate) prepaint_listener: crate::fast::element::PrepaintListener,
+    pub(crate) image_cache: Option<Box<dyn ImageCacheProvider>>,
+    pub(crate) prepaint_order_fn: crate::fast::element::PrepaintOrderFn,
 }
 
 impl Div {

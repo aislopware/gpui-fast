@@ -3,6 +3,9 @@
 mod composition;
 mod dependencies;
 mod dispatch;
+mod element;
+mod element_bench;
+mod element_oracle;
 mod global_id;
 mod keypad;
 mod layout;

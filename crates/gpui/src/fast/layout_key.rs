@@ -199,14 +199,7 @@ pub(crate) fn layout_key(window: &Window) -> Option<u64> {
 pub(crate) fn push_layout_key(window: &mut Window, id: Option<&ElementId>) -> u64 {
     let layout = &mut window.fast_layout;
     let component = match id {
-        Some(id) => {
-            let mut hasher = FxHasher::default();
-            id.hash(&mut hasher);
-            // Kept distinct from the positional case so that an element
-            // identified by index 3 and one whose `ElementId` hashes to 3
-            // do not collide.
-            mix(hasher.finish(), 1)
-        }
+        Some(id) => identified_component(id),
         None => {
             let index = match layout.key_stack.last_mut() {
                 Some(parent) => &mut parent.next_unidentified_child,
@@ -228,6 +221,87 @@ pub(crate) fn push_layout_key(window: &mut Window, id: Option<&ElementId>) -> u6
         next_unidentified_child: 0,
     });
     key
+}
+
+/// What [`push_layout_key`] mixes in for an element with an [`ElementId`].
+fn identified_component(id: &ElementId) -> u64 {
+    let mut hasher = FxHasher::default();
+    id.hash(&mut hasher);
+    // Kept distinct from the positional case so that an element
+    // identified by index 3 and one whose `ElementId` hashes to 3
+    // do not collide.
+    mix(hasher.finish(), 1)
+}
+
+/// Where the next element to begin would begin: everything
+/// [`push_layout_key`] derives its key from. Kept by an element that skips
+/// requesting its layout, to request it later as it would have then.
+pub(crate) struct KeyPosition {
+    parent: Option<u64>,
+    prepaint_scope: u64,
+    index: u32,
+}
+
+impl KeyPosition {
+    /// The key [`push_layout_key`] gives an element identified by `id`
+    /// begun here.
+    pub(crate) fn key(&self, id: Option<&ElementId>) -> u64 {
+        let component = match id {
+            Some(id) => identified_component(id),
+            None => mix(self.index as u64, 2),
+        };
+        let parent = self
+            .parent
+            .unwrap_or_else(|| mix(self.prepaint_scope, LAYOUT_PREPAINT_SALT));
+        mix(parent, component)
+    }
+}
+
+/// Where the next element to begin in `window` would begin.
+#[inline(always)]
+pub(crate) fn key_position(window: &Window) -> KeyPosition {
+    let layout = &window.fast_layout;
+    match layout.key_stack.last() {
+        Some(parent) => KeyPosition {
+            parent: Some(parent.key),
+            prepaint_scope: layout.prepaint_scope,
+            index: parent.next_unidentified_child,
+        },
+        None => KeyPosition {
+            parent: None,
+            prepaint_scope: layout.prepaint_scope,
+            index: layout.root_index,
+        },
+    }
+}
+
+/// Runs `f` as though the element tree were being walked at `position`, so
+/// that an element begun in `f` gets the key it would have got there.
+pub(crate) fn with_key_position<R>(
+    window: &mut Window,
+    position: &KeyPosition,
+    f: impl FnOnce(&mut Window) -> R,
+) -> R {
+    let layout = &mut window.fast_layout;
+    let saved_stack = mem::take(&mut layout.key_stack);
+    let saved_scope = layout.prepaint_scope;
+    let saved_root_index = layout.root_index;
+    match position.parent {
+        Some(key) => layout.key_stack.push(LayoutKeyFrame {
+            key,
+            next_unidentified_child: position.index,
+        }),
+        None => {
+            layout.prepaint_scope = position.prepaint_scope;
+            layout.root_index = position.index;
+        }
+    }
+    let result = f(window);
+    let layout = &mut window.fast_layout;
+    layout.key_stack = saved_stack;
+    layout.prepaint_scope = saved_scope;
+    layout.root_index = saved_root_index;
+    result
 }
 
 /// Hangs elements laid out from here on the element whose prepaint is
@@ -286,7 +360,7 @@ pub(crate) fn layout_as_list_item(
     window: &mut Window,
     cx: &mut App,
 ) -> Size<Pixels> {
-    if element.0.fast_element_id().is_some() {
+    if element.0.fast_retention().element_id().is_some() {
         return element.layout_as_root(available_space, window, cx);
     }
     window.with_list_item_layout_key(index, |window| {
