@@ -38,7 +38,7 @@ use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Div, Drawable, Element, ElementId,
     HitboxBehavior, Interactivity, LayoutId, Overflow, Pixels, SharedString, Size, Stateful,
-    StyleRefinement, Text, TextStyle, Window,
+    StyleRefinement, Svg, Text, TextStyle, Transformation, Window,
 };
 use collections::FxHashMap;
 use std::{
@@ -243,10 +243,42 @@ enum Snapshot {
         id: Option<ElementId>,
         text: SharedString,
     },
+    Svg {
+        id: Option<ElementId>,
+        /// As for [`Snapshot::Div`].
+        style: Option<Rc<StyleRefinement>>,
+        source: SvgSource,
+    },
     /// Not recorded, with nothing nested in it, because it was drawn
     /// somewhere else than the frame before; it is recorded again once it
     /// stands still. See [`Placement`], which does this for roots.
     Moving,
+}
+
+/// What an `svg` draws besides its style: the asset at `path`, or the bytes
+/// `data_path` names, which is a hash of them, and the cache key the atlas
+/// keeps their rendering under.
+#[derive(Clone, PartialEq)]
+struct SvgSource {
+    path: Option<SharedString>,
+    data_path: Option<SharedString>,
+    transformation: Option<Transformation>,
+}
+
+impl SvgSource {
+    fn of(svg: &Svg) -> Self {
+        SvgSource {
+            path: svg.path.clone(),
+            data_path: svg.data_path.clone(),
+            transformation: svg.transformation,
+        }
+    }
+
+    fn matches(&self, svg: &Svg) -> bool {
+        self.path == svg.path
+            && self.data_path == svg.data_path
+            && self.transformation == svg.transformation
+    }
 }
 
 /// A record of last frame: the record `index` of the subtree of its root
@@ -592,6 +624,7 @@ fn retainable_type<E: 'static>() -> bool {
         || id == TypeId::of::<SharedString>()
         || id == TypeId::of::<&'static str>()
         || id == TypeId::of::<Text>()
+        || id == TypeId::of::<Svg>()
 }
 
 /// Whether anything can be drawn from last frame in `window` this frame.
@@ -611,6 +644,7 @@ fn active(window: &Window, cx: &App) -> bool {
 /// What an element is, as far as being drawn again goes.
 enum Own<'a> {
     Div(&'a mut Div),
+    Svg(&'a mut Svg),
     Text {
         id: Option<&'a ElementId>,
         text: TextRef<'a>,
@@ -661,11 +695,14 @@ fn own(element: &mut dyn Any) -> Option<Own<'_>> {
             text: TextRef::Static(text),
         });
     }
-    let text = element.downcast_ref::<Text>()?;
-    Some(Own::Text {
-        id: text.id.as_ref(),
-        text: TextRef::Shared(&text.text),
-    })
+    if element.is::<Text>() {
+        let text = element.downcast_ref::<Text>()?;
+        return Some(Own::Text {
+            id: text.id.as_ref(),
+            text: TextRef::Shared(&text.text),
+        });
+    }
+    element.downcast_mut::<Svg>().map(Own::Svg)
 }
 
 impl Own<'_> {
@@ -674,7 +711,19 @@ impl Own<'_> {
     fn plain(&self) -> bool {
         match self {
             Own::Div(div) => plain_div(div),
+            // An svg from a file draws nothing until the file is loaded,
+            // which notifies the view it is drawn in without changing it.
+            Own::Svg(svg) => svg.external_path.is_none() && plain_interactivity(&svg.interactivity),
             Own::Text { .. } => true,
+        }
+    }
+
+    /// The style an element that has one was built with.
+    fn style(&mut self) -> Option<&mut StyleRefinement> {
+        match self {
+            Own::Div(div) => Some(&mut div.interactivity.base_style),
+            Own::Svg(svg) => Some(&mut svg.interactivity.base_style),
+            Own::Text { .. } => None,
         }
     }
 
@@ -686,6 +735,11 @@ impl Own<'_> {
                 id: div.interactivity.element_id.clone(),
                 style: lent_style,
                 children: div.children.len() as u32,
+            },
+            Own::Svg(svg) => Snapshot::Svg {
+                id: svg.interactivity.element_id.clone(),
+                style: lent_style,
+                source: SvgSource::of(svg),
             },
             Own::Text { id, text } => Snapshot::Text {
                 id: id.cloned(),
@@ -763,10 +817,12 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         tab_index,
         tab_group,
         tab_stop: _,
-        a11y_action_listeners,
-        a11y_synthetic_children,
-        report_active_descendant_focus,
-        override_role,
+        // What accessibility reads is drawn only while it is active, when
+        // nothing is drawn again from last frame.
+        a11y_action_listeners: _,
+        a11y_synthetic_children: _,
+        report_active_descendant_focus: _,
+        override_role: _,
         aria: _,
         #[cfg(any(feature = "inspector", debug_assertions))]
             source_location: _,
@@ -816,10 +872,6 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         && *hitbox_behavior == HitboxBehavior::Normal
         && tab_index.is_none()
         && !tab_group
-        && a11y_action_listeners.is_empty()
-        && a11y_synthetic_children.is_none()
-        && !report_active_descendant_focus
-        && override_role.is_none()
 }
 
 fn child_parts(child: &mut AnyElement) -> ElementParts<'_> {
@@ -845,7 +897,7 @@ fn nested_eligible(own: Own) -> bool {
             let child: &mut AnyElement = child;
             subtree_eligible(child_parts(child))
         }),
-        Own::Text { .. } => true,
+        Own::Svg(_) | Own::Text { .. } => true,
     }
 }
 
@@ -917,6 +969,15 @@ fn subtree_matches(parts: ElementParts, subtree: &Subtree, previous: PrevRef) ->
                     text: previous_text,
                 },
             ) => id == previous_id.as_ref() && text.as_str() == previous_text.as_ref(),
+            (Some(Own::Svg(svg)), Snapshot::Svg { id, style, source }) => {
+                let same_style = style
+                    .as_ref()
+                    .is_some_and(|style| **style == *svg.interactivity.base_style);
+                if same_style {
+                    parts.state.lent_style = style.clone();
+                }
+                svg.interactivity.element_id == *id && same_style && source.matches(svg)
+            }
             _ => false,
         };
     parts.state.matched = Some((previous, result));
@@ -1381,7 +1442,7 @@ fn finish_record(index: u32, window: &mut Window) {
     record.prepaint_range.end = end;
     record.complete = match &record.snapshot {
         Snapshot::Div { children: all, .. } => children == *all,
-        Snapshot::Text { .. } | Snapshot::Moving => children == 0,
+        Snapshot::Text { .. } | Snapshot::Svg { .. } | Snapshot::Moving => children == 0,
     };
     record.reusable = record.complete
         && !matches!(record.snapshot, Snapshot::Moving)
@@ -1546,10 +1607,14 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
             if let Snapshot::Div {
                 style: style @ None,
                 ..
+            }
+            | Snapshot::Svg {
+                style: style @ None,
+                ..
             } = &mut record.snapshot
-                && let Some(Own::Div(div)) = own(&mut drawable.element)
+                && let Some(built) = own(&mut drawable.element).as_mut().and_then(Own::style)
             {
-                *style = Some(Rc::new(mem::take(&mut *div.interactivity.base_style)));
+                *style = Some(Rc::new(mem::take(built)));
             }
             if index == 0 {
                 elements.freeze(root);

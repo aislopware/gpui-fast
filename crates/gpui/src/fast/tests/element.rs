@@ -266,3 +266,81 @@ fn plain_elements_beside_an_interactive_one_are_reused(cx: &mut TestAppContext) 
     // text each, and the text in every button.
     assert_eq!(stats.elements_reused, 7, "{stats:?}");
 }
+
+const SQUARE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect x="1" y="1" width="6" height="6"/></svg>"#;
+const DOT: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="2"/></svg>"#;
+
+struct Icon {
+    data: &'static str,
+    turned: bool,
+}
+
+impl Render for Icon {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let icon = crate::svg()
+            .size(px(16.))
+            .text_color(hsla(0., 0., 0., 1.))
+            .data(self.data.as_bytes());
+        div().child(if self.turned {
+            icon.with_transformation(crate::Transformation::rotate(crate::radians(1.)))
+        } else {
+            icon
+        })
+    }
+}
+
+/// An svg is drawn again only while it shows the same image, turned the
+/// same way.
+#[gpui::test]
+fn an_svg_showing_another_image_is_drawn_anew(cx: &mut TestAppContext) {
+    let window: WindowHandle<Icon> = cx.add_window(|_, _| Icon {
+        data: SQUARE,
+        turned: false,
+    });
+    let sprite = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            let stats = window.layout_stats();
+            window.reset_layout_stats();
+            let sprites = &window.rendered_frame.scene.monochrome_sprites;
+            assert_eq!(sprites.len(), 1);
+            (
+                sprites[0].tile.tile_id,
+                sprites[0].transformation,
+                stats.elements_reused,
+            )
+        })
+        .unwrap()
+    };
+    let (square, straight, _) = sprite(cx);
+    for _ in 0..3 {
+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
+        sprite(cx);
+    }
+    window.update(cx, |_, _, cx| cx.notify()).unwrap();
+    assert_eq!(
+        sprite(cx),
+        (square, straight, 2),
+        "drawn again, div and svg"
+    );
+
+    window
+        .update(cx, |icon, _, cx| {
+            icon.data = DOT;
+            cx.notify();
+        })
+        .unwrap();
+    let (dot, _, reused) = sprite(cx);
+    assert_ne!(dot, square);
+    assert_eq!(reused, 0);
+
+    window
+        .update(cx, |icon, _, cx| {
+            icon.turned = true;
+            cx.notify();
+        })
+        .unwrap();
+    let (_, turned, reused) = sprite(cx);
+    assert_ne!(turned, straight);
+    assert_eq!(reused, 0);
+}

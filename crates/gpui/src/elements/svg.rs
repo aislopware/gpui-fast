@@ -14,12 +14,12 @@ use gpui_util::ResultExt;
 
 /// An SVG element.
 pub struct Svg {
-    interactivity: Interactivity,
-    transformation: Option<Transformation>,
-    path: Option<SharedString>,
-    external_path: Option<SharedString>,
+    pub(crate) interactivity: Interactivity,
+    pub(crate) transformation: Option<Transformation>,
+    pub(crate) path: Option<SharedString>,
+    pub(crate) external_path: Option<SharedString>,
     data: Option<Arc<[u8]>>,
-    data_path: Option<SharedString>,
+    pub(crate) data_path: Option<SharedString>,
 }
 
 /// Create a new SVG element.

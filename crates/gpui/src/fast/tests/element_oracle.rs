@@ -16,11 +16,12 @@ use std::{borrow::Cow, sync::Arc};
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 
 use crate::{
-    AnyElement, App, Bounds, Context, DevicePixels, Entity, FocusHandle, Font, FontId, FontMetrics,
-    FontRun, GlyphId, Hsla, InputEvent as _, IntoElement, LineLayout, MouseMoveEvent,
+    AnyElement, App, AssetSource, Bounds, Context, DevicePixels, Entity, FocusHandle, Font, FontId,
+    FontMetrics, FontRun, GlyphId, Hsla, InputEvent as _, IntoElement, LineLayout, MouseMoveEvent,
     NoopTextSystem, Pixels, PlatformTextSystem, Render, RenderGlyphParams, RenderOnce, Result,
-    ScrollHandle, SharedString, Size, TestAppContext, TextRenderingMode, Window, WindowHandle,
-    anchored, deferred, div, hsla, point, prelude::*, px, size,
+    Role, ScrollHandle, SharedString, Size, SvgRenderer, TestAppContext, TextRenderingMode,
+    Transformation, Window, WindowHandle, anchored, deferred, div, hsla, point, prelude::*, px,
+    radians, size, svg,
 };
 
 const WORDS: [&str; 8] = [
@@ -33,6 +34,27 @@ const WORDS: [&str; 8] = [
     "volume 1200",
     "a label long enough to wrap in a narrow cell",
 ];
+
+/// Icons, each named by its own source, which [`Icons`] serves as the svg
+/// it names.
+const ICONS: [&str; 3] = [
+    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect x="1" y="1" width="6" height="3"/></svg>"#,
+    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"/></svg>"#,
+    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><path d="M0 8L4 0L8 8z"/></svg>"#,
+];
+
+/// Serves every path as the svg source it is.
+struct Icons;
+
+impl AssetSource for Icons {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        Ok(Some(Cow::Owned(path.as_bytes().to_vec())))
+    }
+
+    fn list(&self, _: &str) -> Result<Vec<SharedString>> {
+        Ok(Vec::new())
+    }
+}
 
 const PALETTE: [Hsla; 5] = [
     hsla(0.0, 0.0, 0.1, 1.0),
@@ -57,6 +79,10 @@ struct Item {
     nested: bool,
     hidden: bool,
     invisible: bool,
+    /// An svg icon beside the label: from an asset, from bytes, turned.
+    icon: bool,
+    /// An accessibility role and label on the label, which draw nothing.
+    role: bool,
 }
 
 impl Item {
@@ -73,6 +99,8 @@ impl Item {
             nested: id.is_multiple_of(5),
             hidden: false,
             invisible: false,
+            icon: id.is_multiple_of(3),
+            role: id.is_multiple_of(4),
         }
     }
 }
@@ -86,6 +114,8 @@ enum Flag {
     Nested,
     Hidden,
     Invisible,
+    Icon,
+    Role,
 }
 
 #[derive(Clone, Debug)]
@@ -180,7 +210,9 @@ impl Change {
                     Flag::Nested,
                     Flag::Hidden,
                     Flag::Invisible,
-                ][rng.random_range(0..7)],
+                    Flag::Icon,
+                    Flag::Role,
+                ][rng.random_range(0..9)],
             },
             37..42 => Change::Insert { at: item },
             42..47 => Change::Remove { at: item },
@@ -238,6 +270,25 @@ fn render_item(item: Item, keyed: bool, focus: Option<&FocusHandle>) -> AnyEleme
     let label = div()
         .text_color(PALETTE[(item.color + 1) % PALETTE.len()])
         .child(SharedString::from(WORDS[item.word]));
+    let label = if item.role {
+        label
+            .id(("label", item.id))
+            .role(Role::Label)
+            .aria_label(WORDS[item.word])
+            .into_any_element()
+    } else {
+        label.into_any_element()
+    };
+    let icon = item.icon.then(|| {
+        let icon = svg().size(px(8.)).text_color(PALETTE[item.color]);
+        match item.word % 3 {
+            0 => icon.path(ICONS[item.word / 3 % ICONS.len()]),
+            1 => icon.data(ICONS[item.word / 3 % ICONS.len()].as_bytes()),
+            _ => icon
+                .path(ICONS[0])
+                .with_transformation(Transformation::rotate(radians(item.color as f32))),
+        }
+    });
     let element = div()
         .flex()
         .flex_row()
@@ -252,6 +303,7 @@ fn render_item(item: Item, keyed: bool, focus: Option<&FocusHandle>) -> AnyEleme
             this.track_focus(focus)
                 .focus(|style| style.border_1().border_color(PALETTE[3]))
         })
+        .children(icon)
         .child(label)
         .child(
             div()
@@ -346,6 +398,8 @@ impl Board {
                         Flag::Nested => &mut item.nested,
                         Flag::Hidden => &mut item.hidden,
                         Flag::Invisible => &mut item.invisible,
+                        Flag::Icon => &mut item.icon,
+                        Flag::Role => &mut item.role,
                     };
                     *value = !*value;
                 }
@@ -624,6 +678,14 @@ fn describe_frame_state(window: &Window) -> Vec<String> {
         frame.input_handlers.iter().filter(|h| h.is_some()).count()
     ));
     lines.push(format!("cursor styles {}", frame.cursor_styles.len()));
+    // Which glyph or icon each sprite shows, and how it is turned: the two
+    // windows share one atlas, so the same image is the same tile in both.
+    lines.extend(frame.scene.monochrome_sprites.iter().map(|sprite| {
+        format!(
+            "sprite {:?} tile {:?} {:?}",
+            sprite.bounds, sprite.tile.tile_id, sprite.transformation
+        )
+    }));
     lines
 }
 
@@ -689,8 +751,18 @@ fn first_difference(actual: &[String], expected: &[String]) -> Option<(usize, St
 /// elements the incremental window drew again along the way.
 fn run(seed: u64, steps: usize) -> u64 {
     let mut cx = TestAppContext::with_text_system(Arc::new(GlyphBoxTextSystem(NoopTextSystem)));
+    cx.update(|cx| cx.svg_renderer = SvgRenderer::new(Arc::new(Icons)));
     let incremental = cx.add_window(|_, cx| Board::new(cx));
     let from_scratch = cx.add_window(|_, cx| Board::new(cx));
+    let atlas = cx
+        .update_window(incremental.into(), |_, window, _| {
+            window.sprite_atlas.clone()
+        })
+        .unwrap();
+    cx.update_window(from_scratch.into(), |_, window, _| {
+        window.sprite_atlas = atlas;
+    })
+    .unwrap();
     let mut rng = StdRng::seed_from_u64(seed);
     let mut history: Vec<Vec<Change>> = Vec::new();
     let mut reused = 0;
