@@ -23,6 +23,11 @@ Two upstreams feed it:
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
   longbridge commit merged is `f6e82b4` (#13, "keep carried lines in the line cache, and
   measure text in fast/"), in `4c13f16`; before it `ac1c226` (#12), in `751acaf`.
+- longbridge's open PR #10 ("keep views retained in a real GPUI Kit application",
+  branch `retained-real-apps`, head `fd23405`) is merged ahead of longbridge, in the
+  commit "Merge longbridge/gpui-fast#10 (fd23405) into Slopty's fork". When longbridge
+  merges it, merging `origin/main` again brings nothing new from it; if they squash it,
+  expect the files below to conflict and resolve them to what is here.
 - `UPSTREAM` records `zed_commit` and `import_commit` (the latest vendor commit).
   `script/check-upstream` compares every tracked file against it.
 
@@ -65,6 +70,55 @@ authors and messages:
 - `c10d8a9` gpui_macos: keep drawing a covered window in test builds
 - `ea73091` feat(gpui_apple): draw 10-bit and 4:4:4 video surfaces
 
+Merged ahead of longbridge:
+
+- longbridge/gpui-fast#10 at `fd23405` (18 commits), merged whole. What Slopty needs most
+  from it is `Entity::query` (`fast::dependencies::query`, crate-private): the window asks
+  the focused input handler `accepts_text_input`, its selection and range bounds after
+  every paint through `ElementInputHandler`, and that no longer counts as updating the
+  view, so a focused terminal or screen view is not built again on every frame drawn.
+  Measured with a focused text field beside a spinner notified on every frame, 60
+  frames: the field was built 120 times before the merge (twice a frame), 0 after
+  (`a_focused_text_field_is_not_built_while_a_view_beside_it_animates`).
+  It also changes the rules ([docs/retained-mode.md](docs/retained-mode.md)): an entity
+  updated without a notify counts as changed only for views inside a view notified since
+  the last frame, `has_global` depends only on whether the global is set, a view whose
+  own reads changed is marked dirty so the views around it are spliced, hovers and
+  scrolls build only the innermost view, cached views can be splice gaps, a view around
+  a gap laid out differently is still spliced when its own nodes hold, and text,
+  paths, fonts and scene ordering got faster. How it was adapted:
+  - Conflicts: our zed bd747337 sync against its "every hook names `fast`" rewrite
+    (`entity_map.rs`'s `read_inner`/`lease_inner`, `element.rs`'s
+    `prepare_element_id`/`prepare_inspector_id`, the inspector gating kept as upstream's
+    #64309, `PaintIndex::debug_bounds_index` in `PaintIndex::shifted` and its `PartialEq`,
+    `LineLayoutIndex::font_generation` in its `PartialEq`/`Debug`,
+    `crate::fast::text::fonts_changed()` beside `add_fonts`' font generation), and our
+    splice fixes (`Splice` keeps both `checked` and `held`).
+  - Left out: `e0137e8` ("gpui_wgpu: record a frame with one upload, kept bind groups
+    and fewer passes", `crates/gpui_wgpu/src/fast/`). It is written against the
+    `WgpuRenderer` before zed split it into `WgpuRendererCore` (bd747337), and Slopty
+    renders with Metal only. `wgpu_renderer.rs` stays zed's.
+  - Fixes found by zed's `randomized_element_tree` tests, which came with bd747337 and
+    which longbridge has not run yet. With #10 a root updated without a notify is
+    spliced rather than built, which exposed that a spliced view kept every element
+    state its gaps had used: the layout's own (`RetainedLayout::element_states`) and
+    those a view built at the layout it kept (`build_at_retained_layout`) used during
+    the prepaint of the view around it. Both are now left out by element id prefix
+    (`fast::splice::inside_any`), and a spliced record's layout is rebuilt from the kept
+    part and the gaps' new layouts, where it used to keep last frame's whole. Test:
+    `a_spliced_view_lets_go_of_the_element_states_its_gaps_no_longer_use`.
+  - Tests changed for the new rules: `a_view_that_read_a_changed_model_is_built_again_beside_a_notified_one`
+    (was `…updated_without_a_notify…`: the model is now notified), the surface test's
+    buffer handed over without a notify (shown once a view around it is notified), and
+    zed's `randomized_entities_and_work_counters_support_incremental_benchmarks` no
+    longer asserts the root is rendered for a child's change (a removal-only hunk).
+    New: `an_update_without_a_notify_passed_over_by_a_splice_counts_once_inside_a_notified_view`.
+  - `script/check-upstream` gained `unmarked=N` in the allowlist: #10 fails any hunk of
+    an upstream file that doesn't name `fast`, and our patches are features, not hooks.
+    Each file with such hunks has its count in `script/upstream-allowlist`. Our own
+    hooks that didn't name it (`note_animation_frame_request`,
+    `refresh_if_fonts_changed`) became `crate::fast::…` calls.
+
 Added in this fork:
 
 - `1776aa2` test(gpui): a video surface shows the buffer its view holds, retained or not
@@ -77,7 +131,7 @@ Added in this fork:
 Generic to gpui-fast, not to Slopty, and worth a pull request to longbridge/gpui-fast:
 
 - the zed bd747337 sync itself: `2db56fa` (`zed: import bd747337`) and its merge `acfc6db`,
-  including the font generation handling (`Window::refresh_if_fonts_changed`, a text
+  including the font generation handling (`fast::text::refresh_if_fonts_changed`, a text
   measurement carried over only within one font generation, and its test
   `every_view_is_rendered_again_once_fonts_are_added`);
 - `4d0009e`, a view that asked for an animation frame built on the next frame drawn;
@@ -98,9 +152,15 @@ Generic to gpui-fast, not to Slopty, and worth a pull request to longbridge/gpui
     first built in, so the next frame found it changed by updates it had already been
     checked against, and built the whole chain again. `RenderDependencies::checked_at`
     moves the baselines up to where they stood when the splice was checked.
-  - Tests: `a_view_that_read_a_model_updated_without_a_notify_is_built_again_beside_a_notified_one`
+  - Tests: `a_view_that_read_a_changed_model_is_built_again_beside_a_notified_one`
     and `a_view_drawn_around_a_nested_view_built_again_is_reused_on_the_next_frame` in
     `fast/tests/retained.rs`; each fails without its fix.
+  - longbridge#10 marks a view whose own reads changed dirty
+    (`mark_changed_retained_views_dirty`), which covers the first fix for entities,
+    globals and states, but not for hovers; the gap test stays as it is. `checked_at`
+    and `deferred_out_of_date` are still needed with #10.
+- the element-state fixes made while merging longbridge#10 (above): a spliced view keeps
+  neither its gaps' element states nor last frame's whole layout.
 - the commit adding this file, which also lets `script/check-upstream` accept the patches
   above (`script/upstream-allowlist`, the "Slopty's patches" section)
 
@@ -118,10 +178,13 @@ Retained Mode draws a view from the last frame while nothing it read changed
 
 - **Video surfaces.** A `surface(buffer)` paints a `PaintSurface` holding the
   `CVPixelBuffer`; a view drawn from the last frame repaints last frame's buffer. The
-  view has to be handed a new buffer through its entity (`entity.update(..)`, with or
-  without `cx.notify()`), which is what Slopty's `ScreenView` does. A buffer read from an
-  `Rc<RefCell<..>>`, an atomic or a channel inside `render` would stay stale.
-  `crates/gpui/src/fast/tests/surface.rs` checks both ways and the parent-notified case.
+  view has to be handed a new buffer through its entity and notified
+  (`entity.update(..)` with `cx.notify()`). Since longbridge#10 an update without a notify
+  shows only once a view around it is notified. Slopty's `ScreenView::show` stores the
+  buffer without notifying, so its caller has to notify for every frame once Slopty is
+  on this fork. A buffer read from an `Rc<RefCell<..>>`, an atomic or a channel inside
+  `render` would stay stale. `crates/gpui/src/fast/tests/surface.rs` checks both ways and
+  the parent-notified case.
 - **Presentation reports** (`Window::on_frame_presented`) are per window, reported by the
   renderer for every scene it presents, retained or not. Nothing to fix.
 - **Insets, input modality, a11y**: an insets change and an input modality change refresh
@@ -245,7 +308,7 @@ In the bd747337 sync:
 - `element.rs`: the global id cache and layout key hooks sit in `prepare_element_id`.
 - `line_layout.rs`: `LineLayoutIndex` gained `font_generation`; `fast/text.rs` shifts it, a
   frame after `TextSystem::add_fonts` is drawn from scratch
-  (`Window::refresh_if_fonts_changed`), and a text measurement is carried over only
+  (`fast::text::refresh_if_fonts_changed`), and a text measurement is carried over only
   within one font generation.
 - `view.rs`, `elements/text.rs`: take upstream around gpui-fast's forwarding bodies and
   visibility bumps.

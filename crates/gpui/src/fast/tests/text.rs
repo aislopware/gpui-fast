@@ -96,6 +96,10 @@ fn text_nothing_holds_any_more_leaves_the_line_layout_cache() {
         window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
         draw(&mut cx, window.into());
     }
+    // Lines shaped lately are also kept apart from the cache, so that text
+    // coming back is not shaped again; forget them, to see the cache alone.
+    cx.update_window(window.into(), |_, window, _| window.forget_recent_shapes())
+        .unwrap();
 
     let shown_again = change_and_draw(&mut cx, window, |view| {
         view.row_ids = (0..8).collect();

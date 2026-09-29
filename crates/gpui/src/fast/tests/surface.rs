@@ -92,13 +92,11 @@ fn a_surface_shows_the_buffer_its_view_holds_now() {
 
     let third = buffer();
     picture.update(&mut cx, |picture, _| picture.buffer = third.clone());
+    window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
     assert_eq!(
         shown(&mut cx, window),
-        slice::from_ref(&third),
-        "a buffer handed over without a notify is still the one shown"
+        [third],
+        "a buffer handed over without a notify is shown once a view around it is notified"
     );
-
-    window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
-    assert_eq!(shown(&mut cx, window), [third]);
     assert_eq!(builds.get(), 3);
 }

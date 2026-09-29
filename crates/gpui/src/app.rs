@@ -901,7 +901,7 @@ impl App {
                 pending_effects: VecDeque::new(),
                 pending_notifications: FxHashSet::default(),
                 pending_global_notifications: Default::default(),
-                dependencies: Default::default(),
+                dependencies: crate::fast::dependencies::AppDependencies::default(),
                 observers: SubscriberSet::new(),
                 tracked_entities: FxHashMap::default(),
                 window_invalidators_by_entity: FxHashMap::default(),
@@ -1754,7 +1754,7 @@ impl App {
                 }
             }
             Effect::NotifyGlobalObservers { global_type } => {
-                self.dependencies.global_changed(*global_type);
+                crate::fast::dependencies::global_changed(self, *global_type);
                 if !self.pending_global_notifications.insert(*global_type) {
                     return;
                 }
@@ -2108,14 +2108,14 @@ impl App {
 
     /// Check whether a global of the given type has been assigned.
     pub fn has_global<G: Global>(&self) -> bool {
-        self.note_global_read(TypeId::of::<G>());
+        crate::fast::dependencies::note_global_presence_read::<G>(self);
         self.globals_by_type.contains_key(&TypeId::of::<G>())
     }
 
     /// Access the global of the given type. Panics if a global for that type has not been assigned.
     #[track_caller]
     pub fn global<G: Global>(&self) -> &G {
-        self.note_global_read(TypeId::of::<G>());
+        crate::fast::dependencies::note_global_read(self, TypeId::of::<G>());
         self.globals_by_type
             .get(&TypeId::of::<G>())
             .map(|any_state| any_state.downcast_ref::<G>().unwrap())
@@ -2124,7 +2124,7 @@ impl App {
 
     /// Access the global of the given type if a value has been assigned.
     pub fn try_global<G: Global>(&self) -> Option<&G> {
-        self.note_global_read(TypeId::of::<G>());
+        crate::fast::dependencies::note_global_read(self, TypeId::of::<G>());
         self.globals_by_type
             .get(&TypeId::of::<G>())
             .map(|any_state| any_state.downcast_ref::<G>().unwrap())
@@ -2146,6 +2146,7 @@ impl App {
     pub fn default_global<G: Global + Default>(&mut self) -> &mut G {
         let global_type = TypeId::of::<G>();
         self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        crate::fast::dependencies::note_global_inserted::<G>(self);
         self.globals_by_type
             .entry(global_type)
             .or_insert_with(|| Box::<G>::default())
@@ -2157,6 +2158,7 @@ impl App {
     pub fn set_global<G: Global>(&mut self, global: G) {
         let global_type = TypeId::of::<G>();
         self.push_effect(Effect::NotifyGlobalObservers { global_type });
+        crate::fast::dependencies::note_global_inserted::<G>(self);
         self.globals_by_type.insert(global_type, Box::new(global));
     }
 
@@ -2168,6 +2170,7 @@ impl App {
 
     /// Remove the global of the given type from the app context. Does not notify global observers.
     pub fn remove_global<G: Global>(&mut self) -> G {
+        crate::fast::dependencies::note_global_removed::<G>(self);
         let global_type = TypeId::of::<G>();
         self.push_effect(Effect::NotifyGlobalObservers { global_type });
         *self
@@ -2782,7 +2785,7 @@ impl App {
 
     /// Tell GPUI that an entity has changed and observers of it should be notified.
     pub fn notify(&mut self, entity_id: EntityId) {
-        self.entities.note_notify(entity_id);
+        crate::fast::dependencies::note_notify(&mut self.entities, entity_id);
         let window_invalidators = mem::take(
             self.window_invalidators_by_entity
                 .entry(entity_id)

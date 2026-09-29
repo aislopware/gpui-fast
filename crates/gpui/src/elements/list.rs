@@ -83,7 +83,7 @@ pub(crate) struct StateInner {
 /// proportional pending scroll preserves the same fractional position within the item,
 /// which is useful when the whole list is being resized and each item scales similarly.
 #[derive(Clone)]
-enum PendingScroll {
+pub(crate) enum PendingScroll {
     /// Preserve the same pixel offset into the item after it is remeasured.
     Absolute { item_ix: usize, offset: Pixels },
     /// Preserve the same fractional offset into the item after it is remeasured.
@@ -93,7 +93,7 @@ enum PendingScroll {
 /// Keeps track of a fractional scroll position within an item for restoration
 /// after remeasurement.
 #[derive(Clone)]
-struct PendingScrollFraction {
+pub(crate) struct PendingScrollFraction {
     /// The index of the item to scroll within.
     item_ix: usize,
     /// Fractional offset (0.0 to 1.0) within the item's height.
@@ -326,7 +326,7 @@ impl ListState {
             measuring_behavior: ListMeasuringBehavior::default(),
             pending_scroll: None,
             follow_state: FollowState::default(),
-            version: Default::default(),
+            version: crate::fast::dependencies::StateVersion::default(),
         })));
         this.splice(0..0, item_count);
         this
@@ -357,7 +357,7 @@ impl ListState {
     pub fn reset(&self, element_count: usize) {
         let old_count = {
             let state = &mut *self.0.borrow_mut();
-            state.version.bump();
+            crate::fast::dependencies::StateVersion::bump(&state.version);
             state.reset = true;
             state.measuring_behavior.reset();
             state.logical_scroll_top = None;
@@ -383,7 +383,7 @@ impl ListState {
             height,
         };
         let mut state = self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
         let new_items = state
             .items
             .iter()
@@ -419,7 +419,7 @@ impl ListState {
 
     fn remeasure_items_with_scroll_anchor(&self, range: Range<usize>, scroll_anchor: ScrollAnchor) {
         let state = &mut *self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
 
         if let Some(scroll_top) = state.logical_scroll_top {
             if range.contains(&scroll_top.item_ix) {
@@ -519,7 +519,7 @@ impl ListState {
         focus_handles: impl IntoIterator<Item = Option<FocusHandle>>,
     ) {
         let state = &mut *self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
 
         let mut old_items = state.items.cursor::<Count>(());
         let mut new_items = old_items.slice(&Count(old_range.start), Bias::Right);
@@ -575,7 +575,7 @@ impl ListState {
 
         let current_offset = self.logical_scroll_top();
         let state = &mut *self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
 
         if distance < px(0.) {
             state.follow_state.stop_following();
@@ -609,7 +609,7 @@ impl ListState {
     /// growing (e.g. during streaming).
     pub fn scroll_to_end(&self) {
         let state = &mut *self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
         let item_count = state.items.summary().count;
         state.pending_scroll = None;
         state.logical_scroll_top = Some(ListOffset {
@@ -624,7 +624,7 @@ impl ListState {
     /// following occurs.
     pub fn set_follow_mode(&self, mode: FollowMode) {
         let state = &mut *self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
 
         match mode {
             FollowMode::Normal => {
@@ -653,7 +653,7 @@ impl ListState {
     /// diagram) and the current position should stay put rather than snapping
     /// to the end.
     pub fn pause_following_tail(&self) {
-        self.0.borrow().note_following_paused();
+        crate::fast::dependencies::note_list_following_paused(&self.0.borrow());
         self.0.borrow_mut().follow_state.stop_following();
     }
 
@@ -669,7 +669,7 @@ impl ListState {
     /// Scroll the list to the given offset
     pub fn scroll_to(&self, mut scroll_top: ListOffset) {
         let state = &mut *self.0.borrow_mut();
-        let follow_state = state.follow_state;
+        let scroll_start = crate::fast::dependencies::ListScrollStart::of(state);
         let item_count = state.items.summary().count;
         if scroll_top.item_ix >= item_count {
             scroll_top.item_ix = item_count;
@@ -680,7 +680,12 @@ impl ListState {
             state.follow_state.stop_following();
         }
 
-        state.note_scrolled_to(&scroll_top, follow_state, state.pending_scroll.is_some());
+        crate::fast::dependencies::ListScrollStart::note_scrolled(
+            scroll_start,
+            state,
+            &scroll_top,
+            state.pending_scroll.is_some(),
+        );
         state.rebase_pending_scroll(scroll_top);
         state.logical_scroll_top = Some(scroll_top);
     }
@@ -688,7 +693,7 @@ impl ListState {
     /// Scroll the list to the given item, such that the item is fully visible.
     pub fn scroll_to_reveal_item(&self, ix: usize) {
         let state = &mut *self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
 
         let mut scroll_top = state.logical_scroll_top();
         let height = state
@@ -755,7 +760,7 @@ impl ListState {
     /// as items in the overdraw get measured, and help offset scroll position changes accordingly.
     pub fn scrollbar_drag_started(&self) {
         let mut state = self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
         state.scrollbar_drag_start_height = Some(state.items.summary().height);
     }
 
@@ -763,7 +768,7 @@ impl ListState {
     ///
     /// See `scrollbar_drag_started`.
     pub fn scrollbar_drag_ended(&self) {
-        self.0.borrow().version.bump();
+        crate::fast::dependencies::StateVersion::bump(&self.0.borrow().version);
         self.0.borrow_mut().scrollbar_drag_start_height.take();
     }
 
@@ -779,7 +784,7 @@ impl ListState {
 
     /// Set the offset from the scrollbar
     pub fn set_offset_from_scrollbar(&self, point: Point<Pixels>) {
-        self.0.borrow().version.bump();
+        crate::fast::dependencies::StateVersion::bump(&self.0.borrow().version);
         self.0.borrow_mut().set_offset_from_scrollbar(point);
     }
 
@@ -1028,7 +1033,13 @@ impl StateInner {
         for (ix, item) in cursor.enumerate() {
             let size = item.size().unwrap_or_else(|| {
                 let mut element = render_item(ix, window, cx);
-                element.layout_as_list_item(ix, available_item_space, window, cx)
+                crate::fast::layout_key::layout_as_list_item(
+                    &mut element,
+                    ix,
+                    available_item_space,
+                    window,
+                    cx,
+                )
             });
 
             measured_items.push(ListItem::Measured {
@@ -1090,8 +1101,13 @@ impl StateInner {
             if visible_height < available_height || size.is_none() {
                 let item_index = scroll_top.item_ix + ix;
                 let mut element = render_item(item_index, window, cx);
-                let element_size =
-                    element.layout_as_list_item(item_index, available_item_space, window, cx);
+                let element_size = crate::fast::layout_key::layout_as_list_item(
+                    &mut element,
+                    item_index,
+                    available_item_space,
+                    window,
+                    cx,
+                );
                 size = Some(element_size);
 
                 // If there's a pending scroll adjustment for the scroll-top
@@ -1152,8 +1168,13 @@ impl StateInner {
                 if let Some(item) = cursor.item() {
                     let item_index = cursor.start().0;
                     let mut element = render_item(item_index, window, cx);
-                    let element_size =
-                        element.layout_as_list_item(item_index, available_item_space, window, cx);
+                    let element_size = crate::fast::layout_key::layout_as_list_item(
+                        &mut element,
+                        item_index,
+                        available_item_space,
+                        window,
+                        cx,
+                    );
                     let focus_handle = item.focus_handle();
                     rendered_height += element_size.height;
                     measured_items.push_front(ListItem::Measured {
@@ -1202,7 +1223,13 @@ impl StateInner {
                     *size
                 } else {
                     let mut element = render_item(cursor.start().0, window, cx);
-                    element.layout_as_list_item(cursor.start().0, available_item_space, window, cx)
+                    crate::fast::layout_key::layout_as_list_item(
+                        &mut element,
+                        cursor.start().0,
+                        available_item_space,
+                        window,
+                        cx,
+                    )
                 };
 
                 leading_overdraw += size.height;
@@ -1247,8 +1274,13 @@ impl StateInner {
                 if item.contains_focused(window, cx) {
                     let item_index = cursor.start().0;
                     let mut element = render_item(cursor.start().0, window, cx);
-                    let size =
-                        element.layout_as_list_item(item_index, available_item_space, window, cx);
+                    let size = crate::fast::layout_key::layout_as_list_item(
+                        &mut element,
+                        item_index,
+                        available_item_space,
+                        window,
+                        cx,
+                    );
                     item_layouts.push_back(ItemLayout {
                         index: item_index,
                         element,
@@ -1331,7 +1363,8 @@ impl StateInner {
                                             bounds.size.width.into(),
                                             AvailableSpace::MinContent,
                                         );
-                                        element.layout_as_list_item(
+                                        crate::fast::layout_key::layout_as_list_item(
+                                            &mut element,
                                             cursor.start().0,
                                             item_available_size,
                                             window,
@@ -1364,7 +1397,8 @@ impl StateInner {
                                     let mut item = render_item(cursor.start().0, window, cx);
                                     let item_available_size =
                                         size(bounds.size.width.into(), AvailableSpace::MinContent);
-                                    item.layout_as_list_item(
+                                    crate::fast::layout_key::layout_as_list_item(
+                                        &mut item,
                                         cursor.start().0,
                                         item_available_size,
                                         window,
@@ -1485,7 +1519,7 @@ impl Element for List {
         window: &mut Window,
         cx: &mut App,
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
-        cx.note_state_read(&self.state.0.borrow().version);
+        crate::fast::dependencies::note_state_read(cx, &self.state.0.borrow().version);
         let layout_id = match self.sizing_behavior {
             ListSizingBehavior::Infer => {
                 let mut style = Style::default();

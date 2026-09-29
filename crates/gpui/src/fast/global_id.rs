@@ -4,6 +4,23 @@ use crate::{ElementId, GlobalElementId};
 use collections::FxHashMap;
 use std::{mem, sync::Arc};
 
+/// What a [`GlobalElementId`] hashes to: the hash of its path, worked out once.
+pub(crate) type PathHash = u64;
+
+/// The global id of the element id stack of `window`, handed out again from
+/// the [`GlobalIdCache`] when it was handed out this frame or the last.
+#[inline(always)]
+pub(crate) fn current(window: &mut crate::Window) -> GlobalElementId {
+    window.global_ids.get(&window.element_id_stack)
+}
+
+/// A new global id for `path`, not handed out again.
+#[cfg(any(feature = "inspector", debug_assertions))]
+#[inline(always)]
+pub(crate) fn from_path(path: &[ElementId]) -> GlobalElementId {
+    GlobalElementId::new(Arc::from(path))
+}
+
 /// Element state is looked up by a [`GlobalElementId`] several times per
 /// element in every frame, and hashing its path of ids each time, names byte
 /// by byte, cost more than the lookups did. The path's hash is therefore worked

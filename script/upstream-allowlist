@@ -1,30 +1,46 @@
 # Justified exceptions to script/check-upstream's rules; see docs/upstream-sync.md.
 #
-# Each line: <path or glob> [hunk=N] [added=N] [removed=N] [any] # <reason>
+# Each line: <path or glob> [hunk=N] [added=N] [removed=N] [unmarked=N] [any] # <reason>
 #   hunk=N     raises the most lines one hunk may add for matching files
 #   added=N    raises the most lines matching files may add
 #   removed=N  raises the most lines matching files may remove
+#   unmarked=N lets that many hunks add lines that don't name `fast`
 #   any        allows any change, including adding or removing the file
 # The first matching line applies. Keep entries few and the reasons specific.
 
-crates/gpui/src/window.rs hunk=85 added=290 # the frame's hub: one- and two-line hooks for layout keys, retained drawing, phase timing, global ids and the inspector; with Slopty's patches (SLOPTY.md): presented-frame reports, Window::insets, paint_glyph_scaled, the a11y tree for tests
-crates/gpui/src/elements/div.rs hunk=165 added=215 removed=30 # Interactivity's listener lists become fast::interactivity::LazyVec, a one-word change per field; the rest are one-line state-version hooks; with Slopty's patches (SLOPTY.md): the outline style, focus falling back to the nearest a11y node, the a11y tree for tests
+crates/gpui/src/window.rs hunk=85 added=295 removed=30 unmarked=11 # the frame's hub: one- and two-line hooks for layout keys, retained drawing, phase timing, global ids, the inspector, the text style stack and glyph bounds; text_style's body forwards to fast::text_style; with Slopty's patches (SLOPTY.md): presented-frame reports, Window::insets, paint_glyph_scaled, the a11y tree for tests
+crates/gpui/src/elements/div.rs hunk=165 added=215 removed=30 unmarked=3 # Interactivity's listener lists become fast::interactivity::LazyVec, a one-word change per field; the rest are one-line state-version hooks; with Slopty's patches (SLOPTY.md): the outline style, focus falling back to the nearest a11y node, the a11y tree for tests
 crates/gpui/src/elements/text.rs removed=160 # TextLayout::layout's body is replaced by fast::text's measurement, which carries measurements across frames and recolors them in place; the method forwards to it
-crates/gpui/src/view.rs removed=260 # ViewElement's cache-by-bounds (and the request_layout_view/prepaint_view/paint_view helpers upstream split it into) is replaced by fast::retained's retained views; its Element methods forward to it
+crates/gpui/src/view.rs removed=265 # ViewElement's cache-by-bounds (and the request_layout_view/prepaint_view/paint_view helpers upstream split it into) is replaced by fast::retained's retained views; its Element methods forward to it
 crates/gpui/src/taffy.rs removed=50 # request_layout, request_measured_layout and stretch_auto_size_to_fill bodies are replaced by fast::layout's retained nodes; they forward to it
+crates/gpui/src/elements/list.rs added=75 # each item is laid out through fast::layout_key::layout_as_list_item, a call rustfmt spreads over seven lines at the list's depth; the rest are one-line state-version hooks
 
 # Slopty's patches on top of gpui-fast (aislopware/gpui-fast; see SLOPTY.md).
 # They are features of their own rather than retained-mode hooks, kept in the
 # upstream files they extend, as in the zed fork they came from.
 crates/gpui/examples/frame_latency.rs any # Slopty: a submit-to-glass latency example
-crates/gpui/src/platform.rs hunk=20 added=30 # Slopty: PresentedFrame and the presented-frame sink, CursorStyle::None
-crates/gpui/src/platform/keystroke.rs removed=30 # Slopty: the secondary modifier is the command key on iOS as on macOS, a cfg on every match arm
-crates/gpui/src/platform/test/window.rs hunk=12 added=25 # Slopty: the test window's presented-frame sink
-crates/gpui/src/style.rs hunk=20 added=40 # Slopty: the outline style
-crates/gpui/src/text_system.rs hunk=25 added=45 removed=55 # Slopty: full FontMetrics, and line runs shaped by font rather than by colour
-crates/gpui/src/text_system/line.rs hunk=12 added=20 # Slopty: a ShapedLine's layout exposed
-crates/gpui/src/window/a11y.rs hunk=22 added=65 # Slopty: the a11y tree for tests, focus falling back to the nearest ancestor node
-crates/gpui_apple/build.rs hunk=12 added=20 # Slopty: the iOS backend's shader build
+crates/gpui/src/platform.rs hunk=20 added=30 unmarked=3 # Slopty: PresentedFrame and the presented-frame sink, CursorStyle::None
+crates/gpui/src/platform/keystroke.rs removed=30 unmarked=26 # Slopty: the secondary modifier is the command key on iOS as on macOS, a cfg on every match arm
+crates/gpui/src/platform/test/window.rs hunk=12 added=25 unmarked=4 # Slopty: the test window's presented-frame sink
+crates/gpui/src/style.rs hunk=20 added=40 unmarked=4 # Slopty: the outline style
+crates/gpui/src/text_system.rs hunk=25 added=45 removed=70 unmarked=7 # Slopty: full FontMetrics, and line runs shaped by font rather than by colour; resolve_font's body forwards to fast::text's resolved-font memo
+crates/gpui/src/text_system/line.rs hunk=12 added=20 unmarked=1 # Slopty: a ShapedLine's layout exposed
+crates/gpui/src/window/a11y.rs hunk=22 added=65 unmarked=6 # Slopty: the a11y tree for tests, focus falling back to the nearest ancestor node
+crates/gpui_apple/build.rs hunk=12 added=20 unmarked=6 # Slopty: the iOS backend's shader build
 crates/gpui_apple/src/metal_renderer.rs any # Slopty: iOS rendering, video surfaces (Y'CbCr matrices, 10-bit, 4:4:4), presentation reports and pacing
 crates/gpui_apple/src/presentation_pacing.rs any # Slopty: frames kept from queueing in front of the display
-crates/gpui_macos/src/window.rs hunk=35 added=105 # Slopty: presentation reports and pacing, CursorStyle::None, covered windows drawn in test builds
+crates/gpui_macos/src/window.rs hunk=35 added=105 unmarked=13 # Slopty: presentation reports and pacing, CursorStyle::None, covered windows drawn in test builds
+crates/gpui/src/elements/surface.rs unmarked=7 # Slopty: the surface element on iOS too, a cfg widened per item
+crates/gpui/src/scene.rs unmarked=1 # Slopty: surfaces on iOS too, a widened cfg
+crates/gpui/src/styled.rs unmarked=1 # Slopty: the outline style's builder
+crates/gpui/src/subscription.rs unmarked=1 # Slopty: SubscriberSet::is_empty, for the presented-frame sink
+crates/gpui/src/window/a11y/debug.rs unmarked=1 # Slopty: the a11y tree for tests
+crates/gpui_apple/src/gpui_apple.rs unmarked=3 # Slopty: the crate on iOS too, and presentation pacing
+crates/gpui_apple/src/metal_atlas.rs unmarked=4 # Slopty: shared atlas storage wherever the GPU supports it, iOS included
+crates/gpui_linux/src/linux/platform.rs unmarked=1 # Slopty: CursorStyle::None
+crates/gpui_linux/src/linux/wayland.rs unmarked=1 # Slopty: CursorStyle::None
+crates/gpui_web/src/platform.rs unmarked=1 # Slopty: CursorStyle::None
+crates/gpui_macros/src/styles.rs unmarked=1 # Slopty: CursorStyle::None's style method
+crates/gpui_macos/src/display_link.rs unmarked=1 # Slopty: whether the display link runs, for presentation pacing
+crates/gpui_macos/src/events.rs unmarked=2 # Slopty: a cancelled scroll or pinch is cancelled, not moved
+crates/gpui_platform/src/gpui_platform.rs unmarked=1 # Slopty: the iOS platform

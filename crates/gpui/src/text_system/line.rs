@@ -20,7 +20,7 @@ pub struct GlyphRasterData {
 }
 
 /// Set the text decoration for a run of text.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct DecorationRun {
     /// The length of the run in utf-8 bytes.
     pub len: u32,
@@ -750,7 +750,8 @@ fn paint_line(
                             layout.font_size,
                         )?;
                     } else {
-                        glyph_painter.paint_glyph(
+                        crate::fast::glyphs::LineGlyphPainter::paint_glyph(
+                            &mut glyph_painter,
                             window,
                             glyph_origin + baseline_offset + vertical_offset,
                             run.font_id,
@@ -820,6 +821,9 @@ fn paint_line_background(
         wrap_boundaries,
     );
     window.paint_layer(line_bounds, |window| {
+        if crate::fast::glyphs::has_no_background(decoration_runs) {
+            return Ok(());
+        }
         let mut decoration_runs = decoration_runs.iter();
         let mut wraps = wrap_boundaries.iter().peekable();
         let mut run_end = 0;

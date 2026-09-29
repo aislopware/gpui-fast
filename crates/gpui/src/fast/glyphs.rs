@@ -1,9 +1,9 @@
 //! Glyph painting that works out a run's rendering once, not once a glyph.
 
 use crate::{
-    Bounds, ContentMask, FontId, GlyphId, Hsla, IsZero, MonochromeSprite, Pixels, Point,
-    RenderGlyphParams, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, SubpixelSprite,
-    TransformationMatrix, Window, util::round_half_toward_zero,
+    Bounds, ContentMask, DecorationRun, DevicePixels, FontId, GlyphId, Hsla, IsZero,
+    MonochromeSprite, Pixels, Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y,
+    ScaledPixels, SubpixelSprite, TransformationMatrix, Window, util::round_half_toward_zero,
 };
 use anyhow::Result;
 use std::borrow::Cow;
@@ -78,7 +78,14 @@ impl Window {
             dilation,
         };
 
-        let raster_bounds = self.text_system().raster_bounds(&params)?;
+        let raster_bounds = match self.fast_glyph_bounds.get(&params) {
+            Some(raster_bounds) => raster_bounds,
+            None => {
+                let raster_bounds = self.text_system().raster_bounds(&params)?;
+                self.fast_glyph_bounds.insert(&params, raster_bounds);
+                raster_bounds
+            }
+        };
         if !raster_bounds.is_zero() {
             let tile = self
                 .sprite_atlas
@@ -167,4 +174,57 @@ impl LineGlyphPainter {
             self.snapped_content_mask,
         )
     }
+}
+
+/// How many glyphs' raster bounds a window keeps at hand. See
+/// [`GlyphBoundsCache`].
+const GLYPH_BOUNDS_SLOTS: usize = 512;
+
+/// The raster bounds of the glyphs a window painted lately, so painting a
+/// glyph needn't ask the text system, which locks its map of every glyph's
+/// raster bounds and hashes the glyph's whole description to look it up. A
+/// glyph's raster bounds only depend on that description, so the answer is
+/// the text system's own. Each glyph has one slot it can be kept in; a glyph
+/// that needs a slot another holds takes it over.
+pub(crate) struct GlyphBoundsCache {
+    slots: Box<[Option<(RenderGlyphParams, Bounds<DevicePixels>)>]>,
+}
+
+impl Default for GlyphBoundsCache {
+    fn default() -> Self {
+        Self {
+            slots: vec![None; GLYPH_BOUNDS_SLOTS].into_boxed_slice(),
+        }
+    }
+}
+
+impl GlyphBoundsCache {
+    fn slot(params: &RenderGlyphParams) -> usize {
+        let key = (params.glyph_id.0 as usize)
+            .wrapping_mul(31)
+            .wrapping_add(params.font_id.0.wrapping_mul(0x9e37))
+            .wrapping_add((params.subpixel_variant.x as usize) << 3)
+            .wrapping_add((params.subpixel_variant.y as usize) << 5);
+        key % GLYPH_BOUNDS_SLOTS
+    }
+
+    pub(crate) fn get(&self, params: &RenderGlyphParams) -> Option<Bounds<DevicePixels>> {
+        match &self.slots[Self::slot(params)] {
+            Some((cached, bounds)) if cached == params => Some(*bounds),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn insert(&mut self, params: &RenderGlyphParams, bounds: Bounds<DevicePixels>) {
+        self.slots[Self::slot(params)] = Some((params.clone(), bounds));
+    }
+}
+
+/// Whether none of a line's decoration runs has a background, so painting its
+/// background paints nothing and needn't walk its glyphs.
+#[inline]
+pub(crate) fn has_no_background(decoration_runs: &[DecorationRun]) -> bool {
+    decoration_runs
+        .iter()
+        .all(|run| run.background_color.is_none())
 }

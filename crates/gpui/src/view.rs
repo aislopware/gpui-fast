@@ -34,7 +34,7 @@ impl AnyView {
     /// [Context::notify] was called on the backing entity since it was rendered
     /// (or [Window::refresh] is called, which ignores caching).
     pub fn cached(self, style: StyleRefinement) -> ViewElement<AnyView> {
-        ViewElement::new(self).cached(style)
+        crate::fast::splice::cached(self.clone(), self, style)
     }
 
     /// Convert this to a weak handle.
@@ -93,7 +93,7 @@ impl<V: 'static + Render> IntoElement for Entity<V> {
     type Element = ViewElement<Entity<V>>;
 
     fn into_element(self) -> Self::Element {
-        ViewElement::new(self.clone()).rebuildable(self.into())
+        crate::fast::splice::rebuildable(self.clone(), self.into())
     }
 
     #[inline(never)]
@@ -106,7 +106,7 @@ impl IntoElement for AnyView {
     type Element = ViewElement<AnyView>;
 
     fn into_element(self) -> Self::Element {
-        ViewElement::new(self.clone()).rebuildable(self)
+        crate::fast::splice::rebuildable(self.clone(), self)
     }
 }
 
@@ -166,7 +166,7 @@ mod any_view {
             .a11y
             .view_type_names
             .insert(view.entity_id(), std::any::type_name::<V>());
-        cx.entities.render_next(view.entity_id());
+        crate::fast::dependencies::render_next(&mut cx.entities, view.entity_id());
         view.update(cx, |view, cx| view.render(window, cx).into_any_element())
     }
 }
@@ -217,7 +217,7 @@ impl<T: Render> View for Entity<T> {
 
     #[inline]
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        cx.entities.render_next(self.entity_id());
+        crate::fast::dependencies::render_next(&mut cx.entities, self.entity_id());
         self.update(cx, |this, cx| {
             Render::render(this, window, cx).into_any_element()
         })
@@ -234,7 +234,7 @@ impl<T: Render> Entity<T> {
     /// uncached case.
     #[track_caller]
     pub fn cached(self, style: StyleRefinement) -> ViewElement<Entity<T>> {
-        ViewElement::new(self).cached(style)
+        crate::fast::splice::cached(self.clone(), self.into(), style)
     }
 }
 
@@ -258,7 +258,7 @@ impl<V: View> ViewElement<V> {
         ViewElement {
             entity_id,
             cached_style: None,
-            rebuild: Default::default(),
+            rebuild: crate::fast::splice::RebuildHandle::default(),
             view: Some(view),
             #[cfg(debug_assertions)]
             source: core::panic::Location::caller(),
@@ -306,12 +306,12 @@ impl<V: View> Element for ViewElement<V> {
 
     fn request_layout(
         &mut self,
-        id: Option<&GlobalElementId>,
+        _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        self.request_view_layout(id, window, cx)
+        crate::fast::retained::request_view_layout(self, _id, window, cx)
     }
 
     fn prepaint(
@@ -323,7 +323,7 @@ impl<V: View> Element for ViewElement<V> {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        self.prepaint_view(global_id, bounds, element, window, cx)
+        crate::fast::retained::prepaint_view(self, global_id, bounds, element, window, cx)
     }
 
     fn paint(
@@ -336,7 +336,7 @@ impl<V: View> Element for ViewElement<V> {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.paint_view(global_id, element, window, cx)
+        crate::fast::retained::paint_view(self, global_id, element, window, cx)
     }
 }
 

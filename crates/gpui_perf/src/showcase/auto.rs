@@ -1,12 +1,15 @@
 //! `--auto`: every scenario with retained views on and then off, measured over
 //! a fixed number of frames, then a report. Upstream GPUI has no retained
 //! views, so built with the `upstream` feature it runs every scenario once.
+//!
+//! The trading workspace's scenarios stream quotes into it while the user
+//! does nothing, scrolls the watchlist, or moves the pointer over its rows.
 
 use std::time::Duration;
 
 use std::cell::RefCell;
 
-use gpui::{App, Window};
+use gpui::{App, MouseMoveEvent, PlatformInput, Window, point, px};
 
 use super::{
     BUTTON_PAGE, Driver, Handles, Scroll, backend,
@@ -14,6 +17,8 @@ use super::{
     list_page,
     metrics::{Cost, Sample, main_thread_cpu_time, main_thread_instructions},
     table_page,
+    workspace::{QUOTES_PER_TICK, WATCHLIST_ROW_HEIGHT},
+    workspace_page,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -25,15 +30,62 @@ enum Scenario {
     ScrollTable,
     RefreshTable,
     ScrollList,
+    /// The trading workspace at rest while quotes stream in.
+    WorkspaceQuotes,
+    /// The workspace's watchlist scrolling while quotes stream in.
+    WorkspaceScroll,
+    /// The pointer moving over the workspace's watchlist rows while quotes
+    /// stream in.
+    WorkspaceHover,
 }
 
-const SCENARIOS: [Scenario; 6] = [
+impl Scenario {
+    /// What the scenario shows, for `--list`.
+    fn description(self) -> &'static str {
+        match self {
+            Scenario::Spinner => "idle: nothing scrolls; a spinner in the toolbar animates",
+            Scenario::ScrollSidebar => "scrolling the sidebar",
+            Scenario::ScrollPage => "scrolling a page of components",
+            Scenario::ScrollTable => "scrolling the data table",
+            Scenario::RefreshTable => "refreshing the data table's rows every 33 ms",
+            Scenario::ScrollList => "scrolling a list of messages",
+            Scenario::WorkspaceQuotes => {
+                "workspace: quotes streaming, 16 every 16 ms, to every panel"
+            }
+            Scenario::WorkspaceScroll => {
+                "workspace: scrolling the watchlist, with 8 quotes every 16 ms"
+            }
+            Scenario::WorkspaceHover => {
+                "workspace: hovering rows of the watchlist, with 8 quotes every 16 ms"
+            }
+        }
+    }
+
+    fn is_workspace(self) -> bool {
+        matches!(
+            self,
+            Scenario::WorkspaceQuotes | Scenario::WorkspaceScroll | Scenario::WorkspaceHover
+        )
+    }
+}
+
+/// Prints every scenario `--only` can pick.
+pub fn list() {
+    for scenario in SCENARIOS {
+        println!("{:<16} {}", format!("{scenario:?}"), scenario.description());
+    }
+}
+
+const SCENARIOS: [Scenario; 9] = [
     Scenario::Spinner,
     Scenario::ScrollSidebar,
     Scenario::ScrollPage,
     Scenario::ScrollTable,
     Scenario::RefreshTable,
     Scenario::ScrollList,
+    Scenario::WorkspaceQuotes,
+    Scenario::WorkspaceScroll,
+    Scenario::WorkspaceHover,
 ];
 
 const WARMUP_FRAMES: usize = 30;
@@ -102,7 +154,10 @@ impl AutoRun {
                 only.as_deref()
                     .is_none_or(|only| format!("{scenario:?}").to_lowercase() == only)
             })
-            .collect();
+            .collect::<Vec<_>>();
+        if runs.is_empty() {
+            eprintln!("no scenario matches; `--auto --list` prints them");
+        }
         Self {
             runs,
             measured_frames: flag("--frames")
@@ -129,9 +184,21 @@ impl AutoRun {
         cx: &mut App,
     ) -> bool {
         let Some(&(scenario, retention)) = self.runs.get(self.index) else {
+            // The platform window holds the focused search box's input
+            // handler until a frame is drawn without it, and on Wayland a
+            // closed window's state, handler included, is only dropped by a
+            // task that never runs once the app quits. So the search box is
+            // blurred and one more frame drawn, which takes the handler back,
+            // before the window is closed and the app checks for leaked
+            // entities as it quits.
+            if window.focused(cx).is_some() {
+                window.blur(cx);
+                return true;
+            }
             let clock_held = self.clock.is_holding();
             self.clock.stop();
             self.report(clock_held);
+            window.remove_window();
             cx.quit();
             return false;
         };
@@ -146,9 +213,14 @@ impl AutoRun {
                 Scenario::ScrollTable => (table_page(), Scroll::Table),
                 Scenario::ScrollList => (list_page(), Scroll::List),
                 Scenario::RefreshTable => (table_page(), Scroll::Off),
+                Scenario::WorkspaceQuotes | Scenario::WorkspaceHover => {
+                    (workspace_page(), Scroll::Off)
+                }
+                Scenario::WorkspaceScroll => (workspace_page(), Scroll::Watchlist),
             };
             driver.borrow_mut().scroll = scroll;
             let refresh = matches!(scenario, Scenario::RefreshTable);
+            let streaming = scenario.is_workspace();
             handles
                 .showcase
                 .update(cx, |showcase, cx| {
@@ -158,9 +230,27 @@ impl AutoRun {
                     if showcase.container.read(cx).refreshing != refresh {
                         showcase.toggle_refresh(window, cx);
                     }
+                    // So does toggling the quote stream, the workspace.
+                    if showcase.container.read(cx).streaming != streaming {
+                        showcase.toggle_streaming(window, cx);
+                    }
+                    if let Some(workspace) = showcase.container.read(cx).workspace.clone() {
+                        let quotes = match scenario {
+                            Scenario::WorkspaceScroll | Scenario::WorkspaceHover => {
+                                QUOTES_PER_TICK / 2
+                            }
+                            _ => QUOTES_PER_TICK,
+                        };
+                        workspace.update(cx, |workspace, _| workspace.quotes_per_tick = quotes);
+                    }
                     showcase.select(page, cx);
+                    showcase.focus_page(window, cx);
                 })
                 .ok();
+        }
+
+        if matches!(scenario, Scenario::WorkspaceHover) {
+            hover_watchlist(self.frame, handles, window, cx);
         }
 
         let cpu = main_thread_cpu_time();
@@ -212,6 +302,9 @@ impl AutoRun {
     }
 
     fn report(&self, clock_held: bool) {
+        if self.results.is_empty() {
+            return;
+        }
         println!(
             "\n{:<16} {:>9} {:>6} {:>9} {:>9} {:>9} {:>7} {:>7} {:>8} {:>8} {:>9} {:>8} {:>8} {:>6} {:>6}",
             "scenario",
@@ -276,4 +369,31 @@ impl AutoRun {
             );
         }
     }
+}
+
+/// Moves the pointer one watchlist row a frame, down the rows in view and
+/// back up, as a mouse moved over a table does.
+fn hover_watchlist(frame: usize, handles: &Handles, window: &mut Window, cx: &mut App) {
+    let Some(workspace) = handles.container.read(cx).workspace.clone() else {
+        return;
+    };
+    let bounds = workspace.read(cx).watchlist.read(cx).rows_bounds.get();
+    let rows = (f32::from(bounds.size.height) / f32::from(WATCHLIST_ROW_HEIGHT)) as usize;
+    if rows == 0 {
+        return;
+    }
+    let row = frame % (rows * 2);
+    let row = if row < rows { row } else { rows * 2 - 1 - row };
+    let position = point(
+        bounds.origin.x + px(120.),
+        bounds.origin.y + WATCHLIST_ROW_HEIGHT * (row as f32 + 0.5),
+    );
+    window.dispatch_event(
+        PlatformInput::MouseMove(MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers: Default::default(),
+        }),
+        cx,
+    );
 }
