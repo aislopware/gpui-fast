@@ -33,6 +33,8 @@ pub(crate) mod splice;
 pub(crate) mod stats;
 pub(crate) mod text;
 pub(crate) mod text_style;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_window;
 
 #[cfg(test)]
 mod tests;

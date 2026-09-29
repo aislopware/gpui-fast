@@ -19,4 +19,5 @@ mod splice;
 mod support;
 mod surface;
 mod text;
+mod test_window;
 mod text_shaping;

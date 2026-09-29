@@ -59,6 +59,7 @@ pub(crate) struct TestWindowState {
     appearance: WindowAppearance,
     external_drag_files: Vec<(PathBuf, bool)>,
     start_external_drag_result: bool,
+    pub(crate) fast_ime_positions: Vec<Bounds<Pixels>>,
 }
 
 #[derive(Clone)]
@@ -135,6 +136,7 @@ impl TestWindow {
             appearance: WindowAppearance::Light,
             external_drag_files: Vec::new(),
             start_external_drag_result: false,
+            fast_ime_positions: Vec::new(),
         })))
     }
     pub fn simulate_scheduled_frame(&self) -> bool {
@@ -615,7 +617,9 @@ impl PlatformWindow for TestWindow {
         state.start_external_drag_result
     }
 
-    fn update_ime_position(&self, _bounds: Bounds<Pixels>) {}
+    fn update_ime_position(&self, bounds: Bounds<Pixels>) {
+        self.0.lock().fast_ime_positions.push(bounds);
+    }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {
         None
