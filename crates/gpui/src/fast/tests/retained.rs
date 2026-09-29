@@ -870,6 +870,147 @@ fn a_view_is_rendered_again_when_a_model_it_read_was_updated_without_a_notify() 
     assert_eq!(updated, draw_siblings(&mut cx, s.window));
 }
 
+/// A view whose layout does not change when it is notified, so that the view
+/// around it can be drawn from last frame around it.
+struct Tinted {
+    red: bool,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for Tinted {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        div().size(px(20.)).bg(if self.red {
+            crate::red()
+        } else {
+            crate::blue()
+        })
+    }
+}
+
+struct TintedAndCounted {
+    tinted: Entity<Tinted>,
+    counted: Entity<Counted>,
+}
+
+impl Render for TintedAndCounted {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(self.tinted.clone())
+            .child(self.counted.clone())
+    }
+}
+
+struct Spliced {
+    window: WindowHandle<TintedAndCounted>,
+    tinted: Entity<Tinted>,
+    model: Entity<Model>,
+    tinted_builds: Rc<Cell<usize>>,
+    counted_builds: Rc<Cell<usize>>,
+}
+
+fn spliced(cx: &mut TestAppContext) -> Spliced {
+    let tinted_builds = Rc::new(Cell::new(0));
+    let counted_builds = Rc::new(Cell::new(0));
+    let model = cx.new(|_| Model(0));
+    let window = cx.add_window({
+        let (tinted_builds, counted_builds, model) =
+            (tinted_builds.clone(), counted_builds.clone(), model.clone());
+        move |_, cx| TintedAndCounted {
+            tinted: cx.new(|_| Tinted {
+                red: false,
+                builds: tinted_builds,
+            }),
+            counted: cx.new(|_| Counted {
+                label: 1,
+                model: Some(model),
+                builds: counted_builds,
+            }),
+        }
+    });
+    let tinted = window.update(cx, |view, _, _| view.tinted.clone()).unwrap();
+    Spliced {
+        window,
+        tinted,
+        model,
+        tinted_builds,
+        counted_builds,
+    }
+}
+
+fn draw_spliced(cx: &mut TestAppContext, s: &Spliced) -> (Vec<String>, u64) {
+    cx.update_window(s.window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        (
+            window.describe_rendered_frame(),
+            window.layout_stats().views_built,
+        )
+    })
+    .unwrap()
+}
+
+/// Notifies the tinted view, which draws the window, the way a test context
+/// draws a window an update invalidated, and returns that frame.
+fn tint(cx: &mut TestAppContext, s: &Spliced) -> (Vec<String>, u64) {
+    s.tinted.update(cx, |tinted, cx| {
+        tinted.red = !tinted.red;
+        cx.notify();
+    });
+    cx.update_window(s.window.into(), |_, window, _| {
+        (
+            window.describe_rendered_frame(),
+            window.layout_stats().views_built,
+        )
+    })
+    .unwrap()
+}
+
+/// A view that read a model updated without a notify is built again when a
+/// sibling's notification draws the view around both of them from last frame
+/// around the sibling, as upstream builds every view under the one around
+/// them.
+#[test]
+fn a_view_that_read_a_model_updated_without_a_notify_is_built_again_beside_a_notified_one() {
+    let mut cx = TestAppContext::single();
+    let s = spliced(&mut cx);
+    draw_spliced(&mut cx, &s);
+
+    s.model.update(&mut cx, |model, _| model.0 = 7);
+    let (updated, _) = tint(&mut cx, &s);
+    assert_eq!(
+        (s.tinted_builds.get(), s.counted_builds.get()),
+        (2, 2),
+        "the notified view and the view that read the model are built again"
+    );
+
+    cx.update_window(s.window.into(), |_, window, _| {
+        window.forget_retained_state()
+    })
+    .unwrap();
+    assert_eq!(updated, draw_spliced(&mut cx, &s).0);
+}
+
+/// A view drawn from last frame around a nested view built again is up to date
+/// afterwards: a frame drawn after it with nothing changed, as a hover or an
+/// animation elsewhere draws one, builds nothing.
+#[test]
+fn a_view_drawn_around_a_nested_view_built_again_is_reused_on_the_next_frame() {
+    let mut cx = TestAppContext::single();
+    let s = spliced(&mut cx);
+    draw_spliced(&mut cx, &s);
+
+    let (_, built) = tint(&mut cx, &s);
+    assert_eq!(s.tinted_builds.get(), 2);
+
+    let (_, built_again) = draw_spliced(&mut cx, &s);
+    assert_eq!(
+        built_again, built,
+        "nothing changed since the frame drawn around the notified view"
+    );
+}
+
 /// A view built again keeps the measurements of the text that did not
 /// change, rather than measuring and laying it out again, and measures the
 /// text that did.

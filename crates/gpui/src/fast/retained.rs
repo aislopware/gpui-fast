@@ -1181,8 +1181,7 @@ impl<V: View> ViewElement<V> {
                         {
                             return (layout_id, ViewLayout::Retained { previous });
                         }
-                        if window.dirty_views.contains(&entity_id)
-                            && let Some(splice) = window.splice_layout(global_id, cx)
+                        if let Some(splice) = window.splice_layout(global_id, cx)
                             && let Some(root) = window.retained_layout_root(splice.previous())
                         {
                             return (root, ViewLayout::Spliced(splice));

@@ -256,6 +256,15 @@ impl App {
         }
     }
 
+    /// Where the changes [`App::dependencies_changed`] looks for stand now,
+    /// for dependencies found unchanged now to be marked up to date as of now.
+    pub(crate) fn dependencies_checked(&self) -> Checked {
+        Checked {
+            updates: self.entities.access_log.update_generation,
+            generation: self.dependencies.global_generation,
+        }
+    }
+
     /// Records, for any recording that is open, that the state `version`
     /// belongs to was read as it is now.
     #[inline]
@@ -558,6 +567,14 @@ impl Writes {
     }
 }
 
+/// Where the entity updates and the global changes stood when dependencies
+/// were found unchanged. See [`App::dependencies_checked`].
+#[derive(Clone, Copy)]
+pub(crate) struct Checked {
+    updates: u64,
+    generation: u64,
+}
+
 /// What a recording saw: everything read while it was open, and what was read
 /// outside the recordings nested in it, by the subtree itself.
 pub(crate) struct RecordedDependencies {
@@ -762,6 +779,58 @@ impl RenderDependencies {
                 to: writes,
                 own: SmallVec::new(),
             },
+            ..self.clone()
+        }
+    }
+
+    /// The same dependencies, found unchanged as of `checked`: an update or a
+    /// global change before then was one they did not read.
+    pub(crate) fn checked_at(&self, checked: &Checked) -> Self {
+        Self {
+            updates: self.updates.max(checked.updates),
+            generation: self.generation.max(checked.generation),
+            ..self.clone()
+        }
+    }
+
+    /// These dependencies without what any of `others` read too.
+    pub(crate) fn without(&self, others: &[&RenderDependencies]) -> Self {
+        let read_by_others = |entity: &EntityId| {
+            others
+                .iter()
+                .any(|other| other.entities.binary_search(entity).is_ok())
+        };
+        let global_read_by_others = |global: &TypeId| {
+            others
+                .iter()
+                .any(|other| other.globals.binary_search(global).is_ok())
+        };
+        Self {
+            entities: self
+                .entities
+                .iter()
+                .copied()
+                .filter(|entity| !read_by_others(entity))
+                .collect(),
+            globals: self
+                .globals
+                .iter()
+                .copied()
+                .filter(|global| !global_read_by_others(global))
+                .collect(),
+            states: self
+                .states
+                .iter()
+                .filter(|(version, _)| {
+                    !others.iter().any(|other| {
+                        other
+                            .states
+                            .iter()
+                            .any(|(read, _)| read.ptr() == version.ptr())
+                    })
+                })
+                .cloned()
+                .collect(),
             ..self.clone()
         }
     }

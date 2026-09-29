@@ -161,6 +161,9 @@ impl Prebuilt {
 pub(crate) struct Splice {
     previous: usize,
     gaps: Vec<Gap>,
+    /// Where the app's changes stood when what the view drew was found up to
+    /// date. See [`crate::fast::dependencies::Checked`].
+    checked: crate::fast::dependencies::Checked,
 }
 
 impl Splice {
@@ -238,6 +241,11 @@ impl Window {
     /// it was laid out last frame, with those views built again at their own
     /// nodes, if it can be: nothing it read itself changed, it is hovered as
     /// it was, and the nested views ask for the layout they had.
+    ///
+    /// The views built again are the outermost nested ones that could not be
+    /// drawn from last frame on their own: notified, or not up to date with
+    /// what they read or the hovers they were painted by. Everything else it
+    /// holds is up to date, and is copied.
     pub(crate) fn splice_layout(&mut self, id: &GlobalElementId, cx: &mut App) -> Option<Splice> {
         if self.refreshing
             || cx.has_active_drag()
@@ -264,13 +272,21 @@ impl Window {
             return None;
         }
 
-        // The outermost dirty views nested in it are the gaps. Every view
-        // around a dirty one is dirty too, so a clean one holds none.
+        // The outermost nested views that are out of date are the gaps. What
+        // a subtree read includes what the subtrees nested in it read, and a
+        // view around a dirty one is dirty too, so an up-to-date one holds
+        // none.
+        let checked = cx.dependencies_checked();
         let mut gaps = Vec::new();
         let mut index = previous + 1;
         while index <= previous + record.nested {
             let nested = &records[index];
-            if view_entity(&nested.id).is_some_and(|entity| self.dirty_views.contains(&entity)) {
+            let out_of_date = view_entity(&nested.id)
+                .is_some_and(|entity| self.dirty_views.contains(&entity))
+                || self.retained_state.dirty_subtrees.contains(&nested.id)
+                || cx.dependencies_changed(&nested.dependencies)
+                || !self.hovers_unchanged(&nested.hover_dependencies);
+            if out_of_date {
                 if nested.rebuild.is_none()
                     || nested.layout.is_none()
                     || !matches!(nested.paint, PaintStatus::Painted { .. })
@@ -281,7 +297,7 @@ impl Window {
             }
             index += nested.nested + 1;
         }
-        if gaps.is_empty() {
+        if gaps.is_empty() || self.deferred_out_of_date(previous, entity, &gaps, cx) {
             return None;
         }
 
@@ -327,7 +343,38 @@ impl Window {
         Some(Splice {
             previous,
             gaps: built,
+            checked,
         })
+    }
+
+    /// Whether something drawn by the deferred draws last frame's record
+    /// `previous` holds is out of date, other than in the `gaps` built again.
+    ///
+    /// A deferred draw is copied along with the view that deferred it, but is
+    /// drawn after it, so the views it draws are not nested in the view's
+    /// record, and are not found out of date as nested views are. What they
+    /// read is part of what the view read, so any change to that which none
+    /// of the gaps read, and any view in it that is dirty, is theirs.
+    fn deferred_out_of_date(
+        &self,
+        previous: usize,
+        entity: EntityId,
+        gaps: &[usize],
+        cx: &App,
+    ) -> bool {
+        let records = &self.rendered_frame.retained.records;
+        let range = &records[previous].prepaint_range;
+        if range.start.deferred_draws_index == range.end.deferred_draws_index {
+            return false;
+        }
+        let gaps: Vec<&RenderDependencies> =
+            gaps.iter().map(|&gap| &records[gap].dependencies).collect();
+        let rest = records[previous].dependencies.without(&gaps);
+        cx.dependencies_changed(&rest)
+            || rest
+                .entities
+                .iter()
+                .any(|&view| view != entity && self.dirty_views.contains(&view))
     }
 
     /// Builds the view last frame's record `record` stands for again, where
@@ -447,7 +494,11 @@ impl Window {
         splice: Splice,
         cx: &mut App,
     ) -> ViewPrepaint {
-        let Splice { previous, mut gaps } = splice;
+        let Splice {
+            previous,
+            mut gaps,
+            checked,
+        } = splice;
         let writes_now = cx.entities.write_generation();
         let source = &self.rendered_frame.retained;
         let record = &source.records[previous];
@@ -547,10 +598,13 @@ impl Window {
 
         // The gaps' layout keys, dependencies and hovers are this frame's.
         let mut layout_keys = kept_layout_keys;
-        // What the view read itself was checked before it was spliced, so it
-        // is up to date with every write so far.
+        // What the view read itself, and what the views copied along with it
+        // read, was found unchanged before it was spliced, and the gaps were
+        // built since: it is up to date as of then, and with every write so
+        // far.
         let mut dependencies = self.rendered_frame.retained.records[previous]
             .dependencies
+            .checked_at(&checked)
             .written_up_to(writes_now);
         for gap in &gaps {
             let gap_id = &self.rendered_frame.retained.records[gap.record].id;

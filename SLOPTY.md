@@ -21,8 +21,8 @@ Two upstreams feed it:
   `2db56fa` (`zed: import bd747337`, zed `bd747337d7be`).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
-  longbridge commit merged is `ac1c226` (#12, "hand a text element's inputs to its
-  measurement instead of copying them"), in `751acaf`.
+  longbridge commit merged is `f6e82b4` (#13, "keep carried lines in the line cache, and
+  measure text in fast/"), in `4c13f16`; before it `ac1c226` (#12), in `751acaf`.
 - `UPSTREAM` records `zed_commit` and `import_commit` (the latest vendor commit).
   `script/check-upstream` compares every tracked file against it.
 
@@ -69,6 +69,8 @@ Added in this fork:
 
 - `1776aa2` test(gpui): a video surface shows the buffer its view holds, retained or not
 - `4d0009e` gpui: build a view that asked for an animation frame on the next frame drawn
+- the commit after `4c13f16`: a spliced view builds every nested view that is out of
+  date, not only the notified ones, and leaves its record up to date as of the splice
 
 ### Candidates for longbridge
 
@@ -81,6 +83,24 @@ Generic to gpui-fast, not to Slopty, and worth a pull request to longbridge/gpui
 - `4d0009e`, a view that asked for an animation frame built on the next frame drawn;
 - `1776aa2`, the retained-mode test of a surface's buffer (macOS; the surface element is
   upstream's).
+- the splice fixes in `fast/splice.rs` (the commit after `4c13f16`), all in `fast/`:
+  - A view dirty because a nested view was notified was spliced with only the notified
+    views built again. A nested view that read a model updated without a notify (or a
+    global changed, or a state version bumped, or a hover) was copied from the last frame
+    and drawn stale, where upstream builds every view under the notified one. The gaps
+    are now the outermost nested records that are out of date by any of those, and a
+    view is spliced when it is not reusable, not only when it is in `dirty_views`.
+  - A deferred draw is copied with the view that deferred it, but the views it draws are
+    not nested in that view's record. `Window::deferred_out_of_date` refuses the splice
+    when anything the view read, less what the gaps read, changed or is dirty. The
+    oracle found this (seed 14, step 40) once the first fix spliced more often.
+  - A spliced record kept the `updates` and `generation` baselines of the frame it was
+    first built in, so the next frame found it changed by updates it had already been
+    checked against, and built the whole chain again. `RenderDependencies::checked_at`
+    moves the baselines up to where they stood when the splice was checked.
+  - Tests: `a_view_that_read_a_model_updated_without_a_notify_is_built_again_beside_a_notified_one`
+    and `a_view_drawn_around_a_nested_view_built_again_is_reused_on_the_next_frame` in
+    `fast/tests/retained.rs`; each fails without its fix.
 - the commit adding this file, which also lets `script/check-upstream` accept the patches
   above (`script/upstream-allowlist`, the "Slopty's patches" section)
 
@@ -115,28 +135,43 @@ To rule retention in or out, run with `GPUI_VIEW_RETENTION=0`.
 
 ### gpui-kit under Retained Mode
 
-`cargo test --no-fail-fast -p gpui-base -p gpui-component -p gpui-kit --lib` in our
-gpui-kit fork, on this fork: gpui-base 1239 passed and 5 failed, gpui-component 575
-passed and 1 failed. With `GPUI_VIEW_RETENTION=0`, only the two tests counting a cached
-view's builds fail. Each failure reads or writes something Retained Mode does not see:
+Our gpui-kit fork's `cargo test --no-fail-fast -p gpui-base -p gpui-component -p gpui-kit
+--lib` failed 6 tests on this fork before the fixes below. Each failure was something
+drawn that Retained Mode did not see change, or a write that it did:
 
-- `input::state::tests::test_input_does_not_invalidate_cached_parent_during_paint` and
-  `text::window_selection::tests::selection_inside_a_cached_view_survives_replayed_frames`
-  count how often a cached view is built. gpui-fast builds a cached view again when an
-  entity it read was written, and the input or selection inside it writes its own state
-  while it is drawn: more builds than upstream, the same pictures. With retention off
-  every view is built on every frame, so they fail there too.
-- `virtual_list::tests::{horizontal,vertical}_visible_range_and_deferred_scroll_are_preserved`:
-  `VirtualListScrollHandle::scroll_to_item` keeps the request in its own `Rc<RefCell<..>>`
-  and notifies nobody, so the list's view is drawn from the last frame. The handle has to
-  change the `ScrollHandle` it wraps (which bumps its version) or notify the view.
-- `text::state::tests::reveal_range::a_reveal_that_cannot_be_shown_gives_up`: a reveal is
-  counted by what an `Inline` reports from its prepaint through an `Arc<Mutex<..>>`; a
-  block drawn from the last frame reports nothing, so the reveal waits for its timeout
-  instead of giving up after a few frames.
-- `scrollbar::tests::repeated_touch_and_mouse_drags_keep_the_painted_grab_point`
-  (touch, vertical): the thumb painted after a touch drag moves back to its start is the
-  one painted 5 px further, not yet explained.
+- **Writes while drawing.** gpui-kit updated entities and wrote globals on every frame
+  without changing anything: the window selection state's frame bookkeeping and its
+  snapshots, the active selection scope, the touch UI bounds, the text view state stack,
+  the selection document order and the selection state registry. gpui-fast counts such an
+  update or write as a change, even for a cached view, so the view that read them (the
+  `Root` among others) was built on every frame. gpui-kit now keeps that bookkeeping in
+  `Cell`s and writes only what changed. `selection_inside_a_cached_view_survives_replayed_frames`
+  counted 16 builds where 8 were due; a test ticking a sibling of a cached panel of
+  Markdown and an input now builds only the sibling.
+- **A notify in the first paint.** An input reports its geometry in its first paint and
+  notifies; upstream drops that notify (the window has not tracked the entity yet),
+  gpui-fast honours it. `test_input_does_not_invalidate_cached_parent_during_paint` settles
+  that frame before counting.
+- **`VirtualListScrollHandle::scroll_to_item`** kept its request in its own
+  `Rc<RefCell<..>>` and notified nobody. It now moves the `ScrollHandle` it wraps, which
+  bumps its version, using the geometry of the last prepaint.
+- **Text reveal and hit testing.** A `TextView` ran its reveal progress and started its
+  selection frame from the element's paint, in the parent's view; when only the state's
+  view was built again, or only the parent, the report was lost or the hit test runs
+  cleared. Both now run in the state's own view (`TextViewContent`).
+- **Scrollbar drag.** A throttled drag defers its notify to a trailing timer; the test's
+  handle keeps its offset in plain `Rc` state, so a frame drawn before the timer showed
+  the last thumb. The test lets the throttle deliver before it checks the thumb. Real
+  handles (`ScrollHandle`, `ListState`) carry a state version.
+
+With these fixes and this fork, the same command passes both ways: gpui-base 1246,
+gpui-component 576 (gpui-kit has no lib tests), with retention on and with
+`GPUI_VIEW_RETENTION=0`.
+
+Two limits remain. The selection document order is counted per painted participant, so
+a partial frame orders only those it painted, as upstream's cached views already did. A
+streaming Markdown message grows its layout, so the views around it are built again
+("gap layout changed"); relaying the gap out in place when its size holds would keep them.
 
 ## Measured
 
@@ -214,6 +249,11 @@ In the bd747337 sync:
   within one font generation.
 - `view.rs`, `elements/text.rs`: take upstream around gpui-fast's forwarding bodies and
   visibility bumps.
+
+In the longbridge f6e82b4 merge (`4c13f16`): `TextMeasureInputs::new` went away, so the
+font generation moves into `fast::text::layout_text` and `shapes_as` compares it;
+`LineLayoutCache::finish_frame` keeps our lock order (current frame, then previous) and
+the font-generation clear ahead of `carry_over_line_layouts`.
 
 For our patches: `window.rs` (`paint_glyph_scaled` sits next to gpui-fast's
 `pub(crate) fn should_use_subpixel_rendering`), the root `Cargo.toml` (`gpui_ios` member
