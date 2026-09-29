@@ -2,7 +2,7 @@
 //! carried from one frame to the next, and shaping statistics.
 
 use crate::{
-    App, AvailableSpace, DecorationRun, FontRun, FrameCache, Hsla, LayoutId, LineLayout,
+    App, AvailableSpace, DecorationRun, FontRun, FrameCache, Hsla, LayoutId, LineLayout, LineLayoutCache,
     LineLayoutIndex, Pixels, PlatformTextSystem, SharedString, Size, StrikethroughStyle, Style,
     TextLayout, TextLayoutInner, TextOverflow, TextRun, TextStyle, TruncateFrom, UnderlineStyle,
     WhiteSpace, Window, WindowTextSystem, WrappedLine,
@@ -411,7 +411,7 @@ impl Window {
         self.invalidator.debug_assert_prepaint();
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
-        let key = self.layout_key();
+        let key = crate::fast::layout_key::layout_key(self);
         self.layout_engine
             .as_mut()
             .unwrap()
@@ -551,6 +551,82 @@ impl LineShaping {
                 .fetch_add(started_at.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
         layout
+    }
+}
+
+/// Shapes a line `cache` does not have, counting it. See [`LineShaping`].
+#[inline]
+pub(crate) fn shape_line(
+    cache: &LineLayoutCache,
+    text: &str,
+    font_size: Pixels,
+    runs: &[FontRun],
+) -> LineLayout {
+    cache
+        .shaping
+        .shape_line(&*cache.platform_text_system, text, font_size, runs)
+}
+
+/// The decoration runs of a line about to be measured. Most lines carry one
+/// decoration run, and highlighted ones a handful; reserving for the worst
+/// case, as upstream does, allocated two kilobytes on every measurement, which
+/// is much of what a short line costs.
+#[inline]
+pub(crate) fn decoration_runs() -> Vec<DecorationRun> {
+    Vec::with_capacity(4)
+}
+
+/// Whether two decoration runs decorate alike, so a line measured with one
+/// can be reused for the other.
+impl PartialEq for DecorationRun {
+    fn eq(&self, other: &Self) -> bool {
+        // Destructured, so that a field upstream adds can't be missed here.
+        let DecorationRun {
+            len,
+            color,
+            background_color,
+            underline,
+            strikethrough,
+        } = self;
+        *len == other.len
+            && *color == other.color
+            && *background_color == other.background_color
+            && *underline == other.underline
+            && *strikethrough == other.strikethrough
+    }
+}
+
+/// Where each of the line layout cache's lists stood, compared to tell
+/// whether a reused range of lines is the one recorded.
+impl PartialEq for LineLayoutIndex {
+    fn eq(&self, other: &Self) -> bool {
+        let LineLayoutIndex {
+            lines_index,
+            wrapped_lines_index,
+            lines_by_hash_index,
+            wrapped_lines_by_hash_index,
+        } = self;
+        *lines_index == other.lines_index
+            && *wrapped_lines_index == other.wrapped_lines_index
+            && *lines_by_hash_index == other.lines_by_hash_index
+            && *wrapped_lines_by_hash_index == other.wrapped_lines_by_hash_index
+    }
+}
+
+impl std::fmt::Debug for LineLayoutIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let LineLayoutIndex {
+            lines_index,
+            wrapped_lines_index,
+            lines_by_hash_index,
+            wrapped_lines_by_hash_index,
+        } = self;
+        f.debug_struct("LineLayoutIndex")
+            .field("lines_index", lines_index)
+            .field("wrapped_lines_index", wrapped_lines_index)
+            .field("lines_by_hash_index", lines_by_hash_index)
+            .field("wrapped_lines_by_hash_index", wrapped_lines_by_hash_index)
+            .finish()
     }
 }
 

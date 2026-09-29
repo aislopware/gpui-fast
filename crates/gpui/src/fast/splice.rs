@@ -49,6 +49,13 @@ pub(crate) fn cached<V: View>(view: V, any: AnyView, style: StyleRefinement) -> 
     ViewElement::new(view).rebuildable(any).cached(style)
 }
 
+/// `view` drawn as a view that can be built again on its own, kept as `any`,
+/// as [`Entity::into_element`](crate::IntoElement::into_element) and
+/// [`AnyView::into_element`](crate::IntoElement::into_element) draw it.
+pub(crate) fn rebuildable<V: View>(view: V, any: AnyView) -> ViewElement<V> {
+    ViewElement::new(view).rebuildable(any)
+}
+
 impl<V: View> ViewElement<V> {
     /// Keeps `view`, which renders what this element does, to build it again
     /// on its own. See [`crate::fast::splice`].
@@ -154,8 +161,14 @@ impl Prebuilt {
         window: &mut Window,
         cx: &mut App,
     ) -> ViewPrepaintState {
-        self.view
-            .prepaint_view(global_id, bounds, &mut self.layout, window, cx)
+        crate::fast::retained::prepaint_view(
+            &mut self.view,
+            global_id,
+            bounds,
+            &mut self.layout,
+            window,
+            cx,
+        )
     }
 
     pub(crate) fn paint(
@@ -165,7 +178,7 @@ impl Prebuilt {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.view.paint_view(global_id, prepaint, window, cx)
+        crate::fast::retained::paint_view(&mut self.view, global_id, prepaint, window, cx)
     }
 }
 
@@ -410,11 +423,17 @@ impl Window {
         // it.
         let (layout_id, layout, layout_key) =
             self.with_parent_layout_key(rebuild.parent_layout_key, |window| {
-                let layout_key = window.push_layout_key(Some(&element_id));
+                let layout_key =
+                    crate::fast::layout_key::push_layout_key(window, Some(&element_id));
                 window.element_id_stack.push(element_id.clone());
-                let (layout_id, layout) = view.request_view_layout(Some(&global_id), window, cx);
+                let (layout_id, layout) = crate::fast::retained::request_view_layout(
+                    &mut view,
+                    Some(&global_id),
+                    window,
+                    cx,
+                );
                 window.element_id_stack.pop();
-                window.pop_layout_key();
+                crate::fast::layout_key::pop_layout_key(window);
                 (layout_id, layout, layout_key)
             });
         self.leave_gap(inherited);
@@ -575,11 +594,16 @@ impl Window {
             let bounds = self.layout_bounds(gap.layout_id);
             self.element_id_stack.push(gap.element_id());
             let node = self.next_frame.dispatch_tree.push_node();
-            let scope = self.enter_prepaint_layout_scope(gap.layout_key);
-            let prepaint =
-                gap.view
-                    .prepaint_view(Some(&gap.global_id), bounds, &mut gap.layout, self, cx);
-            self.exit_prepaint_layout_scope(scope);
+            let scope = crate::fast::layout_key::enter_prepaint_scope(self, gap.layout_key);
+            let prepaint = crate::fast::retained::prepaint_view(
+                &mut gap.view,
+                Some(&gap.global_id),
+                bounds,
+                &mut gap.layout,
+                self,
+                cx,
+            );
+            crate::fast::layout_key::exit_prepaint_scope(self, scope);
             self.next_frame.dispatch_tree.pop_node();
             self.element_id_stack.pop();
             gap.prepainted = Some((node, prepaint));
@@ -766,8 +790,13 @@ impl Window {
             if let Some((node, prepaint)) = gap.prepainted.as_mut() {
                 self.element_id_stack.push(element_id);
                 self.next_frame.dispatch_tree.set_active_node(*node);
-                gap.view
-                    .paint_view(Some(&gap.global_id), prepaint, self, cx);
+                crate::fast::retained::paint_view(
+                    &mut gap.view,
+                    Some(&gap.global_id),
+                    prepaint,
+                    self,
+                    cx,
+                );
                 self.element_id_stack.pop();
             }
             self.leave_gap(inherited);

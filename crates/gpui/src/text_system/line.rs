@@ -20,7 +20,7 @@ pub struct GlyphRasterData {
 }
 
 /// Set the text decoration for a run of text.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct DecorationRun {
     /// The length of the run in utf-8 bytes.
     pub len: u32,
@@ -543,7 +543,8 @@ fn paint_line(
                             layout.font_size,
                         )?;
                     } else {
-                        glyph_painter.paint_glyph(
+                        crate::fast::glyphs::LineGlyphPainter::paint_glyph(
+                            &mut glyph_painter,
                             window,
                             glyph_origin + baseline_offset + vertical_offset,
                             run.font_id,

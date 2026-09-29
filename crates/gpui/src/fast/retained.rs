@@ -35,6 +35,20 @@ pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
     window.mark_changed_retained_views_dirty(cx);
 }
 
+/// Marks `window` as drawn outside of its frames, which is what tells
+/// retained subtrees what changed since they were drawn, so that nothing is
+/// drawn again from an earlier frame.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn draw_outside_frames(window: &mut Window) {
+    window.refreshing = true;
+}
+
+/// The retained subtrees being prepainted right now, for something deferred
+/// from them to be counted as theirs.
+pub(crate) fn enclosing_retained(window: &Window) -> EnclosingRetained {
+    window.next_frame.retained.open_records()
+}
+
 /// The retained subtrees drawn in one frame, in the order they began
 /// prepainting, which puts a subtree's nested subtrees right after it.
 #[derive(Default)]
@@ -165,7 +179,7 @@ pub(crate) struct RetainedState {
     pub(crate) hover_dependencies: Vec<(HitboxId, bool)>,
     /// Hovers read through [`HitboxId::is_hovered`], which only has the window
     /// to read, since `hover_dependencies` last took them in. See
-    /// [`Window::note_hover_read`].
+    /// [`note_hover_read`].
     pub(crate) hover_reads: RefCell<Vec<(HitboxId, bool)>>,
     /// For each retained subtree being painted, innermost last, the stretches
     /// of `hover_dependencies` its nested subtrees added.
@@ -215,7 +229,7 @@ impl RetainedState {
 pub(crate) struct EnclosingRetained(SmallVec<[usize; 4]>);
 
 /// Something deferred from retained subtrees being drawn. See
-/// [`Window::begin_deferred_retained_prepaint`].
+/// [`begin_deferred_prepaint`].
 pub(crate) struct DeferredRetainedRecording {
     enclosing: EnclosingRetained,
     dependencies: DependencyRecording,
@@ -244,14 +258,59 @@ impl PrepaintStateIndex {
     }
 }
 
+/// Whether two indices stand at the same place in each of a frame's lists.
+impl PartialEq for PrepaintStateIndex {
+    fn eq(&self, other: &Self) -> bool {
+        // Destructured, so that a field upstream adds can't be missed here.
+        let PrepaintStateIndex {
+            hitboxes_index,
+            tooltips_index,
+            deferred_draws_index,
+            dispatch_tree_index,
+            accessed_element_states_index,
+            line_layout_index,
+        } = self;
+        *hitboxes_index == other.hitboxes_index
+            && *tooltips_index == other.tooltips_index
+            && *deferred_draws_index == other.deferred_draws_index
+            && *dispatch_tree_index == other.dispatch_tree_index
+            && *accessed_element_states_index == other.accessed_element_states_index
+            && *line_layout_index == other.line_layout_index
+    }
+}
+
+/// Whether two indices stand at the same place in each of a frame's lists.
+impl PartialEq for PaintIndex {
+    fn eq(&self, other: &Self) -> bool {
+        let PaintIndex {
+            scene_index,
+            fast_window_control_hitboxes_index,
+            mouse_listeners_index,
+            input_handlers_index,
+            cursor_styles_index,
+            accessed_element_states_index,
+            tab_handle_index,
+            line_layout_index,
+        } = self;
+        *scene_index == other.scene_index
+            && *fast_window_control_hitboxes_index == other.fast_window_control_hitboxes_index
+            && *mouse_listeners_index == other.mouse_listeners_index
+            && *input_handlers_index == other.input_handlers_index
+            && *cursor_styles_index == other.cursor_styles_index
+            && *accessed_element_states_index == other.accessed_element_states_index
+            && *tab_handle_index == other.tab_handle_index
+            && *line_layout_index == other.line_layout_index
+    }
+}
+
 impl PaintIndex {
     /// See [`PrepaintStateIndex::shifted`].
     pub(crate) fn shifted(&self, from: &Self, to: &Self) -> Self {
         PaintIndex {
             scene_index: self.scene_index - from.scene_index + to.scene_index,
-            window_control_hitboxes_index: self.window_control_hitboxes_index
-                - from.window_control_hitboxes_index
-                + to.window_control_hitboxes_index,
+            fast_window_control_hitboxes_index: self.fast_window_control_hitboxes_index
+                - from.fast_window_control_hitboxes_index
+                + to.fast_window_control_hitboxes_index,
             mouse_listeners_index: self.mouse_listeners_index - from.mouse_listeners_index
                 + to.mouse_listeners_index,
             input_handlers_index: self.input_handlers_index - from.input_handlers_index
@@ -630,19 +689,6 @@ impl Window {
         anchor
     }
 
-    /// Copies the window control hitboxes last frame's paint of `range`
-    /// inserted, which upstream's [`Window::reuse_paint`] leaves out: a subtree
-    /// drawn again from last frame would otherwise lose the window controls it
-    /// painted.
-    pub(crate) fn reuse_window_control_hitboxes(&mut self, range: &Range<PaintIndex>) {
-        self.next_frame.window_control_hitboxes.extend(
-            self.rendered_frame.window_control_hitboxes[range.start.window_control_hitboxes_index
-                ..range.end.window_control_hitboxes_index]
-                .iter()
-                .cloned(),
-        );
-    }
-
     /// Draws the subtree whose prepaint [`Window::reuse_retained_prepaint`]
     /// drew again as far as its paint goes.
     pub(crate) fn reuse_retained_paint(&mut self, index: usize) {
@@ -859,31 +905,6 @@ impl Window {
         record.own_dependencies = record.own_dependencies.union(&dependencies.own);
     }
 
-    /// The retained subtrees around the element being painted, for a listener
-    /// to mark if what it listens for changes the element's look.
-    pub(crate) fn enclosing_retained_subtrees(&self) -> SmallVec<[GlobalElementId; 2]> {
-        self.retained_state.subtree_stack.iter().cloned().collect()
-    }
-
-    /// Notes that what is being painted inside a retained subtree looks the
-    /// way it does because `hitbox` is, or is not, hovered: anything painted
-    /// that asked whether it is, a hover style or an element of its own.
-    ///
-    /// Returns the answer when it is noted, having worked it out to note it,
-    /// and `None` when nothing is being drawn to note it for.
-    #[inline]
-    pub(crate) fn note_hover_read(&self, hitbox: HitboxId) -> Option<bool> {
-        if self.retained_state.subtree_stack.is_empty() {
-            return None;
-        }
-        let hovered = hitbox.hovered_now(self);
-        self.retained_state
-            .hover_reads
-            .borrow_mut()
-            .push((hitbox, hovered));
-        Some(hovered)
-    }
-
     /// Takes the hovers read since the last call into `hover_dependencies`,
     /// in the order they were read, before anything measures it.
     pub(crate) fn take_hover_reads(&mut self) {
@@ -918,117 +939,6 @@ impl Window {
         dependencies
             .iter()
             .all(|(hitbox, hovered)| hitbox.hovered_now(self) == *hovered)
-    }
-
-    /// Marks the innermost of the retained subtrees an interaction happened
-    /// in to be built again rather than reused on the next frame. Its
-    /// listener notifies the view it is in, which marks the views around it
-    /// dirty, so they are drawn from last frame around it where they can be
-    /// rather than built again.
-    pub(crate) fn invalidate_retained_subtrees(&mut self, subtrees: &[GlobalElementId]) {
-        self.retained_state
-            .dirty_subtrees
-            .extend(subtrees.last().cloned());
-    }
-
-    /// Multiplies the opacity of what is painted from here on by `opacity`,
-    /// returning the opacity to go back to with
-    /// [`Window::pop_element_opacity`]. See [`Window::with_element_opacity`].
-    ///
-    /// Opacity only affects what is painted, but a retained subtree inside is
-    /// drawn again from what it painted only if it would be painted at the
-    /// opacity it was, which prepaint decides.
-    pub(crate) fn push_element_opacity(&mut self, opacity: Option<f32>) -> f32 {
-        self.invalidator.debug_assert_paint_or_prepaint();
-        let previous_opacity = self.element_opacity;
-        if let Some(opacity) = opacity {
-            self.element_opacity = previous_opacity * opacity;
-        }
-        previous_opacity
-    }
-
-    /// Goes back to the opacity [`Window::push_element_opacity`] returned.
-    pub(crate) fn pop_element_opacity(&mut self, previous_opacity: f32) {
-        self.element_opacity = previous_opacity;
-    }
-
-    /// Starts prepainting the deferred draw at `deferred_draw_ix` as a part of
-    /// the retained subtrees it was deferred from, though it is drawn after
-    /// them: what it listens for marks them, and what it reads is theirs.
-    pub(crate) fn begin_deferred_retained_prepaint(
-        &mut self,
-        deferred_draw_ix: usize,
-        cx: &mut App,
-    ) -> Option<DeferredRetainedRecording> {
-        let enclosing = &self.next_frame.deferred_draws[deferred_draw_ix].enclosing_retained;
-        if enclosing.0.is_empty() {
-            return None;
-        }
-        let enclosing = enclosing.clone();
-        self.retained_state.subtree_stack.extend(
-            enclosing
-                .0
-                .iter()
-                .map(|&index| self.next_frame.retained.id(index).clone()),
-        );
-        Some(DeferredRetainedRecording {
-            enclosing,
-            dependencies: cx.begin_recording_dependencies(),
-            hovers_start: None,
-        })
-    }
-
-    /// Starts painting a deferred draw as a part of the retained subtrees it
-    /// was deferred from, though it is painted after them: an interaction in
-    /// it marks them, and what it reads and is hovered by is theirs.
-    pub(crate) fn begin_deferred_retained_paint(
-        &mut self,
-        enclosing: &EnclosingRetained,
-        cx: &mut App,
-    ) -> Option<DeferredRetainedRecording> {
-        if enclosing.0.is_empty() {
-            return None;
-        }
-        self.retained_state.subtree_stack.extend(
-            enclosing
-                .0
-                .iter()
-                .map(|&index| self.next_frame.retained.id(index).clone()),
-        );
-        self.take_hover_reads();
-        Some(DeferredRetainedRecording {
-            enclosing: enclosing.clone(),
-            dependencies: cx.begin_recording_dependencies(),
-            hovers_start: Some(self.retained_state.hover_dependencies.len()),
-        })
-    }
-
-    /// Ends `recording`, adding what the deferred draw read, and the hovers it
-    /// was painted by, to the retained subtrees it was deferred from.
-    pub(crate) fn finish_deferred_retained(
-        &mut self,
-        recording: Option<DeferredRetainedRecording>,
-        cx: &mut App,
-    ) {
-        let Some(recording) = recording else {
-            return;
-        };
-        self.take_hover_reads();
-        let dependencies = cx.finish_recording_dependencies(recording.dependencies);
-        self.retained_state.subtree_stack.clear();
-        let enclosing = &recording.enclosing.0;
-        self.next_frame
-            .retained
-            .add_dependencies(enclosing, &dependencies.all, &dependencies.own);
-        if let Some(hovers_start) = recording.hovers_start {
-            let hovers = self
-                .retained_state
-                .hover_dependencies
-                .split_off(hovers_start);
-            self.next_frame
-                .retained
-                .add_hover_dependencies(enclosing, &hovers);
-        }
     }
 
     /// Marks dirty, as if notified, every view that last frame read something
@@ -1078,26 +988,185 @@ impl Window {
                 .iter()
                 .any(|entity| notified.contains(entity))
     }
+}
 
-    /// Ends the retained bookkeeping of the frame being drawn, before it
-    /// becomes the rendered frame.
-    pub(crate) fn finish_retained_frame(&mut self) {
-        self.retained_state.prebuilt.clear();
-        self.retained_state.dirty_subtrees =
-            mem::take(&mut self.retained_state.subtrees_dirty_next_frame);
-        self.retained_state.hover_dependencies.clear();
-        self.retained_state.hover_reads.get_mut().clear();
-        self.next_frame.retained.finish_frame();
-        #[cfg(any(test, feature = "test-support"))]
-        if self.next_frame.retained.reused_any() {
-            // Reused subtrees do not paint, and the bounds they would have
-            // recorded for tests to find them by are last frame's.
-            for (selector, bounds) in &self.rendered_frame.debug_bounds {
-                self.next_frame
-                    .debug_bounds
-                    .entry(selector.clone())
-                    .or_insert(*bounds);
-            }
+/// Copies the window control hitboxes last frame's paint of `range`
+/// inserted, which upstream's [`Window::reuse_paint`] leaves out: a subtree
+/// drawn again from last frame would otherwise lose the window controls it
+/// painted.
+pub(crate) fn reuse_window_control_hitboxes(window: &mut Window, range: &Range<PaintIndex>) {
+    window.next_frame.window_control_hitboxes.extend(
+        window.rendered_frame.window_control_hitboxes[range.start.fast_window_control_hitboxes_index
+            ..range.end.fast_window_control_hitboxes_index]
+            .iter()
+            .cloned(),
+    );
+}
+
+/// The retained subtrees around the element being painted, for a listener
+/// to mark if what it listens for changes the element's look.
+pub(crate) fn enclosing_retained_subtrees(window: &Window) -> SmallVec<[GlobalElementId; 2]> {
+    window
+        .retained_state
+        .subtree_stack
+        .iter()
+        .cloned()
+        .collect()
+}
+
+/// Notes that what is being painted inside a retained subtree looks the
+/// way it does because `hitbox` is, or is not, hovered: anything painted
+/// that asked whether it is, a hover style or an element of its own.
+///
+/// Returns the answer when it is noted, having worked it out to note it,
+/// and `None` when nothing is being drawn to note it for.
+#[inline]
+pub(crate) fn note_hover_read(window: &Window, hitbox: HitboxId) -> Option<bool> {
+    if window.retained_state.subtree_stack.is_empty() {
+        return None;
+    }
+    let hovered = hitbox.hovered_now(window);
+    window
+        .retained_state
+        .hover_reads
+        .borrow_mut()
+        .push((hitbox, hovered));
+    Some(hovered)
+}
+
+/// Marks the innermost of the retained subtrees an interaction happened
+/// in to be built again rather than reused on the next frame. Its
+/// listener notifies the view it is in, which marks the views around it
+/// dirty, so they are drawn from last frame around it where they can be
+/// rather than built again.
+pub(crate) fn invalidate_retained_subtrees(window: &mut Window, subtrees: &[GlobalElementId]) {
+    window
+        .retained_state
+        .dirty_subtrees
+        .extend(subtrees.last().cloned());
+}
+
+/// Multiplies the opacity of what is painted from here on by `opacity`,
+/// returning the opacity to go back to with
+/// [`pop_element_opacity`]. See [`Window::with_element_opacity`].
+///
+/// Opacity only affects what is painted, but a retained subtree inside is
+/// drawn again from what it painted only if it would be painted at the
+/// opacity it was, which prepaint decides.
+pub(crate) fn push_element_opacity(window: &mut Window, opacity: Option<f32>) -> f32 {
+    window.invalidator.debug_assert_paint_or_prepaint();
+    let previous_opacity = window.element_opacity;
+    if let Some(opacity) = opacity {
+        window.element_opacity = previous_opacity * opacity;
+    }
+    previous_opacity
+}
+
+/// Goes back to the opacity [`push_element_opacity`] returned.
+pub(crate) fn pop_element_opacity(window: &mut Window, previous_opacity: f32) {
+    window.element_opacity = previous_opacity;
+}
+
+/// Starts prepainting the deferred draw at `deferred_draw_ix` as a part of
+/// the retained subtrees it was deferred from, though it is drawn after
+/// them: what it listens for marks them, and what it reads is theirs.
+pub(crate) fn begin_deferred_prepaint(
+    window: &mut Window,
+    deferred_draw_ix: usize,
+    cx: &mut App,
+) -> Option<DeferredRetainedRecording> {
+    let enclosing = &window.next_frame.deferred_draws[deferred_draw_ix].enclosing_retained;
+    if enclosing.0.is_empty() {
+        return None;
+    }
+    let enclosing = enclosing.clone();
+    window.retained_state.subtree_stack.extend(
+        enclosing
+            .0
+            .iter()
+            .map(|&index| window.next_frame.retained.id(index).clone()),
+    );
+    Some(DeferredRetainedRecording {
+        enclosing,
+        dependencies: cx.begin_recording_dependencies(),
+        hovers_start: None,
+    })
+}
+
+/// Starts painting a deferred draw as a part of the retained subtrees it
+/// was deferred from, though it is painted after them: an interaction in
+/// it marks them, and what it reads and is hovered by is theirs.
+pub(crate) fn begin_deferred_paint(
+    window: &mut Window,
+    enclosing: &EnclosingRetained,
+    cx: &mut App,
+) -> Option<DeferredRetainedRecording> {
+    if enclosing.0.is_empty() {
+        return None;
+    }
+    window.retained_state.subtree_stack.extend(
+        enclosing
+            .0
+            .iter()
+            .map(|&index| window.next_frame.retained.id(index).clone()),
+    );
+    window.take_hover_reads();
+    Some(DeferredRetainedRecording {
+        enclosing: enclosing.clone(),
+        dependencies: cx.begin_recording_dependencies(),
+        hovers_start: Some(window.retained_state.hover_dependencies.len()),
+    })
+}
+
+/// Ends `recording`, adding what the deferred draw read, and the hovers it
+/// was painted by, to the retained subtrees it was deferred from.
+pub(crate) fn finish_deferred(
+    window: &mut Window,
+    recording: Option<DeferredRetainedRecording>,
+    cx: &mut App,
+) {
+    let Some(recording) = recording else {
+        return;
+    };
+    window.take_hover_reads();
+    let dependencies = cx.finish_recording_dependencies(recording.dependencies);
+    window.retained_state.subtree_stack.clear();
+    let enclosing = &recording.enclosing.0;
+    window
+        .next_frame
+        .retained
+        .add_dependencies(enclosing, &dependencies.all, &dependencies.own);
+    if let Some(hovers_start) = recording.hovers_start {
+        let hovers = window
+            .retained_state
+            .hover_dependencies
+            .split_off(hovers_start);
+        window
+            .next_frame
+            .retained
+            .add_hover_dependencies(enclosing, &hovers);
+    }
+}
+
+/// Ends the retained bookkeeping of the frame being drawn, before it
+/// becomes the rendered frame.
+pub(crate) fn finish_retained_frame(window: &mut Window) {
+    window.retained_state.prebuilt.clear();
+    window.retained_state.dirty_subtrees =
+        mem::take(&mut window.retained_state.subtrees_dirty_next_frame);
+    window.retained_state.hover_dependencies.clear();
+    window.retained_state.hover_reads.get_mut().clear();
+    window.next_frame.retained.finish_frame();
+    #[cfg(any(test, feature = "test-support"))]
+    if window.next_frame.retained.reused_any() {
+        // Reused subtrees do not paint, and the bounds they would have
+        // recorded for tests to find them by are last frame's.
+        for (selector, bounds) in &window.rendered_frame.debug_bounds {
+            window
+                .next_frame
+                .debug_bounds
+                .entry(selector.clone())
+                .or_insert(*bounds);
         }
     }
 }
@@ -1184,19 +1253,6 @@ pub(crate) enum ViewPrepaint {
 }
 
 impl<V: View> ViewElement<V> {
-    /// Lays the view out as [`crate::Element::request_layout`] does, drawing it
-    /// again from last frame when it is retained and nothing it depends on
-    /// changed.
-    pub(crate) fn request_view_layout(
-        &mut self,
-        global_id: Option<&GlobalElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ViewLayoutState) {
-        let (layout_id, layout) = self.request_view_layout_inner(global_id, window, cx);
-        (layout_id, ViewLayoutState(layout))
-    }
-
     fn request_view_layout_inner(
         &mut self,
         global_id: Option<&GlobalElementId>,
@@ -1290,20 +1346,6 @@ impl<V: View> ViewElement<V> {
                 },
             )
         }
-    }
-
-    /// Prepaints the view as [`crate::Element::prepaint`] does, following up on how
-    /// [`ViewElement::request_view_layout`] laid it out.
-    pub(crate) fn prepaint_view(
-        &mut self,
-        global_id: Option<&GlobalElementId>,
-        bounds: Bounds<Pixels>,
-        layout: &mut ViewLayoutState,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> ViewPrepaintState {
-        let layout = mem::replace(&mut layout.0, ViewLayout::Taken);
-        ViewPrepaintState(self.prepaint_view_inner(global_id, bounds, layout, window, cx))
     }
 
     fn prepaint_view_inner(
@@ -1494,27 +1536,54 @@ impl<V: View> ViewElement<V> {
         );
         ViewPrepaint::Built { element, record }
     }
+}
 
-    /// Paints the view as [`crate::Element::paint`] does.
-    pub(crate) fn paint_view(
-        &mut self,
-        global_id: Option<&GlobalElementId>,
-        prepaint: &mut ViewPrepaintState,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        if let Some(entity_id) = self.entity_id {
-            // Stateful path.
-            paint_view(entity_id, global_id, &mut prepaint.0, window, cx);
-        } else {
-            // Stateless path: just paint the element.
-            paint_component(std::any::type_name::<V>(), &mut prepaint.0, window, cx);
-        }
+/// Lays the view out as [`crate::Element::request_layout`] does, drawing it
+/// again from last frame when it is retained and nothing it depends on
+/// changed.
+pub(crate) fn request_view_layout<V: View>(
+    view: &mut ViewElement<V>,
+    global_id: Option<&GlobalElementId>,
+    window: &mut Window,
+    cx: &mut App,
+) -> (LayoutId, ViewLayoutState) {
+    let (layout_id, layout) = view.request_view_layout_inner(global_id, window, cx);
+    (layout_id, ViewLayoutState(layout))
+}
+
+/// Prepaints the view as [`crate::Element::prepaint`] does, following up on how
+/// [`request_view_layout`] laid it out.
+pub(crate) fn prepaint_view<V: View>(
+    view: &mut ViewElement<V>,
+    global_id: Option<&GlobalElementId>,
+    bounds: Bounds<Pixels>,
+    layout: &mut ViewLayoutState,
+    window: &mut Window,
+    cx: &mut App,
+) -> ViewPrepaintState {
+    let layout = mem::replace(&mut layout.0, ViewLayout::Taken);
+    ViewPrepaintState(view.prepaint_view_inner(global_id, bounds, layout, window, cx))
+}
+
+/// Paints the view as [`crate::Element::paint`] does.
+pub(crate) fn paint_view<V: View>(
+    view: &mut ViewElement<V>,
+    global_id: Option<&GlobalElementId>,
+    prepaint: &mut ViewPrepaintState,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if let Some(entity_id) = view.entity_id {
+        // Stateful path.
+        paint_entity_view(entity_id, global_id, &mut prepaint.0, window, cx);
+    } else {
+        // Stateless path: just paint the element.
+        paint_component(std::any::type_name::<V>(), &mut prepaint.0, window, cx);
     }
 }
 
 #[inline(never)]
-fn paint_view(
+fn paint_entity_view(
     entity_id: EntityId,
     global_id: Option<&GlobalElementId>,
     prepaint: &mut ViewPrepaint,

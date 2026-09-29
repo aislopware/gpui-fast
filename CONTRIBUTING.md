@@ -23,9 +23,13 @@ upstream's files:
 - **Upstream files hold only hooks**: a field holding a `fast` struct, a
   one-line call into `fast`, a visibility bump. No algorithms, no new types,
   no tests, no reformatting.
+- **Every hook names `fast`**, so whoever merges upstream can tell it from
+  upstream's code: `crate::fast::dependencies::note_notify(&mut self.entities,
+  entity_id)`, not `self.entities.note_notify(entity_id)`, even when the
+  function is a method defined in `fast/`.
 - **`script/check-upstream` enforces it**, comparing every upstream file with
-  upstream's own copy and failing on anything more than a hook. Run it before
-  committing:
+  upstream's own copy and failing on anything more than a hook, or on a hook
+  that doesn't name `fast`. CI runs it too. Run it before committing:
 
   ```sh
   script/check-upstream                      # against upstream as imported

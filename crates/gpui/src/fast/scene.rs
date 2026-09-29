@@ -48,44 +48,6 @@ fn sort_by_gathering<T: Clone, K: Ord>(
 }
 
 impl Scene {
-    /// What [`Scene::finish`] does: puts every primitive in drawing order.
-    /// Sprites of one order are grouped by the atlas texture they come from:
-    /// a batch draws from one texture, and tile ids, which each texture
-    /// numbers from zero, would interleave them.
-    pub(crate) fn sort_in_drawing_order(&mut self) {
-        let scratch = &mut self.sort_scratch;
-        macro_rules! sort {
-            ($field:ident, $key:expr) => {
-                sort_by_gathering(
-                    &mut self.$field,
-                    &mut scratch.order,
-                    &mut scratch.$field,
-                    $key,
-                )
-            };
-        }
-        sort!(shadows, |shadow: &Shadow| shadow.order);
-        sort!(quads, |quad: &Quad| quad.order);
-        sort!(paths, |path: &Path<ScaledPixels>| path.order);
-        sort!(underlines, |underline: &Underline| underline.order);
-        sort!(monochrome_sprites, |sprite: &MonochromeSprite| (
-            sprite.order,
-            sprite.tile.texture_id.index,
-            sprite.tile.tile_id
-        ));
-        sort!(subpixel_sprites, |sprite: &SubpixelSprite| (
-            sprite.order,
-            sprite.tile.texture_id.index,
-            sprite.tile.tile_id
-        ));
-        sort!(polychrome_sprites, |sprite: &PolychromeSprite| (
-            sprite.order,
-            sprite.tile.texture_id.index,
-            sprite.tile.tile_id
-        ));
-        sort!(surfaces, |surface: &PaintSurface| surface.order);
-    }
-
     /// Forgets the orderings recorded for replaying, so the next frame orders
     /// every primitive from scratch.
     #[cfg(test)]
@@ -141,4 +103,42 @@ impl Scene {
         );
         lines
     }
+}
+
+/// What [`Scene::finish`] does: puts every primitive in drawing order.
+/// Sprites of one order are grouped by the atlas texture they come from:
+/// a batch draws from one texture, and tile ids, which each texture
+/// numbers from zero, would interleave them.
+pub(crate) fn sort_in_drawing_order(scene: &mut Scene) {
+    let scratch = &mut scene.sort_scratch;
+    macro_rules! sort {
+        ($field:ident, $key:expr) => {
+            sort_by_gathering(
+                &mut scene.$field,
+                &mut scratch.order,
+                &mut scratch.$field,
+                $key,
+            )
+        };
+    }
+    sort!(shadows, |shadow: &Shadow| shadow.order);
+    sort!(quads, |quad: &Quad| quad.order);
+    sort!(paths, |path: &Path<ScaledPixels>| path.order);
+    sort!(underlines, |underline: &Underline| underline.order);
+    sort!(monochrome_sprites, |sprite: &MonochromeSprite| (
+        sprite.order,
+        sprite.tile.texture_id.index,
+        sprite.tile.tile_id
+    ));
+    sort!(subpixel_sprites, |sprite: &SubpixelSprite| (
+        sprite.order,
+        sprite.tile.texture_id.index,
+        sprite.tile.tile_id
+    ));
+    sort!(polychrome_sprites, |sprite: &PolychromeSprite| (
+        sprite.order,
+        sprite.tile.texture_id.index,
+        sprite.tile.tile_id
+    ));
+    sort!(surfaces, |surface: &PaintSurface| surface.order);
 }

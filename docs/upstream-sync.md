@@ -17,14 +17,25 @@ only hold the hooks that call into it.
    `fast/<topic>/` when it needs more than one file. Other upstream crates get
    their own `src/fast/` when they need one. Tests of what we add go in
    `crates/gpui/src/fast/tests/<topic>.rs` or at the bottom of the topic's file.
-2. **Upstream files only hold small hooks:**
+2. **Upstream files only hold small hooks, and every hook names `fast`:**
    - one field holding the topic's state, typed as a struct defined in `fast/`
-     (`pub(crate) fast_layout: crate::fast::layout::WindowLayout`);
+     (`pub(crate) fast_layout: crate::fast::layout_key::WindowLayout`) and
+     initialized by its path (`crate::fast::layout_key::WindowLayout::default()`);
    - a one-line call into `crate::fast::...`, or a method whose body only
-     forwards to one;
+     forwards to one. The call names the path even where a method would read
+     shorter: `crate::fast::dependencies::note_notify(&mut self.entities, id)`,
+     not `self.entities.note_notify(id)`, and
+     `crate::fast::dependencies::StateVersion::bump(&state.version)`, not
+     `state.version.bump()`. Whoever merges upstream can then tell every line
+     of ours from upstream's at a glance;
    - a visibility bump (`fn` to `pub(crate) fn`) so a `fast/` module can reach
      upstream's items. Methods of upstream types can be defined in an
-     `impl Window { ... }` block inside a `fast/` file;
+     `impl Window { ... }` block inside a `fast/` file for `fast/` code to
+     call, but an upstream file calls a free function in `fast/` instead, so
+     the call site shows where the code lives;
+   - where no path fits — a field, parameter or local of a plain type that a
+     hook threads through upstream code — an identifier named `fast_...`
+     (`fast_layout_key: u64`);
    - `mod` lines;
    - a `#[path = "fast/<file>.rs"] mod <name>;` redirect when we replaced a
      whole upstream file with our own rewrite. The upstream file then stays
@@ -71,6 +82,12 @@ working tree, so run it before committing. It fails when:
 - a hunk of a changed upstream file adds more than 8 lines (`--max-hunk`);
 - a changed upstream file adds more than 40 lines (`--max-added`) or removes
   more than 20 (`--max-removed`);
+- a hunk of a changed upstream `.rs` file adds lines none of which names
+  `fast`: a path such as `crate::fast::...`, `mod fast;` or
+  `#[path = "fast/..."]`, or an identifier starting with `fast_`. One mention
+  covers the hunk, since rustfmt may spread one call over several lines. Hunks
+  that only remove lines, or only change `use` declarations or blank lines,
+  are exempt;
 - a binary file differs;
 - any file, `fast/` included, glob-imports from `fast` (`use ...fast::*`,
   `use ...fast::<topic>::*`);
@@ -96,7 +113,8 @@ Removed lines deserve the most care: upstream's changes to code we deleted
 conflict on every sync, and have to be ported into `fast/` by hand.
 
 When the check fails, move the change into a `fast/` module and leave a hook
-behind; use `git diff <import_commit> -- <file>` to see what differs.
+behind that names it; use `git diff <import_commit> -- <file>` to see what
+differs.
 
 ## Syncing with upstream
 

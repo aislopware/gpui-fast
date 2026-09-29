@@ -2269,7 +2269,7 @@ impl Interactivity {
 
                 if let Some(scroll_handle) = self.tracked_scroll_handle.as_ref() {
                     let scroll_handle_state = scroll_handle.0.borrow();
-                    cx.note_state_read(&scroll_handle_state.version);
+                    crate::fast::dependencies::note_state_read(cx, &scroll_handle_state.version);
                     self.scroll_offset = Some(scroll_handle_state.offset.clone());
                     self.ongoing_scroll = Some(scroll_handle_state.ongoing_scroll.clone());
                 } else if (self.base_style.overflow.x == Some(Overflow::Scroll)
@@ -2382,7 +2382,7 @@ impl Interactivity {
                     }
                 }
 
-                let opacity = window.push_element_opacity(style.opacity);
+                let opacity = crate::fast::retained::push_element_opacity(window, style.opacity);
                 let result = window.with_text_style(style.text_style().cloned(), |window| {
                     window.with_content_mask(
                         style.overflow_mask(bounds, window.rem_size()),
@@ -2400,7 +2400,7 @@ impl Interactivity {
                         },
                     )
                 });
-                window.pop_element_opacity(opacity);
+                crate::fast::retained::pop_element_opacity(window, opacity);
                 result
             },
         )
@@ -2697,14 +2697,16 @@ impl Interactivity {
 
                         let was_hovered = hitbox.is_hovered(window);
                         let current_view = window.current_view();
-                        let subtrees = window.enclosing_retained_subtrees();
+                        let subtrees = crate::fast::retained::enclosing_retained_subtrees(window);
                         window.on_mouse_event({
                             let hitbox = hitbox.clone();
                             move |_: &MouseMoveEvent, phase, window, cx| {
                                 if phase == DispatchPhase::Capture {
                                     let hovered = hitbox.is_hovered(window);
                                     if hovered != was_hovered {
-                                        window.invalidate_retained_subtrees(&subtrees);
+                                        crate::fast::retained::invalidate_retained_subtrees(
+                                            window, &subtrees,
+                                        );
                                         cx.notify(current_view)
                                     }
                                 }
@@ -2859,7 +2861,7 @@ impl Interactivity {
                     .cloned()
             });
             let current_view = window.current_view();
-            let subtrees = window.enclosing_retained_subtrees();
+            let subtrees = crate::fast::retained::enclosing_retained_subtrees(window);
 
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = hitbox.is_hovered(window);
@@ -2869,7 +2871,7 @@ impl Interactivity {
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
                     if let Some(hover_state) = &hover_state {
                         hover_state.borrow_mut().element = hovered;
-                        window.invalidate_retained_subtrees(&subtrees);
+                        crate::fast::retained::invalidate_retained_subtrees(window, &subtrees);
                         cx.notify(current_view);
                     }
                 }
@@ -2883,7 +2885,7 @@ impl Interactivity {
                     .and_then(|element| element.hover_state.as_ref())
                     .cloned();
                 let current_view = window.current_view();
-                let subtrees = window.enclosing_retained_subtrees();
+                let subtrees = crate::fast::retained::enclosing_retained_subtrees(window);
 
                 window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                     let group_hovered = group_hitbox_id.is_hovered(window);
@@ -2893,7 +2895,7 @@ impl Interactivity {
                     if phase == DispatchPhase::Capture && group_hovered != was_group_hovered {
                         if let Some(hover_state) = &hover_state {
                             hover_state.borrow_mut().group = group_hovered;
-                            window.invalidate_retained_subtrees(&subtrees);
+                            crate::fast::retained::invalidate_retained_subtrees(window, &subtrees);
                             cx.notify(current_view);
                         }
                     }
@@ -3321,11 +3323,11 @@ impl Interactivity {
         if let Some(group_hitbox) = group_hitbox {
             let was_hovered = group_hitbox.is_hovered(window);
             let current_view = window.current_view();
-            let subtrees = window.enclosing_retained_subtrees();
+            let subtrees = crate::fast::retained::enclosing_retained_subtrees(window);
             window.on_mouse_event(move |_: &MouseMoveEvent, phase, window, cx| {
                 let hovered = group_hitbox.is_hovered(window);
                 if phase == DispatchPhase::Capture && hovered != was_hovered {
-                    window.invalidate_retained_subtrees(&subtrees);
+                    crate::fast::retained::invalidate_retained_subtrees(window, &subtrees);
                     cx.notify(current_view);
                 }
             });
@@ -3347,7 +3349,7 @@ impl Interactivity {
             let line_height = window.line_height();
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
-            let subtrees = window.enclosing_retained_subtrees();
+            let subtrees = crate::fast::retained::enclosing_retained_subtrees(window);
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                     let mut scroll_offset = scroll_offset.borrow_mut();
@@ -3391,7 +3393,7 @@ impl Interactivity {
                     scroll_offset.y += delta_y;
                     scroll_offset.x += delta_x;
                     if *scroll_offset != old_scroll_offset {
-                        window.invalidate_retained_subtrees(&subtrees);
+                        crate::fast::retained::invalidate_retained_subtrees(window, &subtrees);
                         cx.notify(current_view);
                     }
                 }
@@ -4231,7 +4233,7 @@ impl ScrollAnchor {
 }
 
 #[derive(Default, Debug)]
-struct ScrollHandleState {
+pub(crate) struct ScrollHandleState {
     offset: Rc<RefCell<Point<Pixels>>>,
     ongoing_scroll: Rc<RefCell<OngoingScroll>>,
     bounds: Bounds<Pixels>,
@@ -4240,7 +4242,7 @@ struct ScrollHandleState {
     scroll_to_bottom: bool,
     overflow: Point<Overflow>,
     active_item: Option<ScrollActiveItem>,
-    version: crate::fast::dependencies::StateVersion,
+    pub(crate) version: crate::fast::dependencies::StateVersion,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -4260,7 +4262,7 @@ enum ScrollStrategy {
 /// Used for accessing scroll state, like the current scroll offset,
 /// and for mutating the scroll state, like scrolling to a specific child.
 #[derive(Clone, Debug)]
-pub struct ScrollHandle(Rc<RefCell<ScrollHandleState>>);
+pub struct ScrollHandle(pub(crate) Rc<RefCell<ScrollHandleState>>);
 
 impl Default for ScrollHandle {
     fn default() -> Self {
@@ -4335,7 +4337,7 @@ impl ScrollHandle {
     /// Update [ScrollHandleState]'s active item for scrolling to in prepaint
     pub fn scroll_to_item(&self, ix: usize) {
         let mut state = self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
         state.active_item = Some(ScrollActiveItem {
             index: ix,
             strategy: ScrollStrategy::default(),
@@ -4346,7 +4348,7 @@ impl ScrollHandle {
     /// This scrolls the minimal amount to ensure that the child is the first visible element
     pub fn scroll_to_top_of_item(&self, ix: usize) {
         let mut state = self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
         state.active_item = Some(ScrollActiveItem {
             index: ix,
             strategy: ScrollStrategy::Top,
@@ -4404,15 +4406,10 @@ impl ScrollHandle {
         state.active_item = active_item;
     }
 
-    /// Marks the handle as scrolled from outside the element it tracks.
-    pub(crate) fn changed(&self) {
-        self.0.borrow().version.bump();
-    }
-
     /// Scrolls to the bottom.
     pub fn scroll_to_bottom(&self) {
         let mut state = self.0.borrow_mut();
-        state.version.bump();
+        crate::fast::dependencies::StateVersion::bump(&state.version);
         state.scroll_to_bottom = true;
     }
 
@@ -4421,7 +4418,10 @@ impl ScrollHandle {
     /// As you scroll further down the offset becomes more negative.
     pub fn set_offset(&self, mut position: Point<Pixels>) {
         let state = self.0.borrow();
-        state.version.bump_if(*state.offset.borrow() != position);
+        crate::fast::dependencies::StateVersion::bump_if(
+            &state.version,
+            *state.offset.borrow() != position,
+        );
         *state.offset.borrow_mut() = position;
     }
 

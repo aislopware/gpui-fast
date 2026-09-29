@@ -150,7 +150,7 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
-        self.sort_in_drawing_order();
+        crate::fast::scene::sort_in_drawing_order(self);
     }
 
     #[cfg_attr(

@@ -38,7 +38,7 @@ pub(crate) struct AppDependencies {
 /// not, or removing it, changes that; writing to it does not.
 #[inline]
 pub(crate) fn note_global_presence_read<G: 'static>(cx: &App) {
-    cx.note_global_read(TypeId::of::<GlobalPresence<G>>());
+    note_global_read(cx, TypeId::of::<GlobalPresence<G>>());
 }
 
 /// Stamps a change to whether a global of type `G` is set, if it is about to
@@ -55,6 +55,13 @@ pub(crate) fn note_global_inserted<G: 'static>(cx: &mut App) {
 pub(crate) fn note_global_removed<G: 'static>(cx: &mut App) {
     cx.dependencies
         .global_changed(TypeId::of::<GlobalPresence<G>>());
+}
+
+/// Stamps a change to the global of type `global_type`, as its observers are
+/// about to be notified.
+#[inline]
+pub(crate) fn global_changed(cx: &mut App, global_type: TypeId) {
+    cx.dependencies.global_changed(global_type);
 }
 
 /// Stands for whether a global of type `G` is set, which a subtree that
@@ -284,18 +291,6 @@ impl App {
         }
     }
 
-    /// Records, for any recording that is open, that the state `version`
-    /// belongs to was read as it is now.
-    #[inline]
-    pub(crate) fn note_state_read(&self, version: &StateVersion) {
-        if self.entities.is_recording() {
-            self.dependencies
-                .state_read_log
-                .borrow_mut()
-                .push((version.clone(), version.get()));
-        }
-    }
-
     /// Whether anything in `dependencies` may have changed since they were
     /// recorded: one of the entities was changed since — updated and
     /// notified, or notified while drawing — or one of the globals has been
@@ -337,14 +332,26 @@ impl App {
                 .iter()
                 .any(|(version, read_at)| version.get() != *read_at)
     }
+}
 
-    /// Records, for any recording that is open, that the global of type
-    /// `global` was read.
-    #[inline]
-    pub(crate) fn note_global_read(&self, global: TypeId) {
-        if self.entities.is_recording() {
-            self.dependencies.global_read_log.borrow_mut().push(global);
-        }
+/// Records, for any recording that is open, that the state `version`
+/// belongs to was read as it is now.
+#[inline]
+pub(crate) fn note_state_read(cx: &App, version: &StateVersion) {
+    if cx.entities.is_recording() {
+        cx.dependencies
+            .state_read_log
+            .borrow_mut()
+            .push((version.clone(), version.get()));
+    }
+}
+
+/// Records, for any recording that is open, that the global of type
+/// `global` was read.
+#[inline]
+pub(crate) fn note_global_read(cx: &App, global: TypeId) {
+    if cx.entities.is_recording() {
+        cx.dependencies.global_read_log.borrow_mut().push(global);
     }
 }
 
@@ -365,21 +372,21 @@ pub(crate) struct EntityAccessLog {
     /// each of which is stamped into `updated_at` or `changed_at`.
     update_generation: u64,
     /// When each entity was last updated while no recording was open. See
-    /// [`EntityMap::note_update`].
+    /// [`note_update`].
     updated_at: FxHashMap<EntityId, u64>,
     /// Counts the entities updated while a recording is open — written while
     /// the window draws — each of which is stamped into `written_at`.
     write_generation: u64,
     /// When each entity was last written while the window drew. See
-    /// [`EntityMap::note_update`].
+    /// [`note_update`].
     written_at: FxHashMap<EntityId, u64>,
     /// The entity the framework is about to lease to render it, which is
-    /// drawing it rather than writing to it. See [`EntityMap::render_next`].
+    /// drawing it rather than writing to it. See [`render_next`].
     rendering: Option<EntityId>,
     /// The entities updated and not notified since.
     updated_unnotified: FxHashSet<EntityId>,
     /// When each entity was last changed: notified after being updated, or
-    /// notified while drawing. See [`EntityMap::note_notify`].
+    /// notified while drawing. See [`note_notify`].
     changed_at: FxHashMap<EntityId, u64>,
     /// The entity being asked something through [`Entity::query`], whose
     /// update is not counted as a change unless it notifies.
@@ -431,95 +438,15 @@ impl EntityAccessLog {
 }
 
 impl EntityMap {
-    /// Records, for any recording that is open, that `entity_id` was
-    /// accessed.
-    #[inline]
-    pub(crate) fn note_access(&self, entity_id: EntityId) {
-        if self.access_log.recordings.get() > 0 {
-            let mut log = self.access_log.access_log.borrow_mut();
-            // A view reads the same entity many times in a row as it renders;
-            // one mention is all its dependencies need.
-            if log.len() > self.access_log.boundary.get() && log.last() == Some(&entity_id) {
-                return;
-            }
-            log.push(entity_id);
-        }
-    }
-
     /// Marks where the access log stands as a boundary between stretches.
     fn mark_access_boundary(&mut self) {
         let log = &mut self.access_log;
         log.boundary.set(log.access_log.get_mut().len());
     }
 
-    /// Records that `entity_id` is notified. A notification that follows an
-    /// update marks the entity changed. So does one while a subtree is being
-    /// drawn — a view changing a model it read as it renders — or while the
-    /// entity is asked something ([`Entity::query`]): nothing else tells
-    /// whether it changed what the entity holds. One alone, outside drawing,
-    /// changes nothing a view could have read.
-    #[inline]
-    pub(crate) fn note_notify(&mut self, entity_id: EntityId) {
-        let log = &mut self.access_log;
-        if log.updated_unnotified.remove(&entity_id)
-            || log.recordings.get() > 0
-            || log.queried.is_some()
-        {
-            log.stamp_changed(entity_id);
-        }
-    }
-
-    /// Records that `entity_id` is being updated, as [`Self::note_access`]
-    /// does for an access.
-    ///
-    /// An entity updated outside of drawing — by a task, a listener, an
-    /// action — may have changed without being notified, as when a view
-    /// changes a model it renders and notifies only itself. A retained subtree
-    /// inside a notified view that read it is built again, as upstream builds
-    /// every view under a notified one again; see
-    /// [`App::dependencies_changed`]. Updates while a subtree is being built,
-    /// a view rendering itself for one, are part of drawing it and are not
-    /// stamped.
-    ///
-    /// An entity updated while the window draws — a component writing what
-    /// it was given into the state of a view it renders, as `Tree` writes
-    /// its item renderer — is written, and a retained subtree that read it is
-    /// built again, unless the subtree wrote it itself while it was being
-    /// built: what a subtree writes as it is built is part of building it.
-    /// The update that renders a view is neither.
-    #[inline]
-    pub(crate) fn note_update(&mut self, entity_id: EntityId) {
-        self.note_access(entity_id);
-        let log = &mut self.access_log;
-        if log.rendering == Some(entity_id) {
-            log.rendering = None;
-            if log.recordings.get() > 0 {
-                return;
-            }
-        }
-        if log.queried == Some(entity_id) {
-            return;
-        }
-        if log.recordings.get() == 0 {
-            log.update_generation += 1;
-            log.updated_at.insert(entity_id, log.update_generation);
-            log.updated_unnotified.insert(entity_id);
-        } else {
-            log.write_generation += 1;
-            log.written_at.insert(entity_id, log.write_generation);
-        }
-    }
-
     /// How many writes were made while the window drew so far.
     pub(crate) fn write_generation(&self) -> u64 {
         self.access_log.write_generation
-    }
-
-    /// Marks the next lease of `entity_id` as the framework rendering it, not
-    /// a write to it. See [`Self::note_update`].
-    #[inline]
-    pub(crate) fn render_next(&mut self, entity_id: EntityId) {
-        self.access_log.rendering = Some(entity_id);
     }
 
     pub fn extend_accessed<'a>(&mut self, entities: impl IntoIterator<Item = &'a EntityId>) {
@@ -567,6 +494,86 @@ impl EntityMap {
         entities.dedup();
         entities
     }
+}
+
+/// Records, for any recording that is open, that `entity_id` was
+/// accessed.
+#[inline]
+pub(crate) fn note_access(entities: &EntityMap, entity_id: EntityId) {
+    if entities.access_log.recordings.get() > 0 {
+        let mut log = entities.access_log.access_log.borrow_mut();
+        // A view reads the same entity many times in a row as it renders;
+        // one mention is all its dependencies need.
+        if log.len() > entities.access_log.boundary.get() && log.last() == Some(&entity_id) {
+            return;
+        }
+        log.push(entity_id);
+    }
+}
+
+/// Records that `entity_id` is notified. A notification that follows an
+/// update marks the entity changed. So does one while a subtree is being
+/// drawn — a view changing a model it read as it renders — or while the
+/// entity is asked something ([`Entity::query`]): nothing else tells
+/// whether it changed what the entity holds. One alone, outside drawing,
+/// changes nothing a view could have read.
+#[inline]
+pub(crate) fn note_notify(entities: &mut EntityMap, entity_id: EntityId) {
+    let log = &mut entities.access_log;
+    if log.updated_unnotified.remove(&entity_id)
+        || log.recordings.get() > 0
+        || log.queried.is_some()
+    {
+        log.stamp_changed(entity_id);
+    }
+}
+
+/// Records that `entity_id` is being updated, as [`note_access`]
+/// does for an access.
+///
+/// An entity updated outside of drawing — by a task, a listener, an
+/// action — may have changed without being notified, as when a view
+/// changes a model it renders and notifies only itself. A retained subtree
+/// inside a notified view that read it is built again, as upstream builds
+/// every view under a notified one again; see
+/// [`App::dependencies_changed`]. Updates while a subtree is being built,
+/// a view rendering itself for one, are part of drawing it and are not
+/// stamped.
+///
+/// An entity updated while the window draws — a component writing what
+/// it was given into the state of a view it renders, as `Tree` writes
+/// its item renderer — is written, and a retained subtree that read it is
+/// built again, unless the subtree wrote it itself while it was being
+/// built: what a subtree writes as it is built is part of building it.
+/// The update that renders a view is neither.
+#[inline]
+pub(crate) fn note_update(entities: &mut EntityMap, entity_id: EntityId) {
+    note_access(entities, entity_id);
+    let log = &mut entities.access_log;
+    if log.rendering == Some(entity_id) {
+        log.rendering = None;
+        if log.recordings.get() > 0 {
+            return;
+        }
+    }
+    if log.queried == Some(entity_id) {
+        return;
+    }
+    if log.recordings.get() == 0 {
+        log.update_generation += 1;
+        log.updated_at.insert(entity_id, log.update_generation);
+        log.updated_unnotified.insert(entity_id);
+    } else {
+        log.write_generation += 1;
+        log.written_at.insert(entity_id, log.write_generation);
+    }
+}
+
+/// Marks the next lease of `entity_id` as the framework rendering it, not
+/// a write to it. See [`note_update`].
+#[inline]
+pub(crate) fn render_next(entities: &mut EntityMap, entity_id: EntityId) {
+    entities.access_log.rendering = Some(entity_id);
 }
 
 /// Updates `entity` to ask it something, as the platform asks a text input
@@ -681,7 +688,7 @@ pub(crate) struct RenderDependencies {
     pub(crate) states: Rc<[(StateVersion, u64)]>,
     pub(crate) generation: u64,
     /// The entity update generation the recording began at. See
-    /// [`EntityMap::note_update`].
+    /// [`note_update`].
     pub(crate) updates: u64,
     /// Where in the write generation it was built. See [`Writes`].
     pub(crate) writes: Writes,
@@ -738,6 +745,43 @@ impl crate::StateInner {
         let moved = scroll_top.moves_from(self.logical_scroll_top, pending);
         self.version
             .bump_if(moved || self.follow_state != follow_state);
+    }
+}
+
+/// Marks `handle` as scrolled from outside the element it tracks, as a
+/// uniform list scrolling to an item does.
+#[inline(always)]
+pub(crate) fn scroll_handle_changed(handle: &crate::ScrollHandle) {
+    handle.0.borrow().version.bump();
+}
+
+/// Marks a list's state changed if pausing it stops it following its tail.
+/// See [`crate::StateInner::note_following_paused`].
+#[inline(always)]
+pub(crate) fn note_list_following_paused(state: &crate::StateInner) {
+    state.note_following_paused();
+}
+
+/// How a list followed its tail when [`crate::ListState::scroll_to`] started,
+/// to mark it changed only if scrolling it changed something.
+pub(crate) struct ListScrollStart(crate::FollowState);
+
+impl ListScrollStart {
+    #[inline(always)]
+    pub(crate) fn of(state: &crate::StateInner) -> Self {
+        ListScrollStart(state.follow_state)
+    }
+
+    /// See [`crate::StateInner::note_scrolled_to`]; `pending` is whether a
+    /// scroll was waiting to be applied.
+    #[inline(always)]
+    pub(crate) fn note_scrolled(
+        self,
+        state: &crate::StateInner,
+        scroll_top: &ListOffset,
+        pending: bool,
+    ) {
+        state.note_scrolled_to(scroll_top, self.0, pending);
     }
 }
 

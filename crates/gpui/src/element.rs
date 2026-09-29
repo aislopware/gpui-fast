@@ -210,7 +210,10 @@ pub trait ParentElement {
 
 /// A globally unique identifier for an element, used to track state across frames.
 #[derive(Deref, Clone, Debug)]
-pub struct GlobalElementId(#[deref] pub(crate) Arc<[ElementId]>, pub(crate) u64);
+pub struct GlobalElementId(
+    #[deref] pub(crate) Arc<[ElementId]>,
+    pub(crate) crate::fast::global_id::PathHash,
+);
 
 impl Display for GlobalElementId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -236,7 +239,7 @@ impl GlobalElementId {
 pub(crate) trait ElementObject {
     fn inner_element(&mut self) -> &mut dyn Any;
 
-    fn element_id(&self) -> Option<ElementId>;
+    fn fast_element_id(&self) -> Option<ElementId>;
 
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId;
 
@@ -265,14 +268,14 @@ enum ElementDrawPhase<RequestLayoutState, PrepaintState> {
     Start,
     RequestLayout {
         layout_id: LayoutId,
-        layout_key: u64,
+        fast_layout_key: u64,
         global_id: Option<GlobalElementId>,
         inspector_id: Option<InspectorElementId>,
         request_layout: RequestLayoutState,
     },
     LayoutComputed {
         layout_id: LayoutId,
-        layout_key: u64,
+        fast_layout_key: u64,
         global_id: Option<GlobalElementId>,
         inspector_id: Option<InspectorElementId>,
         available_space: Size<AvailableSpace>,
@@ -302,18 +305,20 @@ impl<E: Element> Drawable<E> {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Start => {
                 let element_id = self.element.id();
-                let layout_key = window.push_layout_key(element_id.as_ref());
+                let fast_layout_key =
+                    crate::fast::layout_key::push_layout_key(window, element_id.as_ref());
                 let global_id = element_id.map(|element_id| {
                     window.element_id_stack.push(element_id);
-                    window.global_ids.get(&window.element_id_stack)
+                    crate::fast::global_id::current(window)
                 });
 
                 let inspector_id;
                 #[cfg(any(feature = "inspector", debug_assertions))]
                 {
-                    inspector_id = window.inspected(&self.element).map(|source| {
+                    let inspected = crate::fast::global_id::inspected(window, &self.element);
+                    inspector_id = inspected.map(|source| {
                         let path = crate::InspectorElementPath {
-                            global_id: GlobalElementId::new(Arc::from(&*window.element_id_stack)),
+                            global_id: crate::fast::global_id::from_path(&window.element_id_stack),
                             source_location: source,
                         };
                         window.build_inspector_element_id(path)
@@ -334,11 +339,11 @@ impl<E: Element> Drawable<E> {
                 if global_id.is_some() {
                     window.element_id_stack.pop();
                 }
-                window.pop_layout_key();
+                crate::fast::layout_key::pop_layout_key(window);
 
                 self.phase = ElementDrawPhase::RequestLayout {
                     layout_id,
-                    layout_key,
+                    fast_layout_key,
                     global_id,
                     inspector_id,
                     request_layout,
@@ -353,14 +358,14 @@ impl<E: Element> Drawable<E> {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::RequestLayout {
                 layout_id,
-                layout_key,
+                fast_layout_key,
                 global_id,
                 inspector_id,
                 mut request_layout,
             }
             | ElementDrawPhase::LayoutComputed {
                 layout_id,
-                layout_key,
+                fast_layout_key,
                 global_id,
                 inspector_id,
                 mut request_layout,
@@ -411,7 +416,7 @@ impl<E: Element> Drawable<E> {
                 }
 
                 let node_id = window.next_frame.dispatch_tree.push_node();
-                let enclosing_scope = window.enter_prepaint_layout_scope(layout_key);
+                let scope = crate::fast::layout_key::enter_prepaint_scope(window, fast_layout_key);
                 let mut prepaint = self.element.prepaint(
                     global_id.as_ref(),
                     inspector_id.as_ref(),
@@ -420,7 +425,7 @@ impl<E: Element> Drawable<E> {
                     window,
                     cx,
                 );
-                window.exit_prepaint_layout_scope(enclosing_scope);
+                crate::fast::layout_key::exit_prepaint_scope(window, scope);
                 window.next_frame.dispatch_tree.pop_node();
 
                 if pushed_a11y_node {
@@ -521,7 +526,7 @@ impl<E: Element> Drawable<E> {
         let layout_id = match mem::take(&mut self.phase) {
             ElementDrawPhase::RequestLayout {
                 layout_id,
-                layout_key,
+                fast_layout_key,
                 global_id,
                 inspector_id,
                 request_layout,
@@ -529,7 +534,7 @@ impl<E: Element> Drawable<E> {
                 window.compute_layout(layout_id, available_space, cx);
                 self.phase = ElementDrawPhase::LayoutComputed {
                     layout_id,
-                    layout_key,
+                    fast_layout_key,
                     global_id,
                     inspector_id,
                     available_space,
@@ -539,7 +544,7 @@ impl<E: Element> Drawable<E> {
             }
             ElementDrawPhase::LayoutComputed {
                 layout_id,
-                layout_key,
+                fast_layout_key,
                 global_id,
                 inspector_id,
                 available_space: prev_available_space,
@@ -550,7 +555,7 @@ impl<E: Element> Drawable<E> {
                 }
                 self.phase = ElementDrawPhase::LayoutComputed {
                     layout_id,
-                    layout_key,
+                    fast_layout_key,
                     global_id,
                     inspector_id,
                     available_space,
@@ -574,7 +579,7 @@ where
         &mut self.element
     }
 
-    fn element_id(&self) -> Option<ElementId> {
+    fn fast_element_id(&self) -> Option<ElementId> {
         self.element.id()
     }
 

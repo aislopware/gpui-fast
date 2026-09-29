@@ -771,7 +771,7 @@ impl HitboxId {
     ///
     /// See [`Hitbox::is_hovered`] for details.
     pub fn is_hovered(self, window: &Window) -> bool {
-        if let Some(hovered) = window.note_hover_read(self) {
+        if let Some(hovered) = crate::fast::retained::note_hover_read(window, self) {
             return hovered;
         }
         // If this hitbox has captured the pointer, it's always considered hovered
@@ -1003,7 +1003,7 @@ pub(crate) struct Frame {
     pub(crate) retained: crate::fast::retained::RetainedSubtrees,
 }
 
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, Default)]
 pub(crate) struct PrepaintStateIndex {
     pub(crate) hitboxes_index: usize,
     pub(crate) tooltips_index: usize,
@@ -1013,10 +1013,10 @@ pub(crate) struct PrepaintStateIndex {
     pub(crate) line_layout_index: LineLayoutIndex,
 }
 
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, Default)]
 pub(crate) struct PaintIndex {
     pub(crate) scene_index: usize,
-    pub(crate) window_control_hitboxes_index: usize,
+    pub(crate) fast_window_control_hitboxes_index: usize,
     pub(crate) mouse_listeners_index: usize,
     pub(crate) input_handlers_index: usize,
     pub(crate) cursor_styles_index: usize,
@@ -1068,7 +1068,7 @@ impl Frame {
         self.window_control_hitboxes.clear();
         self.deferred_draws.clear();
         self.tab_stops.clear();
-        self.retained.clear();
+        crate::fast::retained::RetainedSubtrees::clear(&mut self.retained);
         self.focus = None;
 
         #[cfg(any(test, feature = "test-support"))]
@@ -2036,10 +2036,10 @@ impl Window {
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
             layout_engine: Some(TaffyLayoutEngine::new()),
-            fast_layout: Default::default(),
+            fast_layout: crate::fast::layout_key::WindowLayout::default(),
             root: None,
             element_id_stack: SmallVec::default(),
-            global_ids: Default::default(),
+            global_ids: crate::fast::global_id::GlobalIdCache::default(),
             retained_state: crate::fast::retained::RetainedState::new(cx),
             text_style_stack: Vec::new(),
             rendered_entity_stack: Vec::new(),
@@ -2948,7 +2948,7 @@ impl Window {
         f: impl FnOnce(&GlobalElementId, &mut Self) -> R,
     ) -> R {
         self.with_id(element_id, |this| {
-            let global_id = this.global_ids.get(&this.element_id_stack);
+            let global_id = crate::fast::global_id::current(this);
 
             f(&global_id, this)
         })
@@ -3240,11 +3240,11 @@ impl Window {
                 });
         }
 
-        self.layout_engine.as_mut().unwrap().end_frame();
+        self.layout_engine.as_mut().unwrap().clear();
         self.fast_layout.end_frame();
         self.text_system().finish_frame();
-        self.global_ids.finish_frame();
-        self.finish_retained_frame();
+        crate::fast::global_id::GlobalIdCache::finish_frame(&mut self.global_ids);
+        crate::fast::retained::finish_retained_frame(self);
         self.next_frame.finish(&mut self.rendered_frame);
 
         self.invalidator.set_phase(DrawPhase::Focus);
@@ -3332,7 +3332,7 @@ impl Window {
 
     fn invalidate_entities(&mut self) {
         let mut views = self.invalidator.take_views();
-        self.retained_state.note_notified(&views);
+        crate::fast::retained::RetainedState::note_notified(&mut self.retained_state, &views);
         for entity in views.drain() {
             self.mark_view_dirty(entity);
         }
@@ -3643,7 +3643,8 @@ impl Window {
 
                 let prepaint_start = self.prepaint_index();
                 if let Some(mut element) = element {
-                    let recording = self.begin_deferred_retained_prepaint(deferred_draw_ix, cx);
+                    let recording =
+                        crate::fast::retained::begin_deferred_prepaint(self, deferred_draw_ix, cx);
                     self.with_rendered_view(current_view, |window| {
                         window.with_rem_size(Some(rem_size), |window| {
                             window.with_absolute_element_offset(absolute_offset, |window| {
@@ -3651,7 +3652,7 @@ impl Window {
                             });
                         });
                     });
-                    self.finish_deferred_retained(recording, cx);
+                    crate::fast::retained::finish_deferred(self, recording, cx);
                     self.next_frame.deferred_draws[deferred_draw_ix].element = Some(element);
                 } else {
                     self.reuse_prepaint(prepaint_range);
@@ -3689,8 +3690,8 @@ impl Window {
             let paint_start = self.paint_index();
             let content_mask = deferred_draw.content_mask;
             if let Some(element) = deferred_draw.element.as_mut() {
-                let recording =
-                    self.begin_deferred_retained_paint(&deferred_draw.enclosing_retained, cx);
+                let enclosing = &deferred_draw.enclosing_retained;
+                let recording = crate::fast::retained::begin_deferred_paint(self, enclosing, cx);
                 self.with_rendered_view(deferred_draw.current_view, |window| {
                     window.with_content_mask(content_mask, |window| {
                         window.with_rem_size(Some(deferred_draw.rem_size), |window| {
@@ -3698,7 +3699,7 @@ impl Window {
                         });
                     })
                 });
-                self.finish_deferred_retained(recording, cx);
+                crate::fast::retained::finish_deferred(self, recording, cx);
             } else {
                 self.reuse_paint(deferred_draw.paint_range.clone());
             }
@@ -3782,7 +3783,7 @@ impl Window {
     pub(crate) fn paint_index(&self) -> PaintIndex {
         PaintIndex {
             scene_index: self.next_frame.scene.len(),
-            window_control_hitboxes_index: self.next_frame.window_control_hitboxes.len(),
+            fast_window_control_hitboxes_index: self.next_frame.window_control_hitboxes.len(),
             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
             input_handlers_index: self.next_frame.input_handlers.len(),
             cursor_styles_index: self.next_frame.cursor_styles.len(),
@@ -3793,7 +3794,7 @@ impl Window {
     }
 
     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
-        self.reuse_window_control_hitboxes(&range);
+        crate::fast::retained::reuse_window_control_hitboxes(self, &range);
         self.next_frame.cursor_styles.extend(
             self.rendered_frame.cursor_styles
                 [range.start.cursor_styles_index..range.end.cursor_styles_index]
@@ -4257,7 +4258,7 @@ impl Window {
             absolute_offset,
             prepaint_range: PrepaintStateIndex::default()..PrepaintStateIndex::default(),
             paint_range: PaintIndex::default()..PaintIndex::default(),
-            enclosing_retained: self.next_frame.retained.open_records(),
+            enclosing_retained: crate::fast::retained::enclosing_retained(self),
         });
     }
 
@@ -4972,9 +4973,9 @@ impl Window {
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
 
-        let key = self.layout_key();
+        let fast_key = crate::fast::layout_key::layout_key(self);
         self.layout_engine.as_mut().unwrap().request_layout(
-            key,
+            fast_key,
             style,
             rem_size,
             scale_factor,
@@ -4999,11 +5000,11 @@ impl Window {
 
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
-        let key = self.layout_key();
+        let fast_key = crate::fast::layout_key::layout_key(self);
         self.layout_engine
             .as_mut()
             .unwrap()
-            .request_measured_layout(key, style, rem_size, scale_factor, measure)
+            .request_measured_layout(fast_key, style, rem_size, scale_factor, measure)
     }
 
     /// Compute the layout for the given id within the given available space.
@@ -5480,7 +5481,7 @@ impl Window {
             }
             PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
         };
-        ambient.stamp_changes(self, cx);
+        crate::fast::dependencies::AmbientInput::stamp_changes(ambient, self, cx);
 
         if let Some(any_mouse_event) = event.mouse_event() {
             self.dispatch_mouse_event(any_mouse_event, cx);
@@ -6807,7 +6808,7 @@ impl Window {
             None => Some(cx.new(|_| Inspector::new())),
             Some(_) => None,
         };
-        self.release_closed_inspector_ids();
+        crate::fast::global_id::release_closed_inspector_ids(self);
         self.refresh();
     }
 
@@ -6830,7 +6831,7 @@ impl Window {
         cx: &mut App,
         f: impl FnOnce(&mut Option<T>, &mut Self) -> R,
     ) -> Option<R> {
-        self.with_active_inspector_state(_inspector_id, cx, f)
+        crate::fast::global_id::with_active_inspector_state(self, _inspector_id, cx, f)
     }
 
     #[cfg(any(feature = "inspector", debug_assertions))]

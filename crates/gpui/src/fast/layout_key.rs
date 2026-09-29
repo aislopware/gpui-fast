@@ -15,14 +15,14 @@ use std::{
 /// frame, and to report the work each frame's layout took.
 pub(crate) struct WindowLayout {
     /// Running hashes of the path from the root of the element tree down to the
-    /// element currently requesting layout. See [`Window::push_layout_key`].
+    /// element currently requesting layout. See [`push_layout_key`].
     key_stack: SmallVec<[LayoutKeyFrame; 32]>,
     /// How many unidentified element trees have been laid out under the
     /// current scope. Window roots, prompts, drags and tooltips each start a
     /// tree of their own and need keys that do not collide with each other.
     root_index: u32,
     /// The layout key of the element currently being prepainted, which anything
-    /// it lays out from there hangs off. See [`Window::push_layout_key`].
+    /// it lays out from there hangs off. See [`push_layout_key`].
     prepaint_scope: u64,
     /// How long each phase of the frame took. See [`FramePhaseTimes`].
     pub(crate) phase_times: FramePhaseTimes,
@@ -48,7 +48,7 @@ impl WindowLayout {
     }
 }
 
-/// One level of [`Window::push_layout_key`]'s path stack.
+/// One level of [`push_layout_key`]'s path stack.
 struct LayoutKeyFrame {
     /// Hash of the path from the root of the element tree to this element.
     key: u64,
@@ -80,16 +80,6 @@ fn mix(state: u64, value: u64) -> u64 {
 }
 
 impl Window {
-    /// The key identifying the element currently requesting layout, used to
-    /// match it up with the Taffy node it had on the previous frame.
-    ///
-    /// `None` while no element tree is being walked — layout requested from the
-    /// prepaint phase, as uniform lists do when sizing their items, arrives
-    /// here. Those nodes are not reused.
-    pub(crate) fn layout_key(&self) -> Option<u64> {
-        self.fast_layout.key_stack.last().map(|frame| frame.key)
-    }
-
     /// The key of the element enclosing the one currently requesting layout,
     /// which the latter's key is derived from; `None` at the root of a tree.
     pub(crate) fn parent_layout_key(&self) -> Option<u64> {
@@ -115,87 +105,11 @@ impl Window {
         result
     }
 
-    /// Begins an element, deriving the key its layout node is matched by across
-    /// frames.
-    ///
-    /// The key is the hash of the path from the root: each element mixes either
-    /// its [`ElementId`], when it has one, or its index among its unidentified
-    /// siblings. Identified elements therefore keep their node when siblings are
-    /// inserted or reordered around them, while unidentified ones are matched
-    /// purely by position, which is the same bargain the element state map makes.
-    ///
-    /// Because the parent's key is always mixed in, a key encodes the whole
-    /// ancestor path, and a node can never be matched to an element that has
-    /// moved to a different parent.
-    pub(crate) fn push_layout_key(&mut self, id: Option<&ElementId>) -> u64 {
-        let layout = &mut self.fast_layout;
-        let component = match id {
-            Some(id) => {
-                let mut hasher = FxHasher::default();
-                id.hash(&mut hasher);
-                // Kept distinct from the positional case so that an element
-                // identified by index 3 and one whose `ElementId` hashes to 3
-                // do not collide.
-                mix(hasher.finish(), 1)
-            }
-            None => {
-                let index = match layout.key_stack.last_mut() {
-                    Some(parent) => &mut parent.next_unidentified_child,
-                    None => &mut layout.root_index,
-                };
-                let component = mix(*index as u64, 2);
-                *index += 1;
-                component
-            }
-        };
-        let parent = layout
-            .key_stack
-            .last()
-            .map(|parent| parent.key)
-            .unwrap_or_else(|| mix(layout.prepaint_scope, LAYOUT_PREPAINT_SALT));
-        let key = mix(parent, component);
-        layout.key_stack.push(LayoutKeyFrame {
-            key,
-            next_unidentified_child: 0,
-        });
-        key
-    }
-
-    /// Hangs elements laid out from here on the element whose prepaint is
-    /// running, and returns what [`Window::exit_prepaint_layout_scope`] needs to
-    /// undo it.
-    ///
-    /// The walk that assigns layout keys covers the request-layout phase only.
-    /// Elements laid out afterwards — list items, which a list can lay out only
-    /// once it knows how many of them fit — arrive with no path at all, and
-    /// would otherwise be keyed by the order they happened to be laid out in.
-    /// A list that scrolled by one row, or gained a row at the top, would
-    /// renumber every item and rebuild every item's layout nodes. Keyed under
-    /// the element that lays them out, an item carrying an [`ElementId`] keeps
-    /// its nodes wherever it moves within its list.
-    pub(crate) fn enter_prepaint_layout_scope(&mut self, layout_key: u64) -> (u64, u32) {
-        let layout = &mut self.fast_layout;
-        (
-            mem::replace(&mut layout.prepaint_scope, layout_key),
-            mem::replace(&mut layout.root_index, 0),
-        )
-    }
-
-    /// Restores what [`Window::enter_prepaint_layout_scope`] replaced.
-    pub(crate) fn exit_prepaint_layout_scope(&mut self, enclosing: (u64, u32)) {
-        (self.fast_layout.prepaint_scope, self.fast_layout.root_index) = enclosing;
-    }
-
-    /// Ends the element most recently begun by [`Window::push_layout_key`].
-    pub(crate) fn pop_layout_key(&mut self) {
-        self.fast_layout.key_stack.pop();
-    }
-
     /// Lays out whatever `f` lays out under a step of the layout key path
     /// that names the list item at `index`, as though an element identified by
     /// it enclosed them. No such element exists, so the element id stack, and
     /// the element state keyed by it, are untouched. See
-    /// [`AnyElement::layout_as_list_item`].
+    /// [`layout_as_list_item`].
     pub(crate) fn with_list_item_layout_key<R>(
         &mut self,
         index: usize,
@@ -205,9 +119,9 @@ impl Window {
         // index as its id.
         let key =
             ElementId::NamedInteger(SharedString::new_static("gpui::list_item"), index as u64);
-        self.push_layout_key(Some(&key));
+        push_layout_key(self, Some(&key));
         let result = f(self);
-        self.pop_layout_key();
+        pop_layout_key(self);
         result
     }
 
@@ -255,31 +169,118 @@ impl Window {
     }
 }
 
-impl AnyElement {
-    /// Lays this element out as the item at `index` of a list, the way
-    /// [`Self::layout_as_root`] does.
-    ///
-    /// A list lays out only the items in view, so an item without an
-    /// [`ElementId`] is otherwise matched to last frame's nodes by where it
-    /// comes among the items laid out this frame, and scrolling by a single
-    /// row hands every item the nodes of its neighbour. Keyed by its index
-    /// instead, an item keeps its nodes while it stays in view. Only the
-    /// layout is keyed: element state, which nothing here claims to identify,
-    /// is left as it was. An item with an id of its own keeps being matched by
-    /// that, so one keyed by its data still keeps its nodes when items are
-    /// inserted ahead of it.
-    pub(crate) fn layout_as_list_item(
-        &mut self,
-        index: usize,
-        available_space: Size<AvailableSpace>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> Size<Pixels> {
-        if self.0.element_id().is_some() {
-            return self.layout_as_root(available_space, window, cx);
+/// The key identifying the element currently requesting layout, used to
+/// match it up with the Taffy node it had on the previous frame.
+///
+/// `None` while no element tree is being walked — layout requested from the
+/// prepaint phase, as uniform lists do when sizing their items, arrives
+/// here. Those nodes are not reused.
+pub(crate) fn layout_key(window: &Window) -> Option<u64> {
+    window.fast_layout.key_stack.last().map(|frame| frame.key)
+}
+
+/// Begins an element, deriving the key its layout node is matched by across
+/// frames.
+///
+/// The key is the hash of the path from the root: each element mixes either
+/// its [`ElementId`], when it has one, or its index among its unidentified
+/// siblings. Identified elements therefore keep their node when siblings are
+/// inserted or reordered around them, while unidentified ones are matched
+/// purely by position, which is the same bargain the element state map makes.
+///
+/// Because the parent's key is always mixed in, a key encodes the whole
+/// ancestor path, and a node can never be matched to an element that has
+/// moved to a different parent.
+pub(crate) fn push_layout_key(window: &mut Window, id: Option<&ElementId>) -> u64 {
+    let layout = &mut window.fast_layout;
+    let component = match id {
+        Some(id) => {
+            let mut hasher = FxHasher::default();
+            id.hash(&mut hasher);
+            // Kept distinct from the positional case so that an element
+            // identified by index 3 and one whose `ElementId` hashes to 3
+            // do not collide.
+            mix(hasher.finish(), 1)
         }
-        window.with_list_item_layout_key(index, |window| {
-            self.layout_as_root(available_space, window, cx)
-        })
+        None => {
+            let index = match layout.key_stack.last_mut() {
+                Some(parent) => &mut parent.next_unidentified_child,
+                None => &mut layout.root_index,
+            };
+            let component = mix(*index as u64, 2);
+            *index += 1;
+            component
+        }
+    };
+    let parent = layout
+        .key_stack
+        .last()
+        .map(|parent| parent.key)
+        .unwrap_or_else(|| mix(layout.prepaint_scope, LAYOUT_PREPAINT_SALT));
+    let key = mix(parent, component);
+    layout.key_stack.push(LayoutKeyFrame {
+        key,
+        next_unidentified_child: 0,
+    });
+    key
+}
+
+/// Hangs elements laid out from here on the element whose prepaint is
+/// running, and returns what [`exit_prepaint_scope`] needs to
+/// undo it.
+///
+/// The walk that assigns layout keys covers the request-layout phase only.
+/// Elements laid out afterwards — list items, which a list can lay out only
+/// once it knows how many of them fit — arrive with no path at all, and
+/// would otherwise be keyed by the order they happened to be laid out in.
+/// A list that scrolled by one row, or gained a row at the top, would
+/// renumber every item and rebuild every item's layout nodes. Keyed under
+/// the element that lays them out, an item carrying an [`ElementId`] keeps
+/// its nodes wherever it moves within its list.
+pub(crate) fn enter_prepaint_scope(window: &mut Window, layout_key: u64) -> (u64, u32) {
+    let layout = &mut window.fast_layout;
+    (
+        mem::replace(&mut layout.prepaint_scope, layout_key),
+        mem::replace(&mut layout.root_index, 0),
+    )
+}
+
+/// Restores what [`enter_prepaint_scope`] replaced.
+pub(crate) fn exit_prepaint_scope(window: &mut Window, enclosing: (u64, u32)) {
+    (
+        window.fast_layout.prepaint_scope,
+        window.fast_layout.root_index,
+    ) = enclosing;
+}
+
+/// Ends the element most recently begun by [`push_layout_key`].
+pub(crate) fn pop_layout_key(window: &mut Window) {
+    window.fast_layout.key_stack.pop();
+}
+
+/// Lays this element out as the item at `index` of a list, the way
+/// [`AnyElement::layout_as_root`] does.
+///
+/// A list lays out only the items in view, so an item without an
+/// [`ElementId`] is otherwise matched to last frame's nodes by where it
+/// comes among the items laid out this frame, and scrolling by a single
+/// row hands every item the nodes of its neighbour. Keyed by its index
+/// instead, an item keeps its nodes while it stays in view. Only the
+/// layout is keyed: element state, which nothing here claims to identify,
+/// is left as it was. An item with an id of its own keeps being matched by
+/// that, so one keyed by its data still keeps its nodes when items are
+/// inserted ahead of it.
+pub(crate) fn layout_as_list_item(
+    element: &mut AnyElement,
+    index: usize,
+    available_space: Size<AvailableSpace>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Size<Pixels> {
+    if element.0.fast_element_id().is_some() {
+        return element.layout_as_root(available_space, window, cx);
     }
+    window.with_list_item_layout_key(index, |window| {
+        element.layout_as_root(available_space, window, cx)
+    })
 }

@@ -839,7 +839,7 @@ impl App {
                 pending_effects: VecDeque::new(),
                 pending_notifications: FxHashSet::default(),
                 pending_global_notifications: Default::default(),
-                dependencies: Default::default(),
+                dependencies: crate::fast::dependencies::AppDependencies::default(),
                 observers: SubscriberSet::new(),
                 tracked_entities: FxHashMap::default(),
                 window_invalidators_by_entity: FxHashMap::default(),
@@ -1687,7 +1687,7 @@ impl App {
                 }
             }
             Effect::NotifyGlobalObservers { global_type } => {
-                self.dependencies.global_changed(*global_type);
+                crate::fast::dependencies::global_changed(self, *global_type);
                 if !self.pending_global_notifications.insert(*global_type) {
                     return;
                 }
@@ -2053,7 +2053,7 @@ impl App {
     /// Access the global of the given type. Panics if a global for that type has not been assigned.
     #[track_caller]
     pub fn global<G: Global>(&self) -> &G {
-        self.note_global_read(TypeId::of::<G>());
+        crate::fast::dependencies::note_global_read(self, TypeId::of::<G>());
         self.globals_by_type
             .get(&TypeId::of::<G>())
             .map(|any_state| any_state.downcast_ref::<G>().unwrap())
@@ -2062,7 +2062,7 @@ impl App {
 
     /// Access the global of the given type if a value has been assigned.
     pub fn try_global<G: Global>(&self) -> Option<&G> {
-        self.note_global_read(TypeId::of::<G>());
+        crate::fast::dependencies::note_global_read(self, TypeId::of::<G>());
         self.globals_by_type
             .get(&TypeId::of::<G>())
             .map(|any_state| any_state.downcast_ref::<G>().unwrap())
@@ -2722,7 +2722,7 @@ impl App {
 
     /// Tell GPUI that an entity has changed and observers of it should be notified.
     pub fn notify(&mut self, entity_id: EntityId) {
-        self.entities.note_notify(entity_id);
+        crate::fast::dependencies::note_notify(&mut self.entities, entity_id);
         let window_invalidators = mem::take(
             self.window_invalidators_by_entity
                 .entry(entity_id)

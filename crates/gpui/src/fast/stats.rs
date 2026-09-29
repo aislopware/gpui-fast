@@ -164,28 +164,28 @@ impl TaffyLayoutEngine {
         self.retention.stats = LayoutStats::default();
         self.retention.timed = true;
     }
+}
 
-    /// Starts counting the measurements of a layout computation.
-    pub(crate) fn begin_measure_tally(&self) -> MeasureTally {
-        let timed = self.retention.timed;
-        MeasureTally {
-            timed,
-            calls: 0,
-            time: Duration::ZERO,
-            compute_started_at: timed.then(Instant::now),
-        }
+/// Starts counting the measurements of a layout computation.
+pub(crate) fn begin_measure_tally(engine: &TaffyLayoutEngine) -> MeasureTally {
+    let timed = engine.retention.timed;
+    MeasureTally {
+        timed,
+        calls: 0,
+        time: Duration::ZERO,
+        compute_started_at: timed.then(Instant::now),
     }
+}
 
-    /// Folds what a layout computation measured into [`Self::stats`].
-    pub(crate) fn finish_measure_tally(&mut self, tally: MeasureTally) {
-        let stats = &mut self.retention.stats;
-        stats.compute_layout_calls += 1;
-        if let Some(started_at) = tally.compute_started_at {
-            stats.compute_layout_time += started_at.elapsed();
-        }
-        stats.measure_calls += tally.calls;
-        stats.measure_time += tally.time;
+/// Folds what a layout computation measured into [`TaffyLayoutEngine::stats`].
+pub(crate) fn finish_measure_tally(engine: &mut TaffyLayoutEngine, tally: MeasureTally) {
+    let stats = &mut engine.retention.stats;
+    stats.compute_layout_calls += 1;
+    if let Some(started_at) = tally.compute_started_at {
+        stats.compute_layout_time += started_at.elapsed();
     }
+    stats.measure_calls += tally.calls;
+    stats.measure_time += tally.time;
 }
 
 impl Window {
