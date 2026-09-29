@@ -344,3 +344,93 @@ fn an_svg_showing_another_image_is_drawn_anew(cx: &mut TestAppContext) {
     assert_ne!(turned, straight);
     assert_eq!(reused, 0);
 }
+
+struct Quote {
+    price: usize,
+}
+
+impl Render for Quote {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().flex().child(div().w(px(60.)).child("ACME")).child(
+            div()
+                .w(px(60.))
+                .child(SharedString::from(self.price.to_string())),
+        )
+    }
+}
+
+/// Draws the frame of `window` that `tick` updating its quote causes,
+/// returning how many elements were built and how many drawn again.
+fn quote_frame(
+    window: WindowHandle<Quote>,
+    cx: &mut TestAppContext,
+    tick: impl FnOnce(&mut Quote),
+) -> (u64, u64) {
+    cx.update_window(window.into(), |_, window, _| window.reset_layout_stats())
+        .unwrap();
+    window
+        .update(cx, |quote, _, cx| {
+            tick(quote);
+            cx.notify();
+        })
+        .unwrap();
+    cx.update_window(window.into(), |_, window, _| {
+        let stats = window.layout_stats();
+        (stats.elements_built, stats.elements_reused)
+    })
+    .unwrap()
+}
+
+/// A price that changes every frame stops being compared and recorded, and
+/// is drawn again from last frame once it stops changing.
+#[gpui::test]
+fn an_element_built_anew_every_frame_rests(cx: &mut TestAppContext) {
+    let window: WindowHandle<Quote> = cx.add_window(|_, _| Quote { price: 0 });
+    for _ in 0..4 {
+        quote_frame(window, cx, |_| {});
+    }
+    let ticking: Vec<(u64, u64)> = (0..12)
+        .map(|_| quote_frame(window, cx, |quote| quote.price += 1))
+        .collect();
+    // The row and the price, a div and its text, built and recorded; the
+    // name, a div and its text, drawn again.
+    assert_eq!(ticking[0], (3, 2), "{ticking:?}");
+    // Resting, the price is built without its text being recorded.
+    assert!(ticking.contains(&(2, 2)), "{ticking:?}");
+    assert!(
+        ticking.iter().filter(|frame| **frame == (2, 2)).count() >= 6,
+        "{ticking:?}"
+    );
+
+    let settled = (0..20)
+        .map(|_| quote_frame(window, cx, |_| {}))
+        .position(|frame| frame == (0, 5));
+    assert!(settled.is_some(), "never drawn again whole");
+}
+
+/// An element that changes now and then, drawn again whole in between,
+/// never rests: only frames in a row it came to nothing count.
+#[gpui::test]
+fn an_element_drawn_again_between_its_changes_does_not_rest(cx: &mut TestAppContext) {
+    let window: WindowHandle<Quote> = cx.add_window(|_, _| Quote { price: 0 });
+    for _ in 0..4 {
+        quote_frame(window, cx, |_| {});
+    }
+    let frames: Vec<(u64, u64)> = (0..40)
+        .map(|frame| {
+            quote_frame(window, cx, |quote| {
+                if frame % 4 == 0 {
+                    quote.price += 1;
+                }
+            })
+        })
+        .collect();
+    for (frame, stats) in frames.iter().enumerate() {
+        let expected = match frame % 4 {
+            0 => (3, 2),
+            1 => (0, 5),
+            _ => (0, 5),
+        };
+        assert_eq!(*stats, expected, "frame {frame}: {frames:?}");
+    }
+}

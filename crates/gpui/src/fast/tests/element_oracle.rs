@@ -174,6 +174,10 @@ enum Change {
     Nothing,
     /// Notifies only the view nested in the board.
     Nested,
+    /// Changes the board's quote and the nested view's count, on every step
+    /// of a run of steps, so that elements built anew frame after frame
+    /// rest, and are drawn again once the run ends.
+    Tick,
     MoveMouse {
         x: f32,
         y: f32,
@@ -336,6 +340,7 @@ struct Board {
     scroll: ScrollHandle,
     focus: Vec<FocusHandle>,
     nested: Entity<Ticker>,
+    quote: usize,
 }
 
 impl Board {
@@ -351,6 +356,7 @@ impl Board {
             scroll: ScrollHandle::new(),
             focus: (0..128).map(|_| cx.focus_handle()).collect(),
             nested: cx.new(|_| Ticker { count: 0 }),
+            quote: 0,
         }
     }
 
@@ -435,6 +441,7 @@ impl Board {
             }
             Change::Blur => window.blur(cx),
             Change::Notify => {}
+            Change::Tick => self.quote += 1,
             Change::Nothing | Change::Nested | Change::MoveMouse { .. } | Change::Resize { .. } => {
                 return;
             }
@@ -520,6 +527,19 @@ impl Render for Board {
                             None,
                         )
                     })),
+            )
+            // Changes on every step of a run.
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .child(div().w(px(40.)).child("quote"))
+                    .child(
+                        div()
+                            .w(px(40.))
+                            .child(SharedString::from(self.quote.to_string())),
+                    )
+                    .child(div().size(px(8.)).bg(PALETTE[self.quote % PALETTE.len()])),
             )
             // Never changes.
             .child(
@@ -629,15 +649,21 @@ fn apply(cx: &mut TestAppContext, window: WindowHandle<Board>, change: &Change) 
         Change::Resize { width, height } => {
             cx.simulate_window_resize(window.into(), size(px(width), px(height)));
         }
-        Change::Nested => {
+        Change::Nested | Change::Tick => {
             let nested = window
                 .read_with(cx, |board, _| board.nested.clone())
                 .unwrap();
+            // In one update, so that the board is not drawn between them.
             cx.update(|cx| {
                 nested.update(cx, |ticker, cx| {
                     ticker.count += 1;
                     cx.notify();
-                })
+                });
+                if let Change::Tick = change {
+                    window
+                        .update(cx, |board, window, cx| board.apply(change, window, cx))
+                        .unwrap();
+                }
             });
         }
         _ => window
@@ -766,15 +792,22 @@ fn run(seed: u64, steps: usize) -> u64 {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut history: Vec<Vec<Change>> = Vec::new();
     let mut reused = 0;
+    let mut ticking = false;
 
     for step in 0..steps {
-        let changes: Vec<Change> = if step == 0 {
+        let mut changes: Vec<Change> = if step == 0 {
             Vec::new()
         } else {
             (0..rng.random_range(1..=3))
                 .map(|_| Change::random(&mut rng))
                 .collect()
         };
+        if rng.random_ratio(1, 6) {
+            ticking = !ticking;
+        }
+        if ticking {
+            changes.push(Change::Tick);
+        }
         for change in &changes {
             apply(&mut cx, incremental, change);
             apply(&mut cx, from_scratch, change);

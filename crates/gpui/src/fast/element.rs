@@ -83,8 +83,11 @@ pub(crate) struct ElementRecords {
     /// The root whose records `building` holds.
     building_root: u32,
     /// The records in `building` whose prepaint is under way, innermost
-    /// last.
-    open: Vec<u32>,
+    /// last, each with `reused` as it was when it began.
+    open: Vec<(u32, u32)>,
+    /// How many times elements were drawn again inside ones being built,
+    /// for a record to tell whether anything nested in it was.
+    reused: u32,
 }
 
 /// An element nested in no other element with a record, and where its
@@ -102,6 +105,11 @@ struct Root {
     paint: Paint,
     /// Whether it is the only root under its key.
     usable: bool,
+    /// Whether its records were built this frame, rather than taken over
+    /// from an earlier one, so that the rests of those nested in it are
+    /// this frame's.
+    fresh: bool,
+    rest: Rest,
 }
 
 /// Where a root left without records was drawn, and whether that is where
@@ -122,11 +130,13 @@ struct Placement {
 /// Whether an element nested in no other with a record is recorded this
 /// frame. See [`Placement`].
 enum Probation {
-    /// It was recorded last frame, or stood still, where it was drawn then.
-    Record(Bounds<Pixels>),
-    /// It moved, or was not drawn, last frame: drawn as upstream draws it,
-    /// its placement noted, last frame's bounds if it had one.
-    Skip(Option<Bounds<Pixels>>),
+    /// It was recorded last frame, or stood still, where it was drawn then,
+    /// and does not rest.
+    Record(Bounds<Pixels>, Rest),
+    /// It moved, or was not drawn, last frame, or it rests: drawn as
+    /// upstream draws it, its placement noted, last frame's bounds if it had
+    /// one, with the rest it leaves.
+    Skip(Option<Bounds<Pixels>>, Rest),
 }
 
 /// The records of a root and those nested in it.
@@ -186,6 +196,8 @@ struct ElementRecord {
     /// For [`Snapshot::Moving`], whether it was drawn where it was the frame
     /// before.
     still: bool,
+    /// For a record nested in another; a root's is its [`Root`]'s.
+    rest: Rest,
     layout_id: LayoutId,
     /// While it is being built, how many layout nodes it claimed.
     claimed: u32,
@@ -258,6 +270,61 @@ enum Snapshot {
     /// somewhere else than the frame before; it is recorded again once it
     /// stands still. See [`Placement`], which does this for roots.
     Moving,
+    /// Not recorded, with nothing nested in it, while it rests. See
+    /// [`Rest`].
+    Resting,
+}
+
+/// How long an element has come to nothing, and rested for it.
+///
+/// An element built differently every frame, and holding nothing drawn
+/// again either, a price ticking in its cell, costs a comparison and a
+/// record every frame and saves nothing. Once it has come to nothing on
+/// [`REST_AFTER`] frames in a row, it rests: it is drawn as upstream draws
+/// it, with everything nested in it, neither compared nor recorded, for a
+/// frame, then two, doubling up to [`LONGEST_REST`] frames as it keeps
+/// coming to nothing. After a rest it is recorded again, and compared on
+/// the frame after; drawn again then, or holding anything that is, it
+/// starts over.
+#[derive(Clone, Copy, Default)]
+struct Rest {
+    /// The frames in a row it was compared with its record of the frame
+    /// before, and it and everything nested in it built anew.
+    misses: u8,
+    /// The frames it rested since, and for a record after a rest, the
+    /// length of that rest, which it does not rest again before it is
+    /// compared.
+    rested: u8,
+}
+
+const REST_AFTER: u8 = 2;
+const LONGEST_REST: u8 = 16;
+
+impl Rest {
+    /// The rest that follows this one, when it rests this frame.
+    fn next(self) -> Option<Rest> {
+        if self.misses < REST_AFTER {
+            return None;
+        }
+        let length = (1u8 << (self.misses - REST_AFTER).min(7)).min(LONGEST_REST);
+        (self.rested < length).then_some(Rest {
+            misses: self.misses,
+            rested: self.rested + 1,
+        })
+    }
+
+    /// The rest of a record built this frame, compared or not with this
+    /// one's record, should it come to nothing.
+    fn built(self, compared: bool) -> Rest {
+        if compared {
+            Rest {
+                misses: self.misses.saturating_add(1),
+                rested: 0,
+            }
+        } else {
+            self
+        }
+    }
 }
 
 /// What an `svg` draws besides its style: the asset at `path`, or the bytes
@@ -547,6 +614,7 @@ impl ElementRecords {
         self.by_key.clear();
         self.building.clear();
         self.open.clear();
+        self.reused = 0;
     }
 
     /// The painted subtree of the root `root`, if it can be drawn again from.
@@ -613,13 +681,13 @@ impl ElementRecords {
     /// Whether the element under `key`, should it be a root, is recorded.
     fn probation(&self, key: u64) -> Probation {
         let Some(&root) = self.by_key.get(&key) else {
-            return Probation::Skip(None);
+            return Probation::Skip(None, Rest::default());
         };
         let root = &self.roots[root as usize];
-        match (&root.records, root.placement) {
-            _ if !root.usable => Probation::Skip(None),
+        let bounds = match (&root.records, root.placement) {
+            _ if !root.usable => return Probation::Skip(None, Rest::default()),
             (RootRecords::Frozen(subtree), _) if root.paint == Paint::Painted => {
-                Probation::Record(subtree.records[0].context.bounds)
+                subtree.records[0].context.bounds
             }
             (
                 _,
@@ -627,8 +695,17 @@ impl ElementRecords {
                     still: true,
                     bounds,
                 }),
-            ) => Probation::Record(bounds),
-            (_, placement) => Probation::Skip(placement.map(|placement| placement.bounds)),
+            ) => bounds,
+            (_, placement) => {
+                return Probation::Skip(
+                    placement.map(|placement| placement.bounds),
+                    Rest::default(),
+                );
+            }
+        };
+        match root.rest.next() {
+            Some(rest) => Probation::Skip(Some(bounds), rest),
+            None => Probation::Record(bounds, root.rest),
         }
     }
 
@@ -653,8 +730,9 @@ impl ElementRecords {
     /// Sets the records of the root being built aside, now that it is
     /// prepainted.
     fn finish_prepaint(&mut self) {
-        let records = self.building.drain(..).collect();
-        self.roots[self.building_root as usize].records = RootRecords::Pending(records);
+        let root = &mut self.roots[self.building_root as usize];
+        root.rest = self.building[0].rest;
+        root.records = RootRecords::Pending(self.building.drain(..).collect());
     }
 
     /// Freezes the records of the root `root`, now painted, into its
@@ -705,6 +783,8 @@ pub(crate) fn carry_records(
             paint_start: root.paint_start.clone(),
             paint,
             usable: true,
+            fresh: false,
+            rest: Rest::default(),
         });
     }
     start..target.len()
@@ -766,6 +846,7 @@ enum Phase {
         key: u64,
         layout_id: LayoutId,
         previous: Option<Bounds<Pixels>>,
+        rest: Rest,
     },
     /// Built and laid out; it leaves a record once prepainted.
     Built(BuiltLayout),
@@ -786,6 +867,8 @@ struct BuiltLayout {
     snapshot: Snapshot,
     layout_id: LayoutId,
     claimed: u32,
+    /// Its rest, should it come to nothing.
+    rest: Rest,
     /// Where its record of last frame was drawn, for a moving one to tell
     /// whether it stood still.
     previous_bounds: Option<Bounds<Pixels>>,
@@ -1247,8 +1330,8 @@ fn request_retained_layout<E: Element>(
     // own at once should it hold one that cannot be.
     let probation = (window.retained_state.recording_elements == 0)
         .then(|| window.rendered_frame.retained.elements.probation(key));
-    if let Some(Probation::Skip(previous @ Some(_))) = probation {
-        return request_skipped_root(drawable, key, previous, window, cx);
+    if let Some(Probation::Skip(previous @ Some(_), rest)) = probation {
+        return request_skipped_root(drawable, key, previous, rest, window, cx);
     }
     let eligible = match drawable.fast_retention.eligible {
         Some(eligible) => eligible,
@@ -1264,12 +1347,12 @@ fn request_retained_layout<E: Element>(
         // root never drawn there, which would skip the elements nested in it
         // that can be drawn again on their own.
         drawable.fast_retention.phase = match probation {
-            Some(Probation::Record(previous)) => Phase::Ineligible {
+            Some(Probation::Record(previous, _)) => Phase::Ineligible {
                 key,
                 layout_id,
                 previous: Some(previous),
             },
-            Some(Probation::Skip(previous)) => Phase::Ineligible {
+            Some(Probation::Skip(previous, _)) => Phase::Ineligible {
                 key,
                 layout_id,
                 previous,
@@ -1278,8 +1361,8 @@ fn request_retained_layout<E: Element>(
         };
         return layout_id;
     }
-    if let Some(Probation::Skip(None)) = probation {
-        return request_skipped_root(drawable, key, None, window, cx);
+    if let Some(Probation::Skip(None, rest)) = probation {
+        return request_skipped_root(drawable, key, None, rest, window, cx);
     }
     let previous = window
         .rendered_frame
@@ -1287,24 +1370,51 @@ fn request_retained_layout<E: Element>(
         .elements
         .find(drawable.fast_retention.candidate, key);
 
-    // Nested in an element being recorded, but moving: recorded as such,
-    // with nothing nested in it, until it stands still.
+    // What it was built with last frame, if it was recorded, and its rest.
+    let mut compared = false;
+    let mut rest = match probation {
+        Some(Probation::Record(_, rest)) => rest,
+        _ => Rest::default(),
+    };
     if window.retained_state.recording_elements > 0
         && let Some(previous) = previous
-        && let record = window.rendered_frame.retained.elements.record(previous)
-        && matches!(record.snapshot, Snapshot::Moving)
-        && !record.still
     {
-        let previous_bounds = Some(record.context.bounds);
-        let layout_id = request_skipped_layout(drawable, window, cx);
-        drawable.fast_retention.phase = Phase::Built(BuiltLayout {
-            key,
-            snapshot: Snapshot::Moving,
-            layout_id,
-            claimed: 0,
-            previous_bounds,
-        });
-        return layout_id;
+        let elements = &window.rendered_frame.retained.elements;
+        let record = elements.record(previous);
+        // Taken over since it was built, it was drawn again in the meantime.
+        let record_rest = if elements.roots[previous.root as usize].fresh {
+            record.rest
+        } else {
+            Rest::default()
+        };
+        let skipped = match record.snapshot {
+            // Moving: recorded as such, with nothing nested in it, until it
+            // stands still.
+            Snapshot::Moving if !record.still => Some((
+                Snapshot::Moving,
+                Some(record.context.bounds),
+                Rest::default(),
+            )),
+            _ => record_rest
+                .next()
+                .map(|next| (Snapshot::Resting, None, next)),
+        };
+        if let Some((snapshot, previous_bounds, rest)) = skipped {
+            let layout_id = request_skipped_layout(drawable, window, cx);
+            drawable.fast_retention.phase = Phase::Built(BuiltLayout {
+                key,
+                snapshot,
+                layout_id,
+                claimed: 0,
+                rest,
+                previous_bounds,
+            });
+            return layout_id;
+        }
+        compared = !matches!(record.snapshot, Snapshot::Moving | Snapshot::Resting);
+        rest = record_rest;
+    } else if previous.is_some() {
+        compared = true;
     }
 
     if let Some(previous) = previous
@@ -1339,6 +1449,7 @@ fn request_retained_layout<E: Element>(
             snapshot,
             layout_id,
             claimed,
+            rest: rest.built(compared),
             previous_bounds: None,
         }),
         None => Phase::Plain,
@@ -1352,6 +1463,7 @@ fn request_skipped_root<E: Element>(
     drawable: &mut Drawable<E>,
     key: u64,
     previous: Option<Bounds<Pixels>>,
+    rest: Rest,
     window: &mut Window,
     cx: &mut App,
 ) -> LayoutId {
@@ -1360,6 +1472,7 @@ fn request_skipped_root<E: Element>(
         key,
         layout_id,
         previous,
+        rest,
     };
     layout_id
 }
@@ -1479,7 +1592,7 @@ fn prepaint_retained<E: Element>(drawable: &mut Drawable<E>, window: &mut Window
                         // Moved: drawn as upstream draws it until it stands
                         // still again.
                         let bounds = window.layout_bounds(kept.layout_id);
-                        leave_placement(kept.key, bounds, false, window);
+                        leave_placement(kept.key, bounds, false, Rest::default(), window);
                     }
                     drawable.fast_retention.phase = Phase::Plain;
                     return drawable.prepaint(window, cx);
@@ -1490,9 +1603,12 @@ fn prepaint_retained<E: Element>(drawable: &mut Drawable<E>, window: &mut Window
             key,
             layout_id,
             previous,
+            rest,
         } => {
             let bounds = window.layout_bounds(layout_id);
-            leave_placement(key, bounds, previous == Some(bounds), window);
+            let still = previous == Some(bounds);
+            let rest = if still { rest } else { Rest::default() };
+            leave_placement(key, bounds, still, rest, window);
             drawable.fast_retention.phase = Phase::Plain;
             return drawable.prepaint(window, cx);
         }
@@ -1505,7 +1621,7 @@ fn prepaint_retained<E: Element>(drawable: &mut Drawable<E>, window: &mut Window
             // elements nested in it are not skipped for it next frame.
             let bounds = window.layout_bounds(layout_id);
             let still = previous.is_none_or(|previous| previous == bounds);
-            leave_placement(key, bounds, still, window);
+            leave_placement(key, bounds, still, Rest::default(), window);
             drawable.fast_retention.phase = Phase::Plain;
             return drawable.prepaint(window, cx);
         }
@@ -1561,6 +1677,7 @@ fn build_at_kept_layout<E: Element>(
         snapshot: Snapshot::Moving,
         layout_id,
         claimed: 0,
+        rest: Rest::default(),
         previous_bounds: None,
     })
 }
@@ -1568,7 +1685,7 @@ fn build_at_kept_layout<E: Element>(
 /// Leaves a root without records for the element under `key`, drawn at
 /// `bounds`, `still` if it was drawn there last frame too. See
 /// [`Placement`].
-fn leave_placement(key: u64, bounds: Bounds<Pixels>, still: bool, window: &mut Window) {
+fn leave_placement(key: u64, bounds: Bounds<Pixels>, still: bool, rest: Rest, window: &mut Window) {
     if !window.next_frame.retained.elements.open.is_empty() {
         return;
     }
@@ -1581,6 +1698,8 @@ fn leave_placement(key: u64, bounds: Bounds<Pixels>, still: bool, window: &mut W
         paint_start: PaintIndex::default(),
         paint: Paint::Unpainted,
         usable: true,
+        fresh: false,
+        rest,
     });
 }
 
@@ -1617,6 +1736,8 @@ fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
             paint_start: PaintIndex::default(),
             paint: Paint::Unpainted,
             usable: true,
+            fresh: true,
+            rest: Rest::default(),
         });
     }
     let index = elements.building.len() as u32;
@@ -1633,13 +1754,14 @@ fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
         reusable: false,
         paint: Paint::Unpainted,
         still,
+        rest: built.rest,
         layout_id: built.layout_id,
         claimed: built.claimed,
         context,
         prepaint_range: at..at,
         paint_range: PaintAt::default()..PaintAt::default(),
     });
-    elements.open.push(index);
+    elements.open.push((index, elements.reused));
     (elements.building_root, index)
 }
 
@@ -1652,8 +1774,11 @@ fn finish_record(index: u32, window: &mut Window) {
         &elements.roots[elements.building_root as usize].prepaint_start,
         &end,
     );
-    debug_assert_eq!(elements.open.last(), Some(&index));
-    elements.open.pop();
+    let (open, reused) = elements
+        .open
+        .pop()
+        .expect("a record is finished once begun");
+    debug_assert_eq!(open, index);
     let index = index as usize;
     let len = elements.building.len();
     let mut children = 0;
@@ -1668,11 +1793,16 @@ fn finish_record(index: u32, window: &mut Window) {
     record.prepaint_range.end = end;
     record.complete = match &record.snapshot {
         Snapshot::Div { children: all, .. } => children == *all,
-        Snapshot::Text { .. } | Snapshot::Svg { .. } | Snapshot::Moving => children == 0,
+        Snapshot::Text { .. } | Snapshot::Svg { .. } | Snapshot::Moving | Snapshot::Resting => {
+            children == 0
+        }
     };
     record.reusable = record.complete
-        && !matches!(record.snapshot, Snapshot::Moving)
+        && !matches!(record.snapshot, Snapshot::Moving | Snapshot::Resting)
         && record.claimed == nested + 1;
+    if elements.reused != reused {
+        record.rest = Rest::default();
+    }
     if elements.open.is_empty() {
         elements.finish_prepaint();
     }
@@ -1746,6 +1876,8 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
             paint_start: paint_range.start,
             paint: Paint::Pending,
             usable: true,
+            fresh: false,
+            rest: Rest::default(),
         });
         return Some(Phase::ReusedRoot(root));
     }
@@ -1754,6 +1886,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
     // into that one's, placed in this frame's prepaint, and in last frame's
     // paint until it is painted.
     let index = target.building.len() as u32;
+    target.reused = target.reused.wrapping_add(1);
     let from_prepaint = subtree.records[first].prepaint_range.start;
     let to_prepaint = PrepaintAt::between(
         &target.roots[target.building_root as usize].prepaint_start,
@@ -1777,6 +1910,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
                     Paint::Painted => Paint::Pending,
                     paint => paint,
                 },
+                rest: Rest::default(),
                 ..record.clone()
             }
         }));

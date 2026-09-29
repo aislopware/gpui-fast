@@ -130,7 +130,15 @@ checked first, before anything nested in it is compared, so a moving root
 costs one lookup rather than a walk of its subtree. A root that cannot take
 part itself (a row holding a button) still keeps its place from frame to
 frame, so the plain cells inside it are recorded as standing still and drawn
-again on their own. The records of such an element
+again on their own.
+
+An element built differently on each of two frames in a row, with nothing
+nested in it drawn again either (a price ticking in its cell), rests: it is
+drawn as upstream draws it, neither compared nor recorded, for one frame,
+then two, doubling up to sixteen while it keeps changing. After a rest it is
+recorded again and compared on the next frame, and once it is drawn again,
+or holds anything that is, it starts over. Only frames in a row count: an
+element drawn again in between, even as part of a larger one, never rests. The records of such an element
 and of those nested in it are frozen, once it is painted, into one subtree
 shared from frame to frame, which drawing it again takes over as it is. The
 code is in `crates/gpui/src/fast/element.rs`.
@@ -152,6 +160,12 @@ to it, to reconcile with whatever longbridge lands:
   (`text_let_out_of_the_box_that_wrapped_it_is_measured_unwrapped`). #17
   made this reachable: a node kept across frames is probed again under
   constraints its kept measurement was not taken with.
+- Records keep their ranges as `u32` offsets from their root's
+  (`PrepaintAt`, `PaintAt`), 304 bytes rather than 568.
+- Elements that change every frame rest (`Rest`). Covered by
+  `an_element_built_anew_every_frame_rests`,
+  `an_element_drawn_again_between_its_changes_does_not_rest` and the element
+  oracle's ticking quote.
 - `gpui_perf` has a Slopty-shaped screen (`strip-*`: tiles of terminals with
   headers, icons and a status bar) and counts elements built and reused.
 
