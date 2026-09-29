@@ -293,8 +293,8 @@ impl TextSystem {
     /// Cached font resolution and line layouts are invalidated after installation.
     /// Layouts already in progress may complete against the previous font set.
     pub fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
-        crate::fast::text::fonts_changed();
         self.platform_text_system.add_fonts(fonts)?;
+        crate::fast::text::fonts_changed();
         self.font_ids_by_font.write().clear();
         self.missing_glyph_reporter.reset();
         self.font_generation.fetch_add(1, Ordering::Release);

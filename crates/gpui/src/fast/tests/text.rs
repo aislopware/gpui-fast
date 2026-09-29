@@ -468,3 +468,57 @@ fn new_text_measured_under_the_last_texts_constraints_is_laid_out_afresh() {
     assert_eq!(fitted_lines(&mut cx, fresh), [format!("{NEW} (0 wraps)")]);
     assert_eq!(fitted_lines(&mut cx, window), fitted_lines(&mut cx, fresh));
 }
+
+/// Text in a flex item as wide as its text and free to shrink below it, or
+/// of a fixed width.
+struct Shrinkable {
+    width: Option<crate::Pixels>,
+    layout: std::rc::Rc<std::cell::RefCell<Option<crate::TextLayout>>>,
+}
+
+impl Render for Shrinkable {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use crate::prelude::FluentBuilder as _;
+        let text = crate::StyledText::new("aaaa bbbb cccc dddd");
+        *self.layout.borrow_mut() = Some(text.layout().clone());
+        div().flex().items_start().child(
+            div()
+                .min_w_0()
+                .when_some(self.width, |this, width| this.w(width))
+                .child(text),
+        )
+    }
+}
+
+/// Text wrapped in a box keeps its measurement from frame to frame. Let out
+/// of the box, it is asked how wide it is unwrapped, which the measurement
+/// taken in the box must not answer: in a flex item free to shrink below
+/// its text, nothing asked after would correct it, and the text would stay
+/// wrapped at the width of a box no longer there.
+#[test]
+fn text_let_out_of_the_box_that_wrapped_it_is_measured_unwrapped() {
+    let mut cx = TestAppContext::single();
+    let layout = std::rc::Rc::<std::cell::RefCell<Option<crate::TextLayout>>>::default();
+    let window = cx.add_window({
+        let layout = layout.clone();
+        move |_, _| Shrinkable {
+            width: Some(px(100.)),
+            layout,
+        }
+    });
+    draw(&mut cx, window.into());
+    let wraps = |layout: &std::rc::Rc<std::cell::RefCell<Option<crate::TextLayout>>>| {
+        let layout = layout.borrow().clone().unwrap();
+        let inner = layout.0.borrow();
+        inner.as_ref().unwrap().lines[0].wrap_boundaries().len()
+    };
+    assert!(wraps(&layout) > 0, "the box should wrap the text");
+    window
+        .update(&mut cx, |view, _, cx| {
+            view.width = None;
+            cx.notify();
+        })
+        .unwrap();
+    draw(&mut cx, window.into());
+    assert_eq!(wraps(&layout), 0, "let out, the text should not wrap");
+}
