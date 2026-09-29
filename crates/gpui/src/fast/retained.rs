@@ -169,6 +169,9 @@ pub(crate) struct RetainedState {
     /// Every entity notified since the last frame was drawn, views or not. A
     /// retained subtree that read any of them is built again.
     pub(crate) notified_entities: FxHashSet<EntityId>,
+    /// The generation of the text system's fonts the last frame was drawn
+    /// with. See [`Window::refresh_if_fonts_changed`].
+    pub(crate) font_generation: usize,
     /// Whether a view that was not notified since the last frame, and read
     /// nothing that was, is drawn again from what it drew then. See
     /// [`Window::set_view_retention`].
@@ -189,6 +192,7 @@ impl RetainedState {
             open_paints: Vec::new(),
             prebuilt: FxHashMap::default(),
             notified_entities: FxHashSet::default(),
+            font_generation: 0,
             view_retention: std::env::var("GPUI_VIEW_RETENTION").map_or(true, |value| value != "0"),
         }
     }
@@ -245,6 +249,9 @@ impl PaintIndex {
             window_control_hitboxes_index: self.window_control_hitboxes_index
                 - from.window_control_hitboxes_index
                 + to.window_control_hitboxes_index,
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds_index: self.debug_bounds_index - from.debug_bounds_index
+                + to.debug_bounds_index,
             mouse_listeners_index: self.mouse_listeners_index - from.mouse_listeners_index
                 + to.mouse_listeners_index,
             input_handlers_index: self.input_handlers_index - from.input_handlers_index
@@ -271,7 +278,7 @@ impl RetainedSubtrees {
     }
 
     /// Whether any subtree was drawn from last frame.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn reused_any(&self) -> bool {
         self.reused_any
     }
@@ -1030,17 +1037,6 @@ impl Window {
         self.retained_state.hover_dependencies.clear();
         self.retained_state.hover_reads.get_mut().clear();
         self.next_frame.retained.finish_frame();
-        #[cfg(any(test, feature = "test-support"))]
-        if self.next_frame.retained.reused_any() {
-            // Reused subtrees do not paint, and the bounds they would have
-            // recorded for tests to find them by are last frame's.
-            for (selector, bounds) in &self.rendered_frame.debug_bounds {
-                self.next_frame
-                    .debug_bounds
-                    .entry(selector.clone())
-                    .or_insert(*bounds);
-            }
-        }
     }
 }
 

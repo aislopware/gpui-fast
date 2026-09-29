@@ -297,6 +297,31 @@ fn a_view_is_rendered_again_only_when_something_it_read_changed() {
     assert_eq!((s.first_builds.get(), s.second_builds.get()), (3, 3));
 }
 
+/// Adding fonts changes how text shapes, and the line layout cache lets go of
+/// every line it held: no view is drawn from the last frame on the next one.
+#[test]
+fn every_view_is_rendered_again_once_fonts_are_added() {
+    let mut cx = TestAppContext::single();
+    let s = siblings(&mut cx);
+    draw_siblings(&mut cx, s.window);
+    s.window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+    draw_siblings(&mut cx, s.window);
+    assert_eq!((s.first_builds.get(), s.second_builds.get()), (1, 1));
+
+    cx.update(|cx| cx.text_system().add_fonts(Vec::new()))
+        .unwrap();
+    draw_siblings(&mut cx, s.window);
+    assert_eq!((s.first_builds.get(), s.second_builds.get()), (2, 2));
+
+    s.window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+    draw_siblings(&mut cx, s.window);
+    assert_eq!(
+        (s.first_builds.get(), s.second_builds.get()),
+        (2, 2),
+        "the frame after is drawn from the one before again"
+    );
+}
+
 /// A view that moved is built again where it went, at the layout nodes it
 /// kept, and draws what a window drawing from scratch draws.
 #[test]

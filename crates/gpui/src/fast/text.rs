@@ -9,6 +9,7 @@ use crate::{
 use scheduler::Instant;
 use std::{
     any::Any,
+    mem,
     rc::Rc,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
@@ -22,6 +23,10 @@ pub(crate) struct TextMeasureInputs {
     text_style: TextStyle,
     font_size: Pixels,
     line_height: Pixels,
+    /// The fonts' generation the text was measured with, which
+    /// [`crate::TextSystem::add_fonts`] advances: the same text shapes
+    /// differently once a font is added.
+    font_generation: usize,
 }
 
 impl TextMeasureInputs {
@@ -38,6 +43,7 @@ impl TextMeasureInputs {
             text_style: text_style.clone(),
             font_size,
             line_height,
+            font_generation: 0,
         }
     }
 }
@@ -61,11 +67,12 @@ struct TextMeasurement {
 /// measures it again under other constraints.
 pub(crate) fn request_text_layout(
     layout: &TextLayout,
-    inputs: TextMeasureInputs,
+    mut inputs: TextMeasureInputs,
     window: &mut Window,
     measure: impl Fn(Size<Option<Pixels>>, Size<AvailableSpace>, &mut Window, &mut App) -> Size<Pixels>
     + 'static,
 ) -> LayoutId {
+    inputs.font_generation = window.font_generation();
     let measurement = Rc::new(TextMeasurement {
         inputs,
         layout: layout.clone(),
@@ -111,6 +118,24 @@ fn copy_measurement(inner: &TextLayoutInner) -> TextLayoutInner {
 }
 
 impl Window {
+    /// How many times fonts have been added to the text system.
+    pub(crate) fn font_generation(&self) -> usize {
+        self.text_system()
+            .line_layout_cache
+            .font_generation
+            .load(Ordering::Acquire)
+    }
+
+    /// Draws the frame from scratch when fonts were added since the last one:
+    /// text drawn from the last frame was shaped with the fonts there were
+    /// then, and the line layout cache let go of those lines.
+    pub(crate) fn refresh_if_fonts_changed(&mut self) {
+        let generation = self.font_generation();
+        if mem::replace(&mut self.retained_state.font_generation, generation) != generation {
+            self.refresh();
+        }
+    }
+
     /// Requests a self-measuring leaf, as [`Window::request_measured_layout`]
     /// does, whose measurement can be carried over from the element at the
     /// same place last frame. `adopt` is given what that element left in
@@ -151,6 +176,7 @@ impl LineLayoutIndex {
     /// a copy of that range starting at `to`.
     pub(crate) fn shifted(&self, from: &Self, to: &Self) -> Self {
         LineLayoutIndex {
+            font_generation: to.font_generation,
             lines_index: self.lines_index - from.lines_index + to.lines_index,
             wrapped_lines_index: self.wrapped_lines_index - from.wrapped_lines_index
                 + to.wrapped_lines_index,
