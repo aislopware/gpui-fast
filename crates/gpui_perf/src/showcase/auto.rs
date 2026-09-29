@@ -184,12 +184,20 @@ impl AutoRun {
         cx: &mut App,
     ) -> bool {
         let Some(&(scenario, retention)) = self.runs.get(self.index) else {
+            // The platform window holds the focused search box's input
+            // handler until a frame is drawn without it, and on Wayland a
+            // closed window's state, handler included, is only dropped by a
+            // task that never runs once the app quits. So the search box is
+            // blurred and one more frame drawn, which takes the handler back,
+            // before the window is closed and the app checks for leaked
+            // entities as it quits.
+            if window.focused(cx).is_some() {
+                window.blur(cx);
+                return true;
+            }
             let clock_held = self.clock.is_holding();
             self.clock.stop();
             self.report(clock_held);
-            // Closed first, so that what the window holds on to — the focused
-            // search box's input handler — is released before the app checks
-            // for leaked entities as it quits.
             window.remove_window();
             cx.quit();
             return false;
