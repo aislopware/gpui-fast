@@ -1,6 +1,6 @@
 //! The window's text style stack, which remembers the styles it resolves.
 
-use crate::{TextStyle, TextStyleRefinement, Window};
+use crate::{TextAlign, TextStyle, TextStyleRefinement, Window};
 use refineable::Refineable;
 use std::{cell::RefCell, rc::Rc};
 
@@ -51,10 +51,13 @@ impl TextStyleStack {
         self.resolved.get_mut().push(None);
     }
 
-    pub(crate) fn pop(&mut self) -> Option<TextStyleRefinement> {
-        let refinement = self.refinements.pop()?;
-        self.resolved.get_mut().pop();
-        Some(refinement)
+    /// Pops the refinement pushed last, dropping it where it lies rather
+    /// than handing it back: nothing wants it, and it is 200-odd bytes.
+    pub(crate) fn pop(&mut self) {
+        if let Some(depth) = self.refinements.len().checked_sub(1) {
+            self.refinements.truncate(depth);
+            self.resolved.get_mut().truncate(depth + 1);
+        }
     }
 
     pub(crate) fn clear(&mut self) {
@@ -70,16 +73,36 @@ impl TextStyleStack {
         if let Some(style) = &resolved[depth] {
             return style.clone();
         }
+        // `Rc::make_mut` clones the known style straight into the new
+        // style's allocation, where a clone refined and then wrapped would be
+        // copied twice more.
         let (mut style, from) = match resolved[..depth].iter().rposition(|style| style.is_some()) {
-            Some(known) => ((**resolved[known].as_ref().unwrap()).clone(), known),
-            None => (TextStyle::default(), 0),
+            Some(known) => (resolved[known].clone().unwrap(), known),
+            None => (Rc::new(TextStyle::default()), 0),
         };
+        let refined = Rc::make_mut(&mut style);
         for refinement in &self.refinements[from..] {
-            style.refine(refinement);
+            refined.refine(refinement);
         }
-        let style = Rc::new(style);
         resolved[depth] = Some(style.clone());
         style
+    }
+}
+
+impl TextStyleStack {
+    /// The `text_align` of [`Self::resolve`]'s style, without resolving the
+    /// rest of it: the refinement pushed last that sets it decides it.
+    pub(crate) fn text_align(&self) -> TextAlign {
+        let depth = self.refinements.len();
+        if let Some(style) = &self.resolved.borrow()[depth] {
+            return style.text_align;
+        }
+        self.refinements
+            .iter()
+            .rev()
+            .find_map(|refinement| refinement.text_align)
+            // As `TextStyle::default()` has it.
+            .unwrap_or_default()
     }
 }
 
@@ -88,4 +111,19 @@ impl TextStyleStack {
 #[inline]
 pub(crate) fn text_style(window: &Window) -> Rc<TextStyle> {
     window.text_style_stack.resolve()
+}
+
+/// What painting a text element reads of the text style in effect.
+pub(crate) struct TextPaintStyle {
+    pub(crate) text_align: TextAlign,
+}
+
+/// The part of the text style in effect that painting text reads. Resolving
+/// the whole style for it, once for every text element painted, cost more
+/// than painting a short one.
+#[inline]
+pub(crate) fn text_paint_style(window: &Window) -> TextPaintStyle {
+    TextPaintStyle {
+        text_align: window.text_style_stack.text_align(),
+    }
 }

@@ -16,11 +16,13 @@
 
 pub mod composition;
 pub(crate) mod dependencies;
+pub(crate) mod dispatch;
 pub(crate) mod global_id;
 pub(crate) mod glyphs;
 pub(crate) mod interactivity;
 pub(crate) mod keypad;
 pub(crate) mod layout;
+pub(crate) mod layout_bounds;
 pub(crate) mod layout_key;
 pub(crate) mod line_breaks;
 pub(crate) mod path_cache;

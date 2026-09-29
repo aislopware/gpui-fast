@@ -684,7 +684,7 @@ impl TextLayout {
 
         let line_height = element_state.line_height;
         let mut line_origin = bounds.origin;
-        let text_style = crate::fast::text_style::text_style(window);
+        let text_style = crate::fast::text_style::text_paint_style(window);
         for line in &element_state.lines {
             if matches!(pass, TextPaintPass::All | TextPaintPass::Background) {
                 line.paint_background(

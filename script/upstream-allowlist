@@ -9,11 +9,12 @@
 # The first matching line applies. Keep entries few and the reasons specific.
 
 crates/gpui/src/window.rs hunk=85 added=295 removed=30 unmarked=11 # the frame's hub: one- and two-line hooks for layout keys, retained drawing, phase timing, global ids, the inspector, the text style stack and glyph bounds; text_style's body forwards to fast::text_style; with Slopty's patches (SLOPTY.md): presented-frame reports, Window::insets, paint_glyph_scaled, the a11y tree for tests; window composition (docs/composition.md): its state, the present and cursor hooks, and the hit test and snapping it reads
-crates/gpui/src/elements/div.rs hunk=165 added=216 removed=30 unmarked=3 # Interactivity's listener lists become fast::interactivity::LazyVec, a one-word change per field; the rest are one-line state-version hooks and the keypad's enter activating as enter does; with Slopty's patches (SLOPTY.md): the outline style, focus falling back to the nearest a11y node, the a11y tree for tests
+crates/gpui/src/elements/div.rs hunk=165 added=240 removed=45 unmarked=3 # Interactivity's listener lists become fast::interactivity::LazyVec and its rarely set parts fast::interactivity::Rare, a one-word change per field and a one-line change where each is set; the rest are one-line state-version hooks and the keypad's enter activating as enter does; with Slopty's patches (SLOPTY.md): the outline style, focus falling back to the nearest a11y node, the a11y tree for tests
 crates/gpui/src/elements/text.rs removed=160 # TextLayout::layout's body is replaced by fast::text's measurement, which carries measurements across frames and recolors them in place; the method forwards to it
 crates/gpui/src/view.rs removed=265 # ViewElement's cache-by-bounds (and the request_layout_view/prepaint_view/paint_view helpers upstream split it into) is replaced by fast::retained's retained views; its Element methods forward to it
 crates/gpui/src/taffy.rs removed=50 # request_layout, request_measured_layout and stretch_auto_size_to_fill bodies are replaced by fast::layout's retained nodes; they forward to it
 crates/gpui/src/elements/list.rs added=75 # each item is laid out through fast::layout_key::layout_as_list_item, a call rustfmt spreads over seven lines at the list's depth; the rest are one-line state-version hooks
+crates/gpui/src/key_dispatch.rs removed=55 # reuse_subtree's node-by-node copy is replaced by fast::dispatch::copy_nodes, which writes a reused stretch in one pass, and move_node, used only by it, goes with it; the listener lists become fast::dispatch::Listeners, a one-word change per field
 
 # Slopty's patches on top of gpui-fast (aislopware/gpui-fast; see SLOPTY.md).
 # They are features of their own rather than retained-mode hooks, kept in the
@@ -24,7 +25,7 @@ crates/gpui/src/platform/keystroke.rs removed=30 unmarked=26 # Slopty: the secon
 crates/gpui/src/platform/test/window.rs hunk=14 added=40 unmarked=4 # Slopty: the test window's presented-frame sink; composition: the test window's recording native hosts
 crates/gpui/src/style.rs hunk=20 added=40 unmarked=4 # Slopty: the outline style
 crates/gpui/src/text_system.rs hunk=25 added=45 removed=70 unmarked=7 # Slopty: full FontMetrics, and line runs shaped by font rather than by colour; resolve_font's body forwards to fast::text's resolved-font memo
-crates/gpui/src/text_system/line.rs hunk=153 added=203 removed=23 unmarked=7 # Slopty: a ShapedLine's layout exposed; zed #64542: decorations on wrapped lines follow the text's alignment, and its test
+crates/gpui/src/text_system/line.rs hunk=153 added=208 removed=28 unmarked=7 # Slopty: a ShapedLine's layout exposed; zed #64542: decorations on wrapped lines follow the text's alignment, and its test
 crates/gpui/src/window/a11y.rs hunk=22 added=65 unmarked=6 # Slopty: the a11y tree for tests, focus falling back to the nearest ancestor node
 crates/gpui_apple/build.rs hunk=12 added=20 unmarked=6 # Slopty: the iOS backend's shader build
 crates/gpui_apple/src/metal_renderer.rs any # Slopty: iOS rendering, video surfaces (Y'CbCr matrices, 10-bit, 4:4:4), presentation reports and pacing

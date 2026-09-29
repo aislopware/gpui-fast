@@ -21,15 +21,15 @@ Two upstreams feed it:
   `2db56fa` (`zed: import bd747337`, zed `bd747337d7be`).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
-  longbridge commit merged is `49c1cfa` (#14, "allocate less per frame for carried text
-  measurements and retained records"), in `8a52ff0`; before it `f6e82b4` (#13, "keep
-  carried lines in the line cache, and measure text in fast/"), in `4c13f16`, and
-  `ac1c226` (#12), in `751acaf`.
-- longbridge's open PR #10 ("keep views retained in a real GPUI Kit application",
-  branch `retained-real-apps`, head `fd23405`) is merged ahead of longbridge, in the
-  commit "Merge longbridge/gpui-fast#10 (fd23405) into Slopty's fork". When longbridge
-  merges it, merging `origin/main` again brings nothing new from it; if they squash it,
-  expect the files below to conflict and resolve them to what is here.
+  longbridge commit merged is `ab4c33f` (#10, "keep views retained in a real GPUI Kit
+  application", squashed), in the commit "Merge longbridge/gpui-fast ab4c33f (#10 squash)
+  into Slopty's fork"; before it `49c1cfa` (#14, "allocate less per frame for carried
+  text measurements and retained records"), in `8a52ff0`; `f6e82b4` (#13, "keep carried
+  lines in the line cache, and measure text in fast/"), in `4c13f16`; and `ac1c226`
+  (#12), in `751acaf`.
+- #10's pre-squash head `fd23405` was merged ahead of longbridge, in the commit "Merge
+  longbridge/gpui-fast#10 (fd23405) into Slopty's fork". The ab4c33f merge has
+  `ab4c33f` as its second parent, so merging `origin/main` again sees #10 as merged.
 - `UPSTREAM` records `zed_commit` and `import_commit` (the latest vendor commit).
   `script/check-upstream` compares every tracked file against it.
 
@@ -72,9 +72,10 @@ authors and messages:
 - `c10d8a9` gpui_macos: keep drawing a covered window in test builds
 - `ea73091` feat(gpui_apple): draw 10-bit and 4:4:4 video surfaces
 
-Merged ahead of longbridge:
+Merged ahead of longbridge, and since merged by longbridge:
 
-- longbridge/gpui-fast#10 at `fd23405` (18 commits), merged whole. What Slopty needs most
+- longbridge/gpui-fast#10 at `fd23405` (18 commits), merged whole. Longbridge
+  squash-merged it later as `ab4c33f`, with more on top (see "The #10 squash" below). What Slopty needs most
   from it is `Entity::query` (`fast::dependencies::query`, crate-private): the window asks
   the focused input handler `accepts_text_input`, its selection and range bounds after
   every paint through `ElementInputHandler`, and that no longer counts as updating the
@@ -136,6 +137,56 @@ Merged ahead of longbridge:
 
     Those need GPUI Kit's side (notify where state changes, register participants that
     were not painted) before its pin moves here.
+
+The #10 squash, `ab4c33f`. What it has beyond `fd23405` was taken as the difference
+between `ab4c33f` and `fd23405` merged onto `49c1cfa` (`git merge-tree --write-tree
+49c1cfa fd23405`), applied onto `main` with `git apply -3`, and recorded as a merge of
+`main` and `ab4c33f`. Its rules for applications are those of `fd23405`
+([docs/retained-mode.md](docs/retained-mode.md) did not change). It brings speed and one
+fix:
+
+- `fast/dispatch.rs`: a reused stretch of dispatch nodes is copied in one pass
+  (`copy_nodes`), and a node's listener lists are boxed only once one is added
+  (`key_dispatch.rs` hooks). The fix: a splice gap hangs off the dispatch node its
+  element pushed, copied with the stretch before it, where it used to push another and
+  nest one node deeper every frame
+  (`a_view_drawn_around_a_nested_view_keeps_its_dispatch_tree`).
+- `fast/splice.rs`: `kept_keys` finds the layout keys a spliced view keeps from the
+  gaps' stretches instead of hashing every key.
+- `fast/layout_bounds.rs`: layout bounds cached in slot-indexed tables; `fast/layout.rs`:
+  a carried measurement that stands for the new element leaves the node as it was
+  (`Adopted::Node`); `fast/bounds_tree.rs`: changed bounds marked on a coarse grid during
+  replay; `fast/interactivity.rs`: an element's rarely set interactivity boxed (`Rare`,
+  `div.rs` hooks).
+- `fast/glyphs.rs`: a glyph's atlas tile and a font's bounding box kept for the frame;
+  `fast/text.rs`, `fast/text_style.rs`: plain text keeps no run of its own and shares its
+  text style.
+- `gpui_apple/src/fast/paths.rs`: a frame with paths is encoded by `fast::paths`, which
+  rasterizes non-overlapping path batches in one pass. `gpui_windows/src/fast/`: the same
+  for DirectX. `gpui_perf`: instructions retired per frame.
+
+Conflicts and how they were resolved:
+
+- `fast/splice.rs`: `kept_keys` for both key lists, beside our element-state filter
+  (`inside_any` over the gaps' ids), the kept `RetainedLayout` and the gap ids
+  `copy_prepaint_segment` takes; `copy_records`' new signature.
+- `fast/text.rs`: `TextMeasureInputs` keeps our `font_generation` beside the squash's
+  `RefCell<TextLayout>` and shared `Rc<TextStyle>`; `adopt_measurement` is the squash's.
+- `fast/glyphs.rs`: the squash's tile cache, with the atlas key passed by value (zed
+  #64331, which our zed has).
+- `text_system/line.rs`: the squash's early return for a line with no background, ahead
+  of our aligned `line_paint_bounds` (zed #64542).
+- `gpui_apple`: `pub mod fast` (for `VideoLayer`) holding both `video_layer` and
+  `paths`; `metal_renderer.rs` takes the squash's visibility bumps beside our cfgs.
+- `script/upstream-allowlist`: `key_dispatch.rs` added; `div.rs` and `line.rs` budgets
+  raised to what the two sides add together; `metal_renderer.rs` stays `any`.
+
+Adapted: `fast::paths` walked `Scene::batches` and so drew no holes in a frame with
+paths, leaving every native under GPUI's pixels there. It now walks
+`Scene::composed_batches` for both its plan and its draw, and draws holes as
+`draw_primitives_to_texture` does (`MetalRenderer::draw_holes` is `pub(crate)`). A hole
+splits a path batch as it splits any other, and the plan and the draw see the same
+batches. `composition_tests` (random scenes with paths) fail without this.
 
 Ported from open zed pull requests, ahead of zed. Drop each at the zed import that
 brings it: take zed's version of the files, remove the pull request's line from

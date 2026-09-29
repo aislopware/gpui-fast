@@ -2,6 +2,7 @@
 
 mod composition;
 mod dependencies;
+mod dispatch;
 mod global_id;
 mod keypad;
 mod layout;
@@ -11,6 +12,7 @@ mod path_cache;
 mod retained;
 mod retained_bench;
 mod scene_order;
+mod splice;
 mod support;
 mod surface;
 mod text;

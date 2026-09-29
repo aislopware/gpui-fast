@@ -206,6 +206,9 @@ pub(crate) struct RetainedState {
     pub(crate) view_retention: bool,
     /// Records reads of the pointer and modifier keys while views are drawn.
     pub(crate) ambient_reads: crate::fast::dependencies::AmbientReads,
+    /// Room to sort out the layout keys a spliced view keeps, kept from one
+    /// splice to the next. See [`crate::fast::splice`].
+    pub(crate) splice_keys: FxHashSet<u64>,
 }
 
 impl RetainedState {
@@ -223,6 +226,7 @@ impl RetainedState {
             font_generation: 0,
             animation_requests: RefCell::default(),
             view_retention: std::env::var("GPUI_VIEW_RETENTION").map_or(true, |value| value != "0"),
+            splice_keys: FxHashSet::default(),
         }
     }
 
@@ -1200,6 +1204,8 @@ pub(crate) fn finish_deferred(
 /// becomes the rendered frame.
 #[inline]
 pub(crate) fn finish_retained_frame(window: &mut Window) {
+    // The sprite atlas may be cleared when the frame is presented.
+    window.fast_glyph_bounds.finish_frame();
     window.retained_state.prebuilt.clear();
     window.retained_state.dirty_subtrees =
         mem::take(&mut window.retained_state.subtrees_dirty_next_frame);
