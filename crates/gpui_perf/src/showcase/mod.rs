@@ -265,6 +265,11 @@ pub fn run(auto: bool, demo: bool) {
                     cx,
                 ))),
                 window_min_size: Some(size(px(800.), px(480.))),
+                // GPUI caps a window that isn't focused at 30 fps. Measuring
+                // would then depend on whether the window has focus, so it
+                // draws at the display's rate either way. A cap of 16.7 ms
+                // would not do: frames that arrive a hair early are skipped.
+                inactive_frame_interval: None,
                 ..Default::default()
             },
             |window, cx| {
