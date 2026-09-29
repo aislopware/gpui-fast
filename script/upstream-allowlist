@@ -19,7 +19,7 @@ crates/gpui/src/elements/list.rs added=75 # each item is laid out through fast::
 # They are features of their own rather than retained-mode hooks, kept in the
 # upstream files they extend, as in the zed fork they came from.
 crates/gpui/examples/frame_latency.rs any # Slopty: a submit-to-glass latency example
-crates/gpui/src/platform.rs hunk=20 added=30 unmarked=3 # Slopty: PresentedFrame and the presented-frame sink, CursorStyle::None
+crates/gpui/src/platform.rs hunk=20 added=40 unmarked=5 # Slopty: PresentedFrame and the presented-frame sink, CursorStyle::None; zed #64866: ActivationPolicy and Platform::set_activation_policy
 crates/gpui/src/platform/keystroke.rs removed=30 unmarked=26 # Slopty: the secondary modifier is the command key on iOS as on macOS, a cfg on every match arm
 crates/gpui/src/platform/test/window.rs hunk=12 added=25 unmarked=4 # Slopty: the test window's presented-frame sink
 crates/gpui/src/style.rs hunk=20 added=40 unmarked=4 # Slopty: the outline style
@@ -53,3 +53,5 @@ crates/gpui_macos/src/text_system.rs hunk=194 added=220 unmarked=2 # zed #63469:
 crates/gpui/src/text_system/line_wrapper.rs hunk=29 added=62 removed=160 unmarked=8 # zed #64624: wrap_line breaks where UAX #14 allows; its break opportunities come from fast::line_breaks
 crates/gpui/src/text_system/line_layout.rs hunk=30 added=44 removed=34 unmarked=6 # zed #64624: compute_wrap_boundaries breaks where UAX #14 allows; its break opportunities come from fast::line_breaks
 crates/gpui_windows/src/events.rs hunk=10 unmarked=1 # zed #63402: keypad digits named kp0 to kp9
+crates/gpui/src/app.rs hunk=9 removed=23 unmarked=2 # zed #64866: Application::with_activation_policy and App::set_activation_policy, and the import list rustfmt reflows
+crates/gpui_macos/src/platform.rs hunk=13 added=50 unmarked=7 # zed #64866: the activation policy, Accessory applied before the run loop and Regular at launch as before

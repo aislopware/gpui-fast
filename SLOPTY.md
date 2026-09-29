@@ -206,6 +206,17 @@ brings it: take zed's version of the files, remove the pull request's line from
     the `kp*` names. In GPUI Kit that is the questionnaire's keyboard handling. In
     Slopty it is `slopty-ui`'s `keys::key_code`, where `kp*` is `Unidentified` until
     it maps them to the numpad codes.
+- zed #64866 (@as-cii, head `a86872edbf`), "macOS activation policy control": adds
+  `gpui::ActivationPolicy` (`Regular`, the default, and `Accessory`),
+  `Application::with_activation_policy` for launch and `App::set_activation_policy` at run
+  time. `Accessory` is applied before the run loop, so an accessory launch never reaches
+  the Dock. `Regular` is still applied at launch as before, because applying it earlier
+  leaves an unbundled app's menu bar unclickable. Switching to `Regular` does not
+  activate the app; call `App::activate`. Applied as is.
+  - The pull request has no tests. `MacPlatform` has to be made on the main thread, which
+    a test thread is not, and a real switch changes the Dock on this Mac's screen. So it
+    is checked by building and clippy only.
+  - The `Platform` method's default does nothing, which iOS keeps.
 
 Added in this fork:
 
