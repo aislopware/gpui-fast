@@ -34,6 +34,7 @@
 //! only elements drawn again inside one built this frame copy their records.
 
 use crate::fast::layout_key::{KeyPosition, key_position, pop_layout_key, push_layout_key};
+use crate::text_system::LineLayoutIndex;
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Div, Drawable, Element, ElementId,
@@ -189,8 +190,11 @@ struct ElementRecord {
     /// While it is being built, how many layout nodes it claimed.
     claimed: u32,
     context: ElementContext,
-    prepaint_range: Range<PrepaintStateIndex>,
-    paint_range: Range<PaintIndex>,
+    /// Relative to its root's prepaint.
+    prepaint_range: Range<PrepaintAt>,
+    /// Relative to its root's paint, or, while [`Paint::Pending`], to the
+    /// paint of the root of last frame it is drawn again from.
+    paint_range: Range<PaintAt>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -247,7 +251,8 @@ enum Snapshot {
         id: Option<ElementId>,
         /// As for [`Snapshot::Div`].
         style: Option<Rc<StyleRefinement>>,
-        source: SvgSource,
+        /// Shared, for svgs are few and a record is copied often.
+        source: Rc<SvgSource>,
     },
     /// Not recorded, with nothing nested in it, because it was drawn
     /// somewhere else than the frame before; it is recorded again once it
@@ -287,6 +292,247 @@ impl SvgSource {
 struct PrevRef {
     root: u32,
     index: u32,
+}
+
+/// A place in each of a frame's prepaint lists, as a [`PrepaintStateIndex`]
+/// is, as an offset from a root's: in `u32`s, and without the font
+/// generation, which the root's holds. A record keeps two, and records are
+/// copied as often as elements are drawn again.
+#[derive(Clone, Copy, Default)]
+struct PrepaintAt {
+    hitboxes: u32,
+    tooltips: u32,
+    deferred_draws: u32,
+    dispatch_tree: u32,
+    accessed_element_states: u32,
+    lines: LinesAt,
+}
+
+/// As [`PrepaintAt`], a place in each of a frame's paint lists.
+#[derive(Clone, Copy, Default)]
+struct PaintAt {
+    scene: u32,
+    window_control_hitboxes: u32,
+    #[cfg(any(test, feature = "test-support"))]
+    debug_bounds: u32,
+    mouse_listeners: u32,
+    input_handlers: u32,
+    cursor_styles: u32,
+    accessed_element_states: u32,
+    tab_handle: u32,
+    lines: LinesAt,
+}
+
+/// As [`PrepaintAt`], a place in each of a frame's line layout lists.
+#[derive(Clone, Copy, Default)]
+struct LinesAt {
+    lines: u32,
+    wrapped_lines: u32,
+    lines_by_hash: u32,
+    wrapped_lines_by_hash: u32,
+}
+
+/// The offset of `to` from `from`, which it is not before.
+fn offset(from: usize, to: usize) -> u32 {
+    (to - from) as u32
+}
+
+impl PrepaintAt {
+    /// Where `to` is from `from`.
+    fn between(from: &PrepaintStateIndex, to: &PrepaintStateIndex) -> Self {
+        // Destructured, so that a field upstream adds can't be missed here.
+        let PrepaintStateIndex {
+            hitboxes_index,
+            tooltips_index,
+            deferred_draws_index,
+            dispatch_tree_index,
+            accessed_element_states_index,
+            line_layout_index,
+        } = to;
+        PrepaintAt {
+            hitboxes: offset(from.hitboxes_index, *hitboxes_index),
+            tooltips: offset(from.tooltips_index, *tooltips_index),
+            deferred_draws: offset(from.deferred_draws_index, *deferred_draws_index),
+            dispatch_tree: offset(from.dispatch_tree_index, *dispatch_tree_index),
+            accessed_element_states: offset(
+                from.accessed_element_states_index,
+                *accessed_element_states_index,
+            ),
+            lines: LinesAt::between(&from.line_layout_index, line_layout_index),
+        }
+    }
+
+    /// The place this far from `base`.
+    fn at(self, base: &PrepaintStateIndex) -> PrepaintStateIndex {
+        PrepaintStateIndex {
+            hitboxes_index: base.hitboxes_index + self.hitboxes as usize,
+            tooltips_index: base.tooltips_index + self.tooltips as usize,
+            deferred_draws_index: base.deferred_draws_index + self.deferred_draws as usize,
+            dispatch_tree_index: base.dispatch_tree_index + self.dispatch_tree as usize,
+            accessed_element_states_index: base.accessed_element_states_index
+                + self.accessed_element_states as usize,
+            line_layout_index: self.lines.at(&base.line_layout_index),
+        }
+    }
+
+    fn plus(self, other: Self) -> Self {
+        PrepaintAt {
+            hitboxes: self.hitboxes + other.hitboxes,
+            tooltips: self.tooltips + other.tooltips,
+            deferred_draws: self.deferred_draws + other.deferred_draws,
+            dispatch_tree: self.dispatch_tree + other.dispatch_tree,
+            accessed_element_states: self.accessed_element_states + other.accessed_element_states,
+            lines: self.lines.plus(other.lines),
+        }
+    }
+
+    fn minus(self, other: Self) -> Self {
+        PrepaintAt {
+            hitboxes: self.hitboxes - other.hitboxes,
+            tooltips: self.tooltips - other.tooltips,
+            deferred_draws: self.deferred_draws - other.deferred_draws,
+            dispatch_tree: self.dispatch_tree - other.dispatch_tree,
+            accessed_element_states: self.accessed_element_states - other.accessed_element_states,
+            lines: self.lines.minus(other.lines),
+        }
+    }
+}
+
+impl PaintAt {
+    /// Where `to` is from `from`.
+    fn between(from: &PaintIndex, to: &PaintIndex) -> Self {
+        // Destructured, so that a field upstream adds can't be missed here.
+        let PaintIndex {
+            scene_index,
+            fast_window_control_hitboxes_index,
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds_index,
+            mouse_listeners_index,
+            input_handlers_index,
+            cursor_styles_index,
+            accessed_element_states_index,
+            tab_handle_index,
+            line_layout_index,
+        } = to;
+        PaintAt {
+            scene: offset(from.scene_index, *scene_index),
+            window_control_hitboxes: offset(
+                from.fast_window_control_hitboxes_index,
+                *fast_window_control_hitboxes_index,
+            ),
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds: offset(from.debug_bounds_index, *debug_bounds_index),
+            mouse_listeners: offset(from.mouse_listeners_index, *mouse_listeners_index),
+            input_handlers: offset(from.input_handlers_index, *input_handlers_index),
+            cursor_styles: offset(from.cursor_styles_index, *cursor_styles_index),
+            accessed_element_states: offset(
+                from.accessed_element_states_index,
+                *accessed_element_states_index,
+            ),
+            tab_handle: offset(from.tab_handle_index, *tab_handle_index),
+            lines: LinesAt::between(&from.line_layout_index, line_layout_index),
+        }
+    }
+
+    /// The place this far from `base`.
+    fn at(self, base: &PaintIndex) -> PaintIndex {
+        PaintIndex {
+            scene_index: base.scene_index + self.scene as usize,
+            fast_window_control_hitboxes_index: base.fast_window_control_hitboxes_index
+                + self.window_control_hitboxes as usize,
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds_index: base.debug_bounds_index + self.debug_bounds as usize,
+            mouse_listeners_index: base.mouse_listeners_index + self.mouse_listeners as usize,
+            input_handlers_index: base.input_handlers_index + self.input_handlers as usize,
+            cursor_styles_index: base.cursor_styles_index + self.cursor_styles as usize,
+            accessed_element_states_index: base.accessed_element_states_index
+                + self.accessed_element_states as usize,
+            tab_handle_index: base.tab_handle_index + self.tab_handle as usize,
+            line_layout_index: self.lines.at(&base.line_layout_index),
+        }
+    }
+
+    fn plus(self, other: Self) -> Self {
+        PaintAt {
+            scene: self.scene + other.scene,
+            window_control_hitboxes: self.window_control_hitboxes + other.window_control_hitboxes,
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds: self.debug_bounds + other.debug_bounds,
+            mouse_listeners: self.mouse_listeners + other.mouse_listeners,
+            input_handlers: self.input_handlers + other.input_handlers,
+            cursor_styles: self.cursor_styles + other.cursor_styles,
+            accessed_element_states: self.accessed_element_states + other.accessed_element_states,
+            tab_handle: self.tab_handle + other.tab_handle,
+            lines: self.lines.plus(other.lines),
+        }
+    }
+
+    fn minus(self, other: Self) -> Self {
+        PaintAt {
+            scene: self.scene - other.scene,
+            window_control_hitboxes: self.window_control_hitboxes - other.window_control_hitboxes,
+            #[cfg(any(test, feature = "test-support"))]
+            debug_bounds: self.debug_bounds - other.debug_bounds,
+            mouse_listeners: self.mouse_listeners - other.mouse_listeners,
+            input_handlers: self.input_handlers - other.input_handlers,
+            cursor_styles: self.cursor_styles - other.cursor_styles,
+            accessed_element_states: self.accessed_element_states - other.accessed_element_states,
+            tab_handle: self.tab_handle - other.tab_handle,
+            lines: self.lines.minus(other.lines),
+        }
+    }
+}
+
+impl LinesAt {
+    fn between(from: &LineLayoutIndex, to: &LineLayoutIndex) -> Self {
+        // Destructured, so that a field upstream adds can't be missed here;
+        // the font generation is the base's.
+        let LineLayoutIndex {
+            font_generation: _,
+            lines_index,
+            wrapped_lines_index,
+            lines_by_hash_index,
+            wrapped_lines_by_hash_index,
+        } = to;
+        LinesAt {
+            lines: offset(from.lines_index, *lines_index),
+            wrapped_lines: offset(from.wrapped_lines_index, *wrapped_lines_index),
+            lines_by_hash: offset(from.lines_by_hash_index, *lines_by_hash_index),
+            wrapped_lines_by_hash: offset(
+                from.wrapped_lines_by_hash_index,
+                *wrapped_lines_by_hash_index,
+            ),
+        }
+    }
+
+    fn at(self, base: &LineLayoutIndex) -> LineLayoutIndex {
+        LineLayoutIndex {
+            font_generation: base.font_generation,
+            lines_index: base.lines_index + self.lines as usize,
+            wrapped_lines_index: base.wrapped_lines_index + self.wrapped_lines as usize,
+            lines_by_hash_index: base.lines_by_hash_index + self.lines_by_hash as usize,
+            wrapped_lines_by_hash_index: base.wrapped_lines_by_hash_index
+                + self.wrapped_lines_by_hash as usize,
+        }
+    }
+
+    fn plus(self, other: Self) -> Self {
+        LinesAt {
+            lines: self.lines + other.lines,
+            wrapped_lines: self.wrapped_lines + other.wrapped_lines,
+            lines_by_hash: self.lines_by_hash + other.lines_by_hash,
+            wrapped_lines_by_hash: self.wrapped_lines_by_hash + other.wrapped_lines_by_hash,
+        }
+    }
+
+    fn minus(self, other: Self) -> Self {
+        LinesAt {
+            lines: self.lines - other.lines,
+            wrapped_lines: self.wrapped_lines - other.wrapped_lines,
+            lines_by_hash: self.lines_by_hash - other.lines_by_hash,
+            wrapped_lines_by_hash: self.wrapped_lines_by_hash - other.wrapped_lines_by_hash,
+        }
+    }
 }
 
 impl ElementRecords {
@@ -333,25 +579,11 @@ impl ElementRecords {
     fn ranges(&self, previous: PrevRef) -> (Range<PrepaintStateIndex>, Range<PaintIndex>) {
         let root = &self.roots[previous.root as usize];
         let record = self.record(previous);
-        let zero_prepaint = PrepaintStateIndex::default();
-        let zero_paint = PaintIndex::default();
         (
-            record
-                .prepaint_range
-                .start
-                .shifted(&zero_prepaint, &root.prepaint_start)
-                ..record
-                    .prepaint_range
-                    .end
-                    .shifted(&zero_prepaint, &root.prepaint_start),
-            record
-                .paint_range
-                .start
-                .shifted(&zero_paint, &root.paint_start)
-                ..record
-                    .paint_range
-                    .end
-                    .shifted(&zero_paint, &root.paint_start),
+            record.prepaint_range.start.at(&root.prepaint_start)
+                ..record.prepaint_range.end.at(&root.prepaint_start),
+            record.paint_range.start.at(&root.paint_start)
+                ..record.paint_range.end.at(&root.paint_start),
         )
     }
 
@@ -419,35 +651,22 @@ impl ElementRecords {
     }
 
     /// Sets the records of the root being built aside, now that it is
-    /// prepainted, their prepaint ranges made relative to its own.
+    /// prepainted.
     fn finish_prepaint(&mut self) {
-        let start = self.building[0].prepaint_range.start.clone();
-        let zero = PrepaintStateIndex::default();
-        for record in &mut self.building {
-            record.prepaint_range = record.prepaint_range.start.shifted(&start, &zero)
-                ..record.prepaint_range.end.shifted(&start, &zero);
-        }
         let records = self.building.drain(..).collect();
-        let root = &mut self.roots[self.building_root as usize];
-        root.records = RootRecords::Pending(records);
-        root.prepaint_start = start;
+        self.roots[self.building_root as usize].records = RootRecords::Pending(records);
     }
 
     /// Freezes the records of the root `root`, now painted, into its
-    /// subtree, their paint ranges made relative to its own.
+    /// subtree.
     fn freeze(&mut self, root: u32) {
         let root = &mut self.roots[root as usize];
         let RootRecords::Pending(mut records) = mem::replace(&mut root.records, RootRecords::Lost)
         else {
             panic!("a root is painted once, after it is prepainted");
         };
-        let start = records[0].paint_range.start.clone();
-        let zero = PaintIndex::default();
         for record in records.iter_mut() {
-            if record.paint == Paint::Painted {
-                record.paint_range = record.paint_range.start.shifted(&start, &zero)
-                    ..record.paint_range.end.shifted(&start, &zero);
-            } else {
+            if record.paint != Paint::Painted {
                 record.paint = Paint::Unpainted;
             }
         }
@@ -455,7 +674,6 @@ impl ElementRecords {
             records,
             by_key: OnceCell::new(),
         }));
-        root.paint_start = start;
         root.paint = Paint::Painted;
     }
 }
@@ -559,8 +777,8 @@ enum Phase {
     /// Drawn from last frame as far as prepaint, as the root at this index.
     ReusedRoot(u32),
     /// Drawn from last frame as far as prepaint, into the records starting
-    /// at `index` of the root `root`.
-    ReusedNested { root: u32, index: u32 },
+    /// at `index` of the root `root`, from the root `source` of last frame.
+    ReusedNested { root: u32, index: u32, source: u32 },
 }
 
 struct BuiltLayout {
@@ -739,7 +957,7 @@ impl Own<'_> {
             Own::Svg(svg) => Snapshot::Svg {
                 id: svg.interactivity.element_id.clone(),
                 style: lent_style,
-                source: SvgSource::of(svg),
+                source: Rc::new(SvgSource::of(svg)),
             },
             Own::Text { id, text } => Snapshot::Text {
                 id: id.cloned(),
@@ -1402,6 +1620,10 @@ fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
         });
     }
     let index = elements.building.len() as u32;
+    let at = PrepaintAt::between(
+        &elements.roots[elements.building_root as usize].prepaint_start,
+        &start,
+    );
     let still = built.previous_bounds == Some(context.bounds);
     elements.building.push(ElementRecord {
         key: built.key,
@@ -1414,8 +1636,8 @@ fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
         layout_id: built.layout_id,
         claimed: built.claimed,
         context,
-        prepaint_range: start.clone()..start,
-        paint_range: PaintIndex::default()..PaintIndex::default(),
+        prepaint_range: at..at,
+        paint_range: PaintAt::default()..PaintAt::default(),
     });
     elements.open.push(index);
     (elements.building_root, index)
@@ -1426,6 +1648,10 @@ fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
 fn finish_record(index: u32, window: &mut Window) {
     let end = window.prepaint_index();
     let elements = &mut window.next_frame.retained.elements;
+    let end = PrepaintAt::between(
+        &elements.roots[elements.building_root as usize].prepaint_start,
+        &end,
+    );
     debug_assert_eq!(elements.open.last(), Some(&index));
     elements.open.pop();
     let index = index as usize;
@@ -1496,24 +1722,16 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
         let subtree = if first == 0 {
             subtree.clone()
         } else {
-            let from_prepaint = subtree.records[first].prepaint_range.start.clone();
-            let from_paint = subtree.records[first].paint_range.start.clone();
-            let zero_prepaint = PrepaintStateIndex::default();
-            let zero_paint = PaintIndex::default();
+            let from_prepaint = subtree.records[first].prepaint_range.start;
+            let from_paint = subtree.records[first].paint_range.start;
             Rc::new(Subtree {
                 records: subtree.records[first..=last]
                     .iter()
                     .map(|record| ElementRecord {
-                        prepaint_range: record
-                            .prepaint_range
-                            .start
-                            .shifted(&from_prepaint, &zero_prepaint)
-                            ..record
-                                .prepaint_range
-                                .end
-                                .shifted(&from_prepaint, &zero_prepaint),
-                        paint_range: record.paint_range.start.shifted(&from_paint, &zero_paint)
-                            ..record.paint_range.end.shifted(&from_paint, &zero_paint),
+                        prepaint_range: record.prepaint_range.start.minus(from_prepaint)
+                            ..record.prepaint_range.end.minus(from_prepaint),
+                        paint_range: record.paint_range.start.minus(from_paint)
+                            ..record.paint_range.end.minus(from_paint),
                         ..record.clone()
                     })
                     .collect(),
@@ -1536,23 +1754,25 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
     // into that one's, placed in this frame's prepaint, and in last frame's
     // paint until it is painted.
     let index = target.building.len() as u32;
-    let root = &source.roots[previous.root as usize];
-    let zero_paint = PaintIndex::default();
-    let from_prepaint = subtree.records[first].prepaint_range.start.clone();
+    let from_prepaint = subtree.records[first].prepaint_range.start;
+    let to_prepaint = PrepaintAt::between(
+        &target.roots[target.building_root as usize].prepaint_start,
+        &start,
+    );
     target
         .building
         .extend(subtree.records[first..=last].iter().map(|record| {
             ElementRecord {
-                prepaint_range: record.prepaint_range.start.shifted(&from_prepaint, &start)
-                    ..record.prepaint_range.end.shifted(&from_prepaint, &start),
-                paint_range: record
-                    .paint_range
+                prepaint_range: record
+                    .prepaint_range
                     .start
-                    .shifted(&zero_paint, &root.paint_start)
+                    .minus(from_prepaint)
+                    .plus(to_prepaint)
                     ..record
-                        .paint_range
+                        .prepaint_range
                         .end
-                        .shifted(&zero_paint, &root.paint_start),
+                        .minus(from_prepaint)
+                        .plus(to_prepaint),
                 paint: match record.paint {
                     Paint::Painted => Paint::Pending,
                     paint => paint,
@@ -1563,6 +1783,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
     Some(Phase::ReusedNested {
         root: target.building_root,
         index,
+        source: previous.root,
     })
 }
 
@@ -1596,11 +1817,17 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
     match drawable.fast_retention.phase {
         Phase::Recorded { root, index } => {
             let start = window.paint_index();
+            if index == 0 {
+                window.next_frame.retained.elements.roots[root as usize].paint_start =
+                    start.clone();
+            }
             drawable.paint(window, cx);
             let end = window.paint_index();
             let elements = &mut window.next_frame.retained.elements;
+            let root_start = &elements.roots[root as usize].paint_start;
+            let range = PaintAt::between(root_start, &start)..PaintAt::between(root_start, &end);
             let record = &mut elements.pending(root)[index as usize];
-            record.paint_range = start..end;
+            record.paint_range = range;
             record.paint = Paint::Painted;
             // Painted, the element needs its style no more, which its record
             // takes over.
@@ -1621,7 +1848,11 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
             }
         }
         Phase::ReusedRoot(root) => reuse_root_paint(root, window),
-        Phase::ReusedNested { root, index } => reuse_nested_paint(root, index, window),
+        Phase::ReusedNested {
+            root,
+            index,
+            source,
+        } => reuse_nested_paint(root, index, source, window),
         _ => {
             drawable.paint(window, cx);
         }
@@ -1637,8 +1868,7 @@ fn reuse_root_paint(root: u32, window: &mut Window) {
             panic!("a root drawn again has a subtree");
         };
         let range = &subtree.records[0].paint_range;
-        let zero = PaintIndex::default();
-        range.start.shifted(&zero, &root.paint_start)..range.end.shifted(&zero, &root.paint_start)
+        range.start.at(&root.paint_start)..range.end.at(&root.paint_start)
     };
     let start = window.paint_index();
     window.reuse_paint(source.clone());
@@ -1653,11 +1883,16 @@ fn reuse_root_paint(root: u32, window: &mut Window) {
 
 /// Draws the records starting at `anchor` of the root `root`, whose
 /// prepaint [`reuse_prepaint`] drew again, as far as their paint goes.
-fn reuse_nested_paint(root: u32, anchor: u32, window: &mut Window) {
+fn reuse_nested_paint(root: u32, anchor: u32, source_root: u32, window: &mut Window) {
     let anchor = anchor as usize;
-    let (source, nested) = {
+    let (from, nested) = {
         let record = &window.next_frame.retained.elements.pending(root)[anchor];
         (record.paint_range.clone(), record.nested as usize)
+    };
+    let source = {
+        let source_start =
+            &window.rendered_frame.retained.elements.roots[source_root as usize].paint_start;
+        from.start.at(source_start)..from.end.at(source_start)
     };
     let start = window.paint_index();
     window.reuse_paint(source.clone());
@@ -1665,11 +1900,13 @@ fn reuse_nested_paint(root: u32, anchor: u32, window: &mut Window) {
         window.paint_index() == source.end.shifted(&source.start, &start),
         "a reused paint range changed length"
     );
-    let records = window.next_frame.retained.elements.pending(root);
+    let elements = &mut window.next_frame.retained.elements;
+    let to = PaintAt::between(&elements.roots[root as usize].paint_start, &start);
+    let records = elements.pending(root);
     for record in &mut records[anchor..=anchor + nested] {
         if record.paint == Paint::Pending {
-            record.paint_range = record.paint_range.start.shifted(&source.start, &start)
-                ..record.paint_range.end.shifted(&source.start, &start);
+            record.paint_range = record.paint_range.start.minus(from.start).plus(to)
+                ..record.paint_range.end.minus(from.start).plus(to);
             record.paint = Paint::Painted;
         }
     }
