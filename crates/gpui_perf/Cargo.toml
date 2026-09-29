@@ -21,6 +21,10 @@ path = "src/main.rs"
 name = "views_frames"
 required-features = ["fast"]
 
+[[example]]
+name = "wrap_cost"
+required-features = ["fast"]
+
 [features]
 default = ["fast"]
 # Build against this repository's GPUI: the showcase, `--headless` and the

@@ -139,6 +139,43 @@ brings it: take zed's version of the files, remove the pull request's line from
     `glyph_raster_bounds_do_not_clip` rasterizes a bold tabular `0` at 12 to 48 pt and 3×
     and compares the ink with a buffer 8 px larger all round; without the margin it fails
     at 24 pt. It runs on the simulator (see "Testing gpui_ios on the simulator").
+- zed #64624 (@timvermeulen, head `54c44986d4`), "UAX #14 line breaking": `wrap_line`
+  and `compute_wrap_boundaries` break where `icu_segmenter`'s line segmenter allows,
+  in place of `is_word_char`. Wrapped lines no longer start with `/` or `?`, emoji
+  sequences such as 👍🏽, 🇯🇵 and 👩‍💻 stay whole, and a word may break after a hyphen.
+  Applied with its tests. Two adaptations:
+  - Its `test_wrap_line_break_opportunities` gained the `IndentAdjustment` argument
+    zed's `wrap_line` took after the pull request's base. The expected boundaries
+    in `test_extra_columns_overflow_guard` changed from `9, 11, 13, 15` to
+    `9, 11, 12, 14, 15`: with 2 columns left after the indent, the words `ef` and
+    `gh` stay whole and each space between them wraps alone. The old numbers came
+    from `prev_c` going stale across a returned boundary, which split `ef`.
+  - Ours, kept when the import brings the pull request: `fast::line_breaks`. The
+    segmenter costs about 8 ns a byte, three times the cost of measuring the line. So
+    both wrappers ask for break opportunities only when something on the line passes
+    the wrap width, and they read ASCII as Latin-1, which gives the same breaks
+    (test `ascii_breaks_as_its_utf8_does`). Tests for the exact-fit edge:
+    `a_wrapped_line_that_fits_exactly_is_not_broken`,
+    `a_shaped_line_that_fits_exactly_is_not_broken`.
+  - Cost (`cargo run -p gpui_perf --example wrap_cost --release`, best of 40 rounds,
+    2000 lines of 40 to 300 bytes at 320, 560 and 900 px):
+
+    | | before | after |
+    | --- | --- | --- |
+    | `wrap_line`, mixed scripts | 5.07 ms | 15.3 ms |
+    | `wrap_line`, ASCII | 5.56 ms | 13.7 ms |
+    | `wrap_line`, every line fits | 1.73 ms | 2.01 ms |
+    | `shape_text`, 100 lines | 0.61 ms | 1.61 ms |
+
+    That is about 2.5 µs per wrapped line of 190 bytes, against 0.85 µs before.
+    `__TEXT` grows by 48 KiB (the example: 5,865,472 to 5,914,624 bytes). Its four
+    new crates compile in about 3 s of CPU in a debug build; the ICU crates they
+    share with `idna` were already built.
+- zed #64542 (@madcodelife, head `21ad132982`), "text decorations across wrapped
+  lines": an underline or strikethrough that continues onto the next wrapped line
+  resumes where that line's alignment starts it, not at the box's left edge. The
+  last line's end is found the same way. Applied as is to `line.rs` with its test
+  `test_wrapped_decorations_follow_text_align`.
 
 Added in this fork:
 
