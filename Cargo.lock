@@ -3135,7 +3135,7 @@ dependencies = [
  "core-foundation-sys",
  "core-graphics 0.24.0",
  "core-text",
- "futures 0.3.34",
+ "futures",
  "gpui",
  "gpui_apple",
  "image",
@@ -3150,7 +3150,7 @@ dependencies = [
  "raw-window-handle",
  "smallvec",
  "uuid",
- "zed-font-kit",
+ "zed-font-kit 0.14.1-zed (git+https://github.com/zed-industries/font-kit?rev=94b0f28166665e8fd2f53ff6d268a14955c82269)",
 ]
 
 [[package]]
