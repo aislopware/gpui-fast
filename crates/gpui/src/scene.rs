@@ -41,7 +41,7 @@ impl From<bool> for PaddedBool32 {
 pub struct Scene {
     pub(crate) paint_operations: Vec<PaintOperation>,
     pub(crate) primitive_bounds: BoundsTree<ScaledPixels>,
-    layer_stack: Vec<DrawOrder>,
+    pub(crate) layer_stack: Vec<DrawOrder>,
     pub shadows: Vec<Shadow>,
     pub quads: Vec<Quad>,
     pub paths: Vec<Path<ScaledPixels>>,
@@ -51,6 +51,7 @@ pub struct Scene {
     pub polychrome_sprites: Vec<PolychromeSprite>,
     pub surfaces: Vec<PaintSurface>,
     pub(crate) sort_scratch: crate::fast::scene::SortScratch,
+    pub(crate) composition: crate::fast::composition::SceneComposition,
 }
 
 #[expect(missing_docs)]
@@ -67,6 +68,7 @@ impl Scene {
         self.subpixel_sprites.clear();
         self.polychrome_sprites.clear();
         self.surfaces.clear();
+        self.composition.clear();
     }
 
     pub fn len(&self) -> usize {
@@ -145,6 +147,7 @@ impl Scene {
                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
+                PaintOperation::Native(placement) => self.insert_native(placement.clone()),
             }
         }
     }
@@ -206,6 +209,7 @@ pub(crate) enum PaintOperation {
     Primitive(Primitive),
     StartLayer(Bounds<ScaledPixels>),
     EndLayer,
+    Native(crate::fast::composition::NativePlacement),
 }
 
 #[derive(Clone)]

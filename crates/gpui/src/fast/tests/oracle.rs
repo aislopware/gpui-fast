@@ -20,8 +20,11 @@ use crate::{
     Global, GlyphId, Hsla, InputEvent as _, IntoElement, LineLayout, ListAlignment, ListOffset,
     ListState, MouseMoveEvent, NoopTextSystem, Pixels, PlatformTextSystem, Render,
     RenderGlyphParams, Result, SharedString, Size, StyleRefinement, TestAppContext,
-    TextRenderingMode, UniformListScrollHandle, Window, WindowHandle, anchored, deferred, div,
-    hsla, list, point, prelude::*, px, size, uniform_list,
+    TextRenderingMode, UniformListScrollHandle, Window, WindowHandle, anchored,
+    composition::{NativeHost, NativeHostOptions, native_view},
+    deferred, div, hsla, list, point,
+    prelude::*,
+    px, size, uniform_list,
 };
 
 const WORDS: [&str; 10] = [
@@ -269,10 +272,20 @@ struct OracleView {
     badge: Entity<Badge>,
     panels: Vec<Entity<Panel>>,
     shared: Entity<Shared>,
+    /// A native in a clipping container, moved by the scroll offset.
+    clipped_native: NativeHost,
+    /// A native in some rows of the list.
+    row_native: NativeHost,
+}
+
+fn native_host(window: &mut Window, cx: &mut App) -> NativeHost {
+    window
+        .create_native_host(NativeHostOptions::default(), cx)
+        .expect("the test platform composes natives")
 }
 
 impl OracleView {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let shared = cx.new(|_| Shared { value: 0 });
         let cells: Vec<CellState> = (0..GRID_CELLS)
             .map(|ix| CellState {
@@ -305,17 +318,26 @@ impl OracleView {
                 (0..PANELS)
                     .map(|ix| {
                         let shared = shared.clone();
+                        let native = native_host(window, cx);
+                        let leaf_native = native_host(window, cx);
                         cx.new(|cx| Panel {
                             ix,
                             value: ix,
                             tint: 0,
                             shared,
-                            leaf: cx.new(|_| Leaf { count: ix, tint: 0 }),
+                            native,
+                            leaf: cx.new(|_| Leaf {
+                                count: ix,
+                                tint: 0,
+                                native: leaf_native,
+                            }),
                         })
                     })
                     .collect()
             },
             shared,
+            clipped_native: native_host(window, cx),
+            row_native: native_host(window, cx),
         }
     }
 
@@ -590,8 +612,23 @@ impl Render for OracleView {
                 offset_in_item: px(self.scroll_top.as_f32() % ROW_HEIGHT),
             });
         }
+        let row_native = self.row_native.clone();
         let list_rows = list(self.list_state.clone(), move |ix, _, _| {
-            render_row(rows[ix], identity)
+            let row = render_row(rows[ix], identity);
+            if rows[ix].is_multiple_of(5) {
+                div()
+                    .flex()
+                    .child(row)
+                    .child(
+                        native_view(&row_native)
+                            .w(px(20.))
+                            .h(px(8.))
+                            .rounded(px(2.)),
+                    )
+                    .into_any_element()
+            } else {
+                row
+            }
         })
         .w(px(260.))
         .h(px(120.));
@@ -660,6 +697,14 @@ impl Render for OracleView {
                     .size(px(10.))
                     .child(deferred(anchored().child(self.panels[PANELS - 1].clone()))),
             )
+            .child(
+                div().overflow_hidden().w(px(60.)).h(px(30.)).child(
+                    native_view(&self.clipped_native)
+                        .mt(-self.scroll_top / 10.)
+                        .size(px(50.))
+                        .rounded(px(6.)),
+                ),
+            )
             .child(uniform_rows)
             .child(list_rows)
     }
@@ -684,6 +729,8 @@ struct Panel {
     /// Shifts its colors, leaving its layout as it was.
     tint: usize,
     shared: Entity<Shared>,
+    /// Shown or hidden, faded or not, by the panel's value and tint.
+    native: NativeHost,
     leaf: Entity<Leaf>,
 }
 
@@ -708,6 +755,15 @@ impl Render for Panel {
                 this.hover(|style| style.bg(PALETTE[4]))
             })
             .child(WORDS[(self.value + shared) % WORDS.len()])
+            .when(!(self.value + self.tint).is_multiple_of(3), |this| {
+                this.child(
+                    native_view(&self.native)
+                        .w(px(24.))
+                        .h(px(10.))
+                        .rounded(px(3.))
+                        .when(self.tint % 2 == 1, |this| this.opacity(0.5)),
+                )
+            })
             .child(self.leaf.clone())
     }
 }
@@ -716,6 +772,8 @@ impl Render for Panel {
 struct Leaf {
     count: usize,
     tint: usize,
+    /// Shown by every other count.
+    native: NativeHost,
 }
 
 impl Render for Leaf {
@@ -729,6 +787,9 @@ impl Render for Leaf {
                     .h(px(6.))
                     .bg(PALETTE[(self.count + ix + self.tint) % PALETTE.len()])
             }))
+            .when(self.count.is_multiple_of(2), |this| {
+                this.child(native_view(&self.native).w(px(6.)).h(px(6.)))
+            })
     }
 }
 
@@ -853,7 +914,7 @@ fn draw(
     cx: &mut TestAppContext,
     window: WindowHandle<OracleView>,
     from_scratch: bool,
-) -> (Vec<String>, u64, bool) {
+) -> (Vec<String>, u64, bool, usize) {
     cx.update_window(window.into(), |_, window, cx| {
         if from_scratch {
             window.forget_retained_state();
@@ -864,21 +925,25 @@ fn draw(
             window.describe_rendered_frame(),
             window.layout_stats().nodes_reused,
             window.rendered_frame.retained.reused_any(),
+            window.rendered_frame.scene.natives().placements.len(),
         )
     })
     .unwrap()
 }
 
 /// Drives both windows through one random history and returns how many
-/// layout nodes the incremental window reused along the way.
-fn run(seed: u64, steps: usize) -> (u64, usize) {
+/// layout nodes the incremental window reused along the way, in how many
+/// frames it drew views from its last frame, and in how many of those it
+/// placed natives.
+fn run(seed: u64, steps: usize) -> (u64, usize, usize) {
     let mut cx = TestAppContext::with_text_system(Arc::new(GlyphBoxTextSystem(NoopTextSystem)));
-    let incremental = cx.add_window(|_, cx| OracleView::new(cx));
-    let from_scratch = cx.add_window(|_, cx| OracleView::new(cx));
+    let incremental = cx.add_window(OracleView::new);
+    let from_scratch = cx.add_window(OracleView::new);
     let mut rng = StdRng::seed_from_u64(seed);
     let mut history: Vec<Vec<Change>> = Vec::new();
     let mut reused = 0;
     let mut frames_reusing_subtrees = 0;
+    let mut frames_reusing_with_natives = 0;
 
     for step in 0..steps {
         let changes: Vec<Change> = if step == 0 {
@@ -894,9 +959,10 @@ fn run(seed: u64, steps: usize) -> (u64, usize) {
         }
         history.push(changes);
 
-        let (expected, reused_from_scratch, subtrees_from_scratch) =
+        let (expected, reused_from_scratch, subtrees_from_scratch, _) =
             draw(&mut cx, from_scratch, true);
-        let (actual, reused_incrementally, reused_subtrees) = draw(&mut cx, incremental, false);
+        let (actual, reused_incrementally, reused_subtrees, natives) =
+            draw(&mut cx, incremental, false);
         assert_eq!(
             reused_from_scratch, 0,
             "a window that forgot its layout nodes cannot have reused any"
@@ -907,6 +973,7 @@ fn run(seed: u64, steps: usize) -> (u64, usize) {
         );
         reused += reused_incrementally;
         frames_reusing_subtrees += reused_subtrees as usize;
+        frames_reusing_with_natives += (reused_subtrees && natives > 0) as usize;
 
         if actual != expected {
             let first = actual
@@ -941,14 +1008,14 @@ fn run(seed: u64, steps: usize) -> (u64, usize) {
             );
         }
     }
-    (reused, frames_reusing_subtrees)
+    (reused, frames_reusing_subtrees, frames_reusing_with_natives)
 }
 
 #[test]
 fn incremental_frames_match_frames_drawn_from_scratch() {
-    let (reused, frames_reusing_subtrees) = (0..24)
+    let (reused, frames_reusing_subtrees, frames_reusing_with_natives) = (0..24)
         .map(|seed| run(seed, 60))
-        .fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
+        .fold((0, 0, 0), |(a, b, c), (d, e, f)| (a + d, b + e, c + f));
     assert!(
         reused > 0,
         "the incremental window never reused a layout node, so nothing was compared"
@@ -956,5 +1023,9 @@ fn incremental_frames_match_frames_drawn_from_scratch() {
     assert!(
         frames_reusing_subtrees > 0,
         "the incremental window never drew a view again from its last frame"
+    );
+    assert!(
+        frames_reusing_with_natives > 0,
+        "the incremental window never placed a native in a frame reusing views"
     );
 }

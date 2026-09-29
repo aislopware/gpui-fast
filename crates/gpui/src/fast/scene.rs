@@ -84,6 +84,7 @@ impl Scene {
             sprite.tile.tile_id
         ));
         sort!(surfaces, |surface: &PaintSurface| surface.order);
+        self.composition.sort();
     }
 
     /// Forgets the orderings recorded for replaying, so the next frame orders
@@ -107,6 +108,17 @@ impl Scene {
                 }
                 crate::PaintOperation::EndLayer => lines.push("end layer".into()),
                 crate::PaintOperation::Primitive(..) => {}
+                crate::PaintOperation::Native(placement) => lines.push(format!(
+                    "native {:?} {} {:?} {:?} {:?} {} hitbox {} focus {}",
+                    placement.id,
+                    placement.order,
+                    placement.bounds,
+                    placement.content_mask,
+                    placement.corner_radii,
+                    placement.opacity,
+                    placement.hitbox.is_some(),
+                    placement.focus.is_some(),
+                )),
             }
         }
         lines.extend(self.shadows.iter().map(|shadow| format!("{shadow:?}")));

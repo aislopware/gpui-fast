@@ -16,9 +16,9 @@ crates/gpui/src/taffy.rs removed=50 # request_layout, request_measured_layout an
 # They are features of their own rather than retained-mode hooks, kept in the
 # upstream files they extend, as in the zed fork they came from.
 crates/gpui/examples/frame_latency.rs any # Slopty: a submit-to-glass latency example
-crates/gpui/src/platform.rs hunk=20 added=30 # Slopty: PresentedFrame and the presented-frame sink, CursorStyle::None
+crates/gpui/src/platform.rs hunk=20 added=45 # Slopty: PresentedFrame and the presented-frame sink, CursorStyle::None; composition's two defaulted PlatformWindow methods (create_native_host, present_natives)
 crates/gpui/src/platform/keystroke.rs removed=30 # Slopty: the secondary modifier is the command key on iOS as on macOS, a cfg on every match arm
-crates/gpui/src/platform/test/window.rs hunk=12 added=25 # Slopty: the test window's presented-frame sink
+crates/gpui/src/platform/test/window.rs hunk=14 added=40 # Slopty: the test window's presented-frame sink; composition: the test window's recording native hosts
 crates/gpui/src/style.rs hunk=20 added=40 # Slopty: the outline style
 crates/gpui/src/text_system.rs hunk=25 added=45 removed=55 # Slopty: full FontMetrics, and line runs shaped by font rather than by colour
 crates/gpui/src/text_system/line.rs hunk=12 added=20 # Slopty: a ShapedLine's layout exposed
