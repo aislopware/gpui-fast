@@ -875,6 +875,14 @@ pub(crate) fn shape_line(
         .shape_line(&*cache.platform_text_system, text, font_size, runs)
 }
 
+/// A shaped line's decoration runs. Most lines carry one, and highlighted
+/// ones a handful. Upstream kept room for 32 in the line itself, which made
+/// every `ShapedLine` three kilobytes to move and copy: 15% of the
+/// instructions of a frame scrolling a highlighted editor. Room for four
+/// keeps a line of a few colours, a terminal row or a token or two, from
+/// allocating; room for one did no better and allocated for those.
+pub(crate) type DecorationRuns = smallvec::SmallVec<[DecorationRun; 4]>;
+
 /// The decoration runs of a line about to be measured. Most lines carry one
 /// decoration run, and highlighted ones a handful; reserving for the worst
 /// case, as upstream does, allocated two kilobytes on every measurement, which
