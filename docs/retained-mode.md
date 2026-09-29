@@ -37,10 +37,15 @@ nodes and primitives are copied from the last frame. A view depends on:
 - **The hovers it was painted by**, and interactions inside it: a hover,
   scroll or press that changes how it looks draws it again.
 
+A view that asked for an animation frame (`window.request_animation_frame()`)
+is built again on the next frame drawn, as if notified, without waiting for
+the frame callback that notifies it: what it drew was for the frame it was
+drawn in.
+
 Nothing is drawn from the last frame while the window is being refreshed
-(`window.refresh()`, and what refreshes it: a resize, a focus change), while
-something is dragged, while the inspector is picking, or while accessibility
-is active.
+(`window.refresh()`, and what refreshes it: a resize, a focus change), on the
+first frame after fonts were added (`TextSystem::add_fonts`), while something
+is dragged, while the inspector is picking, or while accessibility is active.
 
 A notified view marks the views around it dirty, because they have to be
 walked to reach it. A view that is dirty only for that reason — it was not

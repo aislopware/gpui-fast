@@ -2708,6 +2708,7 @@ impl Window {
     /// and skip the frame request when it is set.
     pub fn request_animation_frame(&self) {
         let entity = self.current_view();
+        self.note_animation_frame_request(entity);
         self.on_next_frame(move |_, cx| cx.notify(entity));
     }
 
@@ -3526,7 +3527,7 @@ impl Window {
 
     fn invalidate_entities(&mut self) {
         let mut views = self.invalidator.take_views();
-        self.retained_state.note_notified(&views);
+        self.retained_state.note_notified(&mut views);
         for entity in views.drain() {
             self.mark_view_dirty(entity);
         }

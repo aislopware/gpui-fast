@@ -322,6 +322,76 @@ fn every_view_is_rendered_again_once_fonts_are_added() {
     );
 }
 
+/// A view that asked for an animation frame, here as it was prepainted,
+/// is built again on the next frame drawn, whether or not the platform has
+/// delivered the frame callback that notifies it: what it drew was for the
+/// frame it was drawn in. Its sibling, which asked for nothing, is not.
+struct Animated {
+    frames: usize,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for Animated {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        let animating = self.frames > self.builds.get();
+        div().size(px(20.)).child(crate::canvas(
+            move |_, window, _| {
+                if animating {
+                    window.request_animation_frame();
+                }
+            },
+            |_, _, _, _| {},
+        ))
+    }
+}
+
+struct AnimatedAndStill {
+    animated: Entity<Animated>,
+    still: Entity<Counted>,
+}
+
+impl Render for AnimatedAndStill {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .child(self.animated.clone())
+            .child(self.still.clone())
+    }
+}
+
+#[test]
+fn a_view_that_asked_for_an_animation_frame_is_built_again_on_the_next_frame_drawn() {
+    let mut cx = TestAppContext::single();
+    let (animated_builds, still_builds) = (Rc::new(Cell::new(0)), Rc::new(Cell::new(0)));
+    let window = cx.add_window({
+        let (animated_builds, still_builds) = (animated_builds.clone(), still_builds.clone());
+        move |_, cx| AnimatedAndStill {
+            animated: cx.new(|_| Animated {
+                frames: 3,
+                builds: animated_builds,
+            }),
+            still: cx.new(|_| Counted {
+                label: 0,
+                model: None,
+                builds: still_builds,
+            }),
+        }
+    });
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap()
+    };
+    for _ in 0..5 {
+        draw(&mut cx);
+    }
+    assert_eq!(
+        (animated_builds.get(), still_builds.get()),
+        (3, 1),
+        "built on each frame while it animates, then drawn from the last one"
+    );
+}
+
 /// A view that moved is built again where it went, at the layout nodes it
 /// kept, and draws what a window drawing from scratch draws.
 #[test]

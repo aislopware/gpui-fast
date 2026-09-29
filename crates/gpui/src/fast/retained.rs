@@ -172,6 +172,9 @@ pub(crate) struct RetainedState {
     /// The generation of the text system's fonts the last frame was drawn
     /// with. See [`Window::refresh_if_fonts_changed`].
     pub(crate) font_generation: usize,
+    /// Views that asked to be drawn again on the next frame
+    /// ([`Window::request_animation_frame`]) since the last one was drawn.
+    pub(crate) animation_requests: RefCell<FxHashSet<EntityId>>,
     /// Whether a view that was not notified since the last frame, and read
     /// nothing that was, is drawn again from what it drew then. See
     /// [`Window::set_view_retention`].
@@ -193,13 +196,23 @@ impl RetainedState {
             prebuilt: FxHashMap::default(),
             notified_entities: FxHashSet::default(),
             font_generation: 0,
+            animation_requests: RefCell::default(),
             view_retention: std::env::var("GPUI_VIEW_RETENTION").map_or(true, |value| value != "0"),
         }
     }
 
     /// Notes the entities notified since the last frame was drawn, replacing
-    /// those noted then.
-    pub(crate) fn note_notified(&mut self, entities: &FxHashSet<EntityId>) {
+    /// those noted then, and adds the views that asked for an animation frame
+    /// to them.
+    ///
+    /// Such a view is notified by a callback of the next frame the platform
+    /// delivers. A frame drawn before then — one drawn for another reason, or
+    /// by a test calling [`Window::draw`] — has to build it again all the same:
+    /// what it drew was for the moment it was drawn, as an animation's is, or
+    /// it read state it wrote while drawing, as a popup placed by what it
+    /// measured does.
+    pub(crate) fn note_notified(&mut self, entities: &mut FxHashSet<EntityId>) {
+        entities.extend(self.animation_requests.get_mut().drain());
         self.notified_entities.clear();
         self.notified_entities.extend(entities.iter().copied());
     }
@@ -408,6 +421,15 @@ impl Window {
             self.retained_state.view_retention = enabled;
             self.refresh();
         }
+    }
+
+    /// Notes that the view `entity` asked to be drawn again on the next frame.
+    /// See [`RetainedState::note_notified`].
+    pub(crate) fn note_animation_frame_request(&self, entity: EntityId) {
+        self.retained_state
+            .animation_requests
+            .borrow_mut()
+            .insert(entity);
     }
 
     /// Whether views are drawn again from what they drew on the last frame.
