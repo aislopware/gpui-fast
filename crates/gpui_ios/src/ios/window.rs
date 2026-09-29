@@ -242,6 +242,15 @@ fn register_metal_view_class() -> &'static AnyClass {
             handle_scroll_gesture(this, recognizer);
         }
 
+        extern "C" fn hit_test(
+            this: *mut AnyObject,
+            _sel: Sel,
+            point: super::cg_types::ObjcCGPoint,
+            event: *mut AnyObject,
+        ) -> *mut AnyObject {
+            super::composition::metal_view_hit_test(unsafe { window_of_view(this) }, this, point, event)
+        }
+
         /// The view takes hardware key presses when no text input is first responder.
         extern "C" fn can_become_first_responder(_this: *mut AnyObject, _sel: Sel) -> Bool {
             Bool::YES
@@ -330,6 +339,16 @@ fn register_metal_view_class() -> &'static AnyClass {
             decl.add_method(
                 sel!(handleScroll:),
                 handle_scroll as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
+            );
+            decl.add_method(
+                sel!(hitTest:withEvent:),
+                hit_test
+                    as extern "C" fn(
+                        *mut AnyObject,
+                        Sel,
+                        super::cg_types::ObjcCGPoint,
+                        *mut AnyObject,
+                    ) -> *mut AnyObject,
             );
             decl.add_method(
                 sel!(canBecomeFirstResponder),
@@ -857,7 +876,10 @@ pub(crate) struct IosWindow {
     repeat_generation: Cell<u64>,
     /// The scroll recognizer's last reported translation, for per-event deltas.
     scroll_translation: Cell<Point<f32>>,
-    renderer: Mutex<MetalRenderer>,
+    pub(super) renderer: Mutex<MetalRenderer>,
+    /// The view controller's view, holding the natives' containers and the Metal view.
+    root_view: *mut AnyObject,
+    pub(super) composition: Rc<super::composition::WindowComposition>,
     /// VoiceOver bridge, once GPUI hands over its accessibility callbacks.
     a11y: RefCell<Option<super::a11y::A11yBridge>>,
 }
@@ -936,8 +958,8 @@ impl IosWindow {
             let _: () = msg_send![scroll, setMaximumNumberOfTouches: 0_usize];
             let _: () = msg_send![view, addGestureRecognizer: scroll];
 
-            // Set the view as the view controller's view
-            let _: () = msg_send![view_controller, setView: view];
+            let root_view = super::composition::root_view(screen_bounds_cg, view);
+            let _: () = msg_send![view_controller, setView: root_view];
 
             // Set the root view controller
             let _: () = msg_send![window, setRootViewController: view_controller];
@@ -1003,6 +1025,8 @@ impl IosWindow {
                 repeat_generation: Cell::new(0),
                 scroll_translation: Cell::new(Point::new(0.0, 0.0)),
                 renderer: Mutex::new(renderer),
+                root_view,
+                composition: super::composition::WindowComposition::new(root_view, view),
                 a11y: RefCell::new(None),
             };
 
@@ -1028,6 +1052,7 @@ impl IosWindow {
             {
                 *(*self.text_input_view).get_mut_ivar::<*mut c_void>(GPUI_WINDOW_IVAR) = window_ptr;
             }
+            super::composition::set_root_window(self.root_view, self);
             log::info!(
                 "GPUI iOS: Set window pointer {:p} on view {:p} and text input {:p}",
                 window_ptr,
@@ -1427,7 +1452,7 @@ impl IosWindow {
     /// Hands an event to GPUI. The callback is taken out of its cell for the call, so a
     /// dispatch that re-enters (GPUI asking the platform for another event on the way) finds
     /// no borrow to trip over; one registered meanwhile wins over the one taken out.
-    fn dispatch_input(&self, event: PlatformInput) {
+    pub(super) fn dispatch_input(&self, event: PlatformInput) {
         let taken = self.input_callback.borrow_mut().take();
         if let Some(mut callback) = taken {
             let _result = callback(event);
@@ -1646,7 +1671,9 @@ impl Drop for IosWindow {
             }
             let _: () = msg_send![self.text_input_view, removeFromSuperview];
             let _: () = msg_send![self.text_input_view, release];
+            super::composition::set_root_window(self.root_view, ptr::null());
             let _: () = msg_send![self.view, release];
+            let _: () = msg_send![self.root_view, release];
             let _: () = msg_send![self.view_controller, release];
             let _: () = msg_send![self.window, release];
         }
@@ -1854,6 +1881,17 @@ impl PlatformWindow for IosWindow {
 
     fn draw(&self, scene: &Scene) {
         self.renderer.lock().draw(scene);
+    }
+
+    fn create_native_host(
+        &self,
+        params: gpui::composition::NativeHostParams,
+    ) -> anyhow::Result<Rc<dyn gpui::composition::PlatformNativeHost>> {
+        self.composition.create_host(params)
+    }
+
+    fn present_natives(&self, scene: &Scene, natives: &gpui::composition::NativePresent) {
+        self.present_natives_impl(scene, natives);
     }
 
     fn set_presented_frame_sink(&self, sink: Option<gpui::PresentedFrameSink>) {

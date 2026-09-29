@@ -1,5 +1,14 @@
 #import <UIKit/UIKit.h>
 
+// io-surface (through core-video) binds IOSurfaces to OpenGL, which iOS lacks. The
+// force-loaded library keeps that code though nothing calls it, so its symbols need a
+// definition to link and load.
+const char *CGLErrorString(int error) { return "no OpenGL on iOS"; }
+void *CGLGetCurrentContext(void) { return NULL; }
+int CGLTexImageIOSurface2D(void *context, unsigned target, unsigned internal_format,
+                           int width, int height, unsigned format, unsigned type,
+                           void *surface, unsigned plane) { return 10000; }
+
 extern bool gpui_ios_example_run(void);
 extern void gpui_ios_will_enter_foreground(void *application);
 extern void gpui_ios_did_become_active(void *application);
