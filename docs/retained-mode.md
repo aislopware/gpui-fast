@@ -4,14 +4,16 @@ How gpui-fast draws a frame from the last one, what an application needs to
 know about it, and how it is checked and measured. The code is in
 `crates/gpui/src/fast/`: `retained.rs` (retained subtrees), `dependencies.rs`
 (what a subtree read), `layout.rs` and `layout_key.rs` (retained layout nodes)
-and `stats.rs` (counters for tests and benchmarks).
+and `stats.rs` (counters for tests and benchmarks). The reasoning behind the
+design is in [`architecture.md`](architecture.md).
 
 ## How it works
 
-A frame walks the element tree three times: **build** renders views and asks
-for layout, **prepaint** computes layout and places elements, **paint** turns
-them into the scene handed to the GPU. Upstream GPUI does all three from
-scratch every frame.
+A frame walks the element tree three times: **request_layout** renders views
+and asks for layout, **prepaint** computes layout and places elements,
+**paint** turns them into the scene handed to the GPU. Upstream GPUI normally
+does all three from scratch every frame, except where an explicitly cached
+view is reused.
 
 ### Views
 
@@ -28,7 +30,10 @@ nodes and primitives are copied from the last frame. A view depends on:
   state changes, so a view is drawn again when one it read moved, notified or
   not. A view that only asked whether a global is set (`cx.has_global::<G>()`)
   depends on that alone: setting the global where it was not, or removing
-  it, changes it; writing to it does not.
+  it, changes it; writing to it does not. Reading the window's pointer
+  position (`window.mouse_position()`) or its modifier keys and caps lock
+  (`window.modifiers()`, `window.capslock()`) is recorded the same way, and
+  an input event that changes them draws again the views that read them.
 - **What it was updated with.** An entity updated (`entity.update(..)`) while
   no view is being drawn — by a task, a listener, an action — and notified
   counts as changed for every view that read it. So does an entity notified
@@ -142,11 +147,12 @@ row, its list and the window above it.
 
 ## What an application needs to know
 
-Nothing, as long as what a view's render reads lives in entities, globals and
-list or scroll state. Anything else it reads — an `Rc<RefCell<..>>` shared
-outside entities, the time, `window.modifiers()` — it has to be notified of
-(`cx.notify()`), as a cached view already has to be in upstream GPUI. Otherwise
-it keeps showing what it showed when it was last built.
+Nothing, as long as what a view's render reads lives in entities, globals,
+list or scroll state, or the window's pointer position, modifier keys and caps
+lock, which are tracked too. Anything else it reads — an `Rc<RefCell<..>>`
+shared outside entities, the time — it has to be notified of (`cx.notify()`),
+as a cached view already has to be in upstream GPUI. Otherwise it keeps
+showing what it showed when it was last built.
 
 What still costs a rebuild every frame is a change made every frame. An
 entity notified, or a global written (`cx.global_mut`, `cx.update_global`),
