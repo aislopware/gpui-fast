@@ -274,20 +274,6 @@ impl Window {
         self.next_frame.scene.insert_native(placement);
     }
 
-    /// Hands the rendered frame to the platform: with its natives once a host
-    /// exists, exactly as before otherwise.
-    pub(crate) fn present_scene(&mut self) {
-        if !self.composition.active {
-            self.platform_window.draw(&self.rendered_frame.scene);
-            return;
-        }
-        let present = self.native_present();
-        self.composition.presented_hit_map = Some(present.hit_map.clone());
-        self.platform_window
-            .present_natives(&self.rendered_frame.scene, &present);
-        self.composition.presented = Some(present.frame);
-    }
-
     pub(crate) fn native_present(&self) -> NativePresent {
         let scene = &self.rendered_frame.scene;
         let frame = NativeFrame::new(scene, self.scale_factor(), self.viewport_size);
@@ -338,25 +324,11 @@ impl Window {
         }
     }
 
-    /// Whether the pointer is over a native that takes it, which then sets the
-    /// cursor itself: GPUI leaves the cursor alone there.
-    pub(crate) fn native_owns_cursor(&self) -> bool {
-        self.composition.active
-            && self.mouse_hit_test.ids.first().is_some_and(|topmost| {
-                self.rendered_frame
-                    .scene
-                    .composition
-                    .placements
-                    .iter()
-                    .any(|placement| placement.hitbox == Some(*topmost))
-            })
-    }
-
     /// Draws a frame and presents it, as the platform's frame callback does.
     #[cfg(test)]
     pub(crate) fn draw_and_present(&mut self, cx: &mut App) {
         self.draw(cx).clear(cx);
-        self.present_scene();
+        present_scene(self);
     }
 
     /// Where the natives take the pointer, as of the last present.
@@ -368,6 +340,36 @@ impl Window {
     pub fn presented_natives(&self) -> Option<&NativeFrame> {
         self.composition.presented.as_ref()
     }
+}
+
+/// Hands `window`'s rendered frame to the platform: with its natives once a
+/// host exists, exactly as before otherwise.
+pub(crate) fn present_scene(window: &mut Window) {
+    if !window.composition.active {
+        window.platform_window.draw(&window.rendered_frame.scene);
+        return;
+    }
+    let present = window.native_present();
+    window.composition.presented_hit_map = Some(present.hit_map.clone());
+    window
+        .platform_window
+        .present_natives(&window.rendered_frame.scene, &present);
+    window.composition.presented = Some(present.frame);
+}
+
+/// Whether the pointer is over a native that takes it, which then sets the
+/// cursor itself: GPUI leaves the cursor alone there.
+pub(crate) fn native_owns_cursor(window: &Window) -> bool {
+    window.composition.active
+        && window.mouse_hit_test.ids.first().is_some_and(|topmost| {
+            window
+                .rendered_frame
+                .scene
+                .composition
+                .placements
+                .iter()
+                .any(|placement| placement.hitbox == Some(*topmost))
+        })
 }
 
 impl Scene {

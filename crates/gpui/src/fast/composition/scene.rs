@@ -68,15 +68,21 @@ pub struct SceneComposition {
 }
 
 impl SceneComposition {
-    pub(crate) fn clear(&mut self) {
-        self.placements.clear();
-        self.holes.clear();
-    }
-
     pub(crate) fn sort(&mut self) {
         self.placements.sort_by_key(|placement| placement.order);
         self.holes.sort_by_key(|hole| hole.order);
     }
+}
+
+/// Forgets the natives `scene` placed, as [`Scene::clear`] forgets its primitives.
+pub(crate) fn clear(scene: &mut Scene) {
+    scene.composition.placements.clear();
+    scene.composition.holes.clear();
+}
+
+/// Places a native again as the last frame placed it, as [`Scene::replay`] does.
+pub(crate) fn replay(scene: &mut Scene, placement: &NativePlacement) {
+    scene.insert_native(placement.clone());
 }
 
 /// A batch a renderer draws: GPUI's primitives, or the holes natives cut.

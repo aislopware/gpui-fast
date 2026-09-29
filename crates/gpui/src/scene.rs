@@ -68,7 +68,7 @@ impl Scene {
         self.subpixel_sprites.clear();
         self.polychrome_sprites.clear();
         self.surfaces.clear();
-        self.composition.clear();
+        crate::fast::composition::scene::clear(self);
     }
 
     pub fn len(&self) -> usize {
@@ -147,7 +147,9 @@ impl Scene {
                 PaintOperation::Primitive(primitive) => self.insert_primitive(primitive.clone()),
                 PaintOperation::StartLayer(bounds) => self.push_layer(*bounds),
                 PaintOperation::EndLayer => self.pop_layer(),
-                PaintOperation::Native(placement) => self.insert_native(placement.clone()),
+                PaintOperation::Native(placement) => {
+                    crate::fast::composition::scene::replay(self, placement)
+                }
             }
         }
     }

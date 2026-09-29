@@ -3537,7 +3537,7 @@ impl Window {
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
-        self.present_scene();
+        crate::fast::composition::present_scene(self);
         #[cfg(feature = "profiler")]
         self.window_profiler.record_present(
             present_start,
@@ -5549,7 +5549,7 @@ impl Window {
 
     fn reset_cursor_style(&self, cx: &mut App) {
         // Set the cursor only if we're the active window.
-        if self.is_window_hovered() && !self.native_owns_cursor() {
+        if self.is_window_hovered() && !crate::fast::composition::native_owns_cursor(self) {
             let style = self
                 .rendered_frame
                 .cursor_style(self)
