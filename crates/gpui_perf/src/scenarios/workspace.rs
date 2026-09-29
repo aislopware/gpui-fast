@@ -47,36 +47,56 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             description: "A docked trading workspace at rest while eight quotes a frame stream in and every panel, visible or not, receives each one.",
             kind: Kind::Quotes,
             quiet: false,
+            uncached: false,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-hover",
             description: "The trading workspace while the pointer moves over the watchlist rows, highlighting them, with two quotes a frame streaming in.",
             kind: Kind::Hover,
             quiet: false,
+            uncached: false,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-scroll",
             description: "The trading workspace while the watchlist scrolls under the wheel, with two quotes a frame streaming in.",
             kind: Kind::Scroll,
             quiet: false,
+            uncached: false,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-quiet-quotes",
             description: "workspace-quotes, with the dock and the text selection layer writing their state only when it changes.",
             kind: Kind::Quotes,
             quiet: true,
+            uncached: false,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-quiet-hover",
             description: "workspace-hover, with the dock and the text selection layer writing their state only when it changes.",
             kind: Kind::Hover,
             quiet: true,
+            uncached: false,
+        }),
+        Box::new(WorkspaceScenario {
+            name: "workspace-uncached-hover",
+            description: "workspace-quiet-hover, with the tab groups drawing their active panel as a plain view instead of a cached one.",
+            kind: Kind::Hover,
+            quiet: true,
+            uncached: true,
+        }),
+        Box::new(WorkspaceScenario {
+            name: "workspace-uncached-scroll",
+            description: "workspace-quiet-scroll, with the tab groups drawing their active panel as a plain view instead of a cached one.",
+            kind: Kind::Scroll,
+            quiet: true,
+            uncached: true,
         }),
         Box::new(WorkspaceScenario {
             name: "workspace-quiet-scroll",
             description: "workspace-scroll, with the dock and the text selection layer writing their state only when it changes.",
             kind: Kind::Scroll,
             quiet: true,
+            uncached: false,
         }),
     ]
 }
@@ -106,6 +126,9 @@ struct WorkspaceScenario {
     /// and writing globals on every frame. Otherwise they write it on every
     /// prepaint, as GPUI Kit does today.
     quiet: bool,
+    /// Whether the tab groups draw their active panel as a plain view rather
+    /// than a cached one, as GPUI Kit's tab panel does.
+    uncached: bool,
 }
 
 impl crate::Scenario for WorkspaceScenario {
@@ -119,7 +142,8 @@ impl crate::Scenario for WorkspaceScenario {
 
     fn build(&self, window: &mut Window, cx: &mut App) -> AnyView {
         let quiet = self.quiet;
-        let root = cx.new(|cx| Workspace::new(window, quiet, cx));
+        let uncached = self.uncached;
+        let root = cx.new(|cx| Workspace::new(window, quiet, uncached, cx));
         let focus = root.read(cx).search.read(cx).focus.clone();
         window.focus(&focus, cx);
         root.into()
@@ -312,7 +336,7 @@ struct Workspace {
 }
 
 impl Workspace {
-    fn new(window: &mut Window, quiet: bool, cx: &mut Context<Self>) -> Self {
+    fn new(window: &mut Window, quiet: bool, uncached: bool, cx: &mut Context<Self>) -> Self {
         let store = cx.new(|_| QuoteStore::new());
         let feed = cx.new(|_| MarketFeed);
         let search = cx.new(|cx| SearchBox {
@@ -330,11 +354,11 @@ impl Workspace {
         let news: AnyView = cx.new(|cx| HiddenPanel::new("News", &feed, cx)).into();
 
         let groups = vec![
-            cx.new(|_| TabGroup::new(vec![("Watchlist", watchlist)])),
-            cx.new(|_| TabGroup::new(vec![("Quote", detail)])),
-            cx.new(|_| TabGroup::new(vec![("Trades", trades), ("News", news)])),
-            cx.new(|_| TabGroup::new(vec![("Order Book", book)])),
-            cx.new(|_| TabGroup::new(vec![("Chart", chart)])),
+            cx.new(|_| TabGroup::new(uncached, vec![("Watchlist", watchlist)])),
+            cx.new(|_| TabGroup::new(uncached, vec![("Quote", detail)])),
+            cx.new(|_| TabGroup::new(uncached, vec![("Trades", trades), ("News", news)])),
+            cx.new(|_| TabGroup::new(uncached, vec![("Order Book", book)])),
+            cx.new(|_| TabGroup::new(uncached, vec![("Chart", chart)])),
         ];
         let resize = cx.new(|_| ResizeState {
             sizes: vec![Bounds::default(); groups.len()],
@@ -649,11 +673,17 @@ impl Render for DockArea {
 struct TabGroup {
     tabs: Vec<(&'static str, AnyView)>,
     active: usize,
+    /// See [`WorkspaceScenario::uncached`].
+    uncached: bool,
 }
 
 impl TabGroup {
-    fn new(tabs: Vec<(&'static str, AnyView)>) -> Self {
-        Self { tabs, active: 0 }
+    fn new(uncached: bool, tabs: Vec<(&'static str, AnyView)>) -> Self {
+        Self {
+            tabs,
+            active: 0,
+            uncached,
+        }
     }
 }
 
@@ -687,14 +717,15 @@ impl Render for TabGroup {
                             .child(*title)
                     })),
             )
-            .child(
-                div().relative().flex_1().min_h_0().child(
-                    self.tabs[self.active]
-                        .1
-                        .clone()
-                        .cached(StyleRefinement::default().absolute().size_full()),
-                ),
-            )
+            .child({
+                let panel = self.tabs[self.active].1.clone();
+                let content = div().relative().flex_1().min_h_0();
+                if self.uncached {
+                    content.child(div().absolute().size_full().child(panel))
+                } else {
+                    content.child(panel.cached(StyleRefinement::default().absolute().size_full()))
+                }
+            })
     }
 }
 

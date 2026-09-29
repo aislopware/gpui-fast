@@ -1380,7 +1380,9 @@ impl<V: View> ViewElement<V> {
                 }
                 ViewLayout::Spliced(splice) => {
                     let previous = splice.previous();
-                    if window.retained_context_matches(previous, bounds) {
+                    if window.retained_context_matches(previous, bounds)
+                        && window.splice_layout_holds(&splice)
+                    {
                         return window.splice_prepaint(global_id, splice, cx);
                     }
                     window.abandon_splice(splice);

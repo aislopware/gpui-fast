@@ -169,10 +169,25 @@ impl Prebuilt {
     }
 }
 
+/// How a gap built again asked to be laid out, against last frame.
+enum GapLayout {
+    /// As it was.
+    Unchanged,
+    /// At the node it had, with something inside it laid out differently.
+    Changed,
+    /// At another node.
+    NewRoot,
+}
+
 /// A view drawn from last frame around the nested views built again in it.
 pub(crate) struct Splice {
     previous: usize,
     gaps: Vec<Gap>,
+    /// When a gap was laid out differently from last frame, the layouts the
+    /// view's own nodes had then, which have to come out of this frame's
+    /// layout the same for it to be drawn around the gap. See
+    /// [`Window::splice_layout_holds`].
+    held: Vec<(LayoutId, taffy::Layout)>,
 }
 
 impl Splice {
@@ -314,17 +329,26 @@ impl Window {
             return None;
         }
 
+        // A gap laid out differently from last frame, at the node it had,
+        // changes only what is inside it unless the view's own nodes come out
+        // of layout differently too, which is checked once layout is
+        // computed. A gap at another node changes the view's own tree.
         let mut built = Vec::with_capacity(gaps.len());
         let mut unchanged = true;
+        let mut same_roots = true;
         for gap in gaps {
-            let (gap, gap_unchanged) = self.lay_out_gap(gap, cx)?;
+            let (gap, gap_layout) = self.lay_out_gap(gap, cx)?;
             built.push(gap);
-            if !gap_unchanged {
-                unchanged = false;
-                break;
+            match gap_layout {
+                GapLayout::Unchanged => {}
+                GapLayout::Changed => unchanged = false,
+                GapLayout::NewRoot => {
+                    same_roots = false;
+                    break;
+                }
             }
         }
-        if !unchanged {
+        if !same_roots {
             // The view around them is built after all; the views built so
             // far are taken over by their elements there, not built twice.
             self.layout_engine.as_mut().unwrap().release_kept(&kept);
@@ -336,16 +360,33 @@ impl Window {
             .accessed_element_states
             .extend(element_states);
         cx.replay_dependencies(&dependencies);
+        let held = if unchanged {
+            Vec::new()
+        } else {
+            self.layout_engine.as_ref().unwrap().retained_layouts(&kept)
+        };
         Some(Splice {
             previous,
             gaps: built,
+            held,
         })
     }
 
+    /// Whether the view `splice` draws around its gaps came out of this
+    /// frame's layout as it did last frame, so that what it drew around them
+    /// still stands. Checked once layout is computed, when a gap was laid out
+    /// differently.
+    pub(crate) fn splice_layout_holds(&self, splice: &Splice) -> bool {
+        self.layout_engine
+            .as_ref()
+            .unwrap()
+            .layouts_unchanged(&splice.held)
+    }
+
     /// Builds the view last frame's record `record` stands for again, where
-    /// it was, and lays it out, returning it and whether it asked for the
-    /// layout it had.
-    fn lay_out_gap(&mut self, record: usize, cx: &mut App) -> Option<(Gap, bool)> {
+    /// it was, and lays it out, returning it and how its layout compares with
+    /// the one it had.
+    fn lay_out_gap(&mut self, record: usize, cx: &mut App) -> Option<(Gap, GapLayout)> {
         let nested = &self.rendered_frame.retained.records[record];
         let rebuild = nested.rebuild.clone()?;
         let root = nested.layout.as_ref()?.root;
@@ -383,10 +424,16 @@ impl Window {
         let claimed = self.finish_recording_claimed_layout_keys(recording);
 
         let engine = self.layout_engine.as_ref().unwrap();
-        let unchanged = layout_id == root
-            && engine.layout_changes() == changes
+        let gap_layout = if layout_id != root {
+            GapLayout::NewRoot
+        } else if engine.layout_changes() == changes
             && engine.remeasures() == remeasures
-            && engine.transient_count() == transient;
+            && engine.transient_count() == transient
+        {
+            GapLayout::Unchanged
+        } else {
+            GapLayout::Changed
+        };
         Some((
             Gap {
                 record,
@@ -400,7 +447,7 @@ impl Window {
                 dependencies,
                 prepainted: None,
             },
-            unchanged,
+            gap_layout,
         ))
     }
 
@@ -460,7 +507,9 @@ impl Window {
         splice: Splice,
         cx: &mut App,
     ) -> ViewPrepaint {
-        let Splice { previous, mut gaps } = splice;
+        let Splice {
+            previous, mut gaps, ..
+        } = splice;
         let writes_now = cx.entities.write_generation();
         let source = &self.rendered_frame.retained;
         let record = &source.records[previous];

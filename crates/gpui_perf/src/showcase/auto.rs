@@ -187,6 +187,10 @@ impl AutoRun {
             let clock_held = self.clock.is_holding();
             self.clock.stop();
             self.report(clock_held);
+            // Closed first, so that what the window holds on to — the focused
+            // search box's input handler — is released before the app checks
+            // for leaked entities as it quits.
+            window.remove_window();
             cx.quit();
             return false;
         };

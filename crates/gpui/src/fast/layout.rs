@@ -256,6 +256,26 @@ impl TaffyLayoutEngine {
     /// retained and unclaimed this frame; otherwise keeps none of them and
     /// returns false. A subtree whose layout is reused without being requested
     /// again needs all of its nodes, just as they were.
+    /// The layouts last computed for the retained nodes `keys`, to tell once
+    /// layout is computed again whether it changed them. See
+    /// [`Self::layouts_unchanged`].
+    pub(crate) fn retained_layouts(&self, keys: &[u64]) -> Vec<(LayoutId, taffy::Layout)> {
+        keys.iter()
+            .filter_map(|key| self.retention.retained.get(key))
+            .filter_map(|node| Some((node.id, *self.taffy.layout(node.id.into()).ok()?)))
+            .collect()
+    }
+
+    /// Whether the nodes [`Self::retained_layouts`] returned still have the
+    /// layouts they had then.
+    pub(crate) fn layouts_unchanged(&self, layouts: &[(LayoutId, taffy::Layout)]) -> bool {
+        layouts.iter().all(|(id, layout)| {
+            self.taffy
+                .layout((*id).into())
+                .is_ok_and(|now| now == layout)
+        })
+    }
+
     pub(crate) fn try_keep_retained(&mut self, keys: &[u64]) -> bool {
         let frame = self.retention.frame;
         let all_there = keys.iter().all(|key| {
