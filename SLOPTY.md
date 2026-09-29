@@ -20,7 +20,9 @@ Two upstreams feed it:
   gpui-fast's first import (`11a44c4`, zed `7960b2a7`). The latest vendor commit is
   `2db56fa` (`zed: import bd747337`, zed `bd747337d7be`).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
-  bd747337 into gpui-fast"), then our commits on top.
+  bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
+  longbridge commit merged is `ac1c226` (#12, "hand a text element's inputs to its
+  measurement instead of copying them"), in `751acaf`.
 - `UPSTREAM` records `zed_commit` and `import_commit` (the latest vendor commit).
   `script/check-upstream` compares every tracked file against it.
 
@@ -66,6 +68,19 @@ authors and messages:
 Added in this fork:
 
 - `1776aa2` test(gpui): a video surface shows the buffer its view holds, retained or not
+- `4d0009e` gpui: build a view that asked for an animation frame on the next frame drawn
+
+### Candidates for longbridge
+
+Generic to gpui-fast, not to Slopty, and worth a pull request to longbridge/gpui-fast:
+
+- the zed bd747337 sync itself: `2db56fa` (`zed: import bd747337`) and its merge `acfc6db`,
+  including the font generation handling (`Window::refresh_if_fonts_changed`, a text
+  measurement carried over only within one font generation, and its test
+  `every_view_is_rendered_again_once_fonts_are_added`);
+- `4d0009e`, a view that asked for an animation frame built on the next frame drawn;
+- `1776aa2`, the retained-mode test of a surface's buffer (macOS; the surface element is
+  upstream's).
 - the commit adding this file, which also lets `script/check-upstream` accept the patches
   above (`script/upstream-allowlist`, the "Slopty's patches" section)
 
@@ -98,21 +113,47 @@ Retained Mode draws a view from the last frame while nothing it read changed
 
 To rule retention in or out, run with `GPUI_VIEW_RETENTION=0`.
 
+### gpui-kit under Retained Mode
+
+`cargo test --no-fail-fast -p gpui-base -p gpui-component -p gpui-kit --lib` in our
+gpui-kit fork, on this fork: gpui-base 1239 passed and 5 failed, gpui-component 575
+passed and 1 failed. With `GPUI_VIEW_RETENTION=0`, only the two tests counting a cached
+view's builds fail. Each failure reads or writes something Retained Mode does not see:
+
+- `input::state::tests::test_input_does_not_invalidate_cached_parent_during_paint` and
+  `text::window_selection::tests::selection_inside_a_cached_view_survives_replayed_frames`
+  count how often a cached view is built. gpui-fast builds a cached view again when an
+  entity it read was written, and the input or selection inside it writes its own state
+  while it is drawn: more builds than upstream, the same pictures. With retention off
+  every view is built on every frame, so they fail there too.
+- `virtual_list::tests::{horizontal,vertical}_visible_range_and_deferred_scroll_are_preserved`:
+  `VirtualListScrollHandle::scroll_to_item` keeps the request in its own `Rc<RefCell<..>>`
+  and notifies nobody, so the list's view is drawn from the last frame. The handle has to
+  change the `ScrollHandle` it wraps (which bumps its version) or notify the view.
+- `text::state::tests::reveal_range::a_reveal_that_cannot_be_shown_gives_up`: a reveal is
+  counted by what an `Inline` reports from its prepaint through an `Arc<Mutex<..>>`; a
+  block drawn from the last frame reports nothing, so the reveal waits for its timeout
+  instead of giving up after a few frames.
+- `scrollbar::tests::repeated_touch_and_mouse_drags_keep_the_painted_grab_point`
+  (touch, vertical): the thumb painted after a touch drag moves back to its start is the
+  one painted 5 px further, not yet explained.
+
 ## Measured
 
-`gpui_perf --auto` on mac-studio (Apple silicon, macOS 27, window at 60 fps) after the
-bd747337 sync and the port, main-thread CPU per frame (p50) and instructions per frame:
+`gpui_perf --auto` on mac-studio (Apple silicon, macOS 27, window at 60 fps), at
+`751acaf` (zed bd747337, longbridge ac1c226, our patches). Main-thread CPU per frame
+(p50) and instructions per frame:
 
 | Scenario | Retained | From scratch (`GPUI_VIEW_RETENTION=0`) |
 | --- | --- | --- |
-| Spinner | 1.08 ms, 9.1M | 2.03 ms, 16.0M |
-| Scrolling the sidebar | 1.17 ms, 10.1M | 2.16 ms, 16.7M |
-| Scrolling a page | 1.30 ms, 10.4M | 2.11 ms, 17.0M |
-| Scrolling the table | 1.12 ms, 8.1M | 1.93 ms, 14.9M |
-| Scrolling the list | 0.85 ms, 5.3M | 1.63 ms, 11.3M |
+| Spinner | 1.18 ms, 8.8M | 2.00 ms, 15.5M |
+| Scrolling the sidebar | 1.30 ms, 9.8M | 2.12 ms, 16.2M |
+| Scrolling a page | 1.40 ms, 10.2M | 2.12 ms, 16.5M |
+| Scrolling the table | 1.27 ms, 8.0M | 2.04 ms, 14.4M |
+| Scrolling the list | 0.85 ms, 5.2M | 1.51 ms, 11.0M |
 
-`gpui_perf --headless --verify` painted the same quads retained and from scratch in all
-25 simulated scenarios.
+The `RefreshTable` scenario drew no frames here, retained or not. `gpui_perf --headless
+--verify` painted the same quads retained and from scratch in all 25 simulated scenarios.
 
 ## Syncing
 
