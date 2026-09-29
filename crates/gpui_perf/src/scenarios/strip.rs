@@ -17,13 +17,14 @@
 //! the strip's readout ticking, the strip scrolling, the pointer moving over
 //! the tile headers, or only the status bar's clock.
 
-use std::rc::Rc;
+use std::{ops::Range, rc::Rc};
 
 use gpui::{
-    AnyView, App, Bounds, Context, Element, ElementId, Entity, FocusHandle, GlobalElementId, Hsla,
-    InputEvent as _, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseMoveEvent,
-    Pixels, Render, Role, ShapedLine, SharedString, StyleRefinement, TextRun, Window, div, fill,
-    font, hsla, point, prelude::*, px, relative, size, svg,
+    AnyView, App, Bounds, Context, Element, ElementId, ElementInputHandler, Entity,
+    EntityInputHandler, FocusHandle, GlobalElementId, Hsla, InputEvent as _, InspectorElementId,
+    IntoElement, LayoutId, MouseButton, MouseMoveEvent, Pixels, Render, Role, ShapedLine,
+    SharedString, StyleRefinement, TextRun, UTF16Selection, Window, div, fill, font, hsla, point,
+    prelude::*, px, relative, size, svg,
 };
 
 pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
@@ -42,6 +43,11 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             name: "strip-scroll",
             description: "Eight terminal tiles; the strip scrolls sideways 6.5px a frame, moving every tile and its terminal.",
             kind: Kind::Scroll,
+        }),
+        Box::new(StripScenario {
+            name: "strip-spring",
+            description: "strip-scroll with a terminal holding the keyboard: each grid writes its view as it is prepainted and registers an input handler as it is painted, as Slopty's does.",
+            kind: Kind::Spring,
         }),
         Box::new(StripScenario {
             name: "strip-hover",
@@ -80,6 +86,7 @@ enum Kind {
     Output,
     Readout,
     Scroll,
+    Spring,
     Hover,
     Clock,
 }
@@ -99,8 +106,18 @@ impl crate::Scenario for StripScenario {
         self.description
     }
 
-    fn build(&self, _: &mut Window, cx: &mut App) -> AnyView {
-        cx.new(|cx| Shell::new(cx)).into()
+    fn build(&self, window: &mut Window, cx: &mut App) -> AnyView {
+        let spring = self.kind == Kind::Spring;
+        let shell = cx.new(|cx| Shell::new(spring, cx));
+        if spring {
+            let focus = shell.read(cx).strip.read(cx).tiles[0]
+                .terminal
+                .read(cx)
+                .focus
+                .clone();
+            window.focus(&focus, cx);
+        }
+        shell.into()
     }
 
     fn step(&self, root: &AnyView, frame: usize, window: &mut Window, cx: &mut App) {
@@ -121,7 +138,7 @@ impl crate::Scenario for StripScenario {
                 strip.tiles[0].running = Some(frame as u64);
                 cx.notify();
             }),
-            Kind::Scroll => strip.update(cx, |strip, cx| {
+            Kind::Scroll | Kind::Spring => strip.update(cx, |strip, cx| {
                 let span = (TILE_WIDTH + TILE_GAP) * TILES as f32;
                 strip.scroll = (frame as f32 * 6.5) % (span / 2.);
                 cx.notify();
@@ -155,13 +172,13 @@ struct Shell {
 }
 
 impl Shell {
-    fn new(cx: &mut Context<Self>) -> Self {
+    fn new(spring: bool, cx: &mut Context<Self>) -> Self {
         let tiles = (0..TILES)
             .map(|index| Tile {
                 title: format!("shell {index}").into(),
                 cwd: format!("~/src/project-{index}/crates").into(),
                 running: (index % 3 == 0).then_some(12),
-                terminal: cx.new(|cx| Terminal::new(index, cx)),
+                terminal: cx.new(|cx| Terminal::new(index, spring, cx)),
             })
             .collect();
         Shell {
@@ -388,14 +405,21 @@ struct Terminal {
     lines: Vec<SharedString>,
     focus: FocusHandle,
     printed: usize,
+    /// Whether its grid writes it as it is prepainted and registers it as
+    /// the input handler as it is painted.
+    spring: bool,
+    /// What its grid wrote last, as Slopty's keeps its shaped rows.
+    prepainted: usize,
 }
 
 impl Terminal {
-    fn new(index: usize, cx: &mut Context<Self>) -> Self {
+    fn new(index: usize, spring: bool, cx: &mut Context<Self>) -> Self {
         Terminal {
             lines: (0..ROWS).map(|row| line(index * 1000 + row)).collect(),
             focus: cx.focus_handle(),
             printed: 0,
+            spring,
+            prepainted: 0,
         }
     }
 
@@ -446,6 +470,7 @@ impl Render for Terminal {
             .on_mouse_move(cx.listener(|_, _, _, _| {}))
             .child(Grid {
                 lines: Rc::from(self.lines.as_slice()),
+                view: self.spring.then(|| (cx.entity(), self.focus.clone())),
             })
     }
 }
@@ -453,6 +478,7 @@ impl Render for Terminal {
 /// A terminal's grid: one element that shapes and paints every row.
 struct Grid {
     lines: Rc<[SharedString]>,
+    view: Option<(Entity<Terminal>, FocusHandle)>,
 }
 
 impl IntoElement for Grid {
@@ -495,8 +521,11 @@ impl Element for Grid {
         _: Bounds<Pixels>,
         _: &mut (),
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) -> Vec<ShapedLine> {
+        if let Some((view, _)) = &self.view {
+            view.update(cx, |terminal, _| terminal.prepainted += 1);
+        }
         let font = font("Lilex");
         self.lines
             .iter()
@@ -526,6 +555,9 @@ impl Element for Grid {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if let Some((view, focus)) = &self.view {
+            window.handle_input(focus, ElementInputHandler::new(bounds, view.clone()), cx);
+        }
         let cell = px(FONT_SIZE * 0.6);
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             for (row, line) in lines.iter().enumerate() {
@@ -554,5 +586,76 @@ impl Element for Grid {
                 );
             }
         });
+    }
+}
+
+impl EntityInputHandler for Terminal {
+    fn text_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
+        None
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
+        None
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {}
+
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        _: &str,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        _: &str,
+        _: Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) {
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        Some(Bounds::new(
+            element_bounds.origin,
+            size(px(2.), px(LINE_HEIGHT)),
+        ))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _: gpui::Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
     }
 }
