@@ -7,6 +7,7 @@ mod oracle;
 mod path_cache;
 mod retained;
 mod retained_bench;
+mod scene_order;
 mod support;
 mod text;
 mod text_shaping;
