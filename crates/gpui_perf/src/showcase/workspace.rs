@@ -378,6 +378,7 @@ impl Workspace {
         ];
         let resize = cx.new(|_| ResizeState {
             sizes: vec![Bounds::default(); groups.len()],
+            bounds: vec![Bounds::default(); groups.len()],
         });
         let dock = cx.new(|_| DockArea { groups, resize });
 
@@ -759,7 +760,11 @@ impl EntityInputHandler for SearchBox {
 
 /// Where the dock's panels were laid out, written as they are prepainted.
 struct ResizeState {
+    /// The size each panel is laid out at: the size it first measured, as
+    /// GPUI Kit's resizable state keeps it until a panel is dragged.
     sizes: Vec<Bounds<Pixels>>,
+    /// Where each panel was last laid out, written on every prepaint.
+    bounds: Vec<Bounds<Pixels>>,
 }
 
 /// The dock: the watchlist filling most of the width, then a column of the
@@ -794,7 +799,10 @@ impl DockArea {
                 canvas(
                     move |bounds, _, cx| {
                         resize.update(cx, |state, cx| {
-                            state.sizes[ix] = bounds;
+                            if state.sizes[ix].size.height <= px(0.) {
+                                state.sizes[ix] = bounds;
+                            }
+                            state.bounds[ix] = bounds;
                             cx.notify();
                         })
                     },
