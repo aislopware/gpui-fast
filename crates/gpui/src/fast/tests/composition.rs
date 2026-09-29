@@ -340,6 +340,72 @@ fn a_native_shows_while_it_is_placed_and_a_replayed_placement_costs_the_platform
     assert_eq!(test.calls(), 4);
 }
 
+struct Banner {
+    height: f32,
+}
+
+impl Render for Banner {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().w(px(40.)).h(px(self.height))
+    }
+}
+
+struct Column {
+    banner: Entity<Banner>,
+    picture: Entity<Picture>,
+}
+
+impl Render for Column {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(self.banner.clone())
+            .child(self.picture.clone())
+    }
+}
+
+/// Only the banner above the native is notified: the column around both is
+/// spliced, the banner asks for another layout, and the native's own view,
+/// never notified, is moved and places its native where it now is.
+#[test]
+fn a_native_follows_its_view_when_only_a_sibling_view_is_notified() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(|window, cx| {
+        let host = host(window, cx);
+        Column {
+            banner: cx.new(|_| Banner { height: 10. }),
+            picture: cx.new(|_| Picture { host }),
+        }
+    });
+    let (banner, host) = window
+        .update(&mut cx, |column, _, cx| {
+            (column.banner.clone(), column.picture.read(cx).host.clone())
+        })
+        .unwrap();
+
+    draw(&mut cx, window);
+    let test = test_host(&host);
+    assert_eq!(test.placement().unwrap().bounds.origin.y, px(10.));
+
+    cx.update(|cx| {
+        banner.update(cx, |banner, cx| {
+            banner.height = 30.;
+            cx.notify();
+        })
+    });
+    draw(&mut cx, window);
+    assert!(!test.is_hidden());
+    assert_eq!(test.placement().unwrap().bounds.origin.y, px(30.));
+    assert_eq!(test.calls(), 2);
+
+    // The column notified with nothing moved: the placement is replayed as is.
+    window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+    draw(&mut cx, window);
+    assert_eq!(test.placement().unwrap().bounds.origin.y, px(30.));
+    assert_eq!(test.calls(), 2);
+}
+
 struct Focusable {
     host: NativeHost,
     native_focus: FocusHandle,
