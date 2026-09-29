@@ -50,6 +50,7 @@ pub(crate) struct TestWindowState {
     frame_scheduled: bool,
     frame_callback_pending: bool,
     presented_frame_sink: Option<PresentedFrameSink>,
+    pub(crate) composition: crate::fast::composition::test_host::TestComposition,
     input_handler: Option<PlatformInputHandler>,
     text_input_configurations: Vec<TextInputConfiguration>,
     text_input_state_changes: Vec<TextInputStateChange>,
@@ -124,6 +125,7 @@ impl TestWindow {
             frame_scheduled: false,
             frame_callback_pending: false,
             presented_frame_sink: None,
+            composition: Default::default(),
             input_handler: None,
             text_input_configurations: Vec::new(),
             text_input_state_changes: Vec::new(),
@@ -551,6 +553,18 @@ impl PlatformWindow for TestWindow {
         if let Some(renderer) = &mut state.renderer {
             renderer.render_scene(scene, device_size).warn_on_err();
         }
+    }
+
+    fn create_native_host(
+        &self,
+        params: crate::fast::composition::NativeHostParams,
+    ) -> anyhow::Result<Rc<dyn crate::fast::composition::PlatformNativeHost>> {
+        Ok(self.0.lock().composition.create_host(params))
+    }
+
+    fn present_natives(&self, scene: &Scene, natives: &crate::fast::composition::NativePresent) {
+        self.0.lock().composition.present(natives);
+        self.draw(scene);
     }
 
     fn sprite_atlas(&self) -> sync::Arc<dyn crate::PlatformAtlas> {

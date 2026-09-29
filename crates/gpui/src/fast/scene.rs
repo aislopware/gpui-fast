@@ -69,6 +69,17 @@ impl Scene {
                 }
                 crate::PaintOperation::EndLayer => lines.push("end layer".into()),
                 crate::PaintOperation::Primitive(..) => {}
+                crate::PaintOperation::Native(placement) => lines.push(format!(
+                    "native {:?} {} {:?} {:?} {:?} {} hitbox {} focus {}",
+                    placement.id,
+                    placement.order,
+                    placement.bounds,
+                    placement.content_mask,
+                    placement.corner_radii,
+                    placement.opacity,
+                    placement.hitbox.is_some(),
+                    placement.focus.is_some(),
+                )),
             }
         }
         lines.extend(self.shadows.iter().map(|shadow| format!("{shadow:?}")));
@@ -142,4 +153,5 @@ pub(crate) fn sort_in_drawing_order(scene: &mut Scene) {
         sprite.tile.tile_id
     ));
     sort!(surfaces, |surface: &PaintSurface| surface.order);
+    scene.composition.sort();
 }

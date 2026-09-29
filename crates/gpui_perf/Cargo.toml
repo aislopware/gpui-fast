@@ -25,6 +25,23 @@ required-features = ["fast"]
 name = "wrap_cost"
 required-features = ["fast"]
 
+[[example]]
+name = "composition_latency"
+required-features = ["fast"]
+
+[[example]]
+name = "windowserver_gpu"
+required-features = ["fast"]
+
+[[example]]
+name = "video_latency"
+required-features = ["fast"]
+
+[[test]]
+name = "composition_macos"
+harness = false
+required-features = ["fast"]
+
 [features]
 default = ["fast"]
 # Build against this repository's GPUI: the showcase, `--headless` and the
@@ -48,3 +65,22 @@ serde.workspace = true
 serde_json.workspace = true
 libc.workspace = true
 smol.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+raw-window-handle.workspace = true
+roxmltree = "0.21"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+cocoa.workspace = true
+core-graphics.workspace = true
+metal.workspace = true
+objc.workspace = true
+objc2.workspace = true
+block2.workspace = true
+core-foundation.workspace = true
+core-video.workspace = true
+gpui_apple.workspace = true
+foreign-types.workspace = true
+gpui_macos.workspace = true
+parking_lot.workspace = true

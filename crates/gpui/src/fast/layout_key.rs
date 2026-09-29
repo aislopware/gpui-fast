@@ -165,6 +165,9 @@ impl Window {
                 hitbox.bounds, hitbox.content_mask, hitbox.behavior
             )
         }));
+        let natives = self.native_present();
+        lines.push(format!("natives {:?}", natives.frame));
+        lines.push(format!("native hit map {:?}", natives.hit_map));
         lines
     }
 }

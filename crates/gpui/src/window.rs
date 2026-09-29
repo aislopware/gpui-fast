@@ -1186,6 +1186,7 @@ pub struct Window {
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
     pub(crate) global_ids: crate::fast::global_id::GlobalIdCache,
     pub(crate) retained_state: crate::fast::retained::RetainedState,
+    pub(crate) composition: crate::fast::composition::WindowComposition,
     pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
     pub(crate) fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
@@ -1211,7 +1212,7 @@ pub struct Window {
     focus_lost_path: SmallVec<[FocusId; 8]>,
     default_prevented: bool,
     mouse_position: Point<Pixels>,
-    mouse_hit_test: HitTest,
+    pub(crate) mouse_hit_test: HitTest,
     modifiers: Modifiers,
     capslock: Capslock,
     scale_factor: f32,
@@ -2075,6 +2076,7 @@ impl Window {
             element_id_stack: SmallVec::default(),
             global_ids: crate::fast::global_id::GlobalIdCache::default(),
             retained_state: crate::fast::retained::RetainedState::new(cx),
+            composition: crate::fast::composition::WindowComposition::default(),
             text_style_stack: crate::fast::text_style::TextStyleStack::default(),
             fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache::default(),
             rendered_entity_stack: Vec::new(),
@@ -3209,7 +3211,7 @@ impl Window {
     }
 
     #[inline]
-    fn snap_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<ScaledPixels> {
+    pub(crate) fn snap_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<ScaledPixels> {
         let scale_factor = self.scale_factor();
         let left = round_to_device_pixel(bounds.left().0, scale_factor);
         let top = round_to_device_pixel(bounds.top().0, scale_factor);
@@ -3535,7 +3537,7 @@ impl Window {
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
         let present_start = Instant::now();
-        self.platform_window.draw(&self.rendered_frame.scene);
+        self.present_scene();
         #[cfg(feature = "profiler")]
         self.window_profiler.record_present(
             present_start,
@@ -5547,7 +5549,7 @@ impl Window {
 
     fn reset_cursor_style(&self, cx: &mut App) {
         // Set the cursor only if we're the active window.
-        if self.is_window_hovered() {
+        if self.is_window_hovered() && !self.native_owns_cursor() {
             let style = self
                 .rendered_frame
                 .cursor_style(self)

@@ -10,3 +10,5 @@
 pub(crate) mod keypad;
 #[cfg(feature = "font-kit")]
 pub(crate) mod text_system;
+
+pub(crate) mod composition;

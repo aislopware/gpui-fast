@@ -8,6 +8,8 @@
 use gpui::{App, Context, Window, WindowOptions, div, prelude::*, px, rgb};
 use std::{cell::Cell, rc::Rc};
 
+mod composition_test;
+
 struct IosExample {
     tap_count: usize,
 }
@@ -52,14 +54,21 @@ pub extern "C" fn gpui_ios_example_run() -> bool {
     let did_open_window = Rc::new(Cell::new(false));
     gpui_ios::ios::ffi::set_app_callback(Box::new({
         let did_open_window = did_open_window.clone();
-        move |cx: &mut App| match cx.open_window(WindowOptions::default(), |_, cx| {
-            cx.new(|_| IosExample { tap_count: 0 })
-        }) {
-            Ok(_) => {
+        move |cx: &mut App| {
+            if std::env::var_os("GPUI_IOS_COMPOSITION_TEST").is_some() {
                 did_open_window.set(true);
-                cx.activate(true);
+                composition_test::open(cx);
+                return;
             }
-            Err(error) => log::error!("failed to open GPUI iOS example window: {error:#}"),
+            match cx.open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| IosExample { tap_count: 0 })
+            }) {
+                Ok(_) => {
+                    did_open_window.set(true);
+                    cx.activate(true);
+                }
+                Err(error) => log::error!("failed to open GPUI iOS example window: {error:#}"),
+            }
         }
     }));
     gpui_ios::ios::ffi::run_app();

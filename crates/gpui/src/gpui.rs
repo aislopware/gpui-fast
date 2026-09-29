@@ -112,6 +112,7 @@ pub use debug_overlay::*;
 pub use element::*;
 pub use elements::*;
 pub use executor::*;
+pub use fast::composition;
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::stats::LayoutStats;
 pub use geometry::*;

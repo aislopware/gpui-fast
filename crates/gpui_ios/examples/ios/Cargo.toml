@@ -16,3 +16,4 @@ crate-type = ["staticlib"]
 gpui.workspace = true
 gpui_ios.workspace = true
 log.workspace = true
+objc2.workspace = true

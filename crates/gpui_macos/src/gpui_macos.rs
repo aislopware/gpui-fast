@@ -56,6 +56,7 @@ pub(crate) use window::*;
 #[cfg(feature = "font-kit")]
 pub(crate) use text_system::*;
 
+pub use fast::composition::MacNativeHost;
 pub use platform::MacPlatform;
 
 trait BoolExt {

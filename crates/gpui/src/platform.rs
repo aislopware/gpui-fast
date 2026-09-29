@@ -988,6 +988,15 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>);
     fn on_button_layout_changed(&self, _callback: Box<dyn FnMut()>) {}
     fn draw(&self, scene: &Scene);
+    fn create_native_host(
+        &self,
+        _params: crate::fast::composition::NativeHostParams,
+    ) -> Result<Rc<dyn crate::fast::composition::PlatformNativeHost>> {
+        crate::fast::composition::unsupported()
+    }
+    fn present_natives(&self, scene: &Scene, _natives: &crate::fast::composition::NativePresent) {
+        self.draw(scene)
+    }
     /// Installs the sink that receives every frame [`Self::draw`] submits once it has been
     /// presented, or removes it with `None`. Called on the main thread; the sink may run on
     /// any thread. A platform that cannot observe presentation ignores the sink.

@@ -2,6 +2,7 @@
 
 mod a11y;
 pub(crate) mod cg_types;
+pub mod composition;
 mod dispatcher;
 mod display;
 mod events;
