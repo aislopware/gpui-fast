@@ -5,6 +5,7 @@
 //! owns GPU resources and shaders while leaving application lifecycle,
 //! windowing, and input to each platform backend.
 
+pub mod fast;
 mod metal_atlas;
 pub mod metal_renderer;
 mod presentation_pacing;
