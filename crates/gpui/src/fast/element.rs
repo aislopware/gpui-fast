@@ -121,8 +121,8 @@ struct Placement {
 /// Whether an element nested in no other with a record is recorded this
 /// frame. See [`Placement`].
 enum Probation {
-    /// It was recorded last frame, or stood still.
-    Record,
+    /// It was recorded last frame, or stood still, where it was drawn then.
+    Record(Bounds<Pixels>),
     /// It moved, or was not drawn, last frame: drawn as upstream draws it,
     /// its placement noted, last frame's bounds if it had one.
     Skip(Option<Bounds<Pixels>>),
@@ -354,8 +354,16 @@ impl ElementRecords {
         let root = &self.roots[root as usize];
         match (&root.records, root.placement) {
             _ if !root.usable => Probation::Skip(None),
-            (RootRecords::Frozen(_), _) if root.paint == Paint::Painted => Probation::Record,
-            (_, Some(Placement { still: true, .. })) => Probation::Record,
+            (RootRecords::Frozen(subtree), _) if root.paint == Paint::Painted => {
+                Probation::Record(subtree.records[0].context.bounds)
+            }
+            (
+                _,
+                Some(Placement {
+                    still: true,
+                    bounds,
+                }),
+            ) => Probation::Record(bounds),
             (_, placement) => Probation::Skip(placement.map(|placement| placement.bounds)),
         }
     }
@@ -494,6 +502,14 @@ enum Phase {
     Start,
     /// Drawn as upstream draws it, without a record.
     Plain,
+    /// A root of the kind that can be drawn again, but with an element of
+    /// another kind nested in it: drawn as upstream draws it, its place
+    /// kept for the next frame. See [`Placement`].
+    Ineligible {
+        key: u64,
+        layout_id: LayoutId,
+        previous: Option<Bounds<Pixels>>,
+    },
     /// Drawn as upstream draws it, with everything nested in it, while it
     /// is not recorded. See [`Placement`].
     Skipped {
@@ -653,6 +669,15 @@ fn own(element: &mut dyn Any) -> Option<Own<'_>> {
 }
 
 impl Own<'_> {
+    /// Whether the element itself, leaving aside what is nested in it, is of
+    /// a kind that can be drawn again from last frame.
+    fn plain(&self) -> bool {
+        match self {
+            Own::Div(div) => plain_div(div),
+            Own::Text { .. } => true,
+        }
+    }
+
     /// What it was built with, for a record, but for a `div`'s style, which
     /// `lent_style` is, when a record of last frame lends it.
     fn snapshot(&self, lent_style: Option<Rc<StyleRefinement>>) -> Snapshot {
@@ -807,19 +832,21 @@ fn subtree_eligible(parts: ElementParts) -> bool {
     if let Some(eligible) = parts.state.eligible {
         return eligible;
     }
-    let eligible = match own(parts.element) {
-        Some(Own::Div(div)) => {
-            plain_div(div)
-                && div.children.iter_mut().all(|child| {
-                    let child: &mut AnyElement = child;
-                    subtree_eligible(child_parts(child))
-                })
-        }
-        Some(Own::Text { .. }) => true,
-        None => false,
-    };
+    let eligible = own(parts.element).is_some_and(|own| own.plain() && nested_eligible(own));
     parts.state.eligible = Some(eligible);
     eligible
+}
+
+/// Whether every element nested in `own` can be drawn again from last
+/// frame, for an element found [`Own::plain`] itself.
+fn nested_eligible(own: Own) -> bool {
+    match own {
+        Own::Div(div) => div.children.iter_mut().all(|child| {
+            let child: &mut AnyElement = child;
+            subtree_eligible(child_parts(child))
+        }),
+        Own::Text { .. } => true,
+    }
 }
 
 /// Whether `parts`, eligible, and every element nested in it were built as
@@ -921,26 +948,59 @@ fn request_retained_layout<E: Element>(
         drawable.fast_retention.phase = Phase::Plain;
         return drawable.request_layout(window, cx);
     }
-    let id = drawable.element.id();
-    let position = key_position(window);
-    let key = position.key(id.as_ref());
-    if !subtree_eligible(ElementParts::new(
-        &mut drawable.element,
-        &mut drawable.fast_retention,
-    )) {
+    // Nested in an element being compared, it was looked at with it.
+    let own_plain = match drawable.fast_retention.eligible {
+        Some(eligible) => eligible,
+        None => own(&mut drawable.element).is_some_and(|own| own.plain()),
+    };
+    if !own_plain {
+        drawable.fast_retention.eligible = Some(false);
         drawable.fast_retention.phase = Phase::Plain;
         return drawable.request_layout(window, cx);
     }
-    if window.retained_state.recording_elements == 0
-        && let Probation::Skip(previous) = window.rendered_frame.retained.elements.probation(key)
-    {
-        let layout_id = request_skipped_layout(drawable, window, cx);
-        drawable.fast_retention.phase = Phase::Skipped {
-            key,
-            layout_id,
-            previous,
+    let id = drawable.element.id();
+    let position = key_position(window);
+    let key = position.key(id.as_ref());
+    // A root that moved is skipped before the elements nested in it are
+    // looked at: rows under a scroll would otherwise be walked every frame
+    // only to be drawn as upstream draws them. One never drawn here is
+    // looked at, for the elements nested in it to be drawn again on their
+    // own at once should it hold one that cannot be.
+    let probation = (window.retained_state.recording_elements == 0)
+        .then(|| window.rendered_frame.retained.elements.probation(key));
+    if let Some(Probation::Skip(previous @ Some(_))) = probation {
+        return request_skipped_root(drawable, key, previous, window, cx);
+    }
+    let eligible = match drawable.fast_retention.eligible {
+        Some(eligible) => eligible,
+        None => {
+            let eligible = own(&mut drawable.element).is_some_and(nested_eligible);
+            drawable.fast_retention.eligible = Some(eligible);
+            eligible
+        }
+    };
+    if !eligible {
+        let layout_id = drawable.request_layout(window, cx);
+        // A root keeps its place, so that it is not skipped next frame as a
+        // root never drawn there, which would skip the elements nested in it
+        // that can be drawn again on their own.
+        drawable.fast_retention.phase = match probation {
+            Some(Probation::Record(previous)) => Phase::Ineligible {
+                key,
+                layout_id,
+                previous: Some(previous),
+            },
+            Some(Probation::Skip(previous)) => Phase::Ineligible {
+                key,
+                layout_id,
+                previous,
+            },
+            None => Phase::Plain,
         };
         return layout_id;
+    }
+    if let Some(Probation::Skip(None)) = probation {
+        return request_skipped_root(drawable, key, None, window, cx);
     }
     let previous = window
         .rendered_frame
@@ -1003,6 +1063,24 @@ fn request_retained_layout<E: Element>(
             previous_bounds: None,
         }),
         None => Phase::Plain,
+    };
+    layout_id
+}
+
+/// Requests the layout of a root not recorded this frame, `previous` where
+/// it was drawn last frame, if it was. See [`Placement`].
+fn request_skipped_root<E: Element>(
+    drawable: &mut Drawable<E>,
+    key: u64,
+    previous: Option<Bounds<Pixels>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> LayoutId {
+    let layout_id = request_skipped_layout(drawable, window, cx);
+    drawable.fast_retention.phase = Phase::Skipped {
+        key,
+        layout_id,
+        previous,
     };
     layout_id
 }
@@ -1136,6 +1214,19 @@ fn prepaint_retained<E: Element>(drawable: &mut Drawable<E>, window: &mut Window
         } => {
             let bounds = window.layout_bounds(layout_id);
             leave_placement(key, bounds, previous == Some(bounds), window);
+            drawable.fast_retention.phase = Phase::Plain;
+            return drawable.prepaint(window, cx);
+        }
+        Phase::Ineligible {
+            key,
+            layout_id,
+            previous,
+        } => {
+            // Standing still unless it is known to have moved, so that the
+            // elements nested in it are not skipped for it next frame.
+            let bounds = window.layout_bounds(layout_id);
+            let still = previous.is_none_or(|previous| previous == bounds);
+            leave_placement(key, bounds, still, window);
             drawable.fast_retention.phase = Phase::Plain;
             return drawable.prepaint(window, cx);
         }

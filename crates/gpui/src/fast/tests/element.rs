@@ -203,3 +203,66 @@ fn a_view_drawn_again_carries_what_a_spliced_view_in_it_did_not(cx: &mut TestApp
         draw(cx);
     }
 }
+
+struct Buttons {
+    labels: Vec<SharedString>,
+}
+
+impl Render for Buttons {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .children(
+                self.labels
+                    .iter()
+                    .cloned()
+                    .enumerate()
+                    .map(|(index, label)| {
+                        div()
+                            .flex()
+                            .h(px(20.))
+                            .child(div().w(px(80.)).child(label))
+                            .child(
+                                div()
+                                    .id(index)
+                                    .w(px(20.))
+                                    .hover(|style| style.bg(hsla(0.5, 0.5, 0.5, 1.)))
+                                    .child("x"),
+                            )
+                    }),
+            )
+    }
+}
+
+/// A plain row holding an interactive element is drawn as upstream draws it,
+/// but it is kept where it was, so that its plain cells are drawn again on
+/// their own rather than skipped as though the row had just appeared.
+#[gpui::test]
+fn plain_elements_beside_an_interactive_one_are_reused(cx: &mut TestAppContext) {
+    let window: WindowHandle<Buttons> = cx.add_window(|_, _| Buttons {
+        labels: vec!["a".into(), "b".into(), "c".into()],
+    });
+    for _ in 0..4 {
+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+    cx.update_window(window.into(), |_, window, _| window.reset_layout_stats())
+        .unwrap();
+    window
+        .update(cx, |buttons, _, cx| {
+            buttons.labels[1] = "B".into();
+            cx.notify();
+        })
+        .unwrap();
+    let stats = cx
+        .update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.layout_stats()
+        })
+        .unwrap();
+    // The label cells of the two rows that did not change, a div and its
+    // text each, and the text in every button.
+    assert_eq!(stats.elements_reused, 7, "{stats:?}");
+}
