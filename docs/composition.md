@@ -166,7 +166,7 @@ Slopty pins this branch and depends on `gpui_apple` directly on Apple targets fo
 | Holes composited with natives under them against one pass drawing the natives | `cargo test -p gpui_apple --lib composition_tests` |
 | macOS window: containers, hit testing, transactional frames, pointer and focus both ways, video without GPUI frames | `cargo test -p gpui_perf --test composition_macos` |
 | Same refresh, live (and the negative control) | `COMPOSITION_LIVE=1 GPUI_PRESENTED_AT_CALLBACK=1 cargo test -p gpui_perf --release --test composition_macos`, then with `GPUI_COMPOSITION_TRANSACTIONS=0` |
-| iOS simulator: root view, containers, hit testing, transactional frames, focus both ways | see below |
+| iOS simulator: root view, safe area, containers, hit testing, transactional frames, focus both ways | see below |
 
 The pixel oracle renders random scenes (quads, shadows, underlines, paths, paint layers
 and non-overlapping natives of sentinel colours) twice: GPUI with holes composited over the
@@ -186,9 +186,9 @@ SIMCTL_CHILD_GPUI_IOS_COMPOSITION_TEST=1 xcrun simctl launch --console-pty boote
 xcrun simctl shutdown booted
 ```
 
-All 18 checks pass on iOS 27.0 (iPhone 18 Pro simulator). Touches cannot be synthesised
-in-process there, so the recogniser's press is not exercised by a test; its configuration
-is.
+All 19 checks pass on iOS 27.0 (iPhone 18 Pro simulator), the safe area GPUI reports
+among them (62 and 34 pt, the window's own). Touches cannot be synthesised in-process
+there, so the recogniser's press is not exercised by a test; its configuration is.
 
 The live tests open one non-activating panel above other windows and never take the
 keyboard; their events are made in-process and sent to their own window.

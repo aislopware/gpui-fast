@@ -75,6 +75,28 @@ unsafe impl objc2::encode::Encode for CGRect {
     );
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UIEdgeInsets {
+    top: f64,
+    left: f64,
+    bottom: f64,
+    right: f64,
+}
+
+// SAFETY: the layout is UIKit's `UIEdgeInsets`: four `CGFloat`s, top, left, bottom, right.
+unsafe impl objc2::encode::Encode for UIEdgeInsets {
+    const ENCODING: objc2::encode::Encoding = objc2::encode::Encoding::Struct(
+        "UIEdgeInsets",
+        &[
+            objc2::encode::Encoding::Double,
+            objc2::encode::Encoding::Double,
+            objc2::encode::Encoding::Double,
+            objc2::encode::Encoding::Double,
+        ],
+    );
+}
+
 struct Stage {
     host: NativeHost,
     native_focus: FocusHandle,
@@ -234,6 +256,27 @@ async fn run(cx: &mut AsyncApp, window: WindowHandle<Stage>, failures: &Failures
             "the Metal view fills the root",
         );
     }
+    // The safe area GPUI reports still comes through the Metal view under the root.
+    // SAFETY: as above.
+    let window_insets: UIEdgeInsets = unsafe {
+        let window_view: *mut AnyObject = msg_send![root, window];
+        msg_send![window_view, safeAreaInsets]
+    };
+    let gpui_insets = window
+        .update(cx, |_, window, _| window.insets().safe_area)
+        .expect("the window is open");
+    failures.check(
+        (f64::from(f32::from(gpui_insets.top)) - window_insets.top).abs() < 0.5
+            && (f64::from(f32::from(gpui_insets.bottom)) - window_insets.bottom).abs() < 0.5
+            && window_insets.top > 0.,
+        format!(
+            "the safe area is the window's: top {} bottom {} (window {} {})",
+            f32::from(gpui_insets.top),
+            f32::from(gpui_insets.bottom),
+            window_insets.top,
+            window_insets.bottom
+        ),
+    );
 
     // Hit testing by direct calls, in the root's coordinates (the Metal view's too).
     // SAFETY: as above.
