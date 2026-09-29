@@ -168,7 +168,7 @@ impl WindowInvalidator {
         let mut inner = self.inner.borrow_mut();
         inner.update_count += 1;
         inner.dirty_views.insert(entity);
-        if inner.draw_phase == DrawPhase::None {
+        if crate::fast::dependencies::notify_asks_for_a_frame(inner.draw_phase) {
             #[cfg(feature = "profiler")]
             let dirty_at = Self::record_frame_dirty(&mut inner);
             let became_dirty = !inner.dirty;

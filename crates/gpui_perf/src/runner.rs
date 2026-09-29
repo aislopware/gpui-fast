@@ -133,6 +133,8 @@ pub struct PhaseAverages {
     pub draws: f64,
     pub views_built: f64,
     pub views_reused: f64,
+    pub elements_built: f64,
+    pub elements_reused: f64,
 }
 
 impl PhaseAverages {
@@ -155,6 +157,8 @@ impl PhaseAverages {
             draws: stats.frames as f64 / n,
             views_built: stats.views_built as f64 / n,
             views_reused: stats.views_reused as f64 / n,
+            elements_built: stats.elements_built as f64 / n,
+            elements_reused: stats.elements_reused as f64 / n,
         }
     }
 }
@@ -301,9 +305,24 @@ fn new_context() -> HeadlessAppContext {
     let text_system = Arc::new(gpui_wgpu::CosmicTextSystem::new_without_system_fonts(
         "IBM Plex Sans",
     ));
-    let mut cx = HeadlessAppContext::new(text_system);
+    let mut cx = HeadlessAppContext::with_asset_source(text_system, Arc::new(Icons));
     cx.update(|cx| load_fonts(cx));
     cx
+}
+
+/// The icons scenarios draw with `svg()`: any path under `icons/` is one
+/// small glyph, rasterized like a real icon set's.
+struct Icons;
+
+impl gpui::AssetSource for Icons {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        const ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M2 3h12v10H2z M4 6l3 2-3 2 M8 11h4" fill="none" stroke="black" stroke-width="1.5"/></svg>"#;
+        Ok(path.starts_with("icons/").then_some(Cow::Borrowed(ICON)))
+    }
+
+    fn list(&self, _: &str) -> gpui::Result<Vec<gpui::SharedString>> {
+        Ok(Vec::new())
+    }
 }
 
 /// Opens a window showing a freshly built scenario and draws its first frame.
@@ -667,7 +686,7 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
         let _ = writeln!(out);
 
         type Row = (&'static str, fn(&RunReport) -> f64, usize);
-        let rows: [Row; 22] = [
+        let rows: [Row; 26] = [
             ("frame mean ms", |r| r.frame.mean_ms, 3),
             ("frame p50 ms", |r| r.frame.p50_ms, 3),
             ("frame p95 ms", |r| r.frame.p95_ms, 3),
@@ -687,6 +706,10 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
             ("measure rebinds", |r| r.phases.measure_rebinds, 1),
             ("layout computes", |r| r.phases.compute_layout_calls, 1),
             ("draws", |r| r.phases.draws, 2),
+            ("views built", |r| r.phases.views_built, 1),
+            ("views reused", |r| r.phases.views_reused, 1),
+            ("elements built", |r| r.phases.elements_built, 1),
+            ("elements reused", |r| r.phases.elements_reused, 1),
             ("allocations", |r| r.allocations, 1),
             ("allocated KiB", |r| r.allocated_kib, 1),
             ("step ms (not counted)", |r| r.step.mean_ms, 3),

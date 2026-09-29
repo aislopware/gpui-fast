@@ -317,16 +317,35 @@ fn measure_text(
     // or one it fits within unwrapped, unless truncation is involved either
     // way: a truncated layout would answer an unconstrained probe with the
     // truncated size.
+    //
+    // It answers a probe for the unwrapped size only if it did not wrap. One
+    // that wrapped may have been kept from an earlier frame, taken in a
+    // narrower box than the text is in now, and answering from it would keep
+    // the text that narrow. The unwrapped size is then measured, but the
+    // wrapped lines kept: drawn from scratch, Taffy asks for the unwrapped
+    // size before it lays the text out at its width, and whatever it asks
+    // since, the text is painted as last laid out at a width.
+    let mut keep_wrapped = false;
     if let Some(text_layout) = layout.0.borrow().as_ref()
         && let Some(size) = text_layout.size
-        && (wrap_width.is_none()
-            || wrap_width == text_layout.wrap_width
-            || (text_layout.wrap_width.is_none()
-                && wrap_width.is_some_and(|wrap_width| size.width <= wrap_width)))
         && truncate_width.is_none()
         && text_layout.truncate_width.is_none()
     {
-        return size;
+        let wrapped = || {
+            !text_layout
+                .lines
+                .iter()
+                .all(|line| line.wrap_boundaries().is_empty())
+        };
+        if wrap_width.is_none() && wrapped() {
+            keep_wrapped = true;
+        } else if wrap_width.is_none()
+            || wrap_width == text_layout.wrap_width
+            || (text_layout.wrap_width.is_none()
+                && wrap_width.is_some_and(|wrap_width| size.width <= wrap_width))
+        {
+            return size;
+        }
     }
 
     let runs = inputs.runs();
@@ -380,6 +399,9 @@ fn measure_text(
         .shape_text(text, font_size, &runs, wrap_width, text_style.line_clamp)
         .log_err()
     else {
+        if keep_wrapped {
+            return Size::default();
+        }
         layout.0.borrow_mut().replace(TextLayoutInner {
             lines: Default::default(),
             len: 0,
@@ -397,6 +419,9 @@ fn measure_text(
         let line_size = line.size(line_height);
         size.height += line_size.height;
         size.width = size.width.max(line_size.width).ceil();
+    }
+    if keep_wrapped {
+        return size;
     }
     layout.0.borrow_mut().replace(TextLayoutInner {
         lines,
@@ -874,6 +899,14 @@ pub(crate) fn shape_line(
         .shaping
         .shape_line(&*cache.platform_text_system, text, font_size, runs)
 }
+
+/// A shaped line's decoration runs. Most lines carry one, and highlighted
+/// ones a handful. Upstream kept room for 32 in the line itself, which made
+/// every `ShapedLine` three kilobytes to move and copy: 15% of the
+/// instructions of a frame scrolling a highlighted editor. Room for four
+/// keeps a line of a few colours, a terminal row or a token or two, from
+/// allocating; room for one did no better and allocated for those.
+pub(crate) type DecorationRuns = smallvec::SmallVec<[DecorationRun; 4]>;
 
 /// The decoration runs of a line about to be measured. Most lines carry one
 /// decoration run, and highlighted ones a handful; reserving for the worst

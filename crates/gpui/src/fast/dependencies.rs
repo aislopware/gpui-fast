@@ -607,6 +607,19 @@ pub(crate) fn note_access(entities: &EntityMap, entity_id: EntityId) {
     }
 }
 
+/// Whether a view notified while its window is in `phase` asks for a frame.
+/// One notified as the window is prepainted or painted asks for none, as
+/// upstream has it, so that a view cannot keep its window drawing; it is
+/// built again whenever the next frame is drawn. The focus listeners run
+/// once the frame is drawn, and a view one of them notifies, a caret
+/// starting to blink, would wait for whatever else draws the next frame.
+pub(crate) fn notify_asks_for_a_frame(phase: crate::window::DrawPhase) -> bool {
+    matches!(
+        phase,
+        crate::window::DrawPhase::None | crate::window::DrawPhase::Focus
+    )
+}
+
 /// Records that `entity_id` is notified. A notification that follows an
 /// update marks the entity changed. So does one while a subtree is being
 /// drawn — a view changing a model it read as it renders — or while the

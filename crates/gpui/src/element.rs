@@ -241,7 +241,7 @@ impl GlobalElementId {
 pub(crate) trait ElementObject {
     fn inner_element(&mut self) -> &mut dyn Any;
 
-    fn fast_element_id(&self) -> Option<ElementId>;
+    fn fast_retention(&mut self) -> crate::fast::element::ElementParts<'_>;
 
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId;
 
@@ -262,6 +262,7 @@ pub struct Drawable<E: Element> {
     /// The drawn element.
     pub element: E,
     phase: ElementDrawPhase<E::RequestLayoutState, E::PrepaintState>,
+    pub(crate) fast_retention: crate::fast::element::DrawableRetention,
 }
 
 #[derive(Default)]
@@ -300,10 +301,11 @@ impl<E: Element> Drawable<E> {
         Drawable {
             element,
             phase: ElementDrawPhase::Start,
+            fast_retention: crate::fast::element::DrawableRetention::default(),
         }
     }
 
-    fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
+    pub(crate) fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
         match mem::take(&mut self.phase) {
             ElementDrawPhase::Start => {
                 let element_id = self.element.id();
@@ -577,23 +579,23 @@ where
         &mut self.element
     }
 
-    fn fast_element_id(&self) -> Option<ElementId> {
-        self.element.id()
+    fn fast_retention(&mut self) -> crate::fast::element::ElementParts<'_> {
+        crate::fast::element::ElementParts::new(&mut self.element, &mut self.fast_retention)
     }
 
     #[inline]
     fn request_layout(&mut self, window: &mut Window, cx: &mut App) -> LayoutId {
-        Drawable::request_layout(self, window, cx)
+        crate::fast::element::request_layout(self, window, cx)
     }
 
     #[inline]
     fn prepaint(&mut self, window: &mut Window, cx: &mut App) {
-        Drawable::prepaint(self, window, cx);
+        crate::fast::element::prepaint(self, window, cx);
     }
 
     #[inline]
     fn paint(&mut self, window: &mut Window, cx: &mut App) {
-        Drawable::paint(self, window, cx);
+        crate::fast::element::paint(self, window, cx);
     }
 
     #[inline]
@@ -603,7 +605,7 @@ where
         window: &mut Window,
         cx: &mut App,
     ) -> Size<Pixels> {
-        Drawable::layout_as_root(self, available_space, window, cx)
+        crate::fast::element::layout_as_root(self, available_space, window, cx)
     }
 }
 

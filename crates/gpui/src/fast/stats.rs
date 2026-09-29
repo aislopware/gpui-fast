@@ -73,6 +73,14 @@ pub struct LayoutStats {
     /// Views and cached views drawn again from what they drew on the last
     /// frame, without being built.
     pub views_reused: u64,
+    /// Elements laid out, prepainted and painted in retained subtrees of
+    /// elements: a `div` or a piece of text built this frame and drawn as
+    /// built, where it could have been drawn from last frame.
+    pub elements_built: u64,
+    /// Elements drawn again from what they drew on the last frame because
+    /// they were built this frame as they were built then, each element of
+    /// a subtree drawn again counted.
+    pub elements_reused: u64,
 }
 
 /// How long each phase of the frame took, waiting to be folded into the
@@ -137,6 +145,8 @@ pub(crate) struct MeasureTally {
     calls: u64,
     time: Duration,
     compute_started_at: Option<Instant>,
+    /// The nodes measured.
+    measured: Vec<crate::LayoutId>,
 }
 
 impl MeasureTally {
@@ -145,9 +155,10 @@ impl MeasureTally {
         self.timed.then(Instant::now)
     }
 
-    /// Counts a measurement started by [`Self::start`].
-    pub(crate) fn finish(&mut self, started_at: Option<Instant>) {
+    /// Counts a measurement of `node` started by [`Self::start`].
+    pub(crate) fn finish(&mut self, started_at: Option<Instant>, node: taffy::NodeId) {
         self.calls += 1;
+        self.measured.push(node.into());
         if let Some(started_at) = started_at {
             self.time += started_at.elapsed();
         }
@@ -179,6 +190,7 @@ pub(crate) fn begin_measure_tally(engine: &TaffyLayoutEngine) -> MeasureTally {
         calls: 0,
         time: Duration::ZERO,
         compute_started_at: timed.then(Instant::now),
+        measured: Vec::new(),
     }
 }
 
@@ -192,6 +204,7 @@ pub(crate) fn finish_measure_tally(engine: &mut TaffyLayoutEngine, tally: Measur
     }
     stats.measure_calls += tally.calls;
     stats.measure_time += tally.time;
+    engine.retention.measured.extend(tally.measured);
 }
 
 impl Window {

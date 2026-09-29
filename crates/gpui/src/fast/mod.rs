@@ -17,6 +17,7 @@
 pub mod composition;
 pub(crate) mod dependencies;
 pub(crate) mod dispatch;
+pub(crate) mod element;
 pub(crate) mod global_id;
 pub(crate) mod glyphs;
 pub(crate) mod interactivity;
@@ -28,10 +29,13 @@ pub(crate) mod line_breaks;
 pub(crate) mod path_cache;
 pub(crate) mod retained;
 pub(crate) mod scene;
+pub(crate) mod scroll;
 pub(crate) mod splice;
 pub(crate) mod stats;
 pub(crate) mod text;
 pub(crate) mod text_style;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_window;
 
 #[cfg(test)]
 mod tests;

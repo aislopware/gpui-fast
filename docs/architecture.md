@@ -423,6 +423,14 @@ in two steps (`fast/text.rs`):
 When a replay finds a different size, the new text is measured afresh, as on
 a first frame, and any measurement the replay left behind is discarded.
 
+A carried measurement that wrapped the text does not answer a probe with no
+width (Taffy's max-content probe) with its wrapped size: that probe is
+measured unwrapped, and the wrapped lines are kept for painting.
+
+A shaped line keeps four decoration runs inline rather than upstream's 32,
+which made every `ShapedLine` about 3.3 KB to move: most lines have one or
+two, and more spill to the heap.
+
 ## The scene
 
 ### Orderings
@@ -439,6 +447,15 @@ frame, so their orderings are **replayed** rather than computed again: only
 bounds that changed, and bounds that might overlap them, are compared. For a
 frame in which nothing moved, that turns the cost of ordering from a query per
 primitive into a copy.
+
+Each kind of primitive is then sorted by ordering, sprites by ordering and
+texture so that each texture's sprites are drawn in one batch
+(`fast/scene.rs`). The sort packs each primitive's key and index into one
+`u64`, leaves a kind that is already in order as it is, sorts the keys with
+an 11-bit radix sort, and moves the primitives once. It is stable: sprites of
+the same ordering and texture stay in the order they were painted, which is
+the order that matters where they overlap, inside a paint layer. Upstream also
+sorted them by atlas tile, which only made that order arbitrary.
 
 ### Other kept work
 

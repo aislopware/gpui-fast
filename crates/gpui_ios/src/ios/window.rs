@@ -816,6 +816,7 @@ fn handle_scroll_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
             delta: gpui::ScrollDelta::Pixels(delta),
             modifiers: window.modifiers.get(),
             touch_phase: phase,
+            momentum_phase: None,
         }));
     }
 }

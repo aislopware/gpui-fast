@@ -245,7 +245,11 @@ impl TaffyLayoutEngine {
 
                     let measured_size: Size<Pixels> =
                         (node_context.measure)(known_dimensions, available_space, window, cx);
-                    crate::fast::stats::MeasureTally::finish(&mut measures, measure_started_at);
+                    crate::fast::stats::MeasureTally::finish(
+                        &mut measures,
+                        measure_started_at,
+                        _id,
+                    );
                     snap_measured_size_to_device_pixels(measured_size, scale_factor).into()
                 },
             )
