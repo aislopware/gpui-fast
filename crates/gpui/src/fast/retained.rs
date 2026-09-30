@@ -232,6 +232,9 @@ pub(crate) struct RetainedState {
     /// How many elements whose layout is being requested are recorded, so
     /// that those nested in them are recorded with them.
     pub(crate) recording_elements: u32,
+    /// Content masks pushed so far, for a keyed stretch to tell whether it
+    /// pushed one. See [`crate::fast::keyed`].
+    pub(crate) content_mask_pushes: u32,
 }
 
 impl RetainedState {
@@ -256,6 +259,7 @@ impl RetainedState {
             element_keys: Vec::new(),
             skipping_elements: 0,
             recording_elements: 0,
+            content_mask_pushes: 0,
         }
     }
 

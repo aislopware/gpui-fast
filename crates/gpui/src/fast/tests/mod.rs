@@ -9,6 +9,7 @@ mod element_oracle;
 mod focus;
 mod focus_notify;
 mod global_id;
+mod keyed;
 mod keypad;
 mod layout;
 mod line_breaks;

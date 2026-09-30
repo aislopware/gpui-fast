@@ -136,6 +136,24 @@ unchanged, and a new entry needs as good a reason.
   place of `Option<AnyElement>`. `ViewElement` is `#[doc(hidden)]`, and the
   states are only ever handed back to it by GPUI.
 - `crates/gpui/Cargo.toml` names this repository and sets `publish = false`.
+- `Window::paint_keyed(key, origin, paint)` is new public API, the one
+  addition that is not forced (`fast/keyed.rs`; docs/retained-mode.md,
+  "Keyed paint"). An element that paints itself — a terminal's grid, a
+  chart, a code view — builds nothing retention could compare, so it painted
+  every frame whole: a 200 × 60 terminal paints its 12 000 cells again for a
+  blinking cursor. With it the element names each stretch it paints, a row
+  say, by a key standing for everything the stretch paints relative to an
+  origin, and a stretch whose key was painted last frame is copied from last
+  frame's scene, in place or moved by whole device pixels. It is opt-in,
+  paints exactly what painting afresh paints (the oracle test
+  `fast/tests/keyed.rs`), and takes nothing of GPUI's that upstream lacks
+  but the scene replay retention already has. Measured on Slopty's terminal
+  element, 200 × 60 with its rows keyed, in instructions per frame:
+  unchanged 3.12M → 0.37M (−88%), a blinking cursor 3.17M → 0.43M (−86%),
+  one row changing 3.53M → 0.80M (−77%), a line of output a frame 4.43M →
+  1.87M (−58%), every cell changing 25.01M → 25.07M (+0.2%). In
+  `gpui_perf`, `strip-scroll-keyed` takes 7.45M against `strip-scroll`'s
+  7.97M (−6.5%).
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what

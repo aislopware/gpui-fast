@@ -84,6 +84,13 @@ pub struct LayoutStats {
     /// Of the elements drawn again from last frame, those drawn again moved,
     /// as a row under a scroll is.
     pub elements_moved: u64,
+    /// Stretches painted under a key ([`Window::paint_keyed`]) by calling
+    /// their paint.
+    pub paints_keyed: u64,
+    /// Stretches drawn again from last frame under their key, moved or not.
+    pub paints_replayed: u64,
+    /// Of the stretches drawn again under their key, those drawn moved.
+    pub paints_moved: u64,
 }
 
 /// How long each phase of the frame took, waiting to be folded into the

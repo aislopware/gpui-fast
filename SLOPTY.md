@@ -366,6 +366,14 @@ Added in this fork:
 - `6cd5c42` test(gpui): `App::subscription_counts` and `TestAppContext::subscription_counts`
   (test-support) count the callbacks the app and its windows hold (`SubscriptionCounts`)
 
+- perf(gpui): `Window::paint_keyed`, the one public API the fork adds by choice: an
+  element that paints itself names stretches of its paint by keys, and a stretch whose
+  key was painted last frame is copied from it, in place or moved by whole device
+  pixels (`fast/keyed.rs`; docs/retained-mode.md, "Keyed paint"; the exception in
+  docs/upstream-sync.md). Slopty's terminal element with its rows keyed, 200 × 60, in
+  instructions per frame: unchanged −88%, a blinking cursor −86%, one row changing
+  −77%, a line of output a frame −58%, every cell changing +0.2%
+
 ### Candidates for longbridge
 
 Generic to gpui-fast, not to Slopty, and worth a pull request to longbridge/gpui-fast:
