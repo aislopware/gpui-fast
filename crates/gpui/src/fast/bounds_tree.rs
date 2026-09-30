@@ -14,6 +14,14 @@ use std::{
 /// before building the grid costs less than going on without it.
 const REPLAY_SEARCH_BUDGET: usize = 1 << 15;
 
+/// The budget of a replay that follows one that ran out of its own. A frame
+/// that ran out moved most of what it drew, and so does the next one while
+/// the motion lasts (a scroll, a spring, a list sliding): searching its
+/// changed bounds costs the whole budget and then the grid is built anyway.
+/// A frame drawn at rest spends none of it, so the first frame after the
+/// motion is replayed as before and hands the next one the whole budget.
+const REPLAY_SEARCH_BUDGET_IN_MOTION: usize = 1 << 13;
+
 /// The side of a grid cell, in the units of the bounds. A frame's bounds are
 /// mostly a few dozen scaled pixels across, so each takes a cell or a few.
 const CELL_SIZE: f64 = 64.;
@@ -69,6 +77,8 @@ where
     /// How many more bounds replaying may compare against, over every search
     /// it makes, before the tree is built instead.
     replay_search_budget: usize,
+    /// Whether replaying ran out of its budget since the tree was cleared.
+    replay_ran_out: bool,
 }
 
 /// The grid a [`BoundsTree`] keeps its bounds in. Cell `(column, row)`
@@ -442,7 +452,8 @@ where
         self.cursor = 0;
         self.replaying = true;
         self.changed.clear();
-        self.replay_search_budget = REPLAY_SEARCH_BUDGET;
+        self.replay_search_budget = replay_search_budget(self.replay_ran_out);
+        self.replay_ran_out = false;
     }
 
     /// Clears the tree and forgets what was inserted before, so the next fill
@@ -464,6 +475,7 @@ where
                 self.recorded.push((new_bounds, ordering));
                 return ordering;
             }
+            self.replay_ran_out = true;
             self.replaying = false;
             self.build_from_recorded();
         }
@@ -513,6 +525,7 @@ where
                 self.recorded.push((bounds, ordering));
                 return ordering;
             }
+            self.replay_ran_out = true;
             self.replaying = false;
             self.build_from_recorded();
         }
@@ -544,6 +557,7 @@ where
     /// the last.
     pub fn take_previous(&mut self, other: &mut Self) {
         std::mem::swap(&mut self.previous, &mut other.recorded);
+        self.replay_search_budget = replay_search_budget(other.replay_ran_out);
     }
 
     /// The ordering `bounds` is given while the tree is being replayed, or
@@ -662,6 +676,16 @@ where
     }
 }
 
+/// The budget of a replay of the frame whose replay did or did not run out
+/// of its own.
+fn replay_search_budget(last_ran_out: bool) -> usize {
+    if last_ran_out {
+        REPLAY_SEARCH_BUDGET_IN_MOTION
+    } else {
+        REPLAY_SEARCH_BUDGET
+    }
+}
+
 /// What one bounds can stand for of several, as far as meeting others goes.
 enum Held<U>
 where
@@ -771,6 +795,7 @@ where
                 unmarked: false,
             },
             replay_search_budget: REPLAY_SEARCH_BUDGET,
+            replay_ran_out: false,
         }
     }
 }
@@ -961,6 +986,68 @@ mod tests {
                 }
                 fill(&mut tree, &frame);
             }
+        }
+    }
+
+    /// Frames that move everything they draw run a replay out of its budget,
+    /// and the frames after them replay on the smaller one until a frame
+    /// replays whole again. Every ordering is still what inserting afresh
+    /// gives, whether the frames take turns in two trees, as a window's two
+    /// scenes do, or follow one another in one.
+    #[test]
+    fn frames_in_motion_replay_on_a_smaller_budget_until_one_comes_to_rest() {
+        use super::{REPLAY_SEARCH_BUDGET, REPLAY_SEARCH_BUDGET_IN_MOTION};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let frame: Vec<_> = (0..600).map(|_| random_bounds(&mut rng)).collect();
+        let moved = |dx: f32| -> Vec<Bounds<f32>> {
+            frame
+                .iter()
+                .map(|bounds| Bounds {
+                    origin: Point {
+                        x: bounds.origin.x + dx,
+                        y: bounds.origin.y,
+                    },
+                    size: bounds.size,
+                })
+                .collect()
+        };
+
+        let mut tree = BoundsTree::default();
+        fill(&mut tree, &moved(0.));
+        fill(&mut tree, &moved(3.));
+        assert!(tree.replay_ran_out, "moving every bounds runs the replay out");
+        fill(&mut tree, &moved(6.));
+        assert!(tree.replay_ran_out);
+        fill(&mut tree, &moved(6.));
+        assert!(!tree.replay_ran_out, "a frame at rest replays whole");
+
+        let (full, in_motion) = (REPLAY_SEARCH_BUDGET, REPLAY_SEARCH_BUDGET_IN_MOTION);
+        let frames = [
+            (0., full),
+            (2., in_motion),
+            (4., in_motion),
+            (6., in_motion),
+            (6., in_motion),
+            (6., full),
+            (8., full),
+        ];
+        let [mut next, mut rendered] = [BoundsTree::default(), BoundsTree::default()];
+        for (frame_ix, (dx, budget)) in frames.into_iter().enumerate() {
+            next.clear();
+            next.take_previous(&mut rendered);
+            assert_eq!(next.replay_search_budget, budget, "frame {frame_ix}");
+            let mut inserted: Vec<(Bounds<f32>, u32)> = Vec::new();
+            for bounds in moved(dx) {
+                let expected = inserted
+                    .iter()
+                    .filter_map(|(other, order)| other.intersects(&bounds).then_some(*order))
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+                assert_eq!(next.insert(bounds), expected, "frame {frame_ix}");
+                inserted.push((bounds, expected));
+            }
+            std::mem::swap(&mut next, &mut rendered);
         }
     }
 
