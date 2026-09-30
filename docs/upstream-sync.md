@@ -177,6 +177,14 @@ unchanged, and a new entry needs as good a reason.
   remote desktop shows the far side's pointer, which only a picture can be. Drawn by
   the view, that pointer trails the hand by a frame on every move; as the system
   cursor it moves with the hand. Platforms other than macOS keep the arrow for it.
+- `gpui_platform::text_system()`, with `gpui_macos::text_system()` and
+  `gpui_ios::text_system()`, is new public API (`gpui_platform/src/fast/text_system.rs`,
+  `gpui_macos/src/fast/text_system.rs`): the platform's text system made without the
+  platform. Upstream's only way to the Mac's text system is the platform, which
+  panics off the main thread, and a test never runs on the main thread; Core Text
+  needs none, so a test that shapes and rasterises real glyphs (Slopty's terminal
+  paint oracle) takes it from here. Windows' and Linux's text systems need their
+  platform's devices and still come from a headless platform.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what
