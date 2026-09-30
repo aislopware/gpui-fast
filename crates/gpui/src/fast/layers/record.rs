@@ -66,4 +66,8 @@ pub(crate) struct LayerRecord {
     /// painted, by the views' ids: a frame that composites the layer lays
     /// them out again from these instead of rendering them (spec §6.3).
     pub(crate) view_layouts: Rc<FxHashMap<GlobalElementId, KeptLayout>>,
+    /// How far the debug bounds in `paint_range` have been moved from where
+    /// the content was painted (see
+    /// [`crate::fast::layers::reuse::carry_paint_records`]).
+    pub(crate) debug_moved: Point<Pixels>,
 }

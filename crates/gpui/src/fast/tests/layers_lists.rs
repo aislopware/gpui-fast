@@ -1429,3 +1429,117 @@ mod rows {
         });
     }
 }
+
+/// What tests read back after a frame composited a layer: the debug bounds
+/// of the content it did not paint, where it now shows.
+mod debug_bounds {
+    use super::{VIEWPORT_HEIGHT, VIEWPORT_WIDTH, composites, draw, wheel, with_window};
+    use crate::{
+        AnyWindowHandle, Bounds, Context, InteractiveElement as _, IntoElement,
+        ParentElement as _, Pixels, Render, ScrollHandle, StatefulInteractiveElement as _,
+        Styled as _, TestAppContext, Window, div, point, px, rgb, size,
+    };
+    use std::ops::Range;
+
+    const ROW: f32 = 20.;
+
+    /// A 100 px tall scroll container of forty 20 px rows, each with a
+    /// debug selector, over a white panel.
+    struct Page(ScrollHandle);
+
+    impl Render for Page {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().bg(rgb(0xffffff)).child(
+                div()
+                    .id("scroller")
+                    .overflow_y_scroll()
+                    .track_scroll(&self.0)
+                    .w(px(VIEWPORT_WIDTH))
+                    .h(px(VIEWPORT_HEIGHT))
+                    .children((0..40).map(|row| {
+                        div()
+                            .debug_selector(move || format!("row-{row}"))
+                            .h(px(ROW))
+                            .bg(rgb(0x100000 + row * 0x10))
+                    })),
+            )
+        }
+    }
+
+    /// The same rows in a uniform list.
+    struct UniformPage;
+
+    impl Render for UniformPage {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().bg(rgb(0xffffff)).child(
+                crate::uniform_list(
+                    "list",
+                    40,
+                    cx.processor(|_, range: Range<usize>, _, _| {
+                        range
+                            .map(|row| {
+                                div()
+                                    .debug_selector(move || format!("row-{row}"))
+                                    .w(px(VIEWPORT_WIDTH))
+                                    .h(px(ROW))
+                                    .bg(rgb(0x100000 + row as u32 * 0x10))
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .w(px(VIEWPORT_WIDTH))
+                .h(px(VIEWPORT_HEIGHT)),
+            )
+        }
+    }
+
+    fn row_bounds(cx: &mut TestAppContext, window: AnyWindowHandle, row: usize) -> Option<Bounds<Pixels>> {
+        with_window(cx, window, |window, _| {
+            window
+                .rendered_frame
+                .debug_bounds
+                .get(&format!("row-{row}"))
+                .copied()
+        })
+    }
+
+    /// Scrolls `window` down 5 px a frame, each scroll drawing its frame, and
+    /// checks after every frame that row 3 is reported where it shows.
+    fn scroll_and_check(cx: &mut TestAppContext, window: AnyWindowHandle) {
+        draw(cx, window);
+        let mut composited = false;
+        for frame in 1..=8 {
+            wheel(cx, window, -5.);
+            composited |= composites(cx, window);
+            let y = 3. * ROW - 5. * frame as f32;
+            assert_eq!(
+                row_bounds(cx, window, 3),
+                Some(Bounds::new(point(px(0.), px(y)), size(px(VIEWPORT_WIDTH), px(ROW)))),
+                "row 3 after {frame} frames"
+            );
+        }
+        assert!(composited, "some frames were composited");
+    }
+
+    #[crate::test]
+    fn a_composited_layer_keeps_its_contents_debug_bounds_where_they_show(
+        cx: &mut TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window: AnyWindowHandle = cx.add_window(|_, _| Page(ScrollHandle::new())).into();
+        scroll_and_check(cx, window);
+    }
+
+    #[crate::test]
+    fn a_composited_list_layer_keeps_its_rows_debug_bounds_where_they_show(
+        cx: &mut TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window: AnyWindowHandle = cx.add_window(|_, _| UniformPage).into();
+        scroll_and_check(cx, window);
+    }
+}

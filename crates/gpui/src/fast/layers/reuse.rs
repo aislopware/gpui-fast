@@ -121,13 +121,16 @@ pub(crate) fn carry_paint(window: &mut Window, id: &GlobalElementId) {
         return;
     };
     let range = record.paint_range.clone();
+    let mut debug_moved = record.debug_moved;
     let delta = layer.input.stale;
     let viewport = layer.input.viewport;
-    let mut carried = carry_paint_records(window, &range, delta, viewport, true);
+    let mut carried =
+        carry_paint_records(window, &range, delta, &mut debug_moved, viewport, true);
     let Some(layer) = window.fast_layers.layers.get_mut(id) else {
         return;
     };
     if let Some(record) = layer.record.as_mut() {
+        record.debug_moved = debug_moved;
         // The content's scene is the layer's, which is not carried.
         carried.start.scene_index = record.paint_range.start.scene_index;
         carried.end.scene_index = record.paint_range.end.scene_index;
@@ -141,18 +144,35 @@ pub(crate) fn carry_paint(window: &mut Window, id: &GlobalElementId) {
 /// again, returning where they lie in it: its window control hitboxes,
 /// moved by `delta` and clipped to `viewport`, cursor styles, input
 /// handlers, mouse listeners, element states if `element_states`, tab stops
-/// and line layouts. The scene is not carried.
+/// and line layouts; in tests, the debug bounds, moved to `delta` from where
+/// they were painted, `debug_moved` saying how far the range's had moved
+/// already, which it then says of the carried ones. The scene is not
+/// carried.
 #[inline]
 pub(crate) fn carry_paint_records(
     window: &mut Window,
     range: &Range<PaintIndex>,
     delta: Point<Pixels>,
+    debug_moved: &mut Point<Pixels>,
     viewport: Bounds<Pixels>,
     element_states: bool,
 ) -> Range<PaintIndex> {
     let start = window.paint_index();
     let next = &mut window.next_frame;
     let rendered = &mut window.rendered_frame;
+    // Unlike hitboxes, which the layer keeps as painted, debug bounds are
+    // read from the frame, which must hold where they show: a retained view
+    // drawn again copies them from it as they are.
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let by = delta - *debug_moved;
+        for (selector, bounds) in &rendered.debug_bounds_records
+            [range.start.debug_bounds_index..range.end.debug_bounds_index]
+        {
+            next.record_debug_bounds(selector.clone(), *bounds + by);
+        }
+    }
+    *debug_moved = delta;
     next.window_control_hitboxes.extend(
         rendered.window_control_hitboxes[range.start.fast_window_control_hitboxes_index
             ..range.end.fast_window_control_hitboxes_index]

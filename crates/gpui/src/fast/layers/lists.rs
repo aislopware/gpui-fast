@@ -223,6 +223,9 @@ struct Row {
     /// layer drops them when the row leaves its viewport: the row is
     /// rendered afresh before it shows again. See [`sort_rows`].
     dropped: bool,
+    /// How far the debug bounds in the row's paint records have been moved
+    /// from where the row was painted (see [`reuse::carry_paint_records`]).
+    debug_moved: Point<Pixels>,
 }
 
 impl Row {
@@ -887,7 +890,14 @@ fn carry_paint_rows(window: &mut Window, id: &GlobalElementId) {
         };
         let delta = row.delta(translation, scale_factor);
         let element_states = !row.dropped && !leaving.contains(ix);
-        row.paint = reuse::carry_paint_records(window, &row.paint, delta, viewport, element_states);
+        row.paint = reuse::carry_paint_records(
+            window,
+            &row.paint,
+            delta,
+            &mut row.debug_moved,
+            viewport,
+            element_states,
+        );
     }
     if let Some(layer) = window.fast_layers.layers.get_mut(id) {
         layer.rows.rows = rows;
@@ -2135,6 +2145,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                 prepaint,
                 paint: span.paint,
                 dropped: false,
+                debug_moved: Point::default(),
             },
         );
     }
@@ -2205,6 +2216,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
         has_paths,
         paths: Rc::from([]),
         view_layouts: Rc::default(),
+        debug_moved: Point::default(),
     });
     finish_records(window, id, &frame, records);
     if frame.mode == Mode::Repaint && !has_paths {

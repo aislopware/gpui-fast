@@ -797,6 +797,7 @@ fn repaint(
         has_paths,
         paths,
         view_layouts: Rc::new(mem::take(&mut painting.view_layouts)),
+        debug_moved: Point::default(),
     });
     let dirtied = layer
         .record
