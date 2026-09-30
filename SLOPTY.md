@@ -400,6 +400,15 @@ Added in this fork:
 - build: core-video 0.6.1 (zed has 0.5.2): its texture cache takes a `CVImageBuffer`, so
   the surface pass hands it the pixel buffer as one. An application sharing
   `CVPixelBuffer` with GPUI (Slopty's `slopty-ui`) takes 0.6.1 with it
+- perf(gpui): the tab order is sorted when it is read (`Window::focus_next`, `focus_prev`,
+  accessibility's count), not kept as a sum tree every tracked focus handle is inserted
+  into as it is painted, and replayed into for every view drawn from last frame
+  (`fast/tab_stop.rs`, a `#[path]` redirect of `tab_stop.rs`; upstream's tests moved to
+  `fast/tests/tab_stop.rs` unchanged). The tree was 25–35% of the samples of Slopty's echo
+  frames beside 60 shells and 60 notes; those frames now cost 43–56% less, the stream
+  frame beside the chrome 48%, the pointer frame 20%, the docked navigator 11–15%. In
+  `gpui_perf` the strip scenarios save 2–4.5% of their instructions and 39 allocations a
+  frame; nothing else moves
 - perf(gpui): the frame after one whose bounds-tree replay ran out of its search budget
   replays on 8,192 comparisons rather than 32,768 (`fast/bounds_tree.rs`), since a frame
   in motion spends the whole budget and builds the grid anyway; a frame at rest hands
@@ -591,6 +600,7 @@ Code gpui-fast copied from upstream, which the merge never conflicts on:
 | Upstream code | gpui-fast's copy | bd747337 sync |
 | --- | --- | --- |
 | `crates/gpui/src/bounds_tree.rs` | `crates/gpui/src/fast/bounds_tree.rs` (`#[path]` redirect) | unchanged upstream |
+| `crates/gpui/src/tab_stop.rs` | `crates/gpui/src/fast/tab_stop.rs` (`#[path]` redirect; upstream's tests in `fast/tests/tab_stop.rs`) | a change to the order's rules has to be ported |
 | `Window::paint_glyph` in `window.rs` | `Window::paint_glyph_in_run` in `fast/glyphs.rs` | atlas key passed by value (#64331), ported |
 | `ViewElement`'s `Element` bodies in `view.rs` | `fast/retained.rs` | upstream split them into helpers without changing behaviour; nothing to port |
 | `request_layout` bodies in `taffy.rs` | `fast/layout.rs` | unchanged upstream |
