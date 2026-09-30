@@ -94,6 +94,9 @@ pub(crate) fn culled(
     bounds: &Bounds<ScaledPixels>,
     mask: &Bounds<ScaledPixels>,
 ) {
+    if !noting(scene) {
+        return;
+    }
     let edges = |bounds: &Bounds<ScaledPixels>| {
         [
             bounds.left().0,
@@ -109,6 +112,9 @@ pub(crate) fn culled(
 /// Notes that a paint layer at `bounds` was left out for lying outside the
 /// window's content mask.
 pub(crate) fn culled_layer(window: &mut Window, bounds: &Bounds<crate::Pixels>) {
+    if !noting(&window.next_frame.scene) {
+        return;
+    }
     let mask = window.content_mask().bounds;
     let edges = |bounds: &Bounds<crate::Pixels>| {
         [
@@ -148,6 +154,13 @@ pub(crate) fn begin_noting(scene: &mut Scene, noting: bool) -> Around {
 #[inline]
 pub(crate) fn end_noting(scene: &mut Scene, around: Around) -> Noted {
     scene.fast_painted.noted.end(around)
+}
+
+/// Whether an element being painted notes what it paints, for what is
+/// noted only then to be worked out only then.
+#[inline]
+pub(crate) fn noting(scene: &Scene) -> bool {
+    scene.fast_painted.noted.is_active()
 }
 
 /// Notes what `noted` says, as a record keeps it.
