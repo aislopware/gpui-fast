@@ -301,7 +301,10 @@ fn new_context() -> HeadlessAppContext {
     let text_system = Arc::new(gpui_wgpu::CosmicTextSystem::new_without_system_fonts(
         "IBM Plex Sans",
     ));
-    let mut cx = HeadlessAppContext::new(text_system);
+    let mut cx = HeadlessAppContext::with_asset_source(
+        text_system,
+        Arc::new(crate::scenarios::scroll::ScenarioAssets),
+    );
     cx.update(|cx| load_fonts(cx));
     cx
 }
@@ -845,6 +848,44 @@ mod tests {
                 .unwrap();
             assert_eq!(stats.frames, options.frames as u64);
             assert!(!painted_quads(&mut cx, window).is_empty() || stats.lines_shaped > 0);
+        }
+    }
+
+    /// The scroll scenarios scroll by dispatching wheel events over their
+    /// content: every frame draws by itself, because the wheel notified the
+    /// view, and what it paints moves.
+    #[test]
+    fn scroll_scenarios_scroll_with_the_wheel() {
+        const NAMES: [&str; 4] = [
+            "scroll-child-view",
+            "scroll-same-view",
+            "scroll-uniform-list",
+            "scroll-list",
+        ];
+        let options = Options::default();
+        for name in NAMES {
+            let index = all_scenarios()
+                .iter()
+                .position(|scenario| scenario.name() == name)
+                .unwrap_or_else(|| panic!("no scenario named {name}"));
+            let scenario = fresh_scenario(index);
+            let mut cx = new_context();
+            let (window, root) = open(&mut cx, &*scenario, true, &options);
+            let mut painted = painted_quads(&mut cx, window);
+            assert!(
+                painted.iter().any(|line| line.starts_with("monochrome")),
+                "{name}: no icon or text painted"
+            );
+            for n in 0..6 {
+                let sample = frame(&mut cx, window, &*scenario, &root, n);
+                assert!(!sample.forced, "{name}: frame {n} drew nothing by itself");
+                let now = painted_quads(&mut cx, window);
+                assert_ne!(
+                    now, painted,
+                    "{name}: frame {n} painted what frame {n} - 1 did"
+                );
+                painted = now;
+            }
         }
     }
 }
