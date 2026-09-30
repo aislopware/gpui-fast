@@ -227,6 +227,13 @@ fn render_row(
         .flex()
         .flex_row()
         .gap_1()
+        // Glyphs stay inside their line and the line inside the row. A glyph
+        // reaching past its row is drawn from a layer's overscan row where a
+        // list leaves the row out, and one reaching past its line is drawn
+        // at the line's ordering: both differ from drawing from scratch in
+        // ways the rows are not here to test.
+        .text_size(px(8.))
+        .line_height(px(12.))
         .h(px(if fixed {
             UNIFORM_ROW_HEIGHT
         } else {
