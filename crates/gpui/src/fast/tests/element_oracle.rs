@@ -10,6 +10,11 @@
 //! everything it retains before every frame. Every frame, the two must paint
 //! the same primitives in the same places and leave the same hitboxes,
 //! dispatch tree, listeners and focus.
+//!
+//! A spacer above the board, a margin beside its clipped section and its
+//! scroll move what they hold, often by whole device pixels, for elements to
+//! be drawn again moved (see [`crate::fast::shift`]), in a mask that moved
+//! with them or one that stood still.
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -162,6 +167,14 @@ enum Change {
     Scroll {
         y: f32,
     },
+    /// Sets the height of a spacer above the board, moving all of it.
+    Spacer {
+        height: f32,
+    },
+    /// Sets the margin left of the clipped section, moving it with its clip.
+    Margin {
+        left: f32,
+    },
     Focus {
         item: usize,
     },
@@ -235,14 +248,29 @@ impl Change {
             61..64 => Change::ClipWidth {
                 width: rng.random_range(40.0..400.0),
             },
-            64..68 => Change::Scroll {
+            64..66 => Change::Scroll {
                 y: rng.random_range(0.0..200.0),
+            },
+            // By half pixels, whole device pixels at a scale factor of 2.
+            66..68 => Change::Scroll {
+                y: rng.random_range(0..400) as f32 / 2.,
             },
             68..71 => Change::Focus { item },
             71..72 => Change::Blur,
             72..82 => Change::Notify,
             82..87 => Change::Nothing,
-            87..90 => Change::Nested,
+            87..89 => Change::Nested,
+            89..90 => {
+                if rng.random_bool(0.5) {
+                    Change::Spacer {
+                        height: rng.random_range(0..60) as f32 / 2.,
+                    }
+                } else {
+                    Change::Margin {
+                        left: [0., 0.5, 3., 7.25, 12.][rng.random_range(0..5)],
+                    }
+                }
+            }
             90..97 => Change::MoveMouse {
                 x: rng.random_range(0.0..800.0),
                 y: rng.random_range(0.0..600.0),
@@ -337,6 +365,8 @@ struct Board {
     section_color: usize,
     section_opacity: f32,
     clip_width: f32,
+    spacer: f32,
+    margin: f32,
     scroll: ScrollHandle,
     focus: Vec<FocusHandle>,
     nested: Entity<Ticker>,
@@ -353,6 +383,8 @@ impl Board {
             section_color: 0,
             section_opacity: 1.,
             clip_width: 200.,
+            spacer: 0.,
+            margin: 0.,
             scroll: ScrollHandle::new(),
             focus: (0..128).map(|_| cx.focus_handle()).collect(),
             nested: cx.new(|_| Ticker { count: 0 }),
@@ -433,6 +465,8 @@ impl Board {
             Change::SectionOpacity { opacity } => self.section_opacity = opacity,
             Change::ClipWidth { width } => self.clip_width = width,
             Change::Scroll { y } => self.scroll.set_offset(point(px(0.), px(-y))),
+            Change::Spacer { height } => self.spacer = height,
+            Change::Margin { left } => self.margin = left,
             Change::Focus { item: at } => {
                 if let Some(at) = item(at) {
                     let id = self.items[at].id as usize;
@@ -460,6 +494,7 @@ impl Render for Board {
             .flex()
             .flex_col()
             .gap_1()
+            .child(div().h(px(self.spacer)))
             // Inherits a text color and an opacity that change.
             .child(
                 div()
@@ -470,9 +505,10 @@ impl Render for Board {
                     .opacity(self.section_opacity)
                     .children(first.iter().map(|&item| self.row(item))),
             )
-            // Clipped to a width that changes.
+            // Clipped to a width that changes, beside a margin that changes.
             .child(
                 div()
+                    .ml(px(self.margin))
                     .overflow_hidden()
                     .w(px(self.clip_width))
                     .h(px(48.))
@@ -541,6 +577,24 @@ impl Render for Board {
                     )
                     .child(div().size(px(8.)).bg(PALETTE[self.quote % PALETTE.len()])),
             )
+            // Clipped by a box larger than the window, which the spacer
+            // moves: what it holds is clipped as by the window until the
+            // box's top edge comes into it.
+            .child(
+                div()
+                    .absolute()
+                    .left(px(-600.))
+                    .top(px(-600. + self.spacer * 40.))
+                    .size(px(3000.))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(650.))
+                            .top(px(650.))
+                            .child("curtain"),
+                    ),
+            )
             // Never changes.
             .child(
                 div().flex().flex_row().gap_2().children(
@@ -574,7 +628,7 @@ impl Render for Ticker {
 
 /// The no-op text system, except that every glyph rasterizes to a small box,
 /// so text paints a sprite per glyph and where each glyph went is compared.
-struct GlyphBoxTextSystem(NoopTextSystem);
+pub(super) struct GlyphBoxTextSystem(pub(super) NoopTextSystem);
 
 impl PlatformTextSystem for GlyphBoxTextSystem {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
@@ -721,7 +775,7 @@ fn draw(
     cx: &mut TestAppContext,
     window: WindowHandle<Board>,
     from_scratch: bool,
-) -> (Vec<String>, Vec<String>, u64) {
+) -> (Vec<String>, Vec<String>, u64, u64) {
     cx.update_window(window.into(), |_, window, cx| {
         // The incremental window counts the elements drawn again since its
         // last frame was compared, which the test app draws too when a
@@ -731,12 +785,13 @@ fn draw(
             window.reset_layout_stats();
         }
         window.draw(cx).clear(cx);
-        let reused = window.layout_stats().elements_reused;
+        let stats = window.layout_stats();
         window.reset_layout_stats();
         (
             window.describe_rendered_frame(),
             describe_frame_state(window),
-            reused,
+            stats.elements_reused,
+            stats.elements_moved,
         )
     })
     .unwrap()
@@ -774,8 +829,9 @@ fn first_difference(actual: &[String], expected: &[String]) -> Option<(usize, St
 }
 
 /// Drives both windows through one random history and returns how many
-/// elements the incremental window drew again along the way.
-fn run(seed: u64, steps: usize) -> u64 {
+/// elements the incremental window drew again along the way, and how many
+/// of those moved.
+fn run(seed: u64, steps: usize) -> (u64, u64) {
     let mut cx = TestAppContext::with_text_system(Arc::new(GlyphBoxTextSystem(NoopTextSystem)));
     cx.update(|cx| cx.svg_renderer = SvgRenderer::new(Arc::new(Icons)));
     let incremental = cx.add_window(|_, cx| Board::new(cx));
@@ -792,6 +848,7 @@ fn run(seed: u64, steps: usize) -> u64 {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut history: Vec<Vec<Change>> = Vec::new();
     let mut reused = 0;
+    let mut moved = 0;
     let mut ticking = false;
 
     for step in 0..steps {
@@ -814,13 +871,15 @@ fn run(seed: u64, steps: usize) -> u64 {
         }
         history.push(changes);
 
-        let (expected, expected_state, reused_from_scratch) = draw(&mut cx, from_scratch, true);
-        let (actual, actual_state, reused_incrementally) = draw(&mut cx, incremental, false);
+        let (expected, expected_state, reused_from_scratch, _) = draw(&mut cx, from_scratch, true);
+        let (actual, actual_state, reused_incrementally, moved_incrementally) =
+            draw(&mut cx, incremental, false);
         assert_eq!(
             reused_from_scratch, 0,
             "a window drawing from scratch cannot draw an element again"
         );
         reused += reused_incrementally;
+        moved += moved_incrementally;
 
         for (what, actual, expected) in [
             ("painted frame", &actual, &expected),
@@ -840,14 +899,22 @@ fn run(seed: u64, steps: usize) -> u64 {
             }
         }
     }
-    reused
+    (reused, moved)
 }
 
 #[test]
 fn frames_drawing_elements_again_match_frames_drawn_from_scratch() {
-    let reused: u64 = (0..32).map(|seed| run(seed, 60)).sum();
+    let (reused, moved) = (0..32)
+        .map(|seed| run(seed, 60))
+        .fold((0, 0), |(reused, moved), run| {
+            (reused + run.0, moved + run.1)
+        });
     assert!(
         reused > 0,
         "the incremental window never drew an element again, so nothing was compared"
+    );
+    assert!(
+        moved > 0,
+        "the incremental window never drew an element again moved, so no move was compared"
     );
 }
