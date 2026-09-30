@@ -1524,6 +1524,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
         dependencies,
         views,
         has_paths,
+        paths: Rc::from([]),
     });
     if frame.mode == Mode::Repaint && !has_paths {
         window

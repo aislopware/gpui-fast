@@ -308,6 +308,13 @@ pub(crate) fn composite_at(
             // content is drawn into the frame, and painted afresh next time.
             let record = layer.record.take().expect("checked above");
             draw_into_frame(window, &record.content, translation);
+            let viewport = window.snapped_content_mask().bounds;
+            insert_paths(
+                &mut window.next_frame.scene,
+                &record.paths,
+                translation,
+                viewport,
+            );
             return;
         }
     }
@@ -337,6 +344,12 @@ pub(crate) fn insert_layer(
         return;
     }
     insert_tile_quads(&mut window.next_frame.scene, layer, viewport, translation);
+    insert_paths(
+        &mut window.next_frame.scene,
+        &record.paths,
+        translation,
+        viewport,
+    );
     let stats = &mut window.layout_engine.as_mut().unwrap().retention.stats;
     stats.layer_frames_composited += 1;
     stats.tiles_dirtied += dirtied as u64;
@@ -415,6 +428,119 @@ pub(crate) fn insert_tile_quads(
     }
     scene.pop_layer();
     scene.layers.frames.push(frame);
+}
+
+/// Inserts into `scene` the `paths` a layer keeps apart from its tiles,
+/// moved by `translation` and clipped to `viewport`, after its tile quads,
+/// so that they are drawn over them (see [`lift_paths`]).
+fn insert_paths(
+    scene: &mut Scene,
+    paths: &[crate::Path<ScaledPixels>],
+    translation: Point<ScaledPixels>,
+    viewport: Bounds<ScaledPixels>,
+) {
+    for path in paths {
+        let mut primitive = translate_primitive(&Primitive::Path(path.clone()), translation);
+        clip_primitive(&mut primitive, &viewport);
+        scene.insert_primitive(primitive);
+    }
+}
+
+/// `content`, a layer's content scene, split into the scene its tiles are
+/// rasterized from and the paths it painted, in drawing order, when nothing
+/// it draws after a path overlaps that path: the paths can then be drawn
+/// over the tiles, in the frame, and every pixel is drawn over in the order
+/// it would be without a layer. Paths are never rasterized into tiles (spec
+/// §5.6). `Err(content)` when something is drawn over a path.
+pub(crate) fn lift_paths(
+    content: Scene,
+) -> Result<(Scene, Rc<[crate::Path<ScaledPixels>]>), Scene> {
+    if content.paths.is_empty() {
+        return Ok((content, Rc::from([])));
+    }
+    // Every primitive in the order the renderer draws them: by draw order,
+    // then by kind, as `BatchIterator` does, then as the scene sorted them.
+    let mut sequence: Vec<((u32, u8, usize), Bounds<ScaledPixels>, bool)> = Vec::new();
+    macro_rules! gather {
+        ($field:ident, $rank:expr) => {
+            sequence.extend(content.$field.iter().enumerate().map(|(ix, p)| {
+                (
+                    (p.order, $rank, ix),
+                    p.bounds.intersect(&p.content_mask.bounds),
+                    false,
+                )
+            }))
+        };
+    }
+    gather!(shadows, 0);
+    gather!(quads, 1);
+    gather!(underlines, 3);
+    gather!(monochrome_sprites, 4);
+    gather!(subpixel_sprites, 5);
+    gather!(polychrome_sprites, 6);
+    gather!(surfaces, 7);
+    // A path's antialiased edge may reach into the pixels around its bounds.
+    let edge = ScaledPixels(1.);
+    sequence.extend(content.paths.iter().enumerate().map(|(ix, p)| {
+        let clipped = p.bounds.intersect(&p.content_mask.bounds);
+        let reach = Bounds::from_corners(
+            clipped.origin - point(edge, edge),
+            clipped.bottom_right() + point(edge, edge),
+        );
+        ((p.order, 2, ix), reach, true)
+    }));
+    sequence.sort_by_key(|(key, _, _)| *key);
+    let mut paths_so_far: Vec<Bounds<ScaledPixels>> = Vec::new();
+    for (_, bounds, is_path) in &sequence {
+        if *is_path {
+            paths_so_far.push(*bounds);
+        } else if paths_so_far.iter().any(|path| path.intersects(bounds)) {
+            return Err(content);
+        }
+    }
+    let paths: Rc<[crate::Path<ScaledPixels>]> = content.paths.iter().cloned().collect();
+    let mut rest = Scene::default();
+    for operation in &content.paint_operations {
+        match operation {
+            PaintOperation::Primitive(Primitive::Path(_)) => {}
+            PaintOperation::Primitive(primitive) => rest.insert_primitive(primitive.clone()),
+            PaintOperation::StartLayer(bounds) => rest.push_layer(*bounds),
+            PaintOperation::EndLayer => rest.pop_layer(),
+        }
+    }
+    rest.finish();
+    Ok((rest, paths))
+}
+
+/// How finely [`snap_path`] places path vertices: 256 steps a device pixel,
+/// as fine as a GPU rasterizer resolves a vertex's position.
+const PATH_GRID: f32 = 256.;
+
+/// `path`, in device pixels, with its vertices and bounds moved to the
+/// nearest 1/256 of a device pixel where layers are compiled.
+///
+/// A path painted into a layer is drawn moved by whole device pixels, while
+/// drawn without a layer it is painted where it is now: at a fractional
+/// scale factor the two differ by rounding error in the last bits of each
+/// position (a snapped scroll offset is not a whole number of logical
+/// pixels). On the grid they land on the same positions.
+pub(crate) fn snap_path(mut path: crate::Path<ScaledPixels>) -> crate::Path<ScaledPixels> {
+    if !COMPILED {
+        return path;
+    }
+    let snap = |value: ScaledPixels| ScaledPixels((value.0 * PATH_GRID + 0.5).floor() / PATH_GRID);
+    let snap_point = |point: Point<ScaledPixels>| Point {
+        x: snap(point.x),
+        y: snap(point.y),
+    };
+    for vertex in &mut path.vertices {
+        vertex.xy_position = snap_point(vertex.xy_position);
+    }
+    path.bounds = Bounds::from_corners(
+        snap_point(path.bounds.origin),
+        snap_point(path.bounds.bottom_right()),
+    );
+    path
 }
 
 /// Carries into `scene` the [`LayerFrame`]s of the tile quads that
@@ -545,8 +671,11 @@ fn repaint(
         origin: region.origin + to_content,
         size: region.size,
     };
+    let (content, paths, has_paths) = match lift_paths(content) {
+        Ok((content, paths)) => (content, paths, false),
+        Err(content) => (content, Rc::from([]), true),
+    };
     let hashes = tile_hashes(&content, TILE_SIZE, region);
-    let has_paths = !content.paths.is_empty();
     if has_paths {
         draw_into_frame(window, &painting.scene, Point::default());
     }
@@ -578,6 +707,7 @@ fn repaint(
         dependencies: painting.dependencies.union(&paint_dependencies),
         views,
         has_paths,
+        paths,
     });
     let dirtied = layer
         .record

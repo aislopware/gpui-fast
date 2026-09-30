@@ -1426,18 +1426,21 @@ mod paint {
         }
     }
 
+    /// Paths are never composited from tiles (spec §5.6), but a path nothing
+    /// in the content draws over is drawn into the frame over the layer's
+    /// tiles, where it lands on the same pixels as drawn without a layer.
     #[crate::test]
-    fn content_with_paths_is_drawn_into_the_frame_not_composited(cx: &mut crate::TestAppContext) {
+    fn paths_nothing_draws_over_are_drawn_over_the_tiles(cx: &mut crate::TestAppContext) {
         if !crate::fast::layers::COMPILED {
             return;
         }
         let window = cx.add_window(|_, _| PathRows);
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
-        let (direct_paths, direct_rows) = cx
+        let (direct_paths, direct) = cx
             .update_window(window.into(), |_, window, _| {
                 let scene = &window.rendered_frame.scene;
-                (scene.paths.len(), row_quads(scene, 20))
+                (scene.paths.len(), crate::fast::layers::verify::drawn(scene))
             })
             .unwrap();
         assert_eq!(direct_paths, 1);
@@ -1454,23 +1457,26 @@ mod paint {
             .unwrap();
         cx.update_window(window.into(), |_, window, _| {
             let stats = window.layout_stats();
-            assert_eq!(stats.layer_frames_repainted, 0, "no layer frame was made");
-            assert_eq!(stats.layer_frames_composited, 0);
+            assert_eq!(stats.layer_frames_repainted, 1);
+            assert_eq!(stats.layer_frames_composited, 1);
             let layer = window.fast_layers.layers.values().next().expect("a layer");
-            assert!(layer.record.as_ref().expect("painted").has_paths);
+            let record = layer.record.as_ref().expect("painted");
+            assert!(!record.has_paths);
+            assert!(record.content.paths.is_empty(), "the tiles hold no path");
+            assert_eq!(record.paths.len(), 1, "the layer keeps the path apart");
             let scene = &window.rendered_frame.scene;
-            assert!(
-                scene.polychrome_sprites.iter().all(|sprite| {
-                    crate::decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id).is_none()
-                }),
-                "no tile quads"
-            );
-            assert!(scene.layers.frames.is_empty(), "no layer frames");
+            assert!(!tile_quads(scene).is_empty(), "the tiles are composited");
+            assert_eq!(scene.layers.frames.len(), 1);
             assert_eq!(scene.paths.len(), 1, "the path is in the frame");
+            assert!(
+                scene.paths[0].order > tile_quads(scene)[0].2.order,
+                "the path is drawn over the tiles"
+            );
+            assert!(row_quads(scene, 20).is_empty(), "the rows are in the tiles");
             assert_eq!(
-                row_quads(scene, 20),
-                direct_rows,
-                "the rows are drawn as without a layer"
+                crate::fast::layers::verify::drawn(scene),
+                direct,
+                "the frame draws what it drew without a layer"
             );
         })
         .unwrap();
@@ -2541,14 +2547,12 @@ mod policies {
         assert_eq!(layers_demoted(cx, window), 0);
     }
 
-    #[crate::test]
-    fn content_with_paths_is_demoted(cx: &mut TestAppContext) {
-        let handle = page(cx, false);
-        let window = handle.into();
-        with_extra(cx, handle, || {
+    /// Content painting a path, drawn over by `cover` when set.
+    fn with_path(cx: &mut TestAppContext, handle: WindowHandle<LayerPage>, cover: bool) {
+        with_extra(cx, handle, move || {
             canvas(
                 |_, _, _| {},
-                |bounds, _, window, _| {
+                move |bounds, _, window, _| {
                     // Where it shows once scrolled by the 40 px promotion
                     // takes; out of view it is culled.
                     let origin = bounds.origin + point(px(0.), px(60.));
@@ -2557,12 +2561,36 @@ mod policies {
                     path.line_to(origin + point(px(10.), px(10.)));
                     path.line_to(origin);
                     window.paint_path(path, crate::red());
+                    if cover {
+                        window.paint_quad(crate::fill(
+                            crate::Bounds::new(origin, size(px(5.), px(5.))),
+                            crate::blue().opacity(0.5),
+                        ));
+                    }
                 },
             )
             .w(px(10.))
             .h(px(100.))
             .into_any_element()
         });
+    }
+
+    #[crate::test]
+    fn content_with_paths_nothing_draws_over_composites(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        with_path(cx, handle, false);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(layers_demoted(cx, window), 0);
+    }
+
+    #[crate::test]
+    fn content_drawing_over_a_path_is_demoted(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        with_path(cx, handle, true);
         promote(cx, window);
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
         assert_eq!(layers_demoted(cx, window), 1);
@@ -3374,6 +3402,112 @@ mod integration {
                 + window.rendered_frame.scene.subpixel_sprites.len()
         })
         .unwrap()
+    }
+
+    /// Content whose path nothing draws over composites its tiles with the
+    /// path drawn over them, and draws what it draws without a layer at every
+    /// offset, odd numbers of device pixels included.
+    #[crate::test]
+    fn a_path_drawn_over_the_tiles_matches_drawing_without_layers(cx: &mut TestAppContext) {
+        path_over_tiles_matches_drawing_without_layers(cx, 1.);
+    }
+
+    #[crate::test]
+    fn a_path_drawn_over_the_tiles_matches_drawing_without_layers_at_a_fractional_scale(
+        cx: &mut TestAppContext,
+    ) {
+        path_over_tiles_matches_drawing_without_layers(cx, 1.25);
+        path_over_tiles_matches_drawing_without_layers(cx, 1.6);
+    }
+
+    fn path_over_tiles_matches_drawing_without_layers(cx: &mut TestAppContext, scale_factor: f32) {
+        use super::decisions::{LayerPage, new_page};
+        use crate::{Path, canvas, point, size};
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let open = |cx: &mut TestAppContext, layers: bool| {
+            let window = cx.add_window(|_, cx| LayerPage {
+                extra: Some(std::rc::Rc::new(|| {
+                    canvas(
+                        |_, _, _| {},
+                        |bounds, _, window, _| {
+                            // Two paths, the second over the first, as a
+                            // progress circle draws its track and its arc.
+                            for (inset, color) in [(0., crate::red()), (3., crate::green())] {
+                                let origin = bounds.origin + point(px(20. + inset), px(70.));
+                                let mut path = Path::new(origin);
+                                path.line_to(origin + point(px(12.), px(0.)));
+                                path.curve_to(
+                                    origin + point(px(0.), px(12.)),
+                                    origin + point(px(14.), px(14.)),
+                                );
+                                path.line_to(origin);
+                                window.paint_path(path, color);
+                            }
+                            window.paint_quad(crate::fill(
+                                crate::Bounds::new(bounds.origin, size(px(10.), px(10.))),
+                                crate::blue(),
+                            ));
+                        },
+                    )
+                    .w(px(100.))
+                    .h(px(100.))
+                    .into_any_element()
+                })),
+                ..new_page(false, cx)
+            });
+            cx.simulate_window_scale_factor_change(window.into(), scale_factor);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.set_scroll_layers(layers);
+                window.draw(cx).clear(cx);
+            })
+            .unwrap();
+            window
+        };
+        let layered = open(cx, true);
+        let plain = open(cx, false);
+        let drawn = |cx: &mut TestAppContext, window: crate::WindowHandle<LayerPage>| {
+            cx.update_window(window.into(), |_, window, _| window.painted_primitives())
+                .unwrap()
+        };
+        for (step, dy) in [-20., -20., -7., -3., -11., -1., 5., -13., -2.]
+            .into_iter()
+            .enumerate()
+        {
+            for window in [layered, plain] {
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.dispatch_event(
+                        crate::PlatformInput::ScrollWheel(crate::ScrollWheelEvent {
+                            position: point(px(20.), px(20.)),
+                            delta: crate::ScrollDelta::Pixels(point(px(0.), px(dy))),
+                            modifiers: Default::default(),
+                            touch_phase: crate::TouchPhase::Moved,
+                        }),
+                        cx,
+                    );
+                    window.draw(cx).clear(cx);
+                })
+                .unwrap();
+            }
+            let (actual, expected) = (drawn(cx, layered), drawn(cx, plain));
+            if actual != expected {
+                let only = |a: &[String], b: &[String]| -> Vec<String> {
+                    a.iter().filter(|line| !b.contains(line)).cloned().collect()
+                };
+                panic!(
+                    "step {step}, scrolled by {dy}: only with layers {:#?}, only without {:#?}",
+                    only(&actual, &expected),
+                    only(&expected, &actual)
+                );
+            }
+        }
+        let composited = cx
+            .update_window(layered.into(), |_, window, _| {
+                window.layout_stats().layer_frames_composited
+            })
+            .unwrap();
+        assert!(composited >= 6, "composited {composited} frames");
     }
 
     /// A glyph sits on its line's baseline, below the top of a tall line: it

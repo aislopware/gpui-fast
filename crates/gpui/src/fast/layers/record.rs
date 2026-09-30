@@ -2,8 +2,8 @@
 //! translation at paint, prepaint and paint ranges and dependencies (M3).
 
 use crate::{
-    Bounds, EntityId, HitboxId, PaintIndex, Pixels, Point, PrepaintStateIndex, Rgba, ScaledPixels,
-    Scene, TileCoord, fast::dependencies::RenderDependencies,
+    Bounds, EntityId, HitboxId, PaintIndex, Path, Pixels, Point, PrepaintStateIndex, Rgba,
+    ScaledPixels, Scene, TileCoord, fast::dependencies::RenderDependencies,
 };
 use collections::FxHashMap;
 use std::{ops::Range, rc::Rc};
@@ -48,9 +48,14 @@ pub(crate) struct LayerRecord {
     /// The views drawn inside the content, which render before it is
     /// recorded.
     pub(crate) views: Rc<[EntityId]>,
-    /// Whether `content` holds a path. Paths are never composited from
-    /// tiles: their antialiasing pairs pixels in 2×2 quads, so a path moved
-    /// by an odd number of device pixels would not match a direct draw
-    /// (spec §5.6). Such content is drawn into the frame instead.
+    /// Whether the content painted a path that other content draws over.
+    /// Paths are never composited from tiles: their antialiasing pairs
+    /// pixels in 2×2 quads, so a path moved by an odd number of device
+    /// pixels would not match a direct draw (spec §5.6). Such content is
+    /// drawn into the frame instead.
     pub(crate) has_paths: bool,
+    /// The paths the content painted that nothing in it draws over, in
+    /// content space, in drawing order: left out of `content`, and drawn
+    /// into the frame over the layer's tiles wherever it is composited.
+    pub(crate) paths: Rc<[Path<ScaledPixels>]>,
 }
