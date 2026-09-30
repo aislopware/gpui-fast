@@ -23,7 +23,14 @@ Two upstreams feed it:
   (`zed: import bd747337`).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
-  longbridge commit merged is `10d0051` (#19, "keep upstream hooks to the letter of the
+  longbridge commit merged is `bef3abf` (#21, "put numbers together from their glyphs
+  instead of shaping each one"), in the commit "Merge longbridge/gpui-fast bef3abf (#21)
+  into Slopty's fork", with `1cc6b5c` checking it against CoreText in the system faces.
+  On `gpui_perf --headless --retention on`, three alternating runs against `a5704c5`, it
+  cuts instructions per frame 4–5.5% where numbers change (the workspace and
+  `table-ticks-many` scenarios, 700–3,700 fewer allocations a frame) and leaves every
+  other scenario, the terminal strip's included, within ±0.6%. Before it `10d0051`
+  (#19, "keep upstream hooks to the letter of the
   upstream-sync rules"), in the commit "Merge longbridge/gpui-fast 10d0051 (#19) into
   Slopty's fork". Its inspector helpers in `fast/global_id.rs` were left out: zed's
   #64309, which this fork imports, already gates the inspector in `window.rs`, so
