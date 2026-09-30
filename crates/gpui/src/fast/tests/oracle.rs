@@ -884,6 +884,12 @@ fn run(seed: u64, steps: usize) -> (u64, usize) {
     let mut cx = TestAppContext::with_text_system(Arc::new(GlyphBoxTextSystem(NoopTextSystem)));
     let incremental = cx.add_window(|_, cx| OracleView::new(cx));
     let from_scratch = cx.add_window(|_, cx| OracleView::new(cx));
+    // What scroll layers composite is checked against drawing from scratch
+    // by the layer oracle; here the incremental window draws its lists.
+    cx.update_window(incremental.into(), |_, window, _| {
+        window.set_scroll_layers(false)
+    })
+    .unwrap();
     let mut rng = StdRng::seed_from_u64(seed);
     let mut history: Vec<Vec<Change>> = Vec::new();
     let mut reused = 0;

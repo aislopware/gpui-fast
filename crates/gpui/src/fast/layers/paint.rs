@@ -241,7 +241,7 @@ pub(crate) fn paint_children(
 /// The opaque colour a layer's tiles are cleared with: what the frame has
 /// painted so far under the viewport, the current content mask, if it is
 /// one solid quad covering it (spec §5.2).
-fn bake_background(window: &Window) -> Option<Rgba> {
+pub(crate) fn bake_background(window: &Window) -> Option<Rgba> {
     let window_opaque =
         window.platform_window.background_appearance() == WindowBackgroundAppearance::Opaque;
     let viewport = window.snapped_content_mask().bounds;
@@ -269,8 +269,19 @@ fn paint_unbaked(
 /// `scroll_offset`: the layer's content stands, cleared with the background
 /// now under it, and is composited at the offset.
 fn composite(window: &mut Window, id: &GlobalElementId, scroll_offset: Point<Pixels>) {
-    let background = bake_background(window);
     let translation = translation(window, scroll_offset);
+    composite_at(window, id, translation);
+}
+
+/// Composites the layer of the container `id` with its content moved by
+/// `translation` into window space, its content standing, cleared with the
+/// background now under it.
+pub(crate) fn composite_at(
+    window: &mut Window,
+    id: &GlobalElementId,
+    translation: Point<ScaledPixels>,
+) {
+    let background = bake_background(window);
     let layer = layer_mut(window, id);
     let Some(record) = layer.record.as_mut() else {
         return;
@@ -290,8 +301,7 @@ fn composite(window: &mut Window, id: &GlobalElementId, scroll_offset: Point<Pix
             // The tiles cannot be cleared with what is under them now: the
             // content is drawn into the frame, and painted afresh next time.
             let record = layer.record.take().expect("checked above");
-            let delta = translation - record.translation;
-            draw_into_frame(window, &record.content, delta);
+            draw_into_frame(window, &record.content, translation);
             return;
         }
     }
@@ -302,7 +312,7 @@ fn composite(window: &mut Window, id: &GlobalElementId, scroll_offset: Point<Pix
 /// `translation`, `dirtied` of its tiles new this frame: its tile quads
 /// over the viewport, the current content mask, and its [`LayerFrame`].
 /// Content holding paths is drawn into the frame instead.
-fn insert_layer(
+pub(crate) fn insert_layer(
     window: &mut Window,
     id: &GlobalElementId,
     translation: Point<ScaledPixels>,
@@ -317,8 +327,7 @@ fn insert_layer(
     };
     if record.has_paths {
         let content = record.content.clone();
-        let delta = translation - record.translation;
-        draw_into_frame(window, &content, delta);
+        draw_into_frame(window, &content, translation);
         return;
     }
     insert_tile_quads(&mut window.next_frame.scene, layer, viewport, translation);
@@ -435,7 +444,7 @@ pub(crate) fn replay_layers(scene: &mut Scene, range: Range<usize>, previous: &S
 /// Draws the primitives of `content`, moved by `delta` into window space,
 /// straight into the frame, clipped to the viewport, the current content
 /// mask: what painting the content into the frame would have drawn.
-fn draw_into_frame(window: &mut Window, content: &Scene, delta: Point<ScaledPixels>) {
+pub(crate) fn draw_into_frame(window: &mut Window, content: &Scene, delta: Point<ScaledPixels>) {
     let viewport = window.snapped_content_mask().bounds;
     let scene = &mut window.next_frame.scene;
     for operation in &content.paint_operations {
@@ -480,7 +489,7 @@ fn clip_primitive(primitive: &mut Primitive, mask: &Bounds<ScaledPixels>) {
 }
 
 /// Every tile of `hashes`, sorted.
-fn all_tiles(hashes: &FxHashMap<TileCoord, u64>) -> Vec<TileCoord> {
+pub(crate) fn all_tiles(hashes: &FxHashMap<TileCoord, u64>) -> Vec<TileCoord> {
     let mut all: Vec<_> = hashes.keys().copied().collect();
     all.sort();
     all
@@ -586,11 +595,12 @@ pub(crate) fn finish_frame(window: &mut Window) {
     debug_assert!(window.fast_layers.painting.is_none());
     for layer in window.fast_layers.layers.values_mut() {
         layer.prepainted = None;
+        layer.rows.finish_frame();
     }
 }
 
 /// The layer of the container `id`, made if it has none.
-fn layer_mut<'a>(window: &'a mut Window, id: &GlobalElementId) -> &'a mut Layer {
+pub(crate) fn layer_mut<'a>(window: &'a mut Window, id: &GlobalElementId) -> &'a mut Layer {
     let layers = &mut window.fast_layers;
     if !layers.layers.contains_key(id) {
         let key = LayerKey(layers.next_key);

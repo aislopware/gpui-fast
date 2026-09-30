@@ -426,6 +426,27 @@ fn changed(
                 .any(|entity| Some(*entity) != owner && notified.contains(entity)))
 }
 
+/// `dependencies` without `entity`, if they name it.
+pub(crate) fn without_entity(
+    dependencies: &RenderDependencies,
+    entity: Option<EntityId>,
+) -> Option<RenderDependencies> {
+    let entity = entity?;
+    if !dependencies.entities.contains(&entity) {
+        return None;
+    }
+    let entities: Vec<_> = dependencies
+        .entities
+        .iter()
+        .copied()
+        .filter(|other| *other != entity)
+        .collect();
+    Some(RenderDependencies {
+        entities: entities.into(),
+        ..dependencies.clone()
+    })
+}
+
 /// The view holding the scroll container being prepainted.
 pub(crate) fn owner_view(window: &Window) -> Option<EntityId> {
     owner(window).and_then(crate::fast::splice::view_entity)
@@ -655,9 +676,13 @@ fn owner_scrolled_only(
     // again.
     let content_view_dirty = !window.dirty_views.is_empty()
         && any_content_view(window, id, |view| window.dirty_views.contains(&view));
+    // What the view read of itself (a list renders its rows as the view
+    // holding it) is judged by how often it was notified, above.
+    let own = without_entity(&owner.own_dependencies, owner_view(window));
+    let own = own.as_ref().unwrap_or(&owner.own_dependencies);
     !content_view_dirty
         && !source.is_some_and(|source| render_read_offset(&owner.own_dependencies, source))
-        && !changed(window, cx, &owner.own_dependencies, source)
+        && !changed(window, cx, own, source)
 }
 
 /// Whether any view drawn inside the scroll container `id` last frame, as a

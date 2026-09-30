@@ -209,8 +209,9 @@ pub(crate) fn decide(
                 && invalidate::scroll_only(window, cx, id, record) =>
         {
             // Only scrolled; painted again if the scroll exposes what was
-            // not painted, which is not a change of the content.
-            if covers(record, bounds, content_size, scroll_offset) {
+            // not painted, which is not a change of the content. A list's
+            // layer is extended by the rows it exposes instead.
+            if layer.rows.list || covers(record, bounds, content_size, scroll_offset) {
                 Decision::Composite
             } else {
                 Decision::Repaint
