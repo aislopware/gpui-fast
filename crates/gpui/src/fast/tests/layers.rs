@@ -1349,6 +1349,46 @@ mod paint {
         .unwrap();
     }
 
+    #[crate::test]
+    fn a_layer_painted_while_scrolled_is_drawn_where_it_shows_over_a_background_it_cannot_bake(
+        cx: &mut crate::TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        let window = rows_window(cx, 40);
+        let scroll_to = |cx: &mut crate::TestAppContext, y: f32| {
+            window
+                .update(cx, |view, _, _| {
+                    view.scroll.set_offset(point(crate::px(0.), crate::px(y)));
+                })
+                .unwrap();
+        };
+        scroll_to(cx, -60.);
+        draw_deciding(cx, window, Decision::Bypass);
+        let direct = cx
+            .update_window(window.into(), |_, window, _| {
+                row_quads(&window.rendered_frame.scene, 40)
+            })
+            .unwrap();
+
+        scroll_to(cx, -40.);
+        draw_deciding(cx, window, Decision::Repaint);
+        scroll_to(cx, -60.);
+        draw_over(cx, window, Hsla::blue().opacity(0.5), Decision::Composite);
+        cx.update_window(window.into(), |_, window, _| {
+            let scene = &window.rendered_frame.scene;
+            assert!(tile_quads(scene).is_empty());
+            let drawn: Vec<_> = row_quads(scene, 40)
+                .into_iter()
+                .filter(|(row, _)| direct.iter().any(|(direct, _)| direct == row))
+                .collect();
+            assert_eq!(drawn, direct, "the rows where they show at the new offset");
+        })
+        .unwrap();
+    }
+
     /// A scroll container whose content paints a path under a row.
     struct PathRows;
 

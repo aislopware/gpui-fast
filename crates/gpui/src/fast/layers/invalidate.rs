@@ -179,16 +179,45 @@ pub(crate) fn note_scrolled(window: &mut Window, container: &ScrollContainer) {
 }
 
 /// Notes that a wheel moved the list whose state `version` counts changes
-/// of. A list has no id; its offset is known by its state.
-pub(crate) fn note_list_scrolled(window: &mut Window, version: &StateVersion) {
+/// of, as its scroll listener does before it notifies `view`, the view that
+/// painted it. A list has no id; its offset is known by its state, and the
+/// list by the id [`painted_list`] remembered it under, if it was painted.
+pub(crate) fn note_list_scrolled(window: &mut Window, version: &StateVersion, view: EntityId) {
     if !COMPILED {
         return;
     }
-    window
-        .fast_layers
-        .scrolls
+    let scrolls = &mut window.fast_layers.scrolls;
+    scrolls
         .scrolled_sources
         .insert(ScrollSource::of_state(version));
+    let list = scrolls.containers.iter().find_map(|(id, container)| {
+        container
+            .version
+            .as_ref()
+            .is_some_and(|(painted, _)| painted.id() == version.id())
+            .then(|| id.clone())
+    });
+    if let Some(id) = list {
+        *scrolls.scroll_notifies.entry(view).or_default() += 1;
+        scrolls.scrolled.insert(id);
+    }
+}
+
+/// Remembers the list whose state `version` counts changes of as a scroll
+/// container painted under the id `id`, which lists, having no id of their
+/// own, are given (see [`crate::fast::layers::lists`]). Its offset lives in
+/// its state, but a change of the state's version (a splice, a remeasure,
+/// a programmatic scroll) is taken for a change of its content, not for a
+/// scroll: the version counts both.
+pub(crate) fn painted_list(window: &mut Window, id: &GlobalElementId, version: &StateVersion) {
+    let container = Container {
+        id: id.clone(),
+        source: ScrollSource::Container(id.clone()),
+        version: Some(version.clone()),
+        view: window.current_view(),
+    };
+    let frame = window.fast_layers.frame;
+    window.fast_layers.scrolls.remember(&container, frame);
 }
 
 /// Whether the scroll container `id` scrolled since the last frame was
@@ -426,6 +455,27 @@ fn changed(
                 .any(|entity| Some(*entity) != owner && notified.contains(entity)))
 }
 
+/// `dependencies` without `entity`, if they name it.
+pub(crate) fn without_entity(
+    dependencies: &RenderDependencies,
+    entity: Option<EntityId>,
+) -> Option<RenderDependencies> {
+    let entity = entity?;
+    if !dependencies.entities.contains(&entity) {
+        return None;
+    }
+    let entities: Vec<_> = dependencies
+        .entities
+        .iter()
+        .copied()
+        .filter(|other| *other != entity)
+        .collect();
+    Some(RenderDependencies {
+        entities: entities.into(),
+        ..dependencies.clone()
+    })
+}
+
 /// The view holding the scroll container being prepainted.
 pub(crate) fn owner_view(window: &Window) -> Option<EntityId> {
     owner(window).and_then(crate::fast::splice::view_entity)
@@ -465,7 +515,9 @@ pub(crate) fn animation_frame_requested(window: &Window, id: &GlobalElementId) -
     let animating = |view: EntityId| {
         requested.contains(&view) || scrolls.animation_frames_before.contains(&view)
     };
-    owner_view(window).is_some_and(animating) || any_content_view(window, id, animating)
+    owner_view(window).is_some_and(animating)
+        || any_content_view(window, id, animating)
+        || crate::fast::layers::lists::any_held_view(window, id, animating)
 }
 
 /// Notes that the view `view` asked for an animation frame, as
@@ -487,7 +539,12 @@ pub(crate) fn note_animation_frame(window: &Window, view: EntityId) {
 pub(crate) fn note_anchored(window: &mut Window) {
     if COMPILED && !window.fast_layers.layers.is_empty() {
         let id = crate::fast::global_id::current(window);
-        window.fast_layers.scrolls.anchored.push(id);
+        // A list has no id its rows' ids start with (see
+        // `lists::content_prefix`): the layer being painted is noted too.
+        let painting = window.fast_layers.painting.as_ref().map(|p| p.id.clone());
+        let scrolls = &mut window.fast_layers.scrolls;
+        scrolls.anchored.push(id);
+        scrolls.anchored.extend(painting);
     }
 }
 
@@ -620,7 +677,10 @@ fn content_view_notified(window: &Window, record: &LayerRecord) -> bool {
 /// which the notification count alone does not tell apart from a scroll of
 /// `id`.
 fn nested_container_scrolled(window: &Window, id: &GlobalElementId) -> bool {
-    let nested = |other: &GlobalElementId| other.len() > id.len() && other.starts_with(id);
+    let prefix = crate::fast::layers::lists::content_prefix(id);
+    let nested = |other: &GlobalElementId| {
+        other != id && other.len() > prefix.len() && other.starts_with(prefix)
+    };
     let scrolls = &window.fast_layers.scrolls;
     scrolls.scrolled.iter().any(nested)
         || scrolls
@@ -655,9 +715,13 @@ fn owner_scrolled_only(
     // again.
     let content_view_dirty = !window.dirty_views.is_empty()
         && any_content_view(window, id, |view| window.dirty_views.contains(&view));
+    // What the view read of itself (a list renders its rows as the view
+    // holding it) is judged by how often it was notified, above.
+    let own = without_entity(&owner.own_dependencies, owner_view(window));
+    let own = own.as_ref().unwrap_or(&owner.own_dependencies);
     !content_view_dirty
         && !source.is_some_and(|source| render_read_offset(&owner.own_dependencies, source))
-        && !changed(window, cx, &owner.own_dependencies, source)
+        && !changed(window, cx, own, source)
 }
 
 /// Whether any view drawn inside the scroll container `id` last frame, as a

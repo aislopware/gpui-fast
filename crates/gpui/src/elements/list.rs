@@ -18,7 +18,7 @@ use refineable::Refineable as _;
 use std::{cell::RefCell, ops::Range, rc::Rc};
 use sum_tree::{Bias, Dimensions, SumTree};
 
-type RenderItemFn = dyn FnMut(usize, &mut Window, &mut App) -> AnyElement + 'static;
+pub(crate) type RenderItemFn = dyn FnMut(usize, &mut Window, &mut App) -> AnyElement + 'static;
 
 /// Construct a new list element
 pub fn list(
@@ -62,7 +62,7 @@ impl std::fmt::Debug for ListState {
 pub(crate) struct StateInner {
     last_layout_bounds: Option<Bounds<Pixels>>,
     last_padding: Option<Edges<Pixels>>,
-    items: SumTree<ListItem>,
+    pub(crate) items: SumTree<ListItem>,
     pub(crate) logical_scroll_top: Option<ListOffset>,
     alignment: ListAlignment,
     overdraw: Pixels,
@@ -243,7 +243,7 @@ pub struct ListPrepaintState {
 }
 
 #[derive(Clone)]
-enum ListItem {
+pub(crate) enum ListItem {
     Unmeasured {
         size_hint: Option<Size<Pixels>>,
         focus_handle: Option<FocusHandle>,
@@ -255,7 +255,7 @@ enum ListItem {
 }
 
 impl ListItem {
-    fn size(&self) -> Option<Size<Pixels>> {
+    pub(crate) fn size(&self) -> Option<Size<Pixels>> {
         if let ListItem::Measured { size, .. } = self {
             Some(*size)
         } else {
@@ -290,8 +290,8 @@ impl ListItem {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-struct ListItemSummary {
-    count: usize,
+pub(crate) struct ListItemSummary {
+    pub(crate) count: usize,
     rendered_count: usize,
     unrendered_count: usize,
     height: Pixels,
@@ -300,7 +300,7 @@ struct ListItemSummary {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-struct Count(usize);
+pub(crate) struct Count(pub(crate) usize);
 
 #[derive(Clone, Debug, Default)]
 struct Height(Pixels);
@@ -976,11 +976,11 @@ impl StateInner {
             );
         }
 
-        crate::fast::layers::invalidate::note_list_scrolled(window, &self.version);
+        crate::fast::layers::invalidate::note_list_scrolled(window, &self.version, current_view);
         cx.notify(current_view);
     }
 
-    fn logical_scroll_top(&self) -> ListOffset {
+    pub(crate) fn logical_scroll_top(&self) -> ListOffset {
         self.logical_scroll_top
             .unwrap_or_else(|| match self.alignment {
                 ListAlignment::Top => ListOffset {
@@ -994,7 +994,7 @@ impl StateInner {
             })
     }
 
-    fn scroll_top(&self, logical_scroll_top: &ListOffset) -> Pixels {
+    pub(crate) fn scroll_top(&self, logical_scroll_top: &ListOffset) -> Pixels {
         let (start, ..) = self.items.find::<ListItemSummary, _>(
             (),
             &Count(logical_scroll_top.item_ix),
@@ -1098,7 +1098,14 @@ impl StateInner {
             let mut size = item.size();
 
             // If we're within the visible area or the height wasn't cached, render and measure the item's element
-            if visible_height < available_height || size.is_none() {
+            if (visible_height < available_height || size.is_none())
+                && !crate::fast::layers::lists::keeps_row(
+                    window,
+                    &self.version,
+                    scroll_top.item_ix + ix,
+                    size.is_some(),
+                )
+            {
                 let item_index = scroll_top.item_ix + ix;
                 let mut element = render_item(item_index, window, cx);
                 let element_size = crate::fast::layout_key::layout_as_list_item(
@@ -1331,8 +1338,19 @@ impl StateInner {
             // Only paint the visible items, if there is actually any space for them (taking padding into account)
             if bounds.size.height > padding.top + padding.bottom {
                 let mut item_origin = bounds.origin + Point::new(px(0.), padding.top);
-                item_origin.y -= layout_response.scroll_top.offset_in_item;
+                crate::fast::layers::lists::snap_item_origin(
+                    window,
+                    self,
+                    &layout_response.scroll_top,
+                    &mut item_origin,
+                );
                 for item in &mut layout_response.item_layouts {
+                    crate::fast::layers::lists::place_list_item(
+                        window,
+                        self,
+                        item.index,
+                        &mut item_origin,
+                    );
                     window.with_content_mask(Some(ContentMask { bounds }), |window| {
                         item.element.prepaint_at(item_origin, window, cx);
                     });
@@ -1624,6 +1642,7 @@ impl Element for List {
         let padding = style
             .padding
             .to_pixels(bounds.size.into(), window.rem_size());
+        crate::fast::layers::lists::begin_list(window, cx, state, bounds);
         let layout =
             match state.prepaint_items(bounds, padding, true, &mut self.render_item, window, cx) {
                 Ok(layout) => layout,
@@ -1634,6 +1653,7 @@ impl Element for List {
                         .unwrap()
                 }
             };
+        crate::fast::layers::lists::end_list(window, cx, state, &mut self.render_item, bounds);
 
         state.last_layout_bounds = Some(bounds);
         state.last_padding = Some(padding);
@@ -1678,9 +1698,16 @@ impl Element for List {
         });
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            crate::fast::layers::lists::begin_paint_list(window, cx, &self.state);
             for item in &mut prepaint.layout.item_layouts {
-                item.element.paint(window, cx);
+                crate::fast::layers::lists::paint_row(
+                    window,
+                    cx,
+                    Some(item.index),
+                    |window, cx| item.element.paint(window, cx),
+                );
             }
+            crate::fast::layers::lists::end_paint_list(window, cx, &self.state);
         });
     }
 }
