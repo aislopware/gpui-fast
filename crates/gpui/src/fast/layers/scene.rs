@@ -2,7 +2,12 @@
 //! composites, as polychrome sprites whose texture id lies in a range no
 //! atlas allocates, and the content those tiles are rasterized from.
 
-use crate::{AtlasTextureId, AtlasTextureKind, TileId};
+use crate::{
+    AtlasTextureId, AtlasTextureKind, Bounds, Point, Rgba, ScaledPixels, Scene, TileId, point,
+    scene::{PaintOperation, Primitive, TransformationMatrix},
+    size,
+};
+use std::rc::Rc;
 
 /// A live scroll layer, stable while it lives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -52,4 +57,150 @@ pub fn decode_layer_tile(texture: AtlasTextureId, tile: TileId) -> Option<(Layer
     let x = (tile.0 >> 16) as i32 - TILE_COORD_BIAS;
     let y = (tile.0 & 0xFFFF) as i32 - TILE_COORD_BIAS;
     Some((layer, TileCoord { x, y }))
+}
+
+/// The scroll layers a frame composites, for the renderer to rasterize their
+/// tiles from.
+#[derive(Default)]
+pub struct SceneLayers {
+    /// One per layer the frame composites.
+    pub frames: Vec<LayerFrame>,
+}
+
+impl SceneLayers {
+    /// Forgets the frame's layers, as [`Scene::clear`] forgets its primitives.
+    pub fn clear(&mut self) {
+        self.frames.clear();
+    }
+}
+
+/// A layer the frame composites: the content its tiles are rasterized from.
+#[derive(Clone)]
+pub struct LayerFrame {
+    /// The layer, stable while it lives.
+    pub key: LayerKey,
+    /// Bumps whenever `content` is replaced.
+    pub generation: u64,
+    /// The opaque colour every tile is cleared with before its content is drawn.
+    pub background: Rgba,
+    /// The side of a tile, in device pixels.
+    pub tile_size: u32,
+    /// The painted content in content space, finished (sorted).
+    pub content: Rc<Scene>,
+    /// The tiles whose content changed in this generation.
+    pub dirty_tiles: Vec<TileCoord>,
+}
+
+impl LayerFrame {
+    /// The rectangle `tile` covers in content space.
+    pub fn tile_bounds(&self, tile: TileCoord) -> Bounds<ScaledPixels> {
+        let side = self.tile_size as f32;
+        Bounds {
+            origin: point(
+                ScaledPixels(tile.x as f32 * side),
+                ScaledPixels(tile.y as f32 * side),
+            ),
+            size: size(ScaledPixels(side), ScaledPixels(side)),
+        }
+    }
+
+    /// The primitives of `content` that are visible over `tile`, translated
+    /// into the tile's space (its top-left corner at the origin), in drawing
+    /// order, finished and ready to batch.
+    pub fn tile_scene(&self, tile: TileCoord) -> Scene {
+        let bounds = self.tile_bounds(tile);
+        let delta = point(
+            ScaledPixels(-bounds.origin.x.0),
+            ScaledPixels(-bounds.origin.y.0),
+        );
+        let mut scene = Scene::default();
+        for operation in &self.content.paint_operations {
+            match operation {
+                PaintOperation::Primitive(primitive) => {
+                    let clipped = primitive
+                        .bounds()
+                        .intersect(&primitive.content_mask().bounds);
+                    if clipped.intersects(&bounds) {
+                        scene.insert_primitive(translate_primitive(primitive, delta));
+                    }
+                }
+                PaintOperation::StartLayer(layer_bounds) => {
+                    scene.push_layer(translate_bounds(*layer_bounds, delta))
+                }
+                PaintOperation::EndLayer => scene.pop_layer(),
+            }
+        }
+        scene.finish();
+        scene
+    }
+}
+
+fn translate_bounds(
+    bounds: Bounds<ScaledPixels>,
+    delta: Point<ScaledPixels>,
+) -> Bounds<ScaledPixels> {
+    Bounds {
+        origin: bounds.origin + delta,
+        size: bounds.size,
+    }
+}
+
+/// `primitive` moved by `delta`: every position it carries, its content mask
+/// included, so it draws the same pixels `delta` away.
+pub(crate) fn translate_primitive(primitive: &Primitive, delta: Point<ScaledPixels>) -> Primitive {
+    let mut primitive = primitive.clone();
+    let mv = |bounds: &mut Bounds<ScaledPixels>| *bounds = translate_bounds(*bounds, delta);
+    match &mut primitive {
+        Primitive::Shadow(shadow) => {
+            mv(&mut shadow.bounds);
+            mv(&mut shadow.element_bounds);
+            mv(&mut shadow.content_mask.bounds);
+        }
+        Primitive::Quad(quad) => {
+            mv(&mut quad.bounds);
+            mv(&mut quad.content_mask.bounds);
+        }
+        Primitive::Path(path) => {
+            mv(&mut path.bounds);
+            mv(&mut path.content_mask.bounds);
+            for vertex in &mut path.vertices {
+                vertex.xy_position = vertex.xy_position + delta;
+                mv(&mut vertex.content_mask.bounds);
+            }
+        }
+        Primitive::Underline(underline) => {
+            mv(&mut underline.bounds);
+            mv(&mut underline.content_mask.bounds);
+        }
+        Primitive::MonochromeSprite(sprite) => {
+            mv(&mut sprite.bounds);
+            mv(&mut sprite.content_mask.bounds);
+            translate_transformation(&mut sprite.transformation, delta);
+        }
+        Primitive::SubpixelSprite(sprite) => {
+            mv(&mut sprite.bounds);
+            mv(&mut sprite.content_mask.bounds);
+            translate_transformation(&mut sprite.transformation, delta);
+        }
+        Primitive::PolychromeSprite(sprite) => {
+            mv(&mut sprite.bounds);
+            mv(&mut sprite.content_mask.bounds);
+        }
+        Primitive::Surface(surface) => {
+            mv(&mut surface.bounds);
+            mv(&mut surface.content_mask.bounds);
+        }
+    }
+    primitive
+}
+
+/// A sprite's transformation applies to window positions (`R·p + t`, see
+/// `to_device_position_transformed` in the shaders), so for the sprite to
+/// move by `delta` with it, `t` becomes `t + (I − R)·delta`. The unit
+/// transformation stays the unit.
+fn translate_transformation(matrix: &mut TransformationMatrix, delta: Point<ScaledPixels>) {
+    let r = matrix.rotation_scale;
+    let (dx, dy) = (delta.x.0, delta.y.0);
+    matrix.translation[0] += dx - (r[0][0] * dx + r[0][1] * dy);
+    matrix.translation[1] += dy - (r[1][0] * dx + r[1][1] * dy);
 }

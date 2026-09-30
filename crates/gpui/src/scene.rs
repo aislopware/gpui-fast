@@ -51,6 +51,7 @@ pub struct Scene {
     pub polychrome_sprites: Vec<PolychromeSprite>,
     pub surfaces: Vec<PaintSurface>,
     pub(crate) sort_scratch: crate::fast::scene::SortScratch,
+    pub layers: crate::fast::layers::scene::SceneLayers,
 }
 
 #[expect(missing_docs)]
@@ -67,6 +68,7 @@ impl Scene {
         self.subpixel_sprites.clear();
         self.polychrome_sprites.clear();
         self.surfaces.clear();
+        crate::fast::layers::scene::SceneLayers::clear(&mut self.layers);
     }
 
     pub fn len(&self) -> usize {
