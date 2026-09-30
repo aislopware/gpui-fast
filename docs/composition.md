@@ -41,6 +41,13 @@ focus rings, a remote pointer. There is one GPUI layer and no overlay layer per 
 - **Paint layers.** A native painted inside a paint layer re-inserts the layer's bounds
   into the bounds tree, so the rest of the layer gets an order above the native, as it
   would above a quad.
+- **What a native covers whole is not drawn** (`gpui_apple/src/fast/occlusion.rs`). Each
+  pass starts by marking, in a memoryless stencil, the interior of each hole whose opacity is 1
+  (its clipped bounds less its corner radius, at whole pixels). The value marked is the hole's
+  index plus one, and the pass clears the interior's colour to transparent. Every batch then
+  draws only where the stencil is at most the index of the next hole to draw. So what a hole
+  would clear is never drawn, and a hole draws only its antialiased edge. The image is the same
+  pixel for pixel: it is tested against upstream's loop on 500 random scenes.
 - **The GPUI layer** is marked non-opaque while any hole shows and opaque again when none
   does, and hidden for a frame where one opaque native covers the whole window with nothing
   of GPUI's above it (`NativeFrame::covers_window`).

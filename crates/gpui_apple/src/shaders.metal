@@ -97,6 +97,9 @@ vertex QuadVertexOutput quad_vertex(uint unit_vertex_id [[vertex_id]],
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }
 
+// Slopty: clears what a native's hole covers whole (fast/occlusion.rs).
+fragment float4 hole_interior_fragment() { return float4(0.); }
+
 fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
                               constant Quad *quads
                               [[buffer(QuadInputIndex_Quads)]]) {

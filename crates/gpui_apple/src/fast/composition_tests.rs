@@ -740,3 +740,33 @@ fn composition_overlay_gpu_cost() {
         3. * drawable as f64 / 1e6
     );
 }
+
+/// Culling what opaque natives cover whole (`fast::occlusion`) leaves every pixel as
+/// upstream's loop, which draws everything and cuts the holes, leaves it.
+#[test]
+fn culling_under_opaque_natives_leaves_every_pixel_as_drawing_everything() {
+    use crate::metal_renderer::binds::UPSTREAM_LOOP;
+
+    let mut renderer = renderer();
+    let mut compared = 0;
+    for seed in 0..500 {
+        let operations: Vec<Operation> = random_scene(seed)
+            .into_iter()
+            .filter(|operation| !matches!(operation, Operation::Path(..)))
+            .collect();
+        let scene = build(&operations, false);
+        if scene.natives().placements.is_empty() {
+            continue;
+        }
+        compared += 1;
+        UPSTREAM_LOOP.with(|flag| flag.set(true));
+        let everything = render(&mut renderer, &scene);
+        UPSTREAM_LOOP.with(|flag| flag.set(false));
+        let culled = render(&mut renderer, &scene);
+        assert!(
+            culled.as_raw() == everything.as_raw(),
+            "seed {seed}: culling under natives moved pixels"
+        );
+    }
+    assert!(compared > 100, "only {compared} scenes placed natives");
+}
