@@ -2199,7 +2199,6 @@ mod decisions {
     }
 
     #[crate::test]
-    #[ignore = "a composited frame paints no hitboxes for the rows until the input stream (M5) carries them"]
     fn a_hover_change_in_the_content_repaints(cx: &mut TestAppContext) {
         let handle = page(cx, false);
         let window = handle.into();
@@ -3334,5 +3333,60 @@ mod input {
                 "row {row}"
             );
         }
+    }
+}
+
+/// Tests of the streams working together, found by measuring and verifying
+/// real scroll scenarios (M8).
+mod integration {
+    use std::sync::Arc;
+
+    use super::super::oracle::GlyphBoxTextSystem;
+    use crate::{
+        AppContext as _, Context, IntoElement, NoopTextSystem, ParentElement as _, Render,
+        Styled as _, TestAppContext, Window, div, px,
+    };
+
+    /// One line of 8 px text on a 40 px line, whose top is `top`.
+    struct TallLine {
+        top: f32,
+    }
+
+    impl Render for TallLine {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(
+                div()
+                    .absolute()
+                    .top(px(self.top))
+                    .text_size(px(8.))
+                    .line_height(px(40.))
+                    .child("A"),
+            )
+        }
+    }
+
+    fn glyphs_drawn(top: f32) -> usize {
+        let mut cx = TestAppContext::with_text_system(Arc::new(GlyphBoxTextSystem(NoopTextSystem)));
+        let window = cx.add_window(|_, _| TallLine { top });
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.rendered_frame.scene.monochrome_sprites.len()
+                + window.rendered_frame.scene.subpixel_sprites.len()
+        })
+        .unwrap()
+    }
+
+    /// A glyph sits on its line's baseline, below the top of a tall line: it
+    /// is drawn wherever it reaches into the content mask, even when the top
+    /// of its line, where upstream looks for it, is outside the mask. A
+    /// scroll layer paints the line in its overscan and shows the glyph, so
+    /// drawing from scratch must show it too.
+    #[test]
+    fn a_glyph_low_on_a_tall_line_is_drawn_where_it_reaches_into_the_mask() {
+        assert_eq!(glyphs_drawn(10.), 1, "a line inside the window");
+        assert_eq!(glyphs_drawn(-100.), 0, "a line far above the window");
+        // The glyph lies between 15 and 24 px below the line's top, so a line
+        // 20 px above the window shows its bottom 4 px.
+        assert_eq!(glyphs_drawn(-20.), 1, "a glyph reaching into the window");
     }
 }
