@@ -741,7 +741,10 @@ mod decisions {
         StatefulInteractiveElement as _, Styled as _, TestAppContext, TouchPhase, Window,
         WindowHandle, canvas, div, point, px, rgb, size,
     };
-    use std::{cell::RefCell, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
 
     pub(super) const ROWS: usize = 40;
     pub(super) const ROW_HEIGHT: f32 = 20.;
@@ -775,13 +778,17 @@ mod decisions {
 
     /// The probe before the children: decides, and starts recording them
     /// when they are painted into the layer.
-    fn probe_before(probe: Rc<RefCell<Probe>>, content_height: f32) -> impl IntoElement {
+    fn probe_before(
+        probe: Rc<RefCell<Probe>>,
+        content_width: f32,
+        content_height: f32,
+    ) -> impl IntoElement {
         let paint_probe = probe.clone();
         canvas(
             move |_, window, cx| {
                 let id = crate::fast::global_id::current(window);
                 let scroll_offset = window.element_offset();
-                let content_size = size(viewport().size.width, px(content_height));
+                let content_size = size(px(content_width), px(content_height));
                 let decision = decide(window, cx, &id, viewport(), content_size, scroll_offset);
                 if decision != Decision::Repaint {
                     return;
@@ -790,6 +797,8 @@ mod decisions {
                     origin: viewport().origin + scroll_offset,
                     size: content_size,
                 };
+                // Overscan on the scrolled axis only, as the paint stream
+                // paints it.
                 let overscan = viewport().size.height;
                 let painted_region = Bounds::from_corners(
                     point(viewport().left(), viewport().top() - overscan),
@@ -859,9 +868,10 @@ mod decisions {
         )
     }
 
-    /// A row, with a hover style when `hover` is set.
-    fn row(index: usize, hover: bool) -> AnyElement {
+    /// A row, with a hover style when `hover` is set, `width` wide.
+    fn row(index: usize, hover: bool, width: f32) -> AnyElement {
         let row = div()
+            .w(px(width))
             .h(px(ROW_HEIGHT))
             .bg(rgb(0x100000 + index as u32 * 0x10));
         if hover {
@@ -891,7 +901,9 @@ mod decisions {
 
     /// A page with a 100 px tall scroll container of forty 20 px rows at the
     /// top left of the window: in the page's own view (pattern B), or in a
-    /// child view (pattern A), after `extra`, if any.
+    /// child view (pattern A), after `extra`, if any. The rows are as wide
+    /// as the container, or twice as wide when `wide` is set, which the
+    /// container, scrolling on y only, clips.
     pub(super) struct LayerPage {
         pub(super) handle: ScrollHandle,
         pub(super) probe: Rc<RefCell<Probe>>,
@@ -899,13 +911,20 @@ mod decisions {
         pub(super) hover: bool,
         pub(super) read_offset_in_render: bool,
         pub(super) extra: Option<Rc<dyn Fn() -> AnyElement>>,
+        pub(super) wide: bool,
+        /// Whether its render asks for an animation frame.
+        pub(super) animate: bool,
     }
 
     impl Render for LayerPage {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             if self.read_offset_in_render {
                 let _ = self.handle.offset();
             }
+            if self.animate {
+                window.request_animation_frame();
+            }
+            let content_width = viewport().size.width.0 * if self.wide { 2. } else { 1. };
             let content_height = ROWS as f32 * ROW_HEIGHT;
             let mut scroller = div()
                 .id("scroller")
@@ -913,13 +932,19 @@ mod decisions {
                 .track_scroll(&self.handle)
                 .w(viewport().size.width)
                 .h(viewport().size.height)
-                .child(probe_before(self.probe.clone(), content_height));
+                .child(probe_before(
+                    self.probe.clone(),
+                    content_width,
+                    content_height,
+                ));
             if let Some(extra) = &self.extra {
                 scroller = scroller.child(extra());
             }
             scroller = match &self.rows {
                 Some(rows) => scroller.child(rows.clone()),
-                None => scroller.children((0..ROWS).map(|index| row(index, self.hover))),
+                None => {
+                    scroller.children((0..ROWS).map(|index| row(index, self.hover, content_width)))
+                }
             };
             div()
                 .size_full()
@@ -935,6 +960,8 @@ mod decisions {
             hover: false,
             read_offset_in_render: false,
             extra: None,
+            wide: false,
+            animate: false,
         }
     }
 
@@ -1062,6 +1089,69 @@ mod decisions {
             })),
             Some(Decision::Repaint)
         );
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+    }
+
+    #[crate::test]
+    fn an_owner_notified_for_another_reason_while_scrolling_repaints(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        // What the owner renders changes through state nothing records a
+        // read of, which only its notification tells.
+        let height = Rc::new(Cell::new(10.));
+        handle
+            .update(cx, |page, _, cx| {
+                let height = height.clone();
+                page.extra = Some(Rc::new(move || {
+                    div().h(px(height.get())).into_any_element()
+                }));
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx, window);
+        let owner = handle.update(cx, |_, _, cx| cx.entity_id()).unwrap();
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        // Notified before the scroll.
+        assert_eq!(
+            scroll_and(cx, window, -20., |cx| {
+                height.set(30.);
+                cx.notify(owner);
+            }),
+            Some(Decision::Repaint)
+        );
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        // Notified after it.
+        frame_after(cx, window, |cx| {
+            with_window(cx, window, |window, cx| {
+                window.dispatch_event(
+                    crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        position: point(px(20.), px(20.)),
+                        delta: ScrollDelta::Pixels(point(px(0.), px(-20.))),
+                        modifiers: Default::default(),
+                        touch_phase: TouchPhase::Moved,
+                    }),
+                    cx,
+                );
+                height.set(10.);
+                cx.notify(owner);
+            })
+        });
+        assert_eq!(decision(cx, window), Some(Decision::Repaint));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+    }
+
+    #[crate::test]
+    fn content_wider_than_a_container_scrolling_on_y_composites(cx: &mut TestAppContext) {
+        let handle = cx.add_window(|_, cx| LayerPage {
+            wide: true,
+            ..new_page(false, cx)
+        });
+        let window = handle.into();
+        draw(cx, window);
+        draw(cx, window);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
     }
 
@@ -1262,6 +1352,44 @@ mod policies {
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
         assert!(!has_record(cx, window));
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+    }
+
+    #[crate::test]
+    fn anchored_elements_inside_make_it_ineligible(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        // Positioned against the window's edges when prepainted, which a
+        // composited layer would move with the content.
+        with_extra(cx, handle, || {
+            div()
+                .h(px(10.))
+                .child(anchored().child(div().w(px(50.)).h(px(50.)).bg(crate::red())))
+                .into_any_element()
+        });
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert_eq!(layers_demoted(cx, window), 1);
+        assert!(!has_record(cx, window));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+    }
+
+    #[crate::test]
+    fn an_animation_frame_requested_by_the_owner_makes_it_ineligible(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        frame_after(cx, window, |cx| {
+            handle
+                .update(cx, |page, _, cx| {
+                    page.animate = true;
+                    cx.notify();
+                })
+                .unwrap();
+        });
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert!(!has_record(cx, window));
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
     }
 

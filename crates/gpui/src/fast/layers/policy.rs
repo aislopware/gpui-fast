@@ -17,9 +17,12 @@
     reason = "the paint stream's hook around a scroll container's children calls decide; remove once it is merged"
 )]
 
+use crate::fast::layers::invalidate::OwnerWatch;
 use crate::fast::layers::record::LayerRecord;
-use crate::fast::layers::{Layer, input, invalidate, lists, scene::LayerKey};
-use crate::{App, Bounds, ContentMask, GlobalElementId, Pixels, Point, Size, TextStyle, Window};
+use crate::fast::layers::{Layer, WindowLayers, input, invalidate, lists, scene::LayerKey};
+use crate::{
+    App, Bounds, ContentMask, EntityId, GlobalElementId, Pixels, Point, Size, TextStyle, Window,
+};
 
 /// What a scroll container does with its content this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,6 +75,23 @@ pub(crate) struct LayerPolicy {
     painted_in: Option<LayerContext>,
     /// What was decided the last time the container was looked at.
     last_decision: Option<Decision>,
+    /// Counts the notifications of the view holding the container.
+    owner: Option<OwnerWatch>,
+    /// How often that view had been notified when the container was last
+    /// looked at.
+    owner_notifies_at: u64,
+    /// Whether the content, as last painted into the layer, prepainted an
+    /// anchored element.
+    content_anchored: bool,
+}
+
+impl LayerPolicy {
+    /// How often `owner` was notified since the container was last looked
+    /// at, if it held the container then.
+    pub(crate) fn owner_notifies_since(&self, owner: EntityId) -> Option<u64> {
+        let watch = self.owner.as_ref().filter(|watch| watch.view() == owner)?;
+        Some(watch.notifies().saturating_sub(self.owner_notifies_at))
+    }
 }
 
 /// What a container's content is painted with besides what it reads: where
@@ -107,6 +127,10 @@ impl LayerContext {
 /// with its children this frame, and keeps its standing up to date.
 ///
 /// Called where the container prepaints its children, before it does.
+///
+/// A container is given an entry in `layers` the first frame it scrolls, to
+/// count its scrolls towards promotion; it has a layer only once the entry
+/// holds a record.
 pub(crate) fn decide(
     window: &mut Window,
     cx: &mut App,
@@ -163,7 +187,7 @@ pub(crate) fn decide(
     let mut demote = false;
     let decision = match &layer.record {
         _ if demoted_until.is_some() => Decision::Bypass,
-        Some(record) if !eligible(window, record) => {
+        Some(record) if !eligible(window, id, policy, record) => {
             demote = true;
             Decision::Bypass
         }
@@ -197,8 +221,13 @@ pub(crate) fn decide(
     }
     let decision = if demote { Decision::Bypass } else { decision };
 
+    let owner = invalidate::owner_view(window);
     let layer = window.fast_layers.layers.get_mut(id).unwrap();
     let policy = &mut layer.policy;
+    if policy.owner.as_ref().map(OwnerWatch::view) != owner {
+        policy.owner = owner.map(OwnerWatch::new);
+    }
+    policy.owner_notifies_at = policy.owner.as_ref().map_or(0, OwnerWatch::notifies);
     policy.scrolled_streak = streak;
     if scrolled {
         policy.last_scrolled_frame = Some(frame);
@@ -233,11 +262,17 @@ pub(crate) fn decide(
     decision
 }
 
-/// Whether the content `record` holds can be composited from a layer
-/// (spec §5.6, §6.5): it deferred no draws (anchored popovers), handles no
-/// text input (a focused input is inside), painted no path, and the tiles
-/// covering its viewport fit the budget.
-fn eligible(window: &Window, record: &LayerRecord) -> bool {
+/// Whether the content `record` holds of the scroll container `id` can be
+/// composited from a layer (spec §5.6, §6.5): it deferred no draws (anchored
+/// popovers), placed no anchored element, handles no text input (a focused
+/// input is inside), painted no path, no view in it asked for an animation
+/// frame, and the tiles covering its viewport fit the budget.
+fn eligible(
+    window: &Window,
+    id: &GlobalElementId,
+    policy: &LayerPolicy,
+    record: &LayerRecord,
+) -> bool {
     let prepaint = &record.prepaint_range;
     let paint = &record.paint_range;
     let scale_factor = window.scale_factor();
@@ -248,6 +283,8 @@ fn eligible(window: &Window, record: &LayerRecord) -> bool {
     prepaint.start.deferred_draws_index == prepaint.end.deferred_draws_index
         && paint.start.input_handlers_index == paint.end.input_handlers_index
         && !record.has_paths
+        && !policy.content_anchored
+        && !invalidate::animation_frame_requested(window, id)
         && tiles(viewport.width) * tiles(viewport.height) * tile_bytes <= TILE_BUDGET_BYTES
 }
 
@@ -259,6 +296,25 @@ pub(crate) fn drop_layers_on_resize(window: &mut Window) {
     if layers.window_size != Some(size) {
         layers.layers.clear();
         layers.window_size = Some(size);
+    }
+}
+
+/// Ends the frame being drawn for the layers painted in it: notes whether
+/// their content placed an anchored element.
+pub(crate) fn finish_frame(layers: &mut WindowLayers) {
+    let frame = layers.frame;
+    let anchored = &layers.scrolls.anchored;
+    for (id, layer) in &mut layers.layers {
+        let policy = &mut layer.policy;
+        if layer.record.is_some()
+            && policy.last_seen_frame == frame
+            && policy.last_decision == Some(Decision::Repaint)
+        {
+            // An element without an id of its own has the id of the
+            // nearest one around it with one: the container's, when it is
+            // directly inside it.
+            policy.content_anchored = anchored.iter().any(|element| element.starts_with(id));
+        }
     }
 }
 
@@ -275,7 +331,8 @@ pub(crate) fn keep(layer: &Layer, frame: u64) -> bool {
 /// Whether the part of the content `record` painted still covers the
 /// viewport at `bounds`, scrolled by `scroll_offset`, with a margin of a
 /// quarter of the overscan — a quarter of the viewport's extent — around
-/// it, as far as the content reaches (spec §5.4).
+/// it, as far as the content reaches (spec §5.4). The margin is kept only on
+/// the axes overscan was painted on, those the container scrolls on.
 fn covers(
     record: &LayerRecord,
     bounds: Bounds<Pixels>,
@@ -287,9 +344,19 @@ fn covers(
         origin: record.painted_region.origin + translation,
         size: record.painted_region.size,
     };
+    let margin = |painted: Pixels, viewport: Pixels| {
+        if painted > viewport {
+            viewport / 4.
+        } else {
+            Pixels::ZERO
+        }
+    };
     let margin = Point {
-        x: record.viewport.size.width / 4.,
-        y: record.viewport.size.height / 4.,
+        x: margin(record.painted_region.size.width, record.viewport.size.width),
+        y: margin(
+            record.painted_region.size.height,
+            record.viewport.size.height,
+        ),
     };
     let viewport = record.viewport;
     let wanted = Bounds::from_corners(viewport.origin - margin, viewport.bottom_right() + margin);

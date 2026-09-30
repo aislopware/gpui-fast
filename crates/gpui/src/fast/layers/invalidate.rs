@@ -7,6 +7,11 @@
 //! the scroll getters ([`note_offset_read`]) are recorded with what a view
 //! read, so that a view whose output depends on an offset is told apart from
 //! one that was only built again because it holds a scroll container.
+//!
+//! The wheel listener's notification of the view holding the container is
+//! told apart from any other notification of it by counting both: the view
+//! is dirty only through the scroll when it was notified no more often than
+//! the wheel scrolled what it holds ([`OwnerWatch`]).
 
 #![allow(
     dead_code,
@@ -18,8 +23,9 @@ use std::{cell::RefCell, ops::Range, rc::Rc};
 use collections::{FxHashMap, FxHashSet};
 
 use crate::fast::dependencies::{RenderDependencies, StateVersion};
+use crate::fast::layers::COMPILED;
 use crate::fast::layers::record::LayerRecord;
-use crate::{App, GlobalElementId, Interactivity, Window};
+use crate::{App, EntityId, GlobalElementId, Interactivity, Window};
 
 /// Where a scroll container's offset lives, which scrolls and reads of it are
 /// noted under.
@@ -39,13 +45,18 @@ impl ScrollSource {
     }
 }
 
-/// A scroll container as its wheel listener knows it: its id and where its
-/// offset lives. See [`painted_container`].
+/// A scroll container as its wheel listener knows it: its id, where its
+/// offset lives and the view that painted it, which the listener notifies.
+/// Nothing where layers are not compiled. See [`painted_container`].
 #[derive(Clone)]
-pub(crate) struct ScrollContainer {
+pub(crate) struct ScrollContainer(Option<Container>);
+
+#[derive(Clone)]
+struct Container {
     id: GlobalElementId,
     source: ScrollSource,
     version: Option<StateVersion>,
+    view: EntityId,
 }
 
 /// The scrolls of the frame being drawn, and the scroll containers painted.
@@ -58,6 +69,16 @@ pub(crate) struct ScrollLog {
     scrolled_sources: FxHashSet<ScrollSource>,
     /// The scroll containers painted lately, by id.
     containers: FxHashMap<GlobalElementId, PaintedContainer>,
+    /// How many times a wheel listener notified each view since the last
+    /// frame was drawn, for having scrolled a container it painted.
+    scroll_notifies: FxHashMap<EntityId, u64>,
+    /// The views that asked for an animation frame while this frame was
+    /// being drawn, and while the last one was. See [`note_animation_frame`].
+    animation_frames: RefCell<FxHashSet<EntityId>>,
+    animation_frames_before: FxHashSet<EntityId>,
+    /// Where anchored elements were prepainted this frame, by the id of the
+    /// element around them. See [`note_anchored`].
+    pub(crate) anchored: Vec<GlobalElementId>,
 }
 
 /// What [`ScrollLog`] keeps of a scroll container it saw painted.
@@ -89,7 +110,7 @@ impl ScrollLog {
             .map(|container| container.source.clone())
     }
 
-    fn remember(&mut self, container: &ScrollContainer, frame: u64) {
+    fn remember(&mut self, container: &Container, frame: u64) {
         let version = container
             .version
             .as_ref()
@@ -109,6 +130,9 @@ impl ScrollLog {
     pub(crate) fn finish_frame(&mut self, frame: u64, keep: impl Fn(&GlobalElementId) -> bool) {
         self.scrolled.clear();
         self.scrolled_sources.clear();
+        self.scroll_notifies.clear();
+        self.animation_frames_before = std::mem::take(self.animation_frames.get_mut());
+        self.anchored.clear();
         self.containers
             .retain(|id, container| container.frame + FORGET_AFTER_FRAMES > frame || keep(id));
     }
@@ -119,6 +143,9 @@ impl ScrollLog {
 /// the scroll handle it tracks, if any.
 /// It is remembered as painted, for scrolls and reads of it to be told apart.
 pub(crate) fn painted_container(window: &mut Window, element: &Interactivity) -> ScrollContainer {
+    if !COMPILED {
+        return ScrollContainer(None);
+    }
     let id = crate::fast::global_id::current(window);
     let (source, version) = match element.tracked_scroll_handle.as_ref() {
         Some(handle) => {
@@ -127,20 +154,26 @@ pub(crate) fn painted_container(window: &mut Window, element: &Interactivity) ->
         }
         None => (ScrollSource::Container(id.clone()), None),
     };
-    let container = ScrollContainer {
+    let container = Container {
         id,
         source,
         version,
+        view: window.current_view(),
     };
     let frame = window.fast_layers.frame;
     window.fast_layers.scrolls.remember(&container, frame);
-    container
+    ScrollContainer(Some(container))
 }
 
 /// Notes that a wheel moved `container`'s offset, as its scroll listener
-/// does, for the next frame to tell the scroll apart from other changes.
+/// does before it notifies the view that painted the container, for the next
+/// frame to tell the scroll apart from other changes.
 pub(crate) fn note_scrolled(window: &mut Window, container: &ScrollContainer) {
+    let Some(container) = &container.0 else {
+        return;
+    };
     let scrolls = &mut window.fast_layers.scrolls;
+    *scrolls.scroll_notifies.entry(container.view).or_default() += 1;
     scrolls.scrolled.insert(container.id.clone());
     scrolls.scrolled_sources.insert(container.source.clone());
     if !scrolls.containers.contains_key(&container.id) {
@@ -152,6 +185,9 @@ pub(crate) fn note_scrolled(window: &mut Window, container: &ScrollContainer) {
 /// Notes that a wheel moved the list whose state `version` counts changes
 /// of. A list has no id; its offset is known by its state.
 pub(crate) fn note_list_scrolled(window: &mut Window, version: &StateVersion) {
+    if !COMPILED {
+        return;
+    }
     window
         .fast_layers
         .scrolls
@@ -194,6 +230,9 @@ thread_local! {
 /// state `version` counts changes of was read.
 #[inline]
 pub(crate) fn note_offset_read(version: &StateVersion) {
+    if !COMPILED {
+        return;
+    }
     OFFSET_READS.with_borrow_mut(|log| {
         if log.recordings > 0 {
             log.reads.push((version.clone(), version.get()));
@@ -323,6 +362,9 @@ pub(crate) fn render_read_offset(dependencies: &RenderDependencies, source: &Scr
 /// A view that read an offset is built again when it scrolls, as it would
 /// be for any other state it read.
 pub(crate) fn offset_read_changed(window: &Window, dependencies: &RenderDependencies) -> bool {
+    if !COMPILED {
+        return false;
+    }
     let scrolled = &window.fast_layers.scrolls.scrolled_sources;
     dependencies.offset_reads.iter().any(|(version, read_at)| {
         version.get() != *read_at
@@ -388,15 +430,138 @@ fn changed(
                 .any(|entity| Some(*entity) != owner && notified.contains(entity)))
 }
 
+/// The view holding the scroll container being prepainted.
+pub(crate) fn owner_view(window: &Window) -> Option<EntityId> {
+    owner(window).and_then(crate::fast::splice::view_entity)
+}
+
 /// Whether the view holding the scroll container `id` was notified since
-/// the last frame for anything other than a scroll of `id`: notified while
-/// `id` did not scroll, as its wheel listener notifies it only when it does.
+/// the last frame for anything other than a wheel scroll: more often than
+/// wheel listeners of containers it painted notified it. Without a count of
+/// its notifications, any notification is taken for a change.
 fn owner_notified_otherwise(window: &Window, id: &GlobalElementId) -> bool {
-    owner(window)
-        .and_then(crate::fast::splice::view_entity)
-        .is_some_and(|owner| {
-            window.retained_state.notified_entities.contains(&owner) && !scrolled(window, id)
-        })
+    let Some(owner) = owner_view(window) else {
+        return false;
+    };
+    let notifies = window
+        .fast_layers
+        .layers
+        .get(id)
+        .and_then(|layer| layer.policy.owner_notifies_since(owner));
+    match notifies {
+        Some(notifies) => {
+            let scrolls = &window.fast_layers.scrolls.scroll_notifies;
+            notifies > scrolls.get(&owner).copied().unwrap_or(0)
+        }
+        None => window.retained_state.notified_entities.contains(&owner),
+    }
+}
+
+/// Whether the view holding the scroll container `id`, or a view drawn
+/// inside the container last frame, asked for an animation frame while this
+/// frame or the last was drawn: what it animates changes every frame.
+pub(crate) fn animation_frame_requested(window: &Window, id: &GlobalElementId) -> bool {
+    let scrolls = &window.fast_layers.scrolls;
+    let requested = scrolls.animation_frames.borrow();
+    if requested.is_empty() && scrolls.animation_frames_before.is_empty() {
+        return false;
+    }
+    let animating = |view: EntityId| {
+        requested.contains(&view) || scrolls.animation_frames_before.contains(&view)
+    };
+    owner_view(window).is_some_and(animating) || any_content_view(window, id, animating)
+}
+
+/// Notes that the view `view` asked for an animation frame, as
+/// [`Window::request_animation_frame`] does.
+pub(crate) fn note_animation_frame(window: &Window, view: EntityId) {
+    if COMPILED {
+        window
+            .fast_layers
+            .scrolls
+            .animation_frames
+            .borrow_mut()
+            .insert(view);
+    }
+}
+
+/// Notes that an anchored element is being prepainted: it is placed against
+/// the window's edges, where a layer composited at another offset would not
+/// keep it.
+pub(crate) fn note_anchored(window: &mut Window) {
+    if COMPILED && !window.fast_layers.layers.is_empty() {
+        let id = crate::fast::global_id::current(window);
+        window.fast_layers.scrolls.anchored.push(id);
+    }
+}
+
+/// How often each view holding a layer's container was notified, by any
+/// cause, counted for as long as an [`OwnerWatch`] of it lives. Views are
+/// notified through the app, which has no window to count in.
+struct OwnerNotifies {
+    watches: u32,
+    notifies: u64,
+}
+
+thread_local! {
+    static OWNER_NOTIFIES: RefCell<FxHashMap<EntityId, OwnerNotifies>> =
+        RefCell::new(FxHashMap::default());
+}
+
+/// Counts, while it lives, how often the view holding a layer's container
+/// is notified.
+pub(crate) struct OwnerWatch(EntityId);
+
+impl OwnerWatch {
+    pub(crate) fn new(view: EntityId) -> Self {
+        OWNER_NOTIFIES.with_borrow_mut(|watched| {
+            watched
+                .entry(view)
+                .or_insert(OwnerNotifies {
+                    watches: 0,
+                    notifies: 0,
+                })
+                .watches += 1;
+        });
+        OwnerWatch(view)
+    }
+
+    /// The view watched.
+    pub(crate) fn view(&self) -> EntityId {
+        self.0
+    }
+
+    /// How often the view has been notified since any watch of it began.
+    pub(crate) fn notifies(&self) -> u64 {
+        OWNER_NOTIFIES.with_borrow(|watched| watched.get(&self.0).map_or(0, |n| n.notifies))
+    }
+}
+
+impl Drop for OwnerWatch {
+    fn drop(&mut self) {
+        let _ = OWNER_NOTIFIES.try_with(|watched| {
+            let mut watched = watched.borrow_mut();
+            if let Some(notifies) = watched.get_mut(&self.0) {
+                notifies.watches -= 1;
+                if notifies.watches == 0 {
+                    watched.remove(&self.0);
+                }
+            }
+        });
+    }
+}
+
+/// Counts a notification of `entity`, if it is a watched view. See
+/// [`crate::App::notify`].
+#[inline]
+pub(crate) fn note_notify(entity: EntityId) {
+    if COMPILED {
+        OWNER_NOTIFIES.with_borrow_mut(|watched| {
+            if let Some(notifies) = watched.get_mut(&entity) {
+                notifies.notifies += 1;
+            }
+        });
+    }
 }
 
 /// Whether the frame being drawn only scrolled the layer of the scroll
@@ -441,23 +606,33 @@ fn owner_scrolled_only(
         // Not drawn last frame as a retained view: nothing tells what it read.
         return false;
     };
-    let records = &window.rendered_frame.retained.records;
-    let owner = &records[index];
+    let owner = &window.rendered_frame.retained.records[index];
     // A view drawn inside the content renders while the owner lays out,
     // before the content is recorded: what it read is its own record's.
-    // Such records follow the owner's; one whose view is dirty, notified or
-    // around a view that is, is built again.
-    let nested = &records[index + 1..(index + 1 + owner.nested).min(records.len())];
+    // One whose view is dirty, notified or around a view that is, is built
+    // again.
     let content_view_dirty = !window.dirty_views.is_empty()
-        && nested.iter().any(|record| {
-            record.id.len() > id.len()
-                && record.id.starts_with(id)
-                && crate::fast::splice::view_entity(&record.id)
-                    .is_some_and(|view| window.dirty_views.contains(&view))
-        });
+        && any_content_view(window, id, |view| window.dirty_views.contains(&view));
     !content_view_dirty
         && !source.is_some_and(|source| render_read_offset(&owner.own_dependencies, source))
         && !changed(window, cx, &owner.own_dependencies, source)
+}
+
+/// Whether any view drawn inside the scroll container `id` last frame, as a
+/// retained view nested in the view holding it, is one `f` picks.
+fn any_content_view(window: &Window, id: &GlobalElementId, f: impl Fn(EntityId) -> bool) -> bool {
+    let Some(index) = owner(window).and_then(|owner| window.rendered_frame.retained.find(owner))
+    else {
+        return false;
+    };
+    let records = &window.rendered_frame.retained.records;
+    // Nested views' records follow the owner's.
+    let nested = &records[index + 1..(index + 1 + records[index].nested).min(records.len())];
+    nested.iter().any(|record| {
+        record.id.len() > id.len()
+            && record.id.starts_with(id)
+            && crate::fast::splice::view_entity(&record.id).is_some_and(&f)
+    })
 }
 
 /// Whether what the content of the scroll container `id` is built from

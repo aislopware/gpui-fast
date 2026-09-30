@@ -99,6 +99,7 @@ pub(crate) fn finish_frame(window: &mut Window) {
     policy::drop_layers_on_resize(window);
     let layers = &mut window.fast_layers;
     let frame = layers.frame;
+    policy::finish_frame(layers);
     layers.layers.retain(|_, layer| policy::keep(layer, frame));
     let live = &layers.layers;
     layers

@@ -621,6 +621,7 @@ pub(crate) fn note_access(entities: &EntityMap, entity_id: EntityId) {
 /// changes nothing a view could have read.
 #[inline(always)]
 pub(crate) fn note_notify(entities: &mut EntityMap, entity_id: EntityId) {
+    crate::fast::layers::invalidate::note_notify(entity_id);
     let log = &mut entities.access_log;
     if log.updated_unnotified.remove(&entity_id)
         || log.recordings.get() > 0
