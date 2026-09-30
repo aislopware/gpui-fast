@@ -558,7 +558,7 @@ mod invalidation {
         }
     }
 
-    fn with_window<R>(
+    pub(super) fn with_window<R>(
         cx: &mut TestAppContext,
         window: AnyWindowHandle,
         f: impl FnOnce(&mut Window, &mut App) -> R,
@@ -567,13 +567,17 @@ mod invalidation {
             .unwrap()
     }
 
-    fn draw(cx: &mut TestAppContext, window: AnyWindowHandle) {
+    pub(super) fn draw(cx: &mut TestAppContext, window: AnyWindowHandle) {
         with_window(cx, window, |window, cx| window.draw(cx).clear(cx));
     }
 
     /// Scrolls the page by `dy` with the wheel, returning the scroll
     /// containers noted as scrolled before the frame that follows is drawn.
-    fn wheel(cx: &mut TestAppContext, window: AnyWindowHandle, dy: f32) -> Vec<GlobalElementId> {
+    pub(super) fn wheel(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        dy: f32,
+    ) -> Vec<GlobalElementId> {
         with_window(cx, window, |window, cx| {
             window.dispatch_event(
                 crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
@@ -717,5 +721,460 @@ mod invalidation {
         assert_eq!(renders.get(), before + 1, "the reader shows the new offset");
         draw(cx, window);
         assert_eq!(renders.get(), before + 1, "and is reused once it has");
+    }
+}
+
+/// Tests of what a scroll container decides to do with its layer each frame
+/// (M4). The paint stream's hook around a container's children is stood in
+/// for by two probes, painted before and after the rows, which ask
+/// [`decide`] and, when it says [`Decision::Repaint`], record what the rows
+/// read and painted into the layer as the hook does.
+mod decisions {
+    use super::invalidation::{draw, with_window};
+    use crate::fast::dependencies::{DependencyRecording, RenderDependencies};
+    use crate::fast::layers::policy::{Decision, decide, last_decision};
+    use crate::fast::layers::record::LayerRecord;
+    use crate::{
+        AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity,
+        GlobalElementId, Hsla, InteractiveElement as _, IntoElement, MouseMoveEvent,
+        ParentElement as _, Pixels, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent,
+        StatefulInteractiveElement as _, Styled as _, TestAppContext, TouchPhase, Window,
+        WindowHandle, canvas, div, point, px, rgb, size,
+    };
+    use std::{cell::RefCell, rc::Rc};
+
+    pub(super) const ROWS: usize = 40;
+    pub(super) const ROW_HEIGHT: f32 = 20.;
+
+    pub(super) fn viewport() -> Bounds<Pixels> {
+        Bounds {
+            origin: point(px(0.), px(0.)),
+            size: size(px(200.), px(100.)),
+        }
+    }
+
+    /// What the probes hand from one to the other within a frame.
+    #[derive(Default)]
+    pub(super) struct Probe {
+        open: Option<Open>,
+    }
+
+    struct Open {
+        id: GlobalElementId,
+        recording: Option<DependencyRecording>,
+        prepaint_dependencies: RenderDependencies,
+        record: LayerRecord,
+        paint: Option<PaintStart>,
+    }
+
+    struct PaintStart {
+        recording: DependencyRecording,
+        hovers: usize,
+        paths: usize,
+    }
+
+    /// The probe before the children: decides, and starts recording them
+    /// when they are painted into the layer.
+    fn probe_before(probe: Rc<RefCell<Probe>>, content_height: f32) -> impl IntoElement {
+        let paint_probe = probe.clone();
+        canvas(
+            move |_, window, cx| {
+                let id = crate::fast::global_id::current(window);
+                let scroll_offset = window.element_offset();
+                let content_size = size(viewport().size.width, px(content_height));
+                let decision = decide(window, cx, &id, viewport(), content_size, scroll_offset);
+                if decision != Decision::Repaint {
+                    return;
+                }
+                let content = Bounds {
+                    origin: viewport().origin + scroll_offset,
+                    size: content_size,
+                };
+                let overscan = viewport().size.height;
+                let painted_region = Bounds::from_corners(
+                    point(viewport().left(), viewport().top() - overscan),
+                    point(viewport().right(), viewport().bottom() + overscan),
+                )
+                .intersect(&content);
+                let start = window.prepaint_index();
+                probe.borrow_mut().open = Some(Open {
+                    id,
+                    recording: Some(cx.begin_recording_dependencies()),
+                    prepaint_dependencies: RenderDependencies::default(),
+                    record: LayerRecord {
+                        painted_region,
+                        viewport: viewport(),
+                        scroll_offset,
+                        prepaint_range: start.clone()..start,
+                        ..LayerRecord::default()
+                    },
+                    paint: None,
+                });
+            },
+            move |_, _, window, cx| {
+                if let Some(open) = paint_probe.borrow_mut().open.as_mut() {
+                    window.take_hover_reads();
+                    open.record.paint_range.start = window.paint_index();
+                    open.paint = Some(PaintStart {
+                        recording: cx.begin_recording_dependencies(),
+                        hovers: window.retained_state.hover_dependencies.len(),
+                        paths: window.next_frame.scene.paths.len(),
+                    });
+                }
+            },
+        )
+    }
+
+    /// The probe after the children: keeps what they read and painted in
+    /// the layer.
+    fn probe_after(probe: Rc<RefCell<Probe>>) -> impl IntoElement {
+        let paint_probe = probe.clone();
+        canvas(
+            move |_, window, cx| {
+                if let Some(open) = probe.borrow_mut().open.as_mut()
+                    && let Some(recording) = open.recording.take()
+                {
+                    open.prepaint_dependencies = cx.finish_recording_dependencies(recording).all;
+                    open.record.prepaint_range.end = window.prepaint_index();
+                }
+            },
+            move |_, _, window, cx| {
+                let Some(mut open) = paint_probe.borrow_mut().open.take() else {
+                    return;
+                };
+                let Some(paint) = open.paint.take() else {
+                    return;
+                };
+                let paint_dependencies = cx.finish_recording_dependencies(paint.recording).all;
+                window.take_hover_reads();
+                let mut record = open.record;
+                record.hovers = window.retained_state.hover_dependencies[paint.hovers..].into();
+                record.paint_range.end = window.paint_index();
+                record.has_paths = window.next_frame.scene.paths.len() > paint.paths;
+                record.dependencies = open.prepaint_dependencies.union(&paint_dependencies);
+                if let Some(layer) = window.fast_layers.layers.get_mut(&open.id) {
+                    layer.record = Some(record);
+                }
+            },
+        )
+    }
+
+    /// A row, with a hover style when `hover` is set.
+    fn row(index: usize, hover: bool) -> AnyElement {
+        let row = div()
+            .h(px(ROW_HEIGHT))
+            .bg(rgb(0x100000 + index as u32 * 0x10));
+        if hover {
+            row.id(("row", index))
+                .hover(|style| style.bg(rgb(0x00ff00)))
+                .into_any_element()
+        } else {
+            row.into_any_element()
+        }
+    }
+
+    /// The rows in a view of their own, for a page whose scroll container
+    /// holds a child view (pattern A).
+    pub(super) struct Rows {
+        pub(super) tint: u32,
+    }
+
+    impl Render for Rows {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().children((0..ROWS).map(|index| {
+                div()
+                    .h(px(ROW_HEIGHT))
+                    .bg(rgb(self.tint + index as u32 * 0x10))
+            }))
+        }
+    }
+
+    /// A page with a 100 px tall scroll container of forty 20 px rows at the
+    /// top left of the window: in the page's own view (pattern B), or in a
+    /// child view (pattern A), followed by `extra`, if any.
+    pub(super) struct LayerPage {
+        pub(super) handle: ScrollHandle,
+        pub(super) probe: Rc<RefCell<Probe>>,
+        pub(super) rows: Option<Entity<Rows>>,
+        pub(super) hover: bool,
+        pub(super) read_offset_in_render: bool,
+        pub(super) extra: Option<Rc<dyn Fn() -> AnyElement>>,
+    }
+
+    impl Render for LayerPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            if self.read_offset_in_render {
+                let _ = self.handle.offset();
+            }
+            let content_height = ROWS as f32 * ROW_HEIGHT;
+            let mut scroller = div()
+                .id("scroller")
+                .overflow_y_scroll()
+                .track_scroll(&self.handle)
+                .w(viewport().size.width)
+                .h(viewport().size.height)
+                .child(probe_before(self.probe.clone(), content_height));
+            scroller = match &self.rows {
+                Some(rows) => scroller.child(rows.clone()),
+                None => scroller.children((0..ROWS).map(|index| row(index, self.hover))),
+            };
+            if let Some(extra) = &self.extra {
+                scroller = scroller.child(extra());
+            }
+            div()
+                .size_full()
+                .child(scroller.child(probe_after(self.probe.clone())))
+        }
+    }
+
+    pub(super) fn new_page(child_view: bool, cx: &mut App) -> LayerPage {
+        LayerPage {
+            handle: ScrollHandle::new(),
+            probe: Rc::default(),
+            rows: child_view.then(|| cx.new(|_| Rows { tint: 0x100000 })),
+            hover: false,
+            read_offset_in_render: false,
+            extra: None,
+        }
+    }
+
+    pub(super) fn page(cx: &mut TestAppContext, child_view: bool) -> WindowHandle<LayerPage> {
+        let window = cx.add_window(move |_, cx| new_page(child_view, cx));
+        draw(cx, window.into());
+        draw(cx, window.into());
+        window
+    }
+
+    pub(super) fn scroller_id(cx: &mut TestAppContext, window: AnyWindowHandle) -> GlobalElementId {
+        with_window(cx, window, |window, _| {
+            window
+                .fast_layers
+                .scrolls
+                .containers()
+                .find(|id| id.last() == Some(&"scroller".into()))
+                .cloned()
+                .expect("the scroll container was painted")
+        })
+    }
+
+    /// Draws the frame that follows `change`, unless the change drew one.
+    pub(super) fn frame_after(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        change: impl FnOnce(&mut TestAppContext),
+    ) {
+        let frame = with_window(cx, window, |window, _| window.fast_layers.frame);
+        change(cx);
+        if with_window(cx, window, |window, _| window.fast_layers.frame) == frame {
+            draw(cx, window);
+        }
+    }
+
+    /// Scrolls by `dy` with the wheel, returning what the scroll container
+    /// decided in the frame that followed.
+    pub(super) fn scroll(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        dy: f32,
+    ) -> Option<Decision> {
+        scroll_and(cx, window, dy, |_| {})
+    }
+
+    /// Scrolls by `dy` with the wheel after `change`, in one frame,
+    /// returning what the scroll container decided in it.
+    pub(super) fn scroll_and(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        dy: f32,
+        change: impl FnOnce(&mut App),
+    ) -> Option<Decision> {
+        // In one update, for the change and the scroll to be taken in by the
+        // same frame.
+        frame_after(cx, window, |cx| {
+            with_window(cx, window, |window, cx| {
+                change(cx);
+                window.dispatch_event(
+                    crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        position: point(px(20.), px(20.)),
+                        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+                        modifiers: Default::default(),
+                        touch_phase: TouchPhase::Moved,
+                    }),
+                    cx,
+                );
+            })
+        });
+        decision(cx, window)
+    }
+
+    /// What the scroll container decided in the last frame drawn, if it
+    /// decided anything in it.
+    pub(super) fn decision(cx: &mut TestAppContext, window: AnyWindowHandle) -> Option<Decision> {
+        let id = scroller_id(cx, window);
+        with_window(cx, window, |window, _| last_decision(window, &id))
+    }
+
+    /// Scrolls until the container has a layer, checking it is promoted on
+    /// the second scrolled frame.
+    pub(super) fn promote(cx: &mut TestAppContext, window: AnyWindowHandle) {
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
+    }
+
+    #[crate::test]
+    fn a_wheel_scroll_composites(cx: &mut TestAppContext) {
+        let window = page(cx, false).into();
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(scroll(cx, window, 20.), Some(Decision::Composite));
+    }
+
+    #[crate::test]
+    fn a_child_view_page_composites(cx: &mut TestAppContext) {
+        let window = page(cx, true).into();
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+    }
+
+    #[crate::test]
+    fn a_notified_content_view_repaints(cx: &mut TestAppContext) {
+        let handle = page(cx, true);
+        let window = handle.into();
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        let rows = handle
+            .read_with(cx, |page, _| page.rows.clone().unwrap())
+            .unwrap();
+        // Notified in the frame a scroll draws, so that the page is built
+        // again for the scroll and the rows' view is found changed.
+        // Notified without being updated first: the view may have changed
+        // what it renders in a way nothing it read shows.
+        assert_eq!(
+            scroll_and(cx, window, -20., |cx| cx.notify(rows.entity_id())),
+            Some(Decision::Repaint)
+        );
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(
+            scroll_and(cx, window, -20., |cx| rows.update(cx, |rows, cx| {
+                rows.tint = 0x200000;
+                cx.notify();
+            })),
+            Some(Decision::Repaint)
+        );
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+    }
+
+    #[crate::test]
+    fn an_owner_that_reads_the_offset_in_render_repaints(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        handle
+            .update(cx, |page, _, cx| {
+                page.read_offset_in_render = true;
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx, window);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
+    }
+
+    #[crate::test]
+    fn a_hover_change_in_the_content_repaints(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        handle
+            .update(cx, |page, _, cx| {
+                page.hover = true;
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx, window);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        frame_after(cx, window, |cx| {
+            with_window(cx, window, |window, cx| {
+                window.dispatch_event(
+                    crate::PlatformInput::MouseMove(MouseMoveEvent {
+                        position: point(px(20.), px(70.)),
+                        pressed_button: None,
+                        modifiers: Default::default(),
+                    }),
+                    cx,
+                );
+            })
+        });
+        assert_eq!(decision(cx, window), Some(Decision::Repaint));
+    }
+
+    /// A view around the page that sets the text colour the page inherits.
+    struct Themed {
+        color: Hsla,
+        page: Entity<LayerPage>,
+    }
+
+    impl Render for Themed {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .text_color(self.color)
+                .child(self.page.clone())
+        }
+    }
+
+    #[crate::test]
+    fn a_style_change_of_the_scroll_div_repaints(cx: &mut TestAppContext) {
+        // The scroll div's own style is set by the view that holds it, whose
+        // notification repaints the layer anyway; what it inherits changes
+        // without it, as the text colour of a view around it does.
+        let handle = cx.add_window(|_, cx| Themed {
+            color: crate::black(),
+            page: cx.new(|cx| new_page(false, cx)),
+        });
+        let window: AnyWindowHandle = handle.into();
+        draw(cx, window);
+        draw(cx, window);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        frame_after(cx, window, |cx| {
+            handle
+                .update(cx, |themed, _, cx| {
+                    themed.color = crate::white();
+                    cx.notify();
+                })
+                .unwrap();
+        });
+        assert_eq!(decision(cx, window), Some(Decision::Repaint));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+    }
+
+    #[crate::test]
+    fn exposing_past_the_margin_repaints(cx: &mut TestAppContext) {
+        let window = page(cx, false).into();
+        promote(cx, window);
+        // Painted at the offset it was promoted at, -40 px, one viewport
+        // (100 px) beyond each edge as far as the content goes. The margin is
+        // a quarter of that: the fourth 20 px scroll leaves less than 25 px
+        // painted below the viewport.
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
+        let id = scroller_id(cx, window);
+        let painted_at = with_window(cx, window, |window, _| {
+            let record = window.fast_layers.layers[&id].record.as_ref().unwrap();
+            (record.scroll_offset, record.painted_region)
+        });
+        assert_eq!(
+            painted_at,
+            (
+                point(px(0.), px(-120.)),
+                Bounds::from_corners(point(px(0.), px(-100.)), point(px(200.), px(200.)))
+            ),
+            "re-centred on the viewport"
+        );
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
     }
 }

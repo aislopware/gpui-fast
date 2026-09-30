@@ -8,12 +8,18 @@
 //! read, so that a view whose output depends on an offset is told apart from
 //! one that was only built again because it holds a scroll container.
 
+#![allow(
+    dead_code,
+    reason = "the paint stream's hook around a scroll container's children calls policy::decide; remove once it is merged"
+)]
+
 use std::{cell::RefCell, ops::Range, rc::Rc};
 
 use collections::{FxHashMap, FxHashSet};
 
 use crate::fast::dependencies::{RenderDependencies, StateVersion};
-use crate::{GlobalElementId, Interactivity, Window};
+use crate::fast::layers::record::LayerRecord;
+use crate::{App, GlobalElementId, Interactivity, Window};
 
 /// Where a scroll container's offset lives, which scrolls and reads of it are
 /// noted under.
@@ -322,4 +328,125 @@ pub(crate) fn offset_read_changed(window: &Window, dependencies: &RenderDependen
         version.get() != *read_at
             || (!scrolled.is_empty() && scrolled.contains(&ScrollSource::of_state(version)))
     })
+}
+
+/// `dependencies` without the version of the scroll state at `source`, if
+/// they hold it: a scroll of the container is what a layer is composited
+/// for, not a change.
+fn without_scroll_state(
+    dependencies: &RenderDependencies,
+    source: Option<&ScrollSource>,
+) -> Option<RenderDependencies> {
+    let Some(ScrollSource::Handle(id)) = source else {
+        return None;
+    };
+    if !dependencies
+        .states
+        .iter()
+        .any(|(version, _)| version.id() == *id)
+    {
+        return None;
+    }
+    let states: Vec<_> = dependencies
+        .states
+        .iter()
+        .filter(|(version, _)| version.id() != *id)
+        .cloned()
+        .collect();
+    Some(RenderDependencies {
+        states: states.into(),
+        ..dependencies.clone()
+    })
+}
+
+/// The view whose element is being prepainted: the one holding the scroll
+/// container asking.
+fn owner(window: &Window) -> Option<&GlobalElementId> {
+    window.retained_state.subtree_stack.last()
+}
+
+/// Whether `dependencies`, the scroll state at `source` aside, changed since
+/// they were recorded, or name an entity notified since the last frame
+/// other than the view holding the container, whose notification
+/// [`owner_notified_otherwise`] accounts for.
+fn changed(
+    window: &Window,
+    cx: &App,
+    dependencies: &RenderDependencies,
+    source: Option<&ScrollSource>,
+) -> bool {
+    let trimmed = without_scroll_state(dependencies, source);
+    let dependencies = trimmed.as_ref().unwrap_or(dependencies);
+    let notified = &window.retained_state.notified_entities;
+    let owner = owner(window).and_then(crate::fast::splice::view_entity);
+    cx.dependencies_changed(dependencies, window.inside_notified_view())
+        || offset_read_changed(window, dependencies)
+        || (!notified.is_empty()
+            && dependencies
+                .entities
+                .iter()
+                .any(|entity| Some(*entity) != owner && notified.contains(entity)))
+}
+
+/// Whether the view holding the scroll container `id` was notified since
+/// the last frame for anything other than a scroll of `id`: notified while
+/// `id` did not scroll, as its wheel listener notifies it only when it does.
+fn owner_notified_otherwise(window: &Window, id: &GlobalElementId) -> bool {
+    owner(window)
+        .and_then(crate::fast::splice::view_entity)
+        .is_some_and(|owner| {
+            window.retained_state.notified_entities.contains(&owner) && !scrolled(window, id)
+        })
+}
+
+/// Whether the frame being drawn only scrolled the layer of the scroll
+/// container `id`, whose content `record` holds (spec §6.4):
+///
+/// - nothing the content read changed — no view nested in it is notified or
+///   read anything that changed — and no hover it was painted by did;
+/// - the view holding the container is clean, or dirty only because `id`
+///   scrolled: nothing it read itself changed, it was notified only by the
+///   scroll, and its render did not read `id`'s offset.
+///
+/// What the container itself is painted with — its bounds, content mask,
+/// text style, opacity — is checked by [`crate::fast::layers::policy::decide`].
+pub(crate) fn scroll_only(
+    window: &Window,
+    cx: &App,
+    id: &GlobalElementId,
+    record: &LayerRecord,
+) -> bool {
+    let source = window.fast_layers.scrolls.source(id);
+    if changed(window, cx, &record.dependencies, source.as_ref())
+        || !window.hovers_unchanged(&record.hovers)
+        || owner_notified_otherwise(window, id)
+    {
+        return false;
+    }
+    let Some(owner) = owner(window) else {
+        return false;
+    };
+    let Some(index) = window.rendered_frame.retained.find(owner) else {
+        // Not drawn last frame as a retained view: nothing tells what it read.
+        return false;
+    };
+    let records = &window.rendered_frame.retained.records;
+    let owner = &records[index];
+    // A view drawn inside the content renders while the owner lays out,
+    // before the content is recorded: what it read is its own record's.
+    // Such records follow the owner's; one whose view is dirty, notified or
+    // around a view that is, is built again.
+    let nested = &records[index + 1..(index + 1 + owner.nested).min(records.len())];
+    let content_view_dirty = !window.dirty_views.is_empty()
+        && nested.iter().any(|record| {
+            record.id.len() > id.len()
+                && record.id.starts_with(id)
+                && crate::fast::splice::view_entity(&record.id)
+                    .is_some_and(|view| window.dirty_views.contains(&view))
+        });
+    !content_view_dirty
+        && !source
+            .as_ref()
+            .is_some_and(|source| render_read_offset(&owner.own_dependencies, source))
+        && !changed(window, cx, &owner.own_dependencies, source.as_ref())
 }
