@@ -5,11 +5,12 @@ GPUI.**
 
 - **Retained Mode**: redraw only what changed since the last frame. How it
   works, and why it is built this way: [Architecture](docs/architecture.md).
-- **Window composition** (coming next): native views such as a WebView drawn
-  inside a GPUI window, with GPUI's popovers, menus and dialogs still above
-  them. We plan to bring the work proposed in
+- **Window composition**: native views such as a WebView drawn inside a
+  GPUI window, with GPUI's popovers, menus and dialogs still above them. It
+  brings in the work proposed in
   [zed#62379](https://github.com/zed-industries/zed/pull/62379), still under
-  review upstream, into this experimental branch.
+  review upstream; `cargo run -p gpui_perf --example native_webview` shows
+  it.
 
 Both take deep changes to GPUI, so they are tried out here first. Once they
 work, we plan to propose them to [Zed's GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui).
@@ -110,8 +111,9 @@ drawing incrementally and one from scratch, and requires every frame to match.
 
 gpui-fast is for trying Retained Mode out, and for measuring it on real
 applications; expect its internals to change as the experiment goes on, but
-not its API: the public API is upstream's, and code written for upstream GPUI
-compiles here untouched. One thing to know: state a view's render reads that
+not its API: the public API is upstream's, plus the window composition API
+of zed#62379, and code written for upstream GPUI compiles here untouched. One
+thing to know: state a view's render reads that
 gpui-fast cannot observe — an `Rc<RefCell<..>>` outside an entity, the time —
 needs a `cx.notify()` when it changes, as it already does for a cached view.
 
