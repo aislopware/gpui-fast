@@ -236,8 +236,12 @@ pub(crate) fn decide(
             changed = true;
             Decision::Repaint
         }
+        // Content asking for animation frames would be found ineligible the
+        // frame after it is painted into a layer, at the price of painting
+        // the overscan for nothing: it waits until the content stops.
         None if streak >= PROMOTE_AFTER_SCROLLED_FRAMES
-            && policy.retry_at.is_none_or(|at| frame >= at) =>
+            && policy.retry_at.is_none_or(|at| frame >= at)
+            && !invalidate::animation_frame_requested(window, id) =>
         {
             Decision::Repaint
         }

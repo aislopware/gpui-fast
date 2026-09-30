@@ -2833,6 +2833,34 @@ mod policies {
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
     }
 
+    /// A promotion waits while the owner asks for animation frames: the
+    /// layer would be found ineligible the frame after it was painted, and
+    /// painted again for nothing after each retry.
+    #[crate::test]
+    fn a_container_is_not_painted_into_a_layer_while_its_owner_animates(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = page(cx, false);
+        let window = handle.into();
+        let animate = |cx: &mut TestAppContext, animate: bool| {
+            handle
+                .update(cx, |page, _, cx| {
+                    page.animate = animate;
+                    cx.notify();
+                })
+                .unwrap();
+            draw(cx, window);
+        };
+        animate(cx, true);
+        for _ in 0..20 {
+            assert_eq!(scroll(cx, window, -5.), Some(Decision::Bypass));
+        }
+        assert!(!has_record(cx, window));
+        animate(cx, false);
+        promote(cx, window);
+    }
+
     #[crate::test]
     fn a_focused_input_inside_makes_it_ineligible(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
