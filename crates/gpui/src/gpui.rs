@@ -115,6 +115,8 @@ pub use executor::*;
 pub use fast::composition;
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::stats::LayoutStats;
+#[cfg(any(test, feature = "test-support"))]
+pub use fast::subscriptions::SubscriptionCounts;
 pub use geometry::*;
 pub use gestures::*;
 pub use global::*;

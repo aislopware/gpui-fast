@@ -343,6 +343,28 @@ Added in this fork:
     platform goes through `Window::focus`, which refreshes the window. `VideoLayer`
     touches no entity: its thread presents into its own layer, and the window draws no
     frame for it.
+- `973a34b` perf(gpui): a line takes its content mask once, not once a glyph, which
+  longbridge#19's hook in `line.rs` had made it do (strip-scroll +7.9% back to +0.0%)
+- `04aad17` test(gpui_perf): `strip-focus`, the keyboard focus moving between terminal
+  tiles
+- `fbbb9f5` perf(gpui): an element that only moved by whole device pixels is drawn again
+  from last frame, translated (`fast/shift.rs`; docs/retained-mode.md, "Elements drawn
+  again moved"), with `589f6fd` fix(gpui): an element painted outside motion is not
+  drawn again in place under a mask that grew
+- `beb580e` perf(gpui): focus and blur no longer refresh the window. What a view asks
+  through a `FocusId` (`is_focused`, `contains_focused`, `within_focused`) is recorded
+  per handle and question and asked again before each frame, and only views whose
+  answer changed are built again; `Window::focused` reads the focus as a whole
+  (`fast/focus.rs`). Code that relied on a focus change rebuilding every view has to
+  read the focus through those questions, or notify.
+- `b6d9f08` perf(gpui_apple): instanced draws bind only what the batch before left
+  different, and monochrome sprites no longer bind their instances for the fragment
+  stage (`fast/binds.rs`); every frame is encoded by `fast::paths`
+- `4f133fa` feat(gpui): the test platform's own draws present a window's natives, so
+  `TestNativeHost::placement` follows ordinary test draws; `Window::draw_and_present`
+  is public under test-support
+- `6cd5c42` test(gpui): `App::subscription_counts` and `TestAppContext::subscription_counts`
+  (test-support) count the callbacks the app and its windows hold (`SubscriptionCounts`)
 
 ### Candidates for longbridge
 
