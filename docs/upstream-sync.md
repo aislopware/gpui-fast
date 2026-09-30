@@ -154,6 +154,21 @@ unchanged, and a new entry needs as good a reason.
   1.87M (−58%), every cell changing 25.01M → 25.07M (+0.2%). In
   `gpui_perf`, `strip-scroll-keyed` takes 7.45M against `strip-scroll`'s
   7.97M (−6.5%).
+- `PlatformInput::Gesture(PlatformGesture)`, with `RotateEvent`,
+  `SmartMagnifyEvent` and `SwipeEvent` and the `InteractiveGestures`
+  listeners (`on_rotate`, `on_smart_magnify`, `on_swipe`), are new public API
+  (`fast/gesture.rs`, `gpui_macos/src/fast/gesture.rs`, and `gpui_ios`'s
+  rotation recognizer). Upstream delivers a trackpad's pinch and turns a
+  swipe into a back or forward button; Slopty forwards gestures to a remote
+  desktop, so it needs a rotation, a smart magnify and a swipe as they came.
+  A swipe that no listener stops still becomes the back or forward button,
+  so nothing that relied on that changes. On macOS a rotation is AppKit's
+  degrees counterclockwise since the previous event, with its phase; a
+  smart magnify is the two-finger double tap; a swipe carries AppKit's
+  `deltaX`/`deltaY` of ±1 and arrives `Ended`. On iOS a rotation from
+  `UIRotationGestureRecognizer`, touch screen or trackpad, is delivered in
+  the same units; UIKit has no smart magnify, and iPadOS keeps
+  three-finger trackpad swipes for itself.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what

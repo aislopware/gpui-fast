@@ -18,6 +18,7 @@ pub mod composition;
 pub(crate) mod dependencies;
 pub(crate) mod dispatch;
 pub(crate) mod focus;
+pub mod gesture;
 pub(crate) mod element;
 pub(crate) mod global_id;
 pub(crate) mod glyphs;

@@ -1176,6 +1176,7 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         file_drop_exit_listeners,
         scroll_wheel_listeners,
         pinch_listeners,
+        fast_gesture_listeners,
         key_down_listeners,
         key_up_listeners,
         modifiers_changed_listeners,
@@ -1234,6 +1235,7 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         && file_drop_exit_listeners.is_empty()
         && scroll_wheel_listeners.is_empty()
         && pinch_listeners.is_empty()
+        && fast_gesture_listeners.is_empty()
         && key_down_listeners.is_empty()
         && key_up_listeners.is_empty()
         && modifiers_changed_listeners.is_empty()
