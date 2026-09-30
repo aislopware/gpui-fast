@@ -33,6 +33,7 @@ use std::{any::TypeId, cell::RefCell, mem, ops::Range, rc::Rc};
 #[inline(always)]
 pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
     window.fast_layout.phase_times.begin();
+    crate::fast::focus::stamp_changes(window, cx);
     window.mark_changed_retained_views_dirty(cx);
 }
 
@@ -217,6 +218,8 @@ pub(crate) struct RetainedState {
     pub(crate) element_retention: bool,
     /// Records reads of the pointer and modifier keys while views are drawn.
     pub(crate) ambient_reads: crate::fast::dependencies::AmbientReads,
+    /// The questions views asked of the focus. See [`crate::fast::focus`].
+    pub(crate) focus_reads: crate::fast::focus::FocusReads,
     /// Room to sort out the layout keys a spliced view keeps, kept from one
     /// splice to the next. See [`crate::fast::splice`].
     pub(crate) splice_keys: FxHashSet<u64>,
@@ -235,6 +238,7 @@ impl RetainedState {
     pub(crate) fn new(cx: &App) -> Self {
         RetainedState {
             ambient_reads: cx.ambient_reads(),
+            focus_reads: crate::fast::focus::FocusReads::default(),
             subtree_stack: Vec::new(),
             dirty_subtrees: FxHashSet::default(),
             subtrees_dirty_next_frame: FxHashSet::default(),
