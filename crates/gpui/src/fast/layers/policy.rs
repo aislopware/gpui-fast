@@ -343,7 +343,8 @@ pub(crate) fn finish_frame(layers: &mut WindowLayers) {
             // An element without an id of its own has the id of the
             // nearest one around it with one: the container's, when it is
             // directly inside it.
-            policy.content_anchored = anchored.iter().any(|element| element.starts_with(id));
+            let prefix = crate::fast::layers::lists::content_prefix(id);
+            policy.content_anchored = anchored.iter().any(|element| element.starts_with(prefix));
         }
     }
 }

@@ -515,7 +515,9 @@ pub(crate) fn animation_frame_requested(window: &Window, id: &GlobalElementId) -
     let animating = |view: EntityId| {
         requested.contains(&view) || scrolls.animation_frames_before.contains(&view)
     };
-    owner_view(window).is_some_and(animating) || any_content_view(window, id, animating)
+    owner_view(window).is_some_and(animating)
+        || any_content_view(window, id, animating)
+        || crate::fast::layers::lists::any_held_view(window, id, animating)
 }
 
 /// Notes that the view `view` asked for an animation frame, as

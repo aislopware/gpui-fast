@@ -28,8 +28,9 @@
 //! nested views and scroll containers are painted into the layer.
 
 use crate::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, ElementId, GlobalElementId, PaintIndex,
-    Pixels, Point, PrepaintStateIndex, Rgba, ScaledPixels, Scene, Size, TextStyle, Window,
+    AnyElement, App, AvailableSpace, Bounds, ContentMask, ElementId, EntityId, GlobalElementId,
+    PaintIndex, Pixels, Point, PrepaintStateIndex, Rgba, ScaledPixels, Scene, Size, TextStyle,
+    Window,
     fast::{
         dependencies::{DependencyRecording, RenderDependencies, StateVersion},
         layers::{
@@ -388,7 +389,28 @@ pub(crate) fn begin_uniform_list(
     };
     window.fast_layers.painting = Some(marker(id, &frame));
     paint::layer_mut(window, id).rows.frame = Some(frame);
+    if mode == Mode::Extend {
+        keep_reads(window, cx, id);
+    }
     Rows(Some(plan))
+}
+
+/// Tells the window that what the rows held by the layer of the list `id`
+/// read is read again this frame, which renders them not: so that the
+/// window stays told of their changes, a row view's notifications included,
+/// as it is on today's path, where the list renders the rows it shows every
+/// frame.
+fn keep_reads(window: &Window, cx: &mut App, id: &GlobalElementId) {
+    let Some(record) = window
+        .fast_layers
+        .layers
+        .get(id)
+        .and_then(|layer| layer.record.as_ref())
+    else {
+        return;
+    };
+    cx.replay_dependencies(&record.dependencies);
+    cx.entities.extend_accessed(record.views.iter());
 }
 
 /// What marks the rows of the list `id` as painting into its layer, for
@@ -507,11 +529,42 @@ fn frame_mut<'a>(window: &'a mut Window, id: &GlobalElementId) -> Option<&'a mut
 fn list_id(window: &Window, version: &StateVersion) -> GlobalElementId {
     let mut path: Vec<ElementId> = window.element_id_stack.to_vec();
     path.push(ElementId::NamedInteger(
-        "fast-list".into(),
+        LIST_ID_NAME.into(),
         version.id() as u64,
     ));
     GlobalElementId::new(path.into())
 }
+
+/// What the ids of the elements and views inside the scroll container `id`
+/// start with: `id`, or for a `list`, which has no id of its own, the id of
+/// the elements around it (see [`list_id`]).
+pub(crate) fn content_prefix(id: &GlobalElementId) -> &[ElementId] {
+    match id.split_last() {
+        Some((ElementId::NamedInteger(name, _), around)) if name.as_ref() == LIST_ID_NAME => around,
+        _ => id,
+    }
+}
+
+/// Whether a view drawn into the rows the layer of the list `id` holds is
+/// one `f` picks. A list's rows are rendered as it prepaints, not as the view
+/// holding it renders, so their views are not among that view's nested ones;
+/// the layer remembers them.
+pub(crate) fn any_held_view(
+    window: &Window,
+    id: &GlobalElementId,
+    f: impl Fn(EntityId) -> bool,
+) -> bool {
+    window
+        .fast_layers
+        .layers
+        .get(id)
+        .filter(|layer| layer.rows.list)
+        .and_then(|layer| layer.record.as_ref())
+        .is_some_and(|record| record.views.iter().copied().any(f))
+}
+
+/// The name of the last part of a `list`'s id.
+const LIST_ID_NAME: &str = "fast-list";
 
 /// The frame of the `list` whose rows are prepainting, if it is the one
 /// whose state `version` counts changes of.
@@ -575,6 +628,9 @@ pub(crate) fn begin_list(
     };
     window.fast_layers.painting = Some(marker(&id, &frame));
     paint::layer_mut(window, &id).rows.frame = Some(frame);
+    if mode == Mode::Extend {
+        keep_reads(window, cx, &id);
+    }
 }
 
 /// Whether a `list`, whose state `version` counts changes of, laying out the
@@ -735,7 +791,9 @@ pub(crate) fn end_list(
 
     // The rows the layer holds stay where they are only if the first row
     // shown lies at a whole number of device pixels from where the layer
-    // holds it, and every row it holds is as tall as the list measures it.
+    // holds it, and every row it holds is as tall as the list measures it;
+    // and, once the rows around it are placed, if each row it keeps lands on
+    // the pixels it would painted afresh (see [`held_rows_land_alike`]).
     let mut translation = None;
     if frame.mode == Mode::Extend
         && let Some(held) = rows.rows.get(&anchor)
@@ -809,6 +867,11 @@ pub(crate) fn end_list(
 
     let layer = &mut window.fast_layers.layers.get_mut(&id).unwrap().rows;
     let frame = layer.frame.as_mut().unwrap();
+    if frame.mode == Mode::Extend
+        && !held_rows_land_alike(&layer.rows, &needed, &tops, frame.translation, scale_factor)
+    {
+        frame.mode = Mode::Repaint;
+    }
     let held = match frame.mode {
         Mode::Extend => layer.painted.clone(),
         Mode::Repaint => BTreeSet::new(),
@@ -847,18 +910,29 @@ pub(crate) fn end_list(
     }
 
     let mut extra = Vec::with_capacity(to_prepaint.len());
+    let mut unplaced = Vec::new();
     for (row, top) in to_prepaint {
         let mut element = match rendered.remove(&row) {
             Some(element) => element,
             None => {
                 let mut element = render_item(row, window, cx);
-                crate::fast::layout_key::layout_as_list_item(
+                let size = crate::fast::layout_key::layout_as_list_item(
                     &mut element,
                     row,
                     available,
                     window,
                     cx,
                 );
+                let (_, height) = tops[&row];
+                let hidden = top + height <= viewport.top() || top >= viewport.bottom();
+                if hidden && (size.height.0 - height.0).abs() * scale_factor >= 0.01 {
+                    // The list's size for the row is out of date (it was
+                    // measured at another scale, say), and the list corrects
+                    // it when it shows the row: the layer does not hold a row
+                    // where it would not be then.
+                    unplaced.push(row);
+                    continue;
+                }
                 element
             }
         };
@@ -876,7 +950,43 @@ pub(crate) fn end_list(
     finish_prepaint(window, cx, &id);
     if let Some(frame) = frame_mut(window, &id) {
         frame.extra = extra;
+        for row in unplaced {
+            frame.slots.remove(&row);
+        }
     }
+}
+
+/// Whether each row of `held` that a `list` keeps, those of `needed`, lands
+/// on the pixels it would if painted afresh when its content is moved by
+/// `translation`: the row lies at `tops` (its top and height), at the same
+/// fraction of a device pixel as it does moved, and neither its top nor its
+/// bottom lies half way between device pixels.
+///
+/// A row's edges are rounded to device pixels as the row is painted, half
+/// way toward zero. Rounding a position and then moving it by whole device
+/// pixels lands where rounding the moved position does, unless the position
+/// is half way: its rounding then depends on its sign, which the move can
+/// flip, and on the last bits of how the list added up the rows' heights,
+/// which differ from frame to frame. Rows whose height is not a whole number
+/// of device pixels (30 px at a scale of 1.25) put edges there.
+fn held_rows_land_alike(
+    held: &BTreeMap<usize, Row>,
+    needed: &Range<usize>,
+    tops: &BTreeMap<usize, (Pixels, Pixels)>,
+    translation: Point<ScaledPixels>,
+    scale_factor: f32,
+) -> bool {
+    const EPSILON: f32 = 0.01;
+    let half_way = |value: f32| ((value - value.floor()) - 0.5).abs() < EPSILON;
+    held.range(needed.clone()).all(|(row, held)| {
+        let Some((top, height)) = tops.get(row) else {
+            return false;
+        };
+        let top = top.0 * scale_factor;
+        let bottom = top + height.0 * scale_factor;
+        let moved = held.slot.origin.y.0 + translation.y.0;
+        (moved - top).abs() < EPSILON && !half_way(top) && !half_way(bottom)
+    })
 }
 
 /// Starts painting the rows of the `list` of `state`.
