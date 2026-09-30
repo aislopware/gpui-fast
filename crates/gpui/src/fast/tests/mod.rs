@@ -26,6 +26,7 @@ mod splice;
 mod subscriptions;
 mod support;
 mod surface;
+mod tab_stop;
 mod test_window;
 mod text;
 mod text_shaping;
