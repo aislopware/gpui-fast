@@ -630,6 +630,30 @@ mod paint {
         assert_eq!(a[&TileCoord { x: 0, y: 0 }], b[&TileCoord { x: 1, y: 1 }]);
     }
 
+    #[test]
+    fn a_mask_change_outside_a_tile_leaves_the_tile_clean() {
+        // The painted region, every primitive's mask while a layer paints,
+        // moves with the scroll offset: only the tiles it crosses change.
+        let masked = |mask: Bounds<ScaledPixels>| {
+            [
+                Quad {
+                    content_mask: ContentMask { bounds: mask },
+                    ..quad(sp(10., 10., 20., 900.), Hsla::red())
+                },
+                Quad {
+                    content_mask: ContentMask { bounds: mask },
+                    ..quad(sp(600., 10., 20., 900.), Hsla::blue())
+                },
+            ]
+        };
+        let before = masked(sp(0., -100., 1024., 1000.));
+        let after = masked(sp(0., -90., 1024., 1000.));
+        assert_eq!(
+            dirty(&scene(&before), &scene(&after)),
+            tiles(&[(0, 1), (1, 1)])
+        );
+    }
+
     fn row_color(row: usize) -> Hsla {
         crate::hsla(row as f32 / 64., 0.5, 0.5, 1.)
     }
@@ -640,6 +664,7 @@ mod paint {
         rows: usize,
         panel: Hsla,
         scroll: crate::ScrollHandle,
+        height: crate::Pixels,
     }
 
     impl crate::Render for Rows {
@@ -657,7 +682,7 @@ mod paint {
                     .id("s")
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll)
-                    .h(crate::px(100.))
+                    .h(self.height)
                     .children(
                         (0..self.rows).map(|i| crate::div().h(crate::px(20.)).bg(row_color(i))),
                     ),
@@ -666,10 +691,19 @@ mod paint {
     }
 
     fn rows_window(cx: &mut crate::TestAppContext, rows: usize) -> crate::WindowHandle<Rows> {
+        rows_window_of_height(cx, rows, crate::px(100.))
+    }
+
+    fn rows_window_of_height(
+        cx: &mut crate::TestAppContext,
+        rows: usize,
+        height: crate::Pixels,
+    ) -> crate::WindowHandle<Rows> {
         let window = cx.add_window(|_, _| Rows {
             rows,
             panel: crate::white(),
             scroll: crate::ScrollHandle::new(),
+            height,
         });
         // The first frame redraws everything, which never uses layers.
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
@@ -796,6 +830,44 @@ mod paint {
             for (row, bounds) in rows {
                 assert_eq!(bounds.origin.y, ScaledPixels(row as f32 * 20. * scale));
             }
+        });
+    }
+
+    #[crate::test]
+    fn a_repaint_at_a_shifted_offset_dirties_only_the_edge_tiles(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        // Enough viewport for the painted region to span many tiles.
+        let window = rows_window_of_height(cx, 400, crate::px(1000.));
+        let scroll_to = |cx: &mut crate::TestAppContext, y: f32| {
+            window
+                .update(cx, |view, _, _| {
+                    view.scroll
+                        .set_offset(crate::point(crate::px(0.), crate::px(y)))
+                })
+                .unwrap();
+            draw_deciding(cx, window, Decision::Repaint);
+        };
+        scroll_to(cx, -3000.);
+        scroll_to(cx, -3010.);
+        with_record(cx, window, |record, _| {
+            let rows: Vec<i32> = record.tile_hashes.keys().map(|tile| tile.y).collect();
+            let (top, bottom) = (*rows.iter().min().unwrap(), *rows.iter().max().unwrap());
+            assert!(bottom - top >= 4, "the region spans many tile rows");
+            assert!(!record.dirty_tiles.is_empty(), "the region's edges moved");
+            for tile in &record.dirty_tiles {
+                assert!(
+                    tile.y == top || tile.y == bottom,
+                    "tile {tile:?} inside the region ({top}..={bottom}) is dirty"
+                );
+            }
+        });
+        // The same content at the same offset dirties nothing.
+        scroll_to(cx, -3010.);
+        with_record(cx, window, |record, _| {
+            assert_eq!(record.dirty_tiles, Vec::new());
         });
     }
 

@@ -4,6 +4,11 @@
 //! over it: the primitives visible over the tile, in drawing order, moved
 //! into the tile's space. Two tiles hashing alike draw the same pixels, so a
 //! repaint that leaves a tile's hash alone keeps its texture.
+//!
+//! Content masks and layer bounds are hashed clipped to the tile: pixels
+//! outside it never depend on them. While a layer paints, every mask is
+//! the painted region, which moves in content space with the scroll offset;
+//! hashed whole, it would dirty every tile of a repaint at a new offset.
 
 use crate::{
     AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Point, ScaledPixels, Scene,
@@ -11,6 +16,7 @@ use crate::{
     fast::layers::scene::translate_primitive,
     point,
     scene::{PaintOperation, Primitive},
+    size,
 };
 use collections::{FxHashMap, FxHasher};
 use std::hash::Hasher;
@@ -23,9 +29,10 @@ pub(crate) fn tile_hashes(
     tile_size: u32,
     region: Bounds<ScaledPixels>,
 ) -> FxHashMap<TileCoord, u64> {
+    let tile = tile_rect(tile_size);
     let mut hashers: FxHashMap<TileCoord, FxHasher> = FxHashMap::default();
-    for tile in tiles_over(region, tile_size) {
-        hashers.insert(tile, FxHasher::default());
+    for coord in tiles_over(region, tile_size) {
+        hashers.insert(coord, FxHasher::default());
     }
     let mut open_layers: Vec<Bounds<ScaledPixels>> = Vec::new();
     for operation in &content.paint_operations {
@@ -36,18 +43,19 @@ pub(crate) fn tile_hashes(
                     .intersect(&primitive.content_mask().bounds);
                 for_tiles(&mut hashers, visible, tile_size, |hasher, origin| {
                     hasher.write_u8(0);
-                    hash_primitive(&translate_primitive(primitive, origin), hasher);
+                    hash_primitive(&translate_primitive(primitive, origin), &tile, hasher);
                 });
             }
             PaintOperation::StartLayer(bounds) => {
                 open_layers.push(*bounds);
                 for_tiles(&mut hashers, *bounds, tile_size, |hasher, origin| {
                     hasher.write_u8(1);
-                    hash_bounds(
+                    hash_clipped(
                         &Bounds {
                             origin: bounds.origin + origin,
                             size: bounds.size,
                         },
+                        &tile,
                         hasher,
                     );
                 });
@@ -122,16 +130,26 @@ fn for_tiles(
     }
 }
 
-/// Feeds every field of `primitive` that decides its pixels to `hasher`:
-/// all but its draw order and ids, which the scene assigns.
-fn hash_primitive(primitive: &Primitive, hasher: &mut FxHasher) {
+/// A tile's rect in its own space.
+fn tile_rect(tile_size: u32) -> Bounds<ScaledPixels> {
+    let side = ScaledPixels(tile_size as f32);
+    Bounds {
+        origin: Point::default(),
+        size: size(side, side),
+    }
+}
+
+/// Feeds every field of `primitive`, in the space of the tile `tile`, that
+/// decides its pixels in the tile to `hasher`: all but its draw order and
+/// ids, which the scene assigns, with its masks clipped to the tile.
+fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
     match primitive {
         Primitive::Shadow(shadow) => {
             hasher.write_u8(0);
             hash_f32(shadow.blur_radius.0, hasher);
             hash_bounds(&shadow.bounds, hasher);
             hash_corners(&shadow.corner_radii, hasher);
-            hash_mask(&shadow.content_mask, hasher);
+            hash_mask(&shadow.content_mask, tile, hasher);
             hash_hsla(&shadow.color, hasher);
             hash_bounds(&shadow.element_bounds, hasher);
             hash_corners(&shadow.element_corner_radii, hasher);
@@ -141,7 +159,7 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut FxHasher) {
             hasher.write_u8(1);
             hasher.write_u8(quad.border_style as u8);
             hash_bounds(&quad.bounds, hasher);
-            hash_mask(&quad.content_mask, hasher);
+            hash_mask(&quad.content_mask, tile, hasher);
             hash_background(&quad.background, hasher);
             hash_hsla(&quad.border_color, hasher);
             hash_corners(&quad.corner_radii, hasher);
@@ -150,7 +168,7 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut FxHasher) {
         Primitive::Path(path) => {
             hasher.write_u8(2);
             hash_bounds(&path.bounds, hasher);
-            hash_mask(&path.content_mask, hasher);
+            hash_mask(&path.content_mask, tile, hasher);
             hash_background(&path.color, hasher);
             hasher.write_usize(path.vertices.len());
             for vertex in &path.vertices {
@@ -158,13 +176,13 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut FxHasher) {
                 hash_f32(vertex.xy_position.y.0, hasher);
                 hash_f32(vertex.st_position.x, hasher);
                 hash_f32(vertex.st_position.y, hasher);
-                hash_mask(&vertex.content_mask, hasher);
+                hash_mask(&vertex.content_mask, tile, hasher);
             }
         }
         Primitive::Underline(underline) => {
             hasher.write_u8(3);
             hash_bounds(&underline.bounds, hasher);
-            hash_mask(&underline.content_mask, hasher);
+            hash_mask(&underline.content_mask, tile, hasher);
             hash_hsla(&underline.color, hasher);
             hash_f32(underline.thickness.0, hasher);
             hasher.write_u8((underline.wavy == true.into()) as u8);
@@ -172,7 +190,7 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut FxHasher) {
         Primitive::MonochromeSprite(sprite) => {
             hasher.write_u8(4);
             hash_bounds(&sprite.bounds, hasher);
-            hash_mask(&sprite.content_mask, hasher);
+            hash_mask(&sprite.content_mask, tile, hasher);
             hash_hsla(&sprite.color, hasher);
             hash_tile(&sprite.tile, hasher);
             hash_transformation(&sprite.transformation, hasher);
@@ -180,7 +198,7 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut FxHasher) {
         Primitive::SubpixelSprite(sprite) => {
             hasher.write_u8(5);
             hash_bounds(&sprite.bounds, hasher);
-            hash_mask(&sprite.content_mask, hasher);
+            hash_mask(&sprite.content_mask, tile, hasher);
             hash_hsla(&sprite.color, hasher);
             hash_tile(&sprite.tile, hasher);
             hash_transformation(&sprite.transformation, hasher);
@@ -190,7 +208,7 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut FxHasher) {
             hasher.write_u8((sprite.grayscale == true.into()) as u8);
             hash_f32(sprite.opacity, hasher);
             hash_bounds(&sprite.bounds, hasher);
-            hash_mask(&sprite.content_mask, hasher);
+            hash_mask(&sprite.content_mask, tile, hasher);
             hash_corners(&sprite.corner_radii, hasher);
             hash_tile(&sprite.tile, hasher);
         }
@@ -199,7 +217,7 @@ fn hash_primitive(primitive: &Primitive, hasher: &mut FxHasher) {
             // hold one (spec §6.5), so it only needs to hash apart.
             hasher.write_u8(7);
             hash_bounds(&surface.bounds, hasher);
-            hash_mask(&surface.content_mask, hasher);
+            hash_mask(&surface.content_mask, tile, hasher);
         }
     }
 }
@@ -215,8 +233,18 @@ fn hash_bounds(bounds: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
     hash_f32(bounds.size.height.0, hasher);
 }
 
-fn hash_mask(mask: &ContentMask<ScaledPixels>, hasher: &mut FxHasher) {
-    hash_bounds(&mask.bounds, hasher);
+fn hash_mask(mask: &ContentMask<ScaledPixels>, tile: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
+    hash_clipped(&mask.bounds, tile, hasher);
+}
+
+/// Hashes the part of `bounds` inside `tile`, all empty parts alike.
+fn hash_clipped(bounds: &Bounds<ScaledPixels>, tile: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
+    let clipped = bounds.intersect(tile);
+    if clipped.is_empty() {
+        hash_bounds(&Bounds::default(), hasher);
+    } else {
+        hash_bounds(&clipped, hasher);
+    }
 }
 
 fn hash_hsla(color: &Hsla, hasher: &mut FxHasher) {
