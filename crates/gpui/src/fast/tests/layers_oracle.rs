@@ -16,10 +16,9 @@
 //! - every listener must have seen the same events at the same positions,
 //!   with the same hitbox bounds.
 //!
-//! Where layers are not compiled in, or no container is ever promoted, the
-//! two windows draw the same way and the run checks only that the oracle
-//! itself holds; it compares layers against drawing from scratch as soon as
-//! the window's scroll layers produce them.
+//! Where layers are compiled in, the runs must composite layers; elsewhere
+//! the two windows draw the same way and the run checks only that the
+//! oracle itself holds.
 
 use std::{
     cell::{Cell, RefCell},
@@ -935,10 +934,13 @@ fn frames_drawn_through_scroll_layers_match_frames_drawn_without() {
          were not compared"
     );
     assert!(total.scrolled > 0, "nothing ever scrolled");
-    // Until scroll layers composite anything the two windows draw alike, and
-    // this checks the oracle alone; it compares the two paths once they do.
-    eprintln!(
-        "frames that composited a scroll layer: {}, scrolled frames: {}",
-        total.composited, total.scrolled
-    );
+    // Where scroll layers are compiled in, the runs must have composited
+    // layers, or they compared nothing but drawing from scratch with itself.
+    if crate::fast::layers::COMPILED {
+        assert!(
+            total.composited > 0,
+            "no frame composited a scroll layer over {} scrolled frames",
+            total.scrolled
+        );
+    }
 }
