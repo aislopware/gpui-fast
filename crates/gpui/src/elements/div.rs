@@ -1986,6 +1986,7 @@ impl Element for Div {
         let content_size = if request_layout.child_layout_ids.is_empty() {
             bounds.size
         } else if let Some(scroll_handle) = self.interactivity.tracked_scroll_handle.as_ref() {
+            crate::fast::layers::input::track_handle(window, &scroll_handle.0);
             let mut state = scroll_handle.0.borrow_mut();
             state.child_bounds = Vec::with_capacity(request_layout.child_layout_ids.len());
             for child_layout_id in &request_layout.child_layout_ids {
@@ -2026,7 +2027,17 @@ impl Element for Div {
                 }
 
                 window.with_image_cache(image_cache, |window| {
-                    window.with_element_offset(scroll_offset, |window| {
+                    let fast_layer = crate::fast::layers::paint::begin_children(
+                        window,
+                        cx,
+                        global_id,
+                        bounds,
+                        child_min,
+                        content_size,
+                        scroll_offset,
+                        style,
+                    );
+                    crate::fast::layers::paint::prepaint_children(window, fast_layer, |window| {
                         if let Some(order_fn) = &self.prepaint_order_fn {
                             let order = order_fn(window, cx);
                             for idx in order {
@@ -2040,8 +2051,10 @@ impl Element for Div {
                             }
                         }
                     });
+                    crate::fast::layers::paint::end_children(window, cx, fast_layer);
 
                     if let Some(listener) = self.prepaint_listener.as_ref() {
+                        crate::fast::layers::invalidate::note_uncarried(window);
                         listener(children_bounds, window, cx);
                     }
                 });
@@ -2081,9 +2094,16 @@ impl Element for Div {
                         return;
                     }
 
-                    for child in &mut self.children {
-                        child.paint(window, cx);
-                    }
+                    crate::fast::layers::paint::paint_children(
+                        window,
+                        cx,
+                        global_id,
+                        |window, cx| {
+                            for child in &mut self.children {
+                                child.paint(window, cx);
+                            }
+                        },
+                    );
                 },
             )
         });
@@ -3355,6 +3375,7 @@ impl Interactivity {
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
             let subtrees = crate::fast::retained::enclosing_retained_subtrees(window);
+            let fast_container = crate::fast::layers::invalidate::painted_container(window, self);
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                     let mut scroll_offset = scroll_offset.borrow_mut();
@@ -3399,6 +3420,7 @@ impl Interactivity {
                     scroll_offset.x += delta_x;
                     if *scroll_offset != old_scroll_offset {
                         crate::fast::retained::invalidate_retained_subtrees(window, &subtrees);
+                        crate::fast::layers::invalidate::note_scrolled(window, &fast_container);
                         cx.notify(current_view);
                     }
                 }
@@ -4283,17 +4305,20 @@ impl ScrollHandle {
 
     /// Get the current scroll offset.
     pub fn offset(&self) -> Point<Pixels> {
+        crate::fast::layers::invalidate::note_offset_read(&self.0.borrow().version);
         *self.0.borrow().offset.borrow()
     }
 
     /// Get the maximum scroll offset.
     pub fn max_offset(&self) -> Point<Pixels> {
+        crate::fast::layers::invalidate::note_offset_read(&self.0.borrow().version);
         self.0.borrow().max_offset
     }
 
     /// Get the top child that's scrolled into view.
     pub fn top_item(&self) -> usize {
         let state = self.0.borrow();
+        crate::fast::layers::invalidate::note_offset_read(&state.version);
         let top = state.bounds.top() - state.offset.borrow().y;
 
         match state.child_bounds.binary_search_by(|bounds| {
@@ -4313,6 +4338,7 @@ impl ScrollHandle {
     /// Get the bottom child that's scrolled into view.
     pub fn bottom_item(&self) -> usize {
         let state = self.0.borrow();
+        crate::fast::layers::invalidate::note_offset_read(&state.version);
         let bottom = state.bounds.bottom() - state.offset.borrow().y;
 
         match state.child_bounds.binary_search_by(|bounds| {
@@ -4331,12 +4357,13 @@ impl ScrollHandle {
 
     /// Return the bounds into which this child is painted
     pub fn bounds(&self) -> Bounds<Pixels> {
-        self.0.borrow().bounds
+        crate::fast::layers::input::moved(&self.0, Some(self.0.borrow().bounds)).unwrap_or_default()
     }
 
     /// Get the bounds for a specific child.
     pub fn bounds_for_item(&self, ix: usize) -> Option<Bounds<Pixels>> {
-        self.0.borrow().child_bounds.get(ix).cloned()
+        crate::fast::layers::invalidate::note_offset_read(&self.0.borrow().version);
+        crate::fast::layers::input::moved(&self.0, self.0.borrow().child_bounds.get(ix).cloned())
     }
 
     /// Update [ScrollHandleState]'s active item for scrolling to in prepaint
@@ -4423,7 +4450,7 @@ impl ScrollHandle {
     /// As you scroll further down the offset becomes more negative.
     pub fn set_offset(&self, mut position: Point<Pixels>) {
         let state = self.0.borrow();
-        crate::fast::dependencies::StateVersion::bump_if(
+        crate::fast::layers::invalidate::offset_set(
             &state.version,
             *state.offset.borrow() != position,
         );

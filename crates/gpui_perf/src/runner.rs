@@ -133,6 +133,12 @@ pub struct PhaseAverages {
     pub draws: f64,
     pub views_built: f64,
     pub views_reused: f64,
+    /// Scroll containers drawn from a scroll layer's cached tiles.
+    pub layer_frames_composited: f64,
+    /// Scroll layer tiles repaints changed.
+    pub tiles_dirtied: f64,
+    /// Scroll layers painted again before an input event.
+    pub layer_rebuilds_for_input: f64,
 }
 
 impl PhaseAverages {
@@ -155,6 +161,9 @@ impl PhaseAverages {
             draws: stats.frames as f64 / n,
             views_built: stats.views_built as f64 / n,
             views_reused: stats.views_reused as f64 / n,
+            layer_frames_composited: stats.layer_frames_composited as f64 / n,
+            tiles_dirtied: stats.tiles_dirtied as f64 / n,
+            layer_rebuilds_for_input: stats.layer_rebuilds_for_input as f64 / n,
         }
     }
 }
@@ -186,7 +195,7 @@ pub struct RunReport {
     pub forced_draws: usize,
 }
 
-/// Result of running both modes in lockstep and comparing what they painted.
+/// Result of running two windows in lockstep and comparing what they painted.
 #[derive(Clone, Debug, Serialize)]
 pub struct VerifyReport {
     pub frames_compared: usize,
@@ -201,10 +210,22 @@ pub struct ScenarioReport {
     pub name: String,
     pub description: String,
     pub runs: Vec<RunReport>,
+    /// Retention on against off, scroll layers off in both.
     pub verify: Option<VerifyReport>,
+    /// For scroll scenarios, scroll layers on against off, retention on in
+    /// both.
+    pub verify_layers: Option<VerifyReport>,
 }
 
 impl ScenarioReport {
+    /// Whether a verification ran and found the two windows painting
+    /// differently.
+    pub fn failed_verification(&self) -> bool {
+        [&self.verify, &self.verify_layers]
+            .into_iter()
+            .any(|verify| verify.as_ref().is_some_and(|verify| !verify.passed))
+    }
+
     pub fn run(&self, retention: bool) -> Option<&RunReport> {
         self.runs.iter().find(|run| run.retention == retention)
     }
@@ -244,14 +265,25 @@ pub fn run(options: &Options) -> Vec<ScenarioReport> {
             eprintln!("verifying {name}...");
             verify(index, options)
         });
+        let verify_layers = (options.verify && is_scroll_scenario(name)).then(|| {
+            eprintln!("verifying {name} with scroll layers...");
+            verify_layers(index, options)
+        });
         reports.push(ScenarioReport {
             name: name.to_string(),
             description: description.to_string(),
             runs,
             verify,
+            verify_layers,
         });
     }
     reports
+}
+
+/// Whether scenario `name` scrolls, which `--verify` then also runs with
+/// scroll layers on and off.
+fn is_scroll_scenario(name: &str) -> bool {
+    name.contains("scroll")
 }
 
 /// A fresh instance of scenario `index`, so no state carries over between runs.
@@ -301,7 +333,10 @@ fn new_context() -> HeadlessAppContext {
     let text_system = Arc::new(gpui_wgpu::CosmicTextSystem::new_without_system_fonts(
         "IBM Plex Sans",
     ));
-    let mut cx = HeadlessAppContext::new(text_system);
+    let mut cx = HeadlessAppContext::with_asset_source(
+        text_system,
+        Arc::new(crate::scenarios::scroll::ScenarioAssets),
+    );
     cx.update(|cx| load_fonts(cx));
     cx
 }
@@ -556,16 +591,11 @@ fn painted_quads(cx: &mut HeadlessAppContext, window: AnyWindowHandle) -> Vec<St
     .unwrap()
 }
 
-fn compare_quads(off: &[String], on: &[String]) -> Option<String> {
+/// How `on` differs from `off`, two windows' painted frames, which differ in
+/// `what`: retention or scroll layers.
+fn compare_quads(off: &[String], on: &[String], what: &str) -> Option<String> {
     if off == on {
         return None;
-    }
-    if off.len() != on.len() {
-        return Some(format!(
-            "{} primitives painted without retention, {} with",
-            off.len(),
-            on.len()
-        ));
     }
     let mut counts: HashMap<&str, isize> = HashMap::new();
     for quad in off {
@@ -573,6 +603,25 @@ fn compare_quads(off: &[String], on: &[String]) -> Option<String> {
     }
     for quad in on {
         *counts.entry(quad).or_default() -= 1;
+    }
+    if off.len() != on.len() {
+        // A primitive one window painted more often than the other, the
+        // first in the drawing order of the window painting more.
+        let (more, sign) = if off.len() > on.len() {
+            (off, 1)
+        } else {
+            (on, -1)
+        };
+        let extra = more
+            .iter()
+            .find(|quad| counts[quad.as_str()] * sign > 0)
+            .map_or("", String::as_str);
+        return Some(format!(
+            "{} primitives painted without {what}, {} with; only {} paints {extra}",
+            off.len(),
+            on.len(),
+            if sign > 0 { "without" } else { "with" }
+        ));
     }
     let first = off.iter().zip(on).position(|(a, b)| a != b).unwrap();
     if counts.values().all(|&count| count == 0) {
@@ -584,38 +633,106 @@ fn compare_quads(off: &[String], on: &[String]) -> Option<String> {
         ))
     } else {
         Some(format!(
-            "primitive {first} differs: without retention {}, with {}",
+            "primitive {first} differs: without {what} {}, with {}",
             off[first], on[first]
         ))
     }
 }
 
+/// Turns scroll layers on or off in `window` and draws it again.
+fn set_scroll_layers(cx: &mut HeadlessAppContext, window: AnyWindowHandle, enabled: bool) {
+    cx.update_window(window, |_, window, cx| {
+        window.set_scroll_layers(enabled);
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
 /// Runs scenario `index` with and without retention in lockstep, in one app,
-/// and compares what each frame painted: quads, and text, icons, images and
-/// underlines, each with its bounds, clip and colour.
+/// with scroll layers off in both, and compares what each frame painted:
+/// quads, and text, icons, images and underlines, each with its bounds, clip
+/// and colour.
 fn verify(index: usize, options: &Options) -> VerifyReport {
     let off_scenario = fresh_scenario(index);
     let on_scenario = fresh_scenario(index);
     let mut cx = new_context();
     let (off_window, off_root) = open(&mut cx, &*off_scenario, false, options);
     let (on_window, on_root) = open(&mut cx, &*on_scenario, true, options);
-
-    let total = options.warmup + options.frames;
-    let mut first_mismatch = compare_quads(
-        &painted_quads(&mut cx, off_window),
-        &painted_quads(&mut cx, on_window),
+    set_scroll_layers(&mut cx, off_window, false);
+    set_scroll_layers(&mut cx, on_window, false);
+    lockstep(
+        &mut cx,
+        [
+            (off_window, &*off_scenario, &off_root),
+            (on_window, &*on_scenario, &on_root),
+        ],
+        options,
+        "retention",
+        painted_quads,
     )
-    .map(|detail| format!("first frame: {detail}"));
+}
+
+/// What the window painted last, scroll layers expanded into the content
+/// they composite, in a canonical drawing order.
+fn painted_primitives(cx: &mut HeadlessAppContext, window: AnyWindowHandle) -> Vec<String> {
+    cx.update_window(window, |_, window, _| window.painted_primitives())
+        .unwrap()
+}
+
+/// Runs scenario `index` with scroll layers on and off in lockstep, in one
+/// app, with retention on in both, and compares what each frame painted,
+/// the layer window's composited tiles replaced by the content they were
+/// rasterized from.
+fn verify_layers(index: usize, options: &Options) -> VerifyReport {
+    let off_scenario = fresh_scenario(index);
+    let on_scenario = fresh_scenario(index);
+    let mut cx = new_context();
+    let (off_window, off_root) = open(&mut cx, &*off_scenario, true, options);
+    let (on_window, on_root) = open(&mut cx, &*on_scenario, true, options);
+    set_scroll_layers(&mut cx, off_window, false);
+    set_scroll_layers(&mut cx, on_window, true);
+    lockstep(
+        &mut cx,
+        [
+            (off_window, &*off_scenario, &off_root),
+            (on_window, &*on_scenario, &on_root),
+        ],
+        options,
+        "scroll layers",
+        painted_primitives,
+    )
+}
+
+/// One window of a lockstep run: the window, its scenario and the scenario's
+/// root view.
+type Lane<'a> = (AnyWindowHandle, &'a dyn Scenario, &'a AnyView);
+
+/// Steps two windows, the first without `what` and the second with it,
+/// through the same frames and compares what `painted` says each frame of
+/// theirs painted.
+fn lockstep(
+    cx: &mut HeadlessAppContext,
+    [
+        (off_window, off_scenario, off_root),
+        (on_window, on_scenario, on_root),
+    ]: [Lane; 2],
+    options: &Options,
+    what: &str,
+    painted: fn(&mut HeadlessAppContext, AnyWindowHandle) -> Vec<String>,
+) -> VerifyReport {
+    let total = options.warmup + options.frames;
+    let mut first_mismatch = compare_quads(&painted(cx, off_window), &painted(cx, on_window), what)
+        .map(|detail| format!("first frame: {detail}"));
     let mut frames_compared = 1;
     if first_mismatch.is_none() {
         for n in 0..total {
-            frame(&mut cx, off_window, &*off_scenario, &off_root, n);
-            frame(&mut cx, on_window, &*on_scenario, &on_root, n);
+            frame(cx, off_window, off_scenario, off_root, n);
+            frame(cx, on_window, on_scenario, on_root, n);
             frames_compared += 1;
-            if let Some(detail) = compare_quads(
-                &painted_quads(&mut cx, off_window),
-                &painted_quads(&mut cx, on_window),
-            ) {
+            if let Some(detail) =
+                compare_quads(&painted(cx, off_window), &painted(cx, on_window), what)
+            {
                 first_mismatch = Some(format!("frame {n}: {detail}"));
                 break;
             }
@@ -667,7 +784,7 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
         let _ = writeln!(out);
 
         type Row = (&'static str, fn(&RunReport) -> f64, usize);
-        let rows: [Row; 22] = [
+        let rows: [Row; 25] = [
             ("frame mean ms", |r| r.frame.mean_ms, 3),
             ("frame p50 ms", |r| r.frame.p50_ms, 3),
             ("frame p95 ms", |r| r.frame.p95_ms, 3),
@@ -687,6 +804,17 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
             ("measure rebinds", |r| r.phases.measure_rebinds, 1),
             ("layout computes", |r| r.phases.compute_layout_calls, 1),
             ("draws", |r| r.phases.draws, 2),
+            (
+                "layer frames composited",
+                |r| r.phases.layer_frames_composited,
+                2,
+            ),
+            ("tiles dirtied", |r| r.phases.tiles_dirtied, 2),
+            (
+                "layer rebuilds for input",
+                |r| r.phases.layer_rebuilds_for_input,
+                2,
+            ),
             ("allocations", |r| r.allocations, 1),
             ("allocated KiB", |r| r.allocated_kib, 1),
             ("step ms (not counted)", |r| r.step.mean_ms, 3),
@@ -716,17 +844,23 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
                 );
             }
         }
-        if let Some(verify) = &report.verify {
+        for (label, verify) in [
+            ("verify", &report.verify),
+            ("verify layers", &report.verify_layers),
+        ] {
+            let Some(verify) = verify else {
+                continue;
+            };
             match &verify.first_mismatch {
                 None => {
                     let _ = writeln!(
                         out,
-                        "  verify: painted frames identical over {} frames",
+                        "  {label}: painted frames identical over {} frames",
                         verify.frames_compared
                     );
                 }
                 Some(detail) => {
-                    let _ = writeln!(out, "  verify: MISMATCH at {detail}");
+                    let _ = writeln!(out, "  {label}: MISMATCH at {detail}");
                 }
             }
         }
@@ -785,6 +919,18 @@ pub fn to_json(options: &Options, reports: &[ScenarioReport]) -> String {
 mod tests {
     use super::*;
     use gpui::{Entity, SharedString, div, prelude::*};
+
+    /// A frame one window painted more primitives in names one of them.
+    #[test]
+    fn a_mismatch_in_count_names_a_primitive_only_one_window_painted() {
+        let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let detail =
+            compare_quads(&strings(&["a", "b"]), &strings(&["a", "c", "b"]), "layers").unwrap();
+        assert!(detail.ends_with("only with paints c"), "{detail}");
+        let detail =
+            compare_quads(&strings(&["a", "d", "b"]), &strings(&["a", "b"]), "layers").unwrap();
+        assert!(detail.ends_with("only without paints d"), "{detail}");
+    }
 
     struct Counter {
         ticks: usize,
@@ -845,6 +991,82 @@ mod tests {
                 .unwrap();
             assert_eq!(stats.frames, options.frames as u64);
             assert!(!painted_quads(&mut cx, window).is_empty() || stats.lines_shaped > 0);
+        }
+    }
+
+    /// `--verify` also runs scroll scenarios with scroll layers on and off,
+    /// and the report shows what the layers did per frame.
+    #[test]
+    fn verify_compares_scroll_scenarios_with_scroll_layers_on_and_off() {
+        let options = Options {
+            frames: 6,
+            warmup: 2,
+            verify: true,
+            filters: vec!["scroll-child-view".into(), "form-typing".into()],
+            ..Default::default()
+        };
+        let reports = run(&options);
+        let scroll = reports
+            .iter()
+            .find(|report| report.name == "scroll-child-view")
+            .unwrap();
+        let layers = scroll
+            .verify_layers
+            .as_ref()
+            .expect("a scroll scenario is verified with layers on and off");
+        assert!(layers.passed, "{:?}", layers.first_mismatch);
+        assert_eq!(layers.frames_compared, 1 + options.warmup + options.frames);
+        let form = reports
+            .iter()
+            .find(|report| report.name == "form-typing")
+            .unwrap();
+        assert!(form.verify_layers.is_none(), "only scroll scenarios");
+        let text = format_reports(&reports);
+        for row in [
+            "layer frames composited",
+            "tiles dirtied",
+            "layer rebuilds for input",
+            "verify layers: painted frames identical",
+        ] {
+            assert!(text.contains(row), "the report has no {row:?}:\n{text}");
+        }
+    }
+
+    /// The scroll scenarios scroll by dispatching wheel events over their
+    /// content: every frame draws by itself, because the wheel notified the
+    /// view, and what it paints moves.
+    #[test]
+    fn scroll_scenarios_scroll_with_the_wheel() {
+        const NAMES: [&str; 4] = [
+            "scroll-child-view",
+            "scroll-same-view",
+            "scroll-uniform-list",
+            "scroll-list",
+        ];
+        let options = Options::default();
+        for name in NAMES {
+            let index = all_scenarios()
+                .iter()
+                .position(|scenario| scenario.name() == name)
+                .unwrap_or_else(|| panic!("no scenario named {name}"));
+            let scenario = fresh_scenario(index);
+            let mut cx = new_context();
+            let (window, root) = open(&mut cx, &*scenario, true, &options);
+            let mut painted = painted_quads(&mut cx, window);
+            assert!(
+                painted.iter().any(|line| line.starts_with("monochrome")),
+                "{name}: no icon or text painted"
+            );
+            for n in 0..6 {
+                let sample = frame(&mut cx, window, &*scenario, &root, n);
+                assert!(!sample.forced, "{name}: frame {n} drew nothing by itself");
+                let now = painted_quads(&mut cx, window);
+                assert_ne!(
+                    now, painted,
+                    "{name}: frame {n} painted what frame {n} - 1 did"
+                );
+                painted = now;
+            }
         }
     }
 }

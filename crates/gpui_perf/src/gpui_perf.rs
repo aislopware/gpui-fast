@@ -56,5 +56,6 @@ pub fn all_scenarios() -> Vec<Box<dyn Scenario>> {
     scenarios.extend(scenarios::settings::scenarios());
     scenarios.extend(scenarios::layout::scenarios());
     scenarios.extend(scenarios::workspace::scenarios());
+    scenarios.extend(scenarios::scroll::scenarios());
     scenarios
 }

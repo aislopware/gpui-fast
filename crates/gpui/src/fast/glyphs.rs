@@ -3,11 +3,125 @@
 use crate::{
     App, AtlasTile, Bounds, ContentMask, DecorationRun, DevicePixels, FontId, GlyphId, Hsla,
     IsZero, MonochromeSprite, Pixels, Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ScaledPixels, SubpixelSprite, TransformationMatrix, Window,
+    SUBPIXEL_VARIANTS_Y, ScaledPixels, Size, SubpixelSprite, TransformationMatrix, Window,
     util::round_half_toward_zero,
 };
 use anyhow::Result;
 use std::borrow::Cow;
+
+/// A glyph's whole-pixel origin and subpixel variant: upstream's rounding
+/// for non-negative coordinates, extended so that a whole-pixel shift moves
+/// the result by exactly that shift everywhere, negative coordinates included.
+///
+/// Upstream rounds `origin * variants` half toward zero, then takes `trunc`
+/// and `fract`, which mirror around zero; a glyph painted above or left of
+/// the window (a scroll layer's overscan) would then land on a different
+/// pixel or variant than the same glyph painted once scrolled into view.
+pub(crate) fn quantize_origin(origin: Point<ScaledPixels>) -> (Point<ScaledPixels>, Point<u8>) {
+    let (x, variant_x) = quantize_axis(origin.x.0, SUBPIXEL_VARIANTS_X);
+    let (y, variant_y) = quantize_axis(origin.y.0, SUBPIXEL_VARIANTS_Y);
+    (
+        Point::new(ScaledPixels(x), ScaledPixels(y)),
+        Point::new(variant_x, variant_y),
+    )
+}
+
+/// The whole pixel at or below `value` plus the nearest of `variants` steps
+/// within it, ties toward the pixel; the last step carries into the next pixel.
+/// On non-negative values `floor` is `trunc` and the steps round like
+/// upstream's `round_half_toward_zero(value * variants)`.
+fn quantize_axis(value: f32, variants: u8) -> (f32, u8) {
+    let whole = value.floor();
+    let steps = round_half_toward_zero((value - whole) * variants as f32) as i32;
+    let carry = steps / variants as i32;
+    (whole + carry as f32, (steps % variants as i32) as u8)
+}
+
+/// An emoji's whole-pixel origin: the nearest whole pixel, ties toward the
+/// pixel below, which is upstream's `round_half_toward_zero` on non-negative
+/// values and shifts with whole-pixel moves on negative ones.
+pub(crate) fn quantize_emoji_origin(origin: Point<ScaledPixels>) -> Point<ScaledPixels> {
+    origin.map(|c| {
+        let whole = c.0.floor();
+        ScaledPixels(whole + round_half_toward_zero(c.0 - whole))
+    })
+}
+
+/// [`LineGlyphPainter::may_reach`] for a glyph on its own.
+#[cfg(test)]
+pub(crate) fn may_reach(
+    line_glyph: Bounds<Pixels>,
+    baseline: Pixels,
+    mask: &Bounds<Pixels>,
+) -> bool {
+    GlyphReach::new(line_glyph.size, mask)
+        .contains(line_glyph.origin.x, line_glyph.origin.y + baseline)
+}
+
+/// [`LineGlyphPainter::may_reach`] for glyphs sized alike in one mask: the
+/// mask's edges pushed out by the glyphs' reach, which a line works out once
+/// a run, so that each glyph only compares its origin and baseline with them.
+#[derive(Clone, Copy)]
+struct GlyphReach {
+    size: Size<Pixels>,
+    left: Pixels,
+    top: Pixels,
+    right: Pixels,
+    bottom: Pixels,
+}
+
+impl GlyphReach {
+    /// A reach [`GlyphReach::is_for`] no size, to be worked out on first use.
+    const UNSET: Self = Self {
+        size: Size {
+            width: Pixels(f32::NAN),
+            height: Pixels(f32::NAN),
+        },
+        left: Pixels(0.),
+        top: Pixels(0.),
+        right: Pixels(0.),
+        bottom: Pixels(0.),
+    };
+
+    /// Whether this is the reach of glyphs of `size`, comparing bits, as a
+    /// size's only use is to work out the same reach again.
+    #[inline]
+    fn is_for(&self, size: Size<Pixels>) -> bool {
+        self.size.width.0.to_bits() == size.width.0.to_bits()
+            && self.size.height.0.to_bits() == size.height.0.to_bits()
+    }
+
+    fn new(size: Size<Pixels>, mask: &Bounds<Pixels>) -> Self {
+        const MARGIN: Pixels = Pixels(2.);
+        // An empty mask's edges would let in the glyphs straddling it.
+        if mask.is_empty() {
+            return Self {
+                size,
+                left: Pixels(f32::INFINITY),
+                top: Pixels(f32::INFINITY),
+                right: Pixels(f32::NEG_INFINITY),
+                bottom: Pixels(f32::NEG_INFINITY),
+            };
+        }
+        let height = size.height + MARGIN;
+        let width = size.width + MARGIN;
+        let end = mask.bottom_right();
+        Self {
+            size,
+            left: mask.origin.x - width,
+            top: mask.origin.y - height,
+            right: end.x + height,
+            bottom: end.y + height,
+        }
+    }
+
+    /// Whether a glyph whose origin is at `x` and whose baseline is at `y`
+    /// may draw inside the mask.
+    #[inline]
+    fn contains(&self, x: Pixels, y: Pixels) -> bool {
+        y > self.top && y < self.bottom && x > self.left && x < self.right
+    }
+}
 
 /// How the glyphs of a run are rendered: what painting a glyph needs that
 /// depends on its run, not on the glyph. See [`Window::glyph_run_rendering`].
@@ -53,17 +167,7 @@ impl Window {
         let scale_factor = self.scale_factor();
         let glyph_origin = origin.scale(scale_factor);
 
-        let quantized_origin = Point::new(
-            round_half_toward_zero(glyph_origin.x.0 * SUBPIXEL_VARIANTS_X as f32)
-                / SUBPIXEL_VARIANTS_X as f32,
-            round_half_toward_zero(glyph_origin.y.0 * SUBPIXEL_VARIANTS_Y as f32)
-                / SUBPIXEL_VARIANTS_Y as f32,
-        );
-        let subpixel_variant = Point::new(
-            (quantized_origin.x.fract() * SUBPIXEL_VARIANTS_X as f32) as u8,
-            (quantized_origin.y.fract() * SUBPIXEL_VARIANTS_Y as f32) as u8,
-        );
-        let integer_origin = quantized_origin.map(|c| ScaledPixels(c.trunc()));
+        let (integer_origin, subpixel_variant) = quantize_origin(glyph_origin);
         let GlyphRunRendering {
             subpixel_rendering,
             dilation,
@@ -79,17 +183,29 @@ impl Window {
             dilation,
         };
 
-        let (raster_bounds, tile) = match self.fast_glyph_bounds.lookup(&params) {
+        let (raster_bounds, tile, sprite_size) = match self.fast_glyph_bounds.lookup(&params) {
             Some(kept) => kept,
             None => {
                 let raster_bounds = self.text_system().raster_bounds(&params)?;
                 self.fast_glyph_bounds.insert(&params, raster_bounds);
-                (raster_bounds, None)
+                (raster_bounds, None, None)
             }
         };
+        let sprite_origin = integer_origin + raster_bounds.origin.map(Into::into);
         if !raster_bounds.is_zero() {
             let tile = match tile {
                 Some(tile) => tile,
+                // The scene drops a sprite that misses its content mask;
+                // where the sprite's size is known, drop it before looking up
+                // its tile.
+                None if sprite_size.is_some_and(|size| {
+                    Bounds::new(sprite_origin, size.map(Into::into))
+                        .intersect(&content_mask.bounds)
+                        .is_empty()
+                }) =>
+                {
+                    return Ok(());
+                }
                 None => {
                     let tile = self
                         .sprite_atlas
@@ -103,7 +219,7 @@ impl Window {
                 }
             };
             let bounds = Bounds {
-                origin: integer_origin + raster_bounds.origin.map(Into::into),
+                origin: sprite_origin,
                 size: tile.bounds.size.map(Into::into),
             };
 
@@ -134,11 +250,14 @@ impl Window {
 }
 
 /// Paints the glyphs of a line, working out what they share once rather than
-/// once a glyph: the snapped content mask, which nothing painted along a line
-/// changes, and the rendering of each run, which only changes with the run's
-/// font or color.
+/// once a glyph: the content mask, which nothing painted along a line
+/// changes, snapped for its sprites and pushed out by each run's glyph reach
+/// for [`LineGlyphPainter::may_reach`], and the rendering of each run, which
+/// only changes with the run's font or color.
 pub(crate) struct LineGlyphPainter {
     snapped_content_mask: ContentMask<ScaledPixels>,
+    content_mask: Bounds<Pixels>,
+    reach: GlyphReach,
     run_rendering: Option<(FontId, Hsla, GlyphRunRendering)>,
 }
 
@@ -146,8 +265,44 @@ impl LineGlyphPainter {
     pub(crate) fn new(window: &Window) -> Self {
         Self {
             snapped_content_mask: window.snapped_content_mask(),
+            content_mask: window.content_mask().bounds,
+            reach: GlyphReach::UNSET,
             run_rendering: None,
         }
+    }
+
+    /// Whether the line's next glyph may draw inside `mask`, the line's
+    /// content mask, for the line to skip the glyphs it need not paint.
+    /// `line_glyph` is the line's glyph box as upstream builds it: the
+    /// glyph's origin on the top of its line, sized by the font's bounding
+    /// box. The glyph itself is drawn `baseline` further down, on the line's
+    /// baseline, where a tall line puts it well below the top; upstream's
+    /// `line_glyph.intersects(mask)` then skips glyphs that reach into the
+    /// mask.
+    ///
+    /// This test is only conservative, leaving the exact test to the scene,
+    /// which drops a sprite outside its content mask: vertically it takes the
+    /// bounding box's height above and below the baseline; horizontally, as
+    /// upstream does, the bounding box's width from the glyph's origin on,
+    /// and its height before it, for glyphs reaching left of their origin;
+    /// each plus a margin for glyph dilation and subpixel positioning.
+    /// Nothing reaches into an empty mask. Where a glyph is drawn therefore
+    /// depends on its sprite alone, so a line painted in a scroll layer's
+    /// overscan and scrolled into view shows the same glyphs as the line
+    /// painted in place.
+    #[inline]
+    pub(crate) fn may_reach(
+        &mut self,
+        line_glyph: Bounds<Pixels>,
+        baseline: Pixels,
+        mask: &Bounds<Pixels>,
+    ) -> bool {
+        debug_assert_eq!(*mask, self.content_mask);
+        if !self.reach.is_for(line_glyph.size) {
+            self.reach = GlyphReach::new(line_glyph.size, &self.content_mask);
+        }
+        self.reach
+            .contains(line_glyph.origin.x, line_glyph.origin.y + baseline)
     }
 
     /// [`Window::paint_glyph`], for the next glyph of the line.
@@ -218,7 +373,8 @@ pub(crate) struct GlyphBoundsCache {
 struct GlyphSlot {
     params: RenderGlyphParams,
     raster_bounds: Bounds<DevicePixels>,
-    /// The glyph's tile, and the frame it was looked up in.
+    /// The glyph's tile, and the frame it was looked up in; kept past that
+    /// frame for its size.
     tile: Option<(u64, AtlasTile)>,
 }
 
@@ -258,20 +414,27 @@ impl GlyphBoundsCache {
     /// The glyph's raster bounds, if kept.
     #[cfg(test)]
     pub(crate) fn get(&self, params: &RenderGlyphParams) -> Option<Bounds<DevicePixels>> {
-        self.lookup(params).map(|(bounds, _)| bounds)
+        self.lookup(params).map(|(bounds, _, _)| bounds)
     }
 
-    /// The glyph's raster bounds, if kept, and its tile, if it was looked up
-    /// this frame.
+    /// The glyph's raster bounds, if kept, its tile, if it was looked up this
+    /// frame, and the size of its sprite, if its tile was ever looked up: a
+    /// glyph's rasterization, and so its tile's size, only depends on its
+    /// description, whether or not the atlas still holds it.
     pub(crate) fn lookup(
         &self,
         params: &RenderGlyphParams,
-    ) -> Option<(Bounds<DevicePixels>, Option<AtlasTile>)> {
+    ) -> Option<(
+        Bounds<DevicePixels>,
+        Option<AtlasTile>,
+        Option<Size<DevicePixels>>,
+    )> {
         match &self.slots[Self::slot(params)] {
             Some(slot) if slot.params == *params => Some((
                 slot.raster_bounds,
                 slot.tile
                     .and_then(|(frame, tile)| (frame == self.frame).then_some(tile)),
+                slot.tile.map(|(_, tile)| tile.bounds.size),
             )),
             _ => None,
         }

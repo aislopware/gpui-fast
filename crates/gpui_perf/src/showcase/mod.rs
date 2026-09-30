@@ -53,8 +53,9 @@ use std::{
 
 use gpui::{
     Animation, AnimationExt as _, App, Bounds, Context, Entity, FocusHandle, FontWeight,
-    KeyBinding, Pixels, Render, ScrollHandle, SharedString, Subscription, WeakEntity, Window,
-    WindowBounds, WindowOptions, actions, div, prelude::*, px, size,
+    KeyBinding, Modifiers, Pixels, PlatformInput, Render, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, Subscription, TouchPhase, WeakEntity, Window, WindowBounds,
+    WindowOptions, actions, div, point, prelude::*, px, size,
 };
 use gpui_platform::application;
 
@@ -301,9 +302,10 @@ pub struct Showcase {
 }
 
 /// What steps the showcase before every frame: the scroll and the automatic
-/// run. It lives outside the views and only notifies the view that owns what
-/// it scrolls, as a scroll wheel or a dragged scrollbar would, so that no
-/// other view counts as changed.
+/// run. It lives outside the views and scrolls with wheel events dispatched
+/// over what it scrolls, as a user does: the scroll container's own listener
+/// moves the offset and notifies the view that owns it, so that no other view
+/// counts as changed, and hover follows the content moving under the pointer.
 pub struct Driver {
     scroll: Scroll,
     direction: f32,
@@ -328,8 +330,7 @@ pub struct Story {
     name: SharedString,
 }
 
-/// How far each frame scrolls: as fast as a scrollbar dragged a long way in
-/// one go.
+/// How far each frame scrolls: as fast as a wheel spun hard.
 fn scroll_speed(_: Scroll) -> Pixels {
     px(32.)
 }
@@ -345,8 +346,8 @@ fn drive(driver: Rc<RefCell<Driver>>, handles: Handles, window: &mut Window) {
     });
 }
 
-/// Moves whatever scrolls by one frame's worth and notifies the view that
-/// owns it. Returns whether to keep going.
+/// Scrolls whatever scrolls by one frame's worth, with a wheel event over it.
+/// Returns whether to keep going.
 fn step(
     driver: &Rc<RefCell<Driver>>,
     handles: &Handles,
@@ -380,52 +381,48 @@ fn step(
     let mut driver = driver.borrow_mut();
     let scroll = driver.scroll;
     let speed = scroll_speed(scroll) * driver.direction;
-    let mut bounce = |handle: &ScrollHandle| {
-        let max = handle.max_offset().y;
-        let mut offset = handle.offset();
-        offset.y -= speed;
-        if offset.y <= -max {
-            offset.y = -max;
+    // Turns back at either end, then scrolls with a wheel event over the
+    // scrolled area, whose listener moves the offset and notifies the view
+    // that painted it.
+    let mut bounce = |offset: Pixels, max: Pixels, bounds: Bounds<Pixels>| {
+        if offset + speed >= max {
             driver.direction = -1.;
-        } else if offset.y >= px(0.) {
-            offset.y = px(0.);
+        } else if offset + speed <= px(0.) {
             driver.direction = 1.;
         }
-        handle.set_offset(offset);
+        (bounds, speed)
     };
-    match scroll {
+    let handle_wheel =
+        |handle: &ScrollHandle| (-handle.offset().y, handle.max_offset().y, handle.bounds());
+    let (bounds, delta) = match scroll {
         Scroll::Off => return driver.auto.is_some(),
         Scroll::Sidebar => {
-            bounce(&handles.sidebar_scroll);
-            cx.notify(handles.showcase.entity_id());
+            let (offset, max, bounds) = handle_wheel(&handles.sidebar_scroll);
+            bounce(offset, max, bounds)
         }
         Scroll::Page => {
             let handle = handles.container.read(cx).scroll.clone();
-            bounce(&handle);
-            cx.notify(handles.container.entity_id());
+            let (offset, max, bounds) = handle_wheel(&handle);
+            bounce(offset, max, bounds)
         }
         Scroll::Table => {
             let Some(table) = handles.container.read(cx).table.clone() else {
                 return true;
             };
             let handle = table.read(cx).scroll.0.borrow().base_handle.clone();
-            bounce(&handle);
-            cx.notify(table.entity_id());
+            let (offset, max, bounds) = handle_wheel(&handle);
+            bounce(offset, max, bounds)
         }
         Scroll::List => {
             let Some(messages) = handles.container.read(cx).messages.clone() else {
                 return true;
             };
             let state = messages.read(cx).state.clone();
-            let offset = -state.scroll_px_offset_for_scrollbar().y;
-            let max = state.max_offset_for_scrollbar().y;
-            if offset + speed >= max {
-                driver.direction = -1.;
-            } else if offset + speed <= px(0.) {
-                driver.direction = 1.;
-            }
-            state.scroll_by(speed);
-            cx.notify(messages.entity_id());
+            bounce(
+                -state.scroll_px_offset_for_scrollbar().y,
+                state.max_offset_for_scrollbar().y,
+                state.viewport_bounds(),
+            )
         }
         Scroll::Watchlist => {
             let Some(workspace) = handles.container.read(cx).workspace.clone() else {
@@ -433,10 +430,20 @@ fn step(
             };
             let watchlist = workspace.read(cx).watchlist.clone();
             let handle = watchlist.read(cx).scroll.0.borrow().base_handle.clone();
-            bounce(&handle);
-            cx.notify(watchlist.entity_id());
+            let (offset, max, bounds) = handle_wheel(&handle);
+            bounce(offset, max, bounds)
         }
-    }
+    };
+    drop(driver);
+    window.dispatch_event(
+        PlatformInput::ScrollWheel(ScrollWheelEvent {
+            position: bounds.center(),
+            delta: ScrollDelta::Pixels(point(px(0.), -delta)),
+            modifiers: Modifiers::default(),
+            touch_phase: TouchPhase::Moved,
+        }),
+        cx,
+    );
     true
 }
 

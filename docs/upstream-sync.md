@@ -134,6 +134,13 @@ unchanged, and a new entry needs as good a reason.
   `fast::retained::ViewLayoutState` and `ViewPrepaintState`, opaque types, in
   place of `Option<AnyElement>`. `ViewElement` is `#[doc(hidden)]`, and the
   states are only ever handed back to it by GPUI.
+- `Scene` has a public `layers` field (`fast::layers::scene::SceneLayers`),
+  and `gpui` exports `LayerKey`, `TileCoord`, `SceneLayers`, `LayerFrame`,
+  `LayerContent` (a layer's content, in parts: one per row of a virtual
+  list), `LAYER_TILE_TEXTURE_BASE`, `layer_tile_texture_id`, `layer_tile_id` and
+  `decode_layer_tile`, because renderers live in other crates and read scroll
+  layers from the scene. Polychrome sprites whose texture index is at or
+  above `LAYER_TILE_TEXTURE_BASE` are scroll layer tiles, not atlas textures.
 - `crates/gpui/Cargo.toml` names this repository and sets `publish = false`.
 - `App::register_inspector_element` takes a factory, the form newer upstream
   has and GPUI Kit is written against; `fast::inspector` adapts it onto this

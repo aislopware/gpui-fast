@@ -78,6 +78,12 @@ pub(crate) struct RetainedSubtree {
     /// none of it changed, the subtree can be drawn again around nested
     /// subtrees that are built again. See [`crate::fast::splice`].
     pub(crate) own_dependencies: RenderDependencies,
+    /// The scroll offsets the subtree's render read itself, outside nested
+    /// subtrees, when it was rendered: unlike offsets read while it was
+    /// prepainted or painted, they shape the elements it built, a scroll
+    /// container's content included. `None` when it was laid out without
+    /// being rendered. See [`crate::fast::layers::invalidate`].
+    pub(crate) render_offset_reads: Option<crate::fast::layers::invalidate::OffsetReads>,
     /// The hovers the subtree was painted by, nested subtrees included.
     pub(crate) hover_dependencies: Rc<[(HitboxId, bool)]>,
     /// The hovers it was painted by itself, outside nested subtrees.
@@ -497,12 +503,14 @@ impl Window {
             || self.is_inspector_picking(cx)
             || self.retained_state.dirty_subtrees.contains(id)
             || self.next_frame.retained.by_id.contains_key(id)
+            || crate::fast::layers::paint::inside_layer(self)
         {
             return None;
         }
         let index = self.rendered_frame.retained.find(id)?;
         let record = &self.rendered_frame.retained.records[index];
         if cx.dependencies_changed(&record.dependencies, self.inside_notified_view())
+            || crate::fast::layers::invalidate::offset_read_changed(self, &record.dependencies)
             || !self.hovers_unchanged(&record.hover_dependencies)
         {
             return None;
@@ -514,7 +522,8 @@ impl Window {
     /// drawn at `bounds` just as it was.
     pub(crate) fn retained_context_matches(&self, previous: usize, bounds: Bounds<Pixels>) -> bool {
         let context = &self.rendered_frame.retained.records[previous].context;
-        context.bounds == bounds
+        !crate::fast::layers::paint::inside_layer(self)
+            && context.bounds == bounds
             && context.opacity == self.element_opacity
             && context.content_mask == self.content_mask()
             && context.text_style == self.text_style()
@@ -644,6 +653,9 @@ impl Window {
         // is what it was copied from, entry for entry.
         let copied_whole = end == prepaint_range.end.shifted(&prepaint_range.start, &start);
         debug_assert!(copied_whole, "a reused prepaint range changed length");
+        if copied_whole {
+            crate::fast::layers::reuse::follow_prepaint(self, &prepaint_range, &start);
+        }
         // Nothing written since the records were built changed what they
         // read, or they would not be reused: they are up to date as of now.
         let writes_now = cx.entities.write_generation();
@@ -687,6 +699,7 @@ impl Window {
                 context: record.context.clone(),
                 dependencies: record.dependencies.written_up_to(writes_now),
                 own_dependencies: record.own_dependencies.written_up_to(writes_now),
+                render_offset_reads: record.render_offset_reads.clone(),
                 hover_dependencies: record.hover_dependencies.clone(),
                 own_hovers: record.own_hovers.clone(),
                 layout_keys: record.layout_keys.clone(),
@@ -713,6 +726,9 @@ impl Window {
         let end = self.paint_index();
         let copied_whole = end == source.end.shifted(&source.start, &start);
         debug_assert!(copied_whole, "a reused paint range changed length");
+        if copied_whole {
+            crate::fast::layers::reuse::follow_paint(self, &source, &start);
+        }
         let record = &mut self.next_frame.retained.records[index];
         record.paint_range = start..end;
         record.paint = PaintStatus::Painted {
@@ -764,8 +780,9 @@ impl Window {
             .stats
             .views_built += 1;
         let start = self.prepaint_index();
+        let inside_layer = crate::fast::layers::paint::inside_layer(self);
         let retained = &mut self.next_frame.retained;
-        let index = (!retained.by_id.contains_key(id)).then(|| {
+        let index = (!retained.by_id.contains_key(id) && !inside_layer).then(|| {
             let index = retained.push(RetainedSubtree {
                 id: id.clone(),
                 prepaint_range: start.clone()..start,
@@ -780,6 +797,7 @@ impl Window {
                 }),
                 dependencies: RenderDependencies::default(),
                 own_dependencies: RenderDependencies::default(),
+                render_offset_reads: None,
                 hover_dependencies: Rc::new([]),
                 own_hovers: Rc::new([]),
                 layout_keys: Rc::new([]),
@@ -813,8 +831,25 @@ impl Window {
     ) -> Option<usize> {
         let layout_keys = self.finish_recording_claimed_layout_keys(recording.layout_keys);
         let mut dependencies = cx.finish_recording_dependencies(recording.dependencies);
-        self.retained_state.subtree_stack.pop();
-        let index = recording.index?;
+        let id = self.retained_state.subtree_stack.pop();
+        let Some(index) = recording.index else {
+            // Inside a layer's content: the layer keeps how it was laid out.
+            if let (Some(id), Some(layout), Some(layout_dependencies)) =
+                (id, layout, layout_dependencies)
+                && crate::fast::layers::paint::inside_layer(self)
+            {
+                crate::fast::layers::reuse::keep_view_layout(
+                    self,
+                    id,
+                    layout,
+                    layout_dependencies.all.union(&dependencies.all),
+                );
+            }
+            return None;
+        };
+        let render_offset_reads = layout_dependencies
+            .as_ref()
+            .map(|layout| layout.own.offset_reads.clone());
         if let Some(layout_dependencies) = layout_dependencies {
             dependencies = RecordedDependencies {
                 all: layout_dependencies.all.union(&dependencies.all),
@@ -838,6 +873,7 @@ impl Window {
         record.context = Rc::new(context);
         record.dependencies = dependencies.all;
         record.own_dependencies = dependencies.own;
+        record.render_offset_reads = render_offset_reads;
         record.layout_keys = layout_keys.into();
         record.layout = layout;
         record.rebuild = rebuild.map(Rc::new);
@@ -972,7 +1008,12 @@ impl Window {
                     .dispatch_tree
                     .view_path_reversed(entity)
                     .any(|view| notified.contains(&view));
-            if cx.dependencies_changed(&record.own_dependencies, inside_notified) {
+            if cx.dependencies_changed(&record.own_dependencies, inside_notified)
+                || crate::fast::layers::invalidate::offset_read_changed(
+                    self,
+                    &record.own_dependencies,
+                )
+            {
                 changed.push(entity);
             }
         }
@@ -1176,6 +1217,8 @@ pub(crate) fn finish_retained_frame(window: &mut Window) {
     window.retained_state.hover_dependencies.clear();
     window.retained_state.hover_reads.get_mut().clear();
     window.next_frame.retained.finish_frame();
+    crate::fast::layers::paint::finish_frame(window);
+    crate::fast::layers::finish_frame(window);
     #[cfg(any(test, feature = "test-support"))]
     if window.next_frame.retained.reused_any() {
         // Reused subtrees do not paint, and the bounds they would have
@@ -1253,6 +1296,10 @@ enum ViewLayout {
     /// Built and laid out already, for a view around it that was to be drawn
     /// from last frame and could not be.
     Prebuilt(Box<Prebuilt>),
+    /// Laid out as the layer it is drawn in kept it, without being built,
+    /// for a frame expected to composite the layer. See
+    /// [`crate::fast::layers::reuse::KeptLayout`].
+    Kept(Rc<RetainedLayout>),
     /// Moved on to prepaint.
     Taken,
 }
@@ -1301,6 +1348,14 @@ impl<V: View> ViewElement<V> {
                             && let Some(layout_id) = window.reuse_retained_layout(previous, cx)
                         {
                             return (layout_id, ViewLayout::Retained { previous });
+                        }
+                        if !window.dirty_views.contains(&entity_id)
+                            && let Some((layout_id, kept)) =
+                                crate::fast::layers::reuse::reuse_kept_layout(
+                                    window, global_id, entity_id, cx,
+                                )
+                        {
+                            return (layout_id, ViewLayout::Kept(kept));
                         }
                         if window.dirty_views.contains(&entity_id)
                             && let Some(splice) = window.splice_layout(global_id, cx)
@@ -1435,6 +1490,23 @@ impl<V: View> ViewElement<V> {
                     }
                     self.build_at_retained_layout(previous, global_id, bounds, window, cx)
                 }
+                ViewLayout::Kept(layout) => {
+                    // The layer is painted afresh after all: the view is
+                    // built at the layout it kept.
+                    window
+                        .layout_engine
+                        .as_mut()
+                        .unwrap()
+                        .release_kept(&layout.keys);
+                    self.build_at_layout(
+                        Some(layout.root),
+                        layout.parent_layout_key,
+                        global_id,
+                        bounds,
+                        window,
+                        cx,
+                    )
+                }
                 ViewLayout::Prebuilt(mut prebuilt) => {
                     let prepaint = prebuilt.prepaint(Some(global_id), bounds, window, cx);
                     ViewPrepaint::Prebuilt(Box::new((*prebuilt, prepaint)))
@@ -1509,6 +1581,26 @@ impl<V: View> ViewElement<V> {
     ) -> ViewPrepaint {
         let root = window.retained_layout_root(previous);
         window.release_retained_layout(previous);
+        // Where it is drawn has not changed its place in the element tree.
+        let parent_layout_key = window.rendered_frame.retained.records[previous]
+            .rebuild
+            .as_ref()
+            .map(|rebuild| rebuild.parent_layout_key());
+        self.build_at_layout(root, parent_layout_key, global_id, bounds, window, cx)
+    }
+
+    /// Builds a view laid out at `root`, whose nodes were given back, as
+    /// [`Self::build_at_retained_layout`] does; `parent_layout_key` keys the
+    /// node of the element it hangs off.
+    fn build_at_layout(
+        &mut self,
+        root: Option<LayoutId>,
+        parent_layout_key: Option<u64>,
+        global_id: &GlobalElementId,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> ViewPrepaint {
         let layout_recording = window.begin_retained_layout(cx);
         let changes_before = window.layout_changes();
         let remeasures_before = window.layout_remeasures();
@@ -1539,11 +1631,6 @@ impl<V: View> ViewElement<V> {
             element.prepaint_at(bounds.origin, window, cx);
             window.request_animation_frame();
         }
-        // Where it is drawn has not changed its place in the element tree.
-        let parent_layout_key = window.rendered_frame.retained.records[previous]
-            .rebuild
-            .as_ref()
-            .map(|rebuild| rebuild.parent_layout_key());
         let rebuild = window.rebuild_here(&self.rebuild, None, parent_layout_key);
         let record = window.finish_retained_prepaint(
             recording,
