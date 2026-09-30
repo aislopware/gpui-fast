@@ -15,6 +15,7 @@
 //! root one by one, in `gpui.rs`.
 
 pub mod composition;
+pub mod cursor;
 pub(crate) mod dependencies;
 pub(crate) mod dispatch;
 pub(crate) mod focus;
