@@ -372,8 +372,10 @@ Merged ahead of longbridge, and not yet merged there:
     - The conversation face panning goes from 4.17M to 4.32M (+3.8%), and was +20% before
       `fcc4533`.
     - The navigator scrolling goes from 4.06M to 4.08M.
-    - Neither ever composites a frame. The view holding each list reads something in its
-      render that changes as it scrolls, so the layer is repainted until it is demoted.
+    - Neither ever composites a frame. The view holding each list read an entity in its
+      render that is written while the window draws every scrolled frame
+      (`written_since` in `owner_scrolled_only`). For the face that is the first entity it
+      creates, most likely its prompt rail. So the layer is repainted until it is demoted.
     - Until that changes in Slopty, layers there only cost, and they stay compiled out on
       Apple.
 
