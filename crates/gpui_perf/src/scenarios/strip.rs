@@ -166,7 +166,7 @@ impl crate::Scenario for StripScenario {
                 );
             }
             Kind::Focus => {
-                if frame % 10 == 0 {
+                if frame.is_multiple_of(10) {
                     let tile = &strip.read(cx).tiles[frame / 10 % TILES];
                     let focus = tile.terminal.read(cx).focus.clone();
                     window.focus(&focus, cx);
