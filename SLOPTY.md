@@ -322,9 +322,10 @@ Merged ahead of longbridge, and not yet merged there:
   moves (`layout-text`, `layout-panel`, `table-virtual-scroll`); `3b1c671` takes back
   part of it. When longbridge merges its own version, keep ours where it differs and
   the tests named there pass.
-- longbridge/gpui-fast#24 at `ed94b72` ("composite scrolled content from cached tiles",
-  a draft), on the branch `eval/scroll-layers` only, to judge it for Slopty. Its layer
-  logic is in `fast/layers/`; its tile renderer is wgpu's and is left out here, as
+- longbridge/gpui-fast#24 at `ed94b72`, then `2c8e248` ("composite scrolled content from
+  cached tiles"; list layers off since `2c8e248`), on the branch `eval/scroll-layers`
+  only, to judge it for Slopty. Its layer logic is in `fast/layers/`; its tile
+  renderer is wgpu's and is left out here, as
   `e0137e8` was, since our `wgpu_renderer.rs` is zed's. With no renderer to composite
   tiles, `fast::layers::COMPILED` is `cfg!(test)`: layers run in GPUI's own tests, on
   the test platform, and nowhere else. How it was adapted:
@@ -339,9 +340,10 @@ Merged ahead of longbridge, and not yet merged there:
     Without this, #24's tests and the element oracle fail with layers compiled in.
   - `LineGlyphPainter::meets_mask` takes #24's `may_reach`; `paint_glyph_scaled`
     quantizes as `paint_glyph` does.
-  - Cost with layers compiled out, `gpui_perf --headless --retention on`, instructions
-    against `ca9be59`: +0.1 to +1.5% on most scenarios, `strip-scroll-keyed` +3.6%, of
-    which `may_reach` is 2.1 points.
+  - Cost with layers compiled out, `gpui_perf --headless --retention on`, median of
+    three alternating runs against `ca9be59`, in instructions: +0.1 to +1.8% on most
+    scenarios, `strip-scroll` and `strip-spring` unchanged, `strip-scroll-keyed` +3.7%,
+    of which `may_reach` is about 2 points.
   - With layers compiled in for the headless runner (an experiment, not kept):
     `scroll-child-view` 8.04M to 1.33M instructions, `scroll-same-view` 7.81M to 4.29M;
     `list` and `uniform_list` scenarios never composite.
