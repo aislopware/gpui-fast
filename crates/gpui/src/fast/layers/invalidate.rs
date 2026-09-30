@@ -550,6 +550,17 @@ pub(crate) fn note_animation_frame(window: &Window, view: EntityId) {
 /// Notes that an anchored element is being prepainted: it is placed against
 /// the window's edges, where a layer composited at another offset would not
 /// keep it.
+/// Notes that the layer being painted, if any, has content that hands its
+/// bounds or state to code outside it while it is prepainted or painted (a
+/// children-prepainted listener, an entity written): skipping that work on
+/// composited frames would leave that code with stale values, so the
+/// container is kept off its layer as for an anchored element.
+pub(crate) fn note_uncarried(window: &mut Window) {
+    if COMPILED && let Some(id) = window.fast_layers.painting.as_ref().map(|p| p.id.clone()) {
+        window.fast_layers.scrolls.anchored.push(id);
+    }
+}
+
 pub(crate) fn note_anchored(window: &mut Window) {
     if COMPILED && !window.fast_layers.layers.is_empty() {
         let id = crate::fast::global_id::current(window);

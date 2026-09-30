@@ -2054,6 +2054,7 @@ impl Element for Div {
                     crate::fast::layers::paint::end_children(window, cx, fast_layer);
 
                     if let Some(listener) = self.prepaint_listener.as_ref() {
+                        crate::fast::layers::invalidate::note_uncarried(window);
                         listener(children_bounds, window, cx);
                     }
                 });
@@ -4356,7 +4357,7 @@ impl ScrollHandle {
 
     /// Return the bounds into which this child is painted
     pub fn bounds(&self) -> Bounds<Pixels> {
-        self.0.borrow().bounds
+        crate::fast::layers::input::moved(&self.0, Some(self.0.borrow().bounds)).unwrap_or_default()
     }
 
     /// Get the bounds for a specific child.

@@ -3391,8 +3391,29 @@ mod input {
         })
     }
 
+    /// A move that lands beside the content — on a scrollbar being dragged,
+    /// say — does not rebuild a scrolled layer: only the content's own
+    /// elements compare pointer positions with bounds they hold. A move onto
+    /// the content does.
     #[crate::test]
-    fn rebuilds_for_input_do_not_demote(cx: &mut TestAppContext) {
+    fn only_a_move_onto_the_content_rebuilds_it(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window: AnyWindowHandle = handle.into();
+        scroll_five_times(cx, window);
+        for step in 0..6 {
+            let y = px(50. + step as f32);
+            dispatch(cx, window, [mouse_move(point(px(150.), y), true)]);
+        }
+        assert_eq!(rebuilds(cx, window), 0, "moves beside the rows");
+        dispatch(cx, window, [mouse_move(point(px(20.), px(50.)), false)]);
+        assert_eq!(rebuilds(cx, window), 1, "a move onto a row");
+    }
+
+    #[crate::test]
+    fn moves_beside_the_content_neither_rebuild_nor_demote(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
             return;
         }
@@ -3400,8 +3421,8 @@ mod input {
         let window: AnyWindowHandle = handle.into();
         scroll_five_times(cx, window);
         // Scrolling with the pointer moving in the viewport between scrolls,
-        // beside the rows, where it hovers none: each move rebuilds, none
-        // changes the content.
+        // beside the rows, where it lands on none of the content: no move
+        // rebuilds, and none changes the content.
         for step in 0..12 {
             assert_eq!(
                 scroll(cx, window, 5.),
@@ -3411,9 +3432,9 @@ mod input {
             let y = px(50. + (step % 2) as f32);
             let repainted = repaints(cx, window);
             dispatch(cx, window, [mouse_move(point(px(150.), y), false)]);
-            assert_eq!(repaints(cx, window), repainted + 1, "step {step}");
+            assert_eq!(repaints(cx, window), repainted, "step {step}");
         }
-        assert_eq!(rebuilds(cx, window), 12);
+        assert_eq!(rebuilds(cx, window), 0);
         let id = super::decisions::scroller_id(cx, window);
         let (demoted, changes) = with_window(cx, window, |window, _| {
             let layer = &window.fast_layers.layers[&id];

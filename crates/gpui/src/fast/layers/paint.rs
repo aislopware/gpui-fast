@@ -251,8 +251,12 @@ fn end_repainted_children(window: &mut Window, cx: &mut App) {
     if let Some(recording) = painting.recording.take() {
         painting.dependencies = cx.finish_recording_dependencies(recording).all;
     }
+    let wrote = painting.dependencies.writes.wrote();
     let id = painting.id.clone();
     layer_mut(window, &id).prepainted = Some(Prepainted::Repaint(painting));
+    if wrote {
+        window.fast_layers.scrolls.anchored.push(id);
+    }
 }
 
 /// Paints a container's children as its prepaint decided: `f` is the
@@ -726,6 +730,13 @@ fn repaint(
         .take()
         .expect("the layer being painted");
     let paint_dependencies = cx.finish_recording_dependencies(recording).all;
+    if paint_dependencies.writes.wrote() {
+        window
+            .fast_layers
+            .scrolls
+            .anchored
+            .push(painting.id.clone());
+    }
     window.take_hover_reads();
     let hovers: Rc<[_]> = window.retained_state.hover_dependencies[hovers_start..].into();
     let paint_end = window.paint_index();

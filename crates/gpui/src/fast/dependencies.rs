@@ -732,6 +732,11 @@ pub(crate) struct Writes {
 }
 
 impl Writes {
+    /// Whether any entity was written while the recording was open.
+    pub(crate) fn wrote(&self) -> bool {
+        self.to > self.from
+    }
+
     /// Whether a write at `written_at` came from outside the subtree after
     /// it began.
     fn is_foreign(&self, written_at: u64) -> bool {
