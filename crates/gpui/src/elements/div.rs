@@ -1986,6 +1986,7 @@ impl Element for Div {
         let content_size = if request_layout.child_layout_ids.is_empty() {
             bounds.size
         } else if let Some(scroll_handle) = self.interactivity.tracked_scroll_handle.as_ref() {
+            crate::fast::layers::input::track_handle(window, &scroll_handle.0);
             let mut state = scroll_handle.0.borrow_mut();
             state.child_bounds = Vec::with_capacity(request_layout.child_layout_ids.len());
             for child_layout_id in &request_layout.child_layout_ids {
@@ -4361,7 +4362,7 @@ impl ScrollHandle {
     /// Get the bounds for a specific child.
     pub fn bounds_for_item(&self, ix: usize) -> Option<Bounds<Pixels>> {
         crate::fast::layers::invalidate::note_offset_read(&self.0.borrow().version);
-        self.0.borrow().child_bounds.get(ix).cloned()
+        crate::fast::layers::input::moved(&self.0, self.0.borrow().child_bounds.get(ix).cloned())
     }
 
     /// Update [ScrollHandleState]'s active item for scrolling to in prepaint

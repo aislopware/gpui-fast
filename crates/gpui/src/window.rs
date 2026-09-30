@@ -1157,7 +1157,7 @@ pub struct Window {
     is_resizable: bool,
     is_minimizable: bool,
     pub(crate) sprite_atlas: Arc<dyn PlatformAtlas>,
-    text_system: Arc<WindowTextSystem>,
+    pub(crate) text_system: Arc<WindowTextSystem>,
     text_rendering_mode: Rc<Cell<TextRenderingMode>>,
     rem_size: Pixels,
     /// The stack of override values for the window's rem size.
@@ -5042,7 +5042,7 @@ impl Window {
     pub fn insert_hitbox(&mut self, bounds: Bounds<Pixels>, behavior: HitboxBehavior) -> Hitbox {
         self.invalidator.debug_assert_prepaint();
 
-        let content_mask = self.content_mask();
+        let content_mask = crate::fast::layers::input::hitbox_mask(self);
         let mut id = self.next_hitbox_id;
         self.next_hitbox_id = self.next_hitbox_id.next();
         let hitbox = Hitbox {
@@ -5472,6 +5472,7 @@ impl Window {
             PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
         };
         crate::fast::dependencies::AmbientInput::stamp_changes(ambient, self, cx);
+        crate::fast::layers::input::before_dispatch(self, cx, &event);
 
         if let Some(any_mouse_event) = event.mouse_event() {
             self.dispatch_mouse_event(any_mouse_event, cx);
