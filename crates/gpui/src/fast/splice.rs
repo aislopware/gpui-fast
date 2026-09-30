@@ -335,7 +335,17 @@ impl Window {
                 .map(|&gap| records[gap].layout.as_ref().unwrap().keys.as_slice()),
             &mut self.retained_state.splice_keys,
         );
-        let element_states = layout.element_states.clone();
+        let element_states = kept_element_states(
+            &layout.element_states,
+            gaps.iter().map(|&gap| {
+                records[gap]
+                    .layout
+                    .as_ref()
+                    .unwrap()
+                    .element_states
+                    .as_slice()
+            }),
+        );
         let dependencies = record.dependencies.clone();
         let engine = self.layout_engine.as_mut().unwrap();
         if !engine.try_keep_retained(&kept) {
@@ -964,6 +974,24 @@ impl OpenDispatchCopy {
 /// cover every key, none is kept and nothing is looked up. Otherwise the
 /// gaps' keys are gathered into `scratch`, which keeps its room from one
 /// splice to the next.
+/// The element states a view drawn around `gaps` keeps from last frame: those
+/// it used itself. Its record lists every state used while its layout was
+/// requested, the nested views' included, and a nested view built again in
+/// its gap uses its own states anew; one it no longer uses, such as the state
+/// of an element it no longer has, is dropped at the end of the frame, as
+/// upstream drops the state of every element a frame does not draw.
+pub(crate) fn kept_element_states<'a>(
+    element_states: &[(GlobalElementId, std::any::TypeId)],
+    gaps: impl Iterator<Item = &'a [(GlobalElementId, std::any::TypeId)]>,
+) -> Vec<(GlobalElementId, std::any::TypeId)> {
+    let in_gaps: FxHashSet<&(GlobalElementId, std::any::TypeId)> = gaps.flatten().collect();
+    element_states
+        .iter()
+        .filter(|state| !in_gaps.contains(state))
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn kept_keys<'a>(
     keys: &[u64],
     gaps: impl Iterator<Item = &'a [u64]> + Clone,

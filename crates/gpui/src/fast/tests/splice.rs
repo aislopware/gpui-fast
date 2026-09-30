@@ -2,6 +2,11 @@
 //! again in it.
 
 use crate::fast::splice::kept_keys;
+use crate::prelude::FluentBuilder as _;
+use crate::{
+    AppContext as _, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Styled as _, TestAppContext, Window, div, px,
+};
 use collections::FxHashSet;
 use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 
@@ -50,4 +55,89 @@ fn kept_keys_are_the_keys_of_no_gap() {
         );
         assert!(scratch.is_empty());
     }
+}
+
+struct Outer {
+    middle: Entity<Middle>,
+}
+
+impl Render for Outer {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.middle.clone())
+    }
+}
+
+struct Middle {
+    inner: Entity<Nest>,
+}
+
+impl Render for Middle {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(self.inner.clone())
+    }
+}
+
+struct Nest {
+    inner: Entity<Inner>,
+}
+
+impl Render for Nest {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(self.inner.clone())
+    }
+}
+
+struct Inner {
+    leaf: bool,
+}
+
+impl Render for Inner {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        // Sized by the leaf, so that removing it lays the view around out
+        // differently, and that view is built after all.
+        div().when(self.leaf, |this| this.child(div().id("leaf").size(px(10.))))
+    }
+}
+
+/// A nested view built again in its gap keeps no state of an element it no
+/// longer has, even where the views around it, laid out differently by it,
+/// are built after all: the state is dropped at the end of the frame, as
+/// upstream drops the state of every element a frame does not draw, and an
+/// element with that id drawn later starts afresh.
+#[test]
+fn a_view_drawn_around_a_rebuilt_view_keeps_no_state_of_its_removed_elements() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(|_, cx| {
+        let inner = cx.new(|_| Inner { leaf: true });
+        let inner = cx.new(|_| Nest { inner });
+        Outer {
+            middle: cx.new(|_| Middle { inner }),
+        }
+    });
+    let inner = window
+        .update(&mut cx, |outer, _, cx| {
+            let nest = outer.middle.read(cx).inner.clone();
+            nest.read(cx).inner.clone()
+        })
+        .unwrap();
+    let leaf_states = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window
+                .rendered_frame
+                .element_states
+                .keys()
+                .filter(|(id, _)| id.0.last() == Some(&ElementId::from("leaf")))
+                .count()
+        })
+        .unwrap()
+    };
+    assert_ne!(leaf_states(&mut cx), 0, "the leaf keeps an element state");
+
+    inner.update(&mut cx, |inner, cx| {
+        inner.leaf = false;
+        cx.notify();
+    });
+    assert_eq!(leaf_states(&mut cx), 0);
+    assert_eq!(leaf_states(&mut cx), 0);
 }

@@ -650,7 +650,7 @@ fn glyph_tile(harness: &Harness, glyph: u32) -> AtlasTile {
     harness
         .renderer
         .sprite_atlas()
-        .get_or_insert_with(&key, &mut || {
+        .get_or_insert_with(key, &mut || {
             Ok(Some((device_size(16, 16), Cow::Owned(bytes.clone()))))
         })
         .expect("glyph uploaded")
@@ -676,7 +676,7 @@ fn image_tile(harness: &Harness) -> AtlasTile {
     harness
         .renderer
         .sprite_atlas()
-        .get_or_insert_with(&key, &mut || {
+        .get_or_insert_with(key, &mut || {
             Ok(Some((device_size(20, 20), Cow::Owned(bytes.clone()))))
         })
         .expect("image uploaded")

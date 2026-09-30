@@ -23,7 +23,7 @@ use crate::fast::frame::{FrameHost, FrameState, FrameTarget};
 use crate::fast::layers::TileCache;
 use crate::wgpu_renderer::{
     GammaParams, GlobalParams, RenderingParameters, WgpuBindGroupLayouts, WgpuPipelines,
-    WgpuRenderer,
+    WgpuRendererCore,
 };
 
 #[test]
@@ -555,7 +555,7 @@ fn glyph_tile(harness: &Harness, glyph: u32, subpixel: bool) -> AtlasTile {
         .collect();
     harness
         .atlas
-        .get_or_insert_with(&key, &mut || {
+        .get_or_insert_with(key, &mut || {
             Ok(Some((device_size(16, 16), Cow::Owned(bytes.clone()))))
         })
         .expect("glyph uploaded")
@@ -580,7 +580,7 @@ fn image_tile(harness: &Harness) -> AtlasTile {
         .collect();
     harness
         .atlas
-        .get_or_insert_with(&key, &mut || {
+        .get_or_insert_with(key, &mut || {
             Ok(Some((device_size(20, 20), Cow::Owned(bytes.clone()))))
         })
         .expect("image uploaded")
@@ -693,8 +693,8 @@ impl Harness {
         })?;
 
         let rendering_params = RenderingParameters::new(&adapter, format);
-        let bind_group_layouts = WgpuRenderer::create_bind_group_layouts(&device, false);
-        let pipelines = WgpuRenderer::create_pipelines(
+        let bind_group_layouts = WgpuRendererCore::create_bind_group_layouts(&device, false);
+        let pipelines = WgpuRendererCore::create_pipelines(
             &device,
             &bind_group_layouts,
             format,
@@ -867,8 +867,8 @@ impl Harness {
         }
         let (width, height) = (size.width.0 as u32, size.height.0 as u32);
         let (intermediate, intermediate_view) =
-            WgpuRenderer::create_path_intermediate(&self.device, self.format, width, height);
-        let (msaa, msaa_view) = WgpuRenderer::create_msaa_if_needed(
+            WgpuRendererCore::create_path_intermediate(&self.device, self.format, width, height);
+        let (msaa, msaa_view) = WgpuRendererCore::create_msaa_if_needed(
             &self.device,
             self.format,
             width,

@@ -140,8 +140,9 @@ pub(crate) fn carry_paint(window: &mut Window, id: &GlobalElementId) {
 /// the frame being drawn, where painting what added them would add them
 /// again, returning where they lie in it: its window control hitboxes,
 /// moved by `delta` and clipped to `viewport`, cursor styles, input
-/// handlers, mouse listeners, element states if `element_states`, tab stops
-/// and line layouts. The scene is not carried.
+/// handlers, mouse listeners, element states if `element_states`, tab stops,
+/// line layouts and, for tests, debug bounds, moved by `delta`. The scene is
+/// not carried.
 #[inline]
 pub(crate) fn carry_paint_records(
     window: &mut Window,
@@ -192,6 +193,13 @@ pub(crate) fn carry_paint_records(
         &rendered.tab_stops.insertion_history
             [range.start.tab_handle_index..range.end.tab_handle_index],
     );
+    #[cfg(any(test, feature = "test-support"))]
+    for (selector, bounds) in
+        &rendered.debug_bounds_records[range.start.debug_bounds_index..range.end.debug_bounds_index]
+    {
+        let moved = Bounds::new(bounds.origin + delta, bounds.size);
+        next.record_debug_bounds(selector.clone(), moved);
+    }
     window
         .text_system
         .reuse_layouts(range.start.line_layout_index.clone()..range.end.line_layout_index.clone());

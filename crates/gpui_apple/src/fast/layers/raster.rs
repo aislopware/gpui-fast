@@ -14,12 +14,16 @@
 //! writes, and the frame's encoding stays upstream's.
 
 use std::cell::Cell;
+use std::ptr;
 
 use anyhow::Result;
-use block::ConcreteBlock;
+use block2::RcBlock;
+use foreign_types::ForeignTypeRef;
 use gpui::{
     DevicePixels, LayerKey, PrimitiveBatch, Rgba, Scene, TileCoord, decode_layer_tile, size,
 };
+
+use objc2::runtime::AnyObject;
 
 use crate::metal_renderer::{
     InstanceBindings, InstanceBufferWriter, MetalRenderer, SurfaceBounds,
@@ -142,7 +146,10 @@ fn encode(
     let instance_buffer_pool = renderer.instance_buffer_pool.clone();
     let failed = renderer.fast_layers.failure_flag();
     let instance_buffer = Cell::new(Some(instance_buffer));
-    let block = ConcreteBlock::new(move |command_buffer: &metal::CommandBufferRef| {
+    let block = RcBlock::new(move |command_buffer: ptr::NonNull<AnyObject>| {
+        // SAFETY: Metal hands its completion handlers the command buffer that completed.
+        let command_buffer =
+            unsafe { metal::CommandBufferRef::from_ptr(command_buffer.as_ptr().cast()) };
         if command_buffer.status() == metal::MTLCommandBufferStatus::Error {
             failed.store(true, std::sync::atomic::Ordering::Release);
         }
@@ -150,8 +157,11 @@ fn encode(
             instance_buffer_pool.lock().release(instance_buffer);
         }
     });
-    let block = block.copy();
-    command_buffer.add_completed_handler(&block);
+    // SAFETY: Both pointee types are opaque views of the same Objective-C block
+    // pointer ABI, as upstream's `draw_primitives_to_texture` relies on too.
+    unsafe {
+        command_buffer.add_completed_handler(&*RcBlock::as_ptr(&block).cast());
+    }
     command_buffer.commit();
     Ok(())
 }

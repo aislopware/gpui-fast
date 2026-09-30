@@ -5,7 +5,7 @@
 //! buffer and records a copy that the next submit has to run, yet the values
 //! only change with the window's size, transparency or text settings.
 
-use crate::wgpu_renderer::{GammaParams, GlobalParams};
+use crate::wgpu_renderer::{GammaParams, GlobalParams, WgpuRendererCore};
 
 const GLOBALS: usize = size_of::<GlobalParams>();
 const GAMMA: usize = size_of::<GammaParams>();
@@ -14,9 +14,20 @@ const GAMMA: usize = size_of::<GammaParams>();
 #[derive(Default)]
 pub(crate) struct UploadedGlobals(Option<[u8; 2 * GLOBALS + GAMMA]>);
 
-/// Forwarded to by `WgpuRenderer::draw` in place of its three globals writes.
+impl UploadedGlobals {
+    /// Whether the frame being drawn blends with premultiplied alpha, as the
+    /// globals written for it say. Layer tiles are drawn to match.
+    pub(crate) fn premultiplied_alpha(&self) -> bool {
+        self.0.is_some_and(|bytes| {
+            bytemuck::pod_read_unaligned::<GlobalParams>(&bytes[..GLOBALS]).premultiplied_alpha != 0
+        })
+    }
+}
+
+/// Forwarded to by `WgpuRendererCore::render_frame` in place of its three
+/// globals writes.
 pub(crate) fn write_globals(
-    renderer: &mut crate::WgpuRenderer,
+    renderer: &mut WgpuRendererCore,
     globals: &GlobalParams,
     path_globals: &GlobalParams,
     gamma_params: &GammaParams,

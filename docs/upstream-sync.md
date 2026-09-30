@@ -142,9 +142,6 @@ unchanged, and a new entry needs as good a reason.
   layers from the scene. Polychrome sprites whose texture index is at or
   above `LAYER_TILE_TEXTURE_BASE` are scroll layer tiles, not atlas textures.
 - `crates/gpui/Cargo.toml` names this repository and sets `publish = false`.
-- `App::register_inspector_element` takes a factory, the form newer upstream
-  has and GPUI Kit is written against; `fast::inspector` adapts it onto this
-  snapshot's registry.
 - Window composition, the API of
   [zed#62379](https://github.com/zed-industries/zed/pull/62379), which
   upstream has not merged yet: native views drawn between a window's GPUI
