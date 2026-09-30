@@ -24,13 +24,16 @@ use collections::FxHashMap;
 /// Whether scroll layers are compiled in. Elsewhere every layer entry point
 /// is a no-op and today's path runs.
 ///
-/// Upstream compiles them on Linux (wgpu) and macOS (Metal). Slopty's fork
-/// composites tiles with Metal only, on macOS and iOS, which share
-/// `gpui_apple`'s renderer: its wgpu renderer is zed's, without gpui-fast's
-/// frame recording (SLOPTY.md). GPUI's own tests compile them in on every
-/// platform, where the test platform draws no pixels and the oracles compare
-/// layer scenes, composites expanded, with scenes drawn without them.
-pub(crate) const COMPILED: bool = cfg!(any(test, target_os = "macos", target_os = "ios"));
+/// Upstream compiles them on Linux (wgpu), macOS (Metal) and Windows
+/// (Direct3D 11). This fork keeps upstream's Windows, drops Linux, whose
+/// wgpu renderer is zed's without gpui-fast's frame recording, and keeps
+/// them out on macOS and iOS for now: the Metal composite is correct, but in
+/// Slopty the lists that scroll most never composite a frame and pay for
+/// the repaints (SLOPTY.md, "Scroll layers"). GPUI's own tests compile them
+/// in on every platform, where the test platform draws no pixels and the
+/// oracles compare layer scenes, composites expanded, with scenes drawn
+/// without them.
+pub(crate) const COMPILED: bool = cfg!(any(test, target_os = "windows"));
 
 /// A window's scroll layers, by the scroll container's global id.
 #[allow(
