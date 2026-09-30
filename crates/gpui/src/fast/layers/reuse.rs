@@ -43,7 +43,8 @@ pub(crate) fn carry_prepaint(
         .extend(LayerInput::hitboxes_at(&input.hitboxes, delta, viewport));
     // A tooltip shows where its element was when it was requested; a scroll
     // hides tooltips (spec §7, rule 5).
-    let tooltips = &mut rendered.tooltip_requests[range.start.tooltips_index..range.end.tooltips_index];
+    let tooltips =
+        &mut rendered.tooltip_requests[range.start.tooltips_index..range.end.tooltips_index];
     if !moved {
         next.tooltip_requests
             .extend(tooltips.iter_mut().map(|request| request.take()));
@@ -122,7 +123,8 @@ pub(crate) fn carry_paint(window: &mut Window, id: &GlobalElementId) {
             .map(|handler| handler.take()),
     );
     next.mouse_listeners.extend(
-        rendered.mouse_listeners[range.start.mouse_listeners_index..range.end.mouse_listeners_index]
+        rendered.mouse_listeners
+            [range.start.mouse_listeners_index..range.end.mouse_listeners_index]
             .iter_mut()
             .map(|listener| listener.take()),
     );

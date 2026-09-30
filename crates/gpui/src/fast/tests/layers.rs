@@ -2620,10 +2620,11 @@ mod input {
     use super::invalidation::{draw, with_window};
     use crate::fast::layers::policy::Decision;
     use crate::{
-        AnyWindowHandle, Context, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
-        MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
+        AnyWindowHandle, AppContext as _, Bounds, Context, DispatchPhase, FocusHandle,
+        HitboxBehavior, InteractiveElement as _, IntoElement, Modifiers, MouseButton,
+        MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
         ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _,
-        TestAppContext, TouchPhase, Window, WindowHandle, div, point, px, rgb,
+        TestAppContext, TouchPhase, Window, WindowHandle, canvas, div, point, px, rgb,
     };
     use std::{
         cell::{Cell, RefCell},
@@ -2633,15 +2634,43 @@ mod input {
     const ROWS: usize = 40;
     const ROW_HEIGHT: f32 = 20.;
 
+    /// What a listener inside a row saw: the row, the bounds of the hitbox
+    /// it captured, and the event's position.
+    type Seen = (usize, Bounds<Pixels>, Point<Pixels>);
+
     /// A 200 × 100 px scroll container of forty 20 px rows, 100 px wide, that
-    /// can be clicked, at the top left of the window. Row 2 can take focus
-    /// and counts the keys it sees. The wheel scrolls it from beside the
-    /// rows, where it hovers none of them.
+    /// can be clicked and dragged, at the top left of the window. Each row
+    /// holds a canvas whose mouse-down listener notes the bounds of the
+    /// hitbox it captured when painted. Row 2 can take focus and counts the
+    /// keys it sees. The wheel scrolls it from beside the rows, where it
+    /// hovers none of them.
     struct InputPage {
         handle: ScrollHandle,
         clicks: Rc<RefCell<Vec<usize>>>,
         keys: Rc<Cell<usize>>,
         focus: FocusHandle,
+        seen: Rc<RefCell<Vec<Seen>>>,
+        drags: Rc<RefCell<Vec<Seen>>>,
+    }
+
+    /// What a row of an [`InputPage`] is dragged as.
+    struct DraggedRow;
+
+    /// A canvas filling a row, whose mouse-down listener notes into `seen`
+    /// the bounds of the hitbox it captured when painted.
+    fn noting_canvas(index: usize, seen: Rc<RefCell<Vec<Seen>>>) -> impl IntoElement {
+        canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |_, hitbox, window, _| {
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
+                    if phase == DispatchPhase::Bubble && hitbox.is_hovered(window) {
+                        seen.borrow_mut()
+                            .push((index, hitbox.bounds, event.position));
+                    }
+                });
+            },
+        )
+        .size_full()
     }
 
     impl Render for InputPage {
@@ -2655,12 +2684,20 @@ mod input {
                     .h(px(100.))
                     .children((0..ROWS).map(|index| {
                         let clicks = self.clicks.clone();
+                        let drags = self.drags.clone();
                         let row = div()
                             .id(("row", index))
                             .w(px(100.))
                             .h(px(ROW_HEIGHT))
                             .bg(rgb(0x100000 + index as u32 * 0x10))
-                            .on_click(move |_, _, _| clicks.borrow_mut().push(index));
+                            .on_click(move |_, _, _| clicks.borrow_mut().push(index))
+                            .on_drag(DraggedRow, |_, _, _, cx| cx.new(|_| super::EmptyView))
+                            .on_drag_move::<DraggedRow>(move |event, _, _| {
+                                drags
+                                    .borrow_mut()
+                                    .push((index, event.bounds, event.event.position))
+                            })
+                            .child(noting_canvas(index, self.seen.clone()));
                         if index == 2 {
                             let keys = self.keys.clone();
                             row.track_focus(&self.focus)
@@ -2679,6 +2716,8 @@ mod input {
             clicks: Rc::default(),
             keys: Rc::default(),
             focus: cx.focus_handle(),
+            seen: Rc::default(),
+            drags: Rc::default(),
         });
         draw(cx, window.into());
         draw(cx, window.into());
@@ -2705,27 +2744,81 @@ mod input {
     }
 
     fn click(cx: &mut TestAppContext, window: AnyWindowHandle, position: Point<Pixels>) {
+        dispatch(cx, window, [mouse_down(position), mouse_up(position)]);
+    }
+
+    fn mouse_down(position: Point<Pixels>) -> crate::PlatformInput {
+        crate::PlatformInput::MouseDown(MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        })
+    }
+
+    fn mouse_up(position: Point<Pixels>) -> crate::PlatformInput {
+        crate::PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Modifiers::default(),
+            click_count: 1,
+        })
+    }
+
+    fn mouse_move(position: Point<Pixels>, pressed: bool) -> crate::PlatformInput {
+        crate::PlatformInput::MouseMove(MouseMoveEvent {
+            position,
+            pressed_button: pressed.then_some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        })
+    }
+
+    /// Dispatches `events` to `window` in one update, with no frame drawn
+    /// between them unless dispatching one draws it.
+    fn dispatch(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        events: impl IntoIterator<Item = crate::PlatformInput>,
+    ) {
         with_window(cx, window, |window, cx| {
-            window.dispatch_event(
-                crate::PlatformInput::MouseDown(MouseDownEvent {
-                    button: MouseButton::Left,
-                    position,
-                    modifiers: Modifiers::default(),
-                    click_count: 1,
-                    first_mouse: false,
-                }),
-                cx,
-            );
-            window.dispatch_event(
-                crate::PlatformInput::MouseUp(MouseUpEvent {
-                    button: MouseButton::Left,
-                    position,
-                    modifiers: Modifiers::default(),
-                    click_count: 1,
-                }),
-                cx,
-            );
+            for event in events {
+                window.dispatch_event(event, cx);
+            }
         });
+    }
+
+    fn rebuilds(cx: &mut TestAppContext, window: AnyWindowHandle) -> u64 {
+        with_window(cx, window, |window, _| {
+            window.layout_stats().layer_rebuilds_for_input
+        })
+    }
+
+    /// A page with layers, and one without, for the same history to be
+    /// played in both.
+    fn page_with_and_without_layers(
+        cx: &mut TestAppContext,
+    ) -> (WindowHandle<InputPage>, WindowHandle<InputPage>) {
+        let with = input_page(cx);
+        let without = input_page(cx);
+        without
+            .update(cx, |_, window, _| window.set_scroll_layers(false))
+            .unwrap();
+        draw(cx, without.into());
+        (with, without)
+    }
+
+    /// Scrolls the page five times by -20 px: promoted on the second
+    /// scroll, painted at -40 px, and composited from the third on, at
+    /// -100 px after the fifth. Returns the decisions of the last three.
+    fn scroll_five_times(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+    ) -> Vec<Option<Decision>> {
+        (0..5)
+            .map(|_| scroll(cx, window, -20.))
+            .collect::<Vec<_>>()
+            .split_off(2)
     }
 
     fn clicks(cx: &mut TestAppContext, window: WindowHandle<InputPage>) -> Vec<usize> {
@@ -2789,5 +2882,114 @@ mod input {
         cx.simulate_keystrokes(window, "a");
         let keys = handle.update(cx, |page, _, _| page.keys.get()).unwrap();
         assert_eq!(keys, 1);
+    }
+
+    #[crate::test]
+    fn click_after_scroll_hits_current_element(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let (with, without) = page_with_and_without_layers(cx);
+        assert_eq!(
+            scroll_five_times(cx, with.into()),
+            vec![Some(Decision::Composite); 3]
+        );
+        scroll_five_times(cx, without.into());
+        // Row 7 lies at 140 px in the content, at 40 px once scrolled by -100.
+        for window in [with, without] {
+            click(cx, window.into(), point(px(20.), px(50.)));
+            assert_eq!(clicks(cx, window), vec![7]);
+        }
+        let seen = |cx: &mut TestAppContext, window: WindowHandle<InputPage>| {
+            window
+                .update(cx, |page, _, _| page.seen.borrow().clone())
+                .unwrap()
+        };
+        let seen_with = seen(cx, with);
+        assert_eq!(
+            seen_with,
+            vec![(
+                7,
+                Bounds::new(point(px(0.), px(40.)), crate::size(px(100.), px(20.))),
+                point(px(20.), px(50.))
+            )]
+        );
+        assert_eq!(seen_with, seen(cx, without));
+        assert_eq!(rebuilds(cx, with.into()), 1);
+    }
+
+    #[crate::test]
+    fn drag_after_scroll_sees_current_bounds(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let (with, without) = page_with_and_without_layers(cx);
+        assert_eq!(
+            scroll_five_times(cx, with.into()),
+            vec![Some(Decision::Composite); 3]
+        );
+        scroll_five_times(cx, without.into());
+        let drags = |cx: &mut TestAppContext, window: WindowHandle<InputPage>| {
+            // The drag is the app's: it ends with the mouse up, before the
+            // other window is dragged in.
+            dispatch(
+                cx,
+                window.into(),
+                [
+                    mouse_down(point(px(20.), px(50.))),
+                    mouse_move(point(px(20.), px(60.)), true),
+                    mouse_move(point(px(20.), px(70.)), true),
+                    mouse_up(point(px(20.), px(70.))),
+                ],
+            );
+            window
+                .update(cx, |page, _, _| page.drags.borrow().clone())
+                .unwrap()
+        };
+        let drags_with = drags(cx, with);
+        assert!(!drags_with.is_empty(), "the row was dragged");
+        assert!(
+            drags_with
+                .iter()
+                .all(|(index, bounds, _)| *index != 7 || bounds.origin.y == px(40.)),
+            "{drags_with:?}"
+        );
+        assert_eq!(drags_with, drags(cx, without));
+    }
+
+    #[crate::test]
+    fn wheel_events_do_not_rebuild(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window = handle.into();
+        scroll_five_times(cx, window);
+        for _ in 0..10 {
+            assert_eq!(scroll(cx, window, 5.), Some(Decision::Composite));
+        }
+        assert_eq!(rebuilds(cx, window), 0);
+    }
+
+    #[crate::test]
+    fn a_mouse_move_after_scroll_rebuilds_once(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window = handle.into();
+        scroll_five_times(cx, window);
+        dispatch(cx, window, [mouse_move(point(px(20.), px(50.)), false)]);
+        assert_eq!(rebuilds(cx, window), 1);
+        dispatch(cx, window, [mouse_move(point(px(30.), px(60.)), false)]);
+        draw(cx, window);
+        dispatch(cx, window, [mouse_move(point(px(40.), px(70.)), false)]);
+        assert_eq!(rebuilds(cx, window), 1);
+        // Outside the viewport, a move after a scroll does not rebuild. (The
+        // first scroll moves the pointer off the rows, a hover change.)
+        scroll(cx, window, -20.);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        dispatch(cx, window, [mouse_move(point(px(300.), px(300.)), false)]);
+        assert_eq!(rebuilds(cx, window), 1);
     }
 }

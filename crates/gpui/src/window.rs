@@ -5472,6 +5472,7 @@ impl Window {
             PlatformInput::KeyDown(_) | PlatformInput::KeyUp(_) => event,
         };
         crate::fast::dependencies::AmbientInput::stamp_changes(ambient, self, cx);
+        crate::fast::layers::input::before_dispatch(self, cx, &event);
 
         if let Some(any_mouse_event) = event.mouse_event() {
             self.dispatch_mouse_event(any_mouse_event, cx);
