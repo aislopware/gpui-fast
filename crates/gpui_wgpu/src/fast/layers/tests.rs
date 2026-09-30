@@ -15,8 +15,8 @@ use gpui::{
     AtlasKey, AtlasTile, Bounds, ContentMask, Corners, DevicePixels, Edges, FontId, GlyphId, Hsla,
     ImageId, LayerFrame, LayerKey, MonochromeSprite, Path, PlatformAtlas, PolychromeSprite, Quad,
     RenderGlyphParams, RenderImageParams, Rgba, ScaledPixels, Scene, SceneLayers, Shadow, Size,
-    SubpixelSprite, TileCoord, TransformationMatrix, Underline, linear_color_stop, linear_gradient,
-    point, px, rgba, size,
+    SubpixelSprite, TileCoord, TransformationMatrix, Underline, layer_tile_id,
+    layer_tile_texture_id, linear_color_stop, linear_gradient, point, px, rgba, size,
 };
 
 use crate::WgpuAtlas;
@@ -50,12 +50,12 @@ fn a_rasterized_tile_equals_the_same_content_drawn_directly() {
         return;
     };
     let direct = harness.render(
-        &content(&harness, 0.),
+        &content(&harness, (0., 0.), no_mask().bounds, Paths::With),
         device_size(1024, 1024),
         background(),
     );
     let tiles = [(0, 0), (1, 0), (0, 1), (1, 1)];
-    let content = content(&harness, 0.);
+    let content = content(&harness, (0., 0.), no_mask().bounds, Paths::With);
     let assembled = rasterize_and_assemble(&mut harness, content, &tiles);
     assert_same_pixels(&assembled, &direct, 1024);
 }
@@ -67,14 +67,107 @@ fn tiles_of_negative_coordinates_rasterize_like_positive_ones() {
         return;
     };
     let direct = harness.render(
-        &content(&harness, 0.),
+        &content(&harness, (0., 0.), no_mask().bounds, Paths::With),
         device_size(1024, 1024),
         background(),
     );
     let tiles = [(-1, -1), (0, -1), (-1, 0), (0, 0)];
-    let shifted = content(&harness, -(TILE as f32));
+    let shifted = content(
+        &harness,
+        (-(TILE as f32), -(TILE as f32)),
+        no_mask().bounds,
+        Paths::With,
+    );
     let assembled = rasterize_and_assemble(&mut harness, shifted, &tiles);
     assert_same_pixels(&assembled, &direct, 1024);
+}
+
+#[test]
+fn a_composited_layer_equals_direct_drawing() {
+    let Some(mut harness) = Harness::new() else {
+        eprintln!("skipped: no wgpu adapter");
+        return;
+    };
+    composite_and_compare(&mut harness, (37., -91.), Paths::Without);
+}
+
+/// Paths are drawn exactly when the content moved by an even number of
+/// device pixels since its tiles were rasterized. At an odd translation an
+/// antialiased path edge pixel can come out one level apart: the path
+/// shader's `dpdx` and `dpdy` are differences within 2×2 pixel quads,
+/// which then pair other pixels.
+#[test]
+fn paths_composite_exactly_at_even_translations() {
+    let Some(mut harness) = Harness::new() else {
+        eprintln!("skipped: no wgpu adapter");
+        return;
+    };
+    composite_and_compare(&mut harness, (38., -92.), Paths::With);
+}
+
+/// Draws a window with a viewport over a scroll layer at `translation`, once
+/// from the content directly and once from the layer's tiles, twice (the
+/// second frame from the cached tiles), and compares the pixels.
+fn composite_and_compare(harness: &mut Harness, translation: (f32, f32), paths: Paths) {
+    let window = device_size(700, 500);
+    let viewport = sp(40., 30., 600., 400.);
+    let panel = quad(sp(0., 0., 700., 500.), Hsla::from(background()));
+    let scrollbar = quad(sp(620., 40., 12., 120.), Hsla::from(rgba(0x888888ff)));
+
+    let mut direct = Scene::default();
+    direct.insert_primitive(panel);
+    add_content(&mut direct, harness, translation, viewport, paths);
+    direct.insert_primitive(scrollbar);
+    direct.finish();
+    let expected = harness.render(&direct, window, rgba(0x000000ff));
+
+    let key = LayerKey(5);
+    let tiles = [coord(0, 0), coord(1, 0), coord(0, 1), coord(1, 1)];
+    let layer = layer_frame(
+        key,
+        1,
+        content(harness, (0., 0.), no_mask().bounds, paths),
+        &tiles,
+    );
+    let mut composited = Scene::default();
+    composited.insert_primitive(panel);
+    composited.push_layer(viewport);
+    for tile in tiles {
+        let bounds = layer.tile_bounds(tile);
+        composited.insert_primitive(PolychromeSprite {
+            order: 0,
+            pad: 0,
+            grayscale: false.into(),
+            opacity: 1.,
+            bounds: sp(
+                bounds.origin.x.0 + translation.0,
+                bounds.origin.y.0 + translation.1,
+                TILE as f32,
+                TILE as f32,
+            ),
+            content_mask: ContentMask { bounds: viewport },
+            corner_radii: Corners::default(),
+            tile: AtlasTile {
+                texture_id: layer_tile_texture_id(key),
+                tile_id: layer_tile_id(tile),
+                padding: 0,
+                bounds: Bounds {
+                    origin: point(DevicePixels(0), DevicePixels(0)),
+                    size: device_size(TILE as i32, TILE as i32),
+                },
+            },
+        });
+    }
+    composited.pop_layer();
+    composited.insert_primitive(scrollbar);
+    composited.layers.frames.push(layer);
+    composited.finish();
+    let actual = harness.render(&composited, window, rgba(0x000000ff));
+    assert_same_pixels(&actual, &expected, 700);
+
+    // A frame that only scrolled draws the cached tiles again.
+    let actual = harness.render(&composited, window, rgba(0x000000ff));
+    assert_same_pixels(&actual, &expected, 700);
 }
 
 #[test]
@@ -206,17 +299,44 @@ fn assert_same_pixels(actual: &[u8], expected: &[u8], width: usize) {
 }
 
 /// Content of every primitive kind, spread over the four tiles of
-/// (0, 0)..(1024, 1024) and across their edges, moved by `offset` on both axes.
-fn content(harness: &Harness, offset: f32) -> Scene {
-    let o = offset;
-    let at = |x: f32, y: f32, w: f32, h: f32| sp(x + o, y + o, w, h);
-    let mask = |bounds: Bounds<ScaledPixels>| ContentMask { bounds };
+/// (0, 0)..(1024, 1024) and across their edges, moved by `offset` and
+/// clipped to `clip`.
+fn content(
+    harness: &Harness,
+    offset: (f32, f32),
+    clip: Bounds<ScaledPixels>,
+    paths: Paths,
+) -> Scene {
     let mut scene = Scene::default();
+    add_content(&mut scene, harness, offset, clip, paths);
+    scene.finish();
+    scene
+}
 
-    scene.insert_primitive(quad(
-        at(100., 100., 200., 150.),
-        Hsla::from(rgba(0xcc3322ff)),
-    ));
+/// Inserts [`content`]'s primitives into `scene`.
+#[derive(Clone, Copy, PartialEq)]
+enum Paths {
+    With,
+    Without,
+}
+
+fn add_content(
+    scene: &mut Scene,
+    harness: &Harness,
+    offset: (f32, f32),
+    clip: Bounds<ScaledPixels>,
+    paths: Paths,
+) {
+    let (ox, oy) = offset;
+    let at = |x: f32, y: f32, w: f32, h: f32| sp(x + ox, y + oy, w, h);
+    let mask = |bounds: Bounds<ScaledPixels>| ContentMask {
+        bounds: bounds.intersect(&clip),
+    };
+
+    scene.insert_primitive(Quad {
+        content_mask: mask(clip),
+        ..quad(at(100., 100., 200., 150.), Hsla::from(rgba(0xcc3322ff)))
+    });
     scene.insert_primitive(Quad {
         bounds: at(450.5, 60., 150., 120.),
         content_mask: mask(at(0., 0., 1024., 1024.)),
@@ -232,7 +352,7 @@ fn content(harness: &Harness, offset: f32) -> Scene {
         blur_radius: ScaledPixels(8.),
         bounds: at(380., 420., 120., 70.),
         corner_radii: Corners::all(ScaledPixels(6.)),
-        content_mask: no_mask(),
+        content_mask: mask(clip),
         color: Hsla::from(rgba(0x00000080)),
         element_bounds: at(380., 420., 120., 70.),
         element_corner_radii: Corners::all(ScaledPixels(6.)),
@@ -241,7 +361,7 @@ fn content(harness: &Harness, offset: f32) -> Scene {
     });
     scene.insert_primitive(Quad {
         bounds: at(600., 600., 300., 200.),
-        content_mask: no_mask(),
+        content_mask: mask(clip),
         background: linear_gradient(
             45.,
             linear_color_stop(rgba(0xff0000ff), 0.),
@@ -254,7 +374,7 @@ fn content(harness: &Harness, offset: f32) -> Scene {
         order: 0,
         pad: 0,
         bounds: at(50., 505., 900., 8.),
-        content_mask: no_mask(),
+        content_mask: mask(clip),
         color: Hsla::from(rgba(0xffcc00ff)),
         thickness: ScaledPixels(2.),
         wavy: true.into(),
@@ -267,25 +387,16 @@ fn content(harness: &Harness, offset: f32) -> Scene {
         ..Default::default()
     });
 
-    let mut path = Path::new(point(px(480. + o), px(300. + o)));
-    path.line_to(point(px(560.5 + o), px(330. + o)));
-    path.curve_to(
-        point(px(500. + o), px(560. + o)),
-        point(px(600. + o), px(450. + o)),
-    );
-    path.line_to(point(px(480. + o), px(300. + o)));
-    path.content_mask = ContentMask {
-        bounds: sp(-10_000., -10_000., 20_000., 20_000.).map(|c| px(c.0)),
-    };
-    path.color = Hsla::from(rgba(0x8800ffcc)).into();
-    scene.insert_primitive(path.scale(1.));
+    if paths == Paths::With {
+        add_path(scene, offset, clip);
+    }
 
     let mono = glyph_tile(harness, 1, false);
     scene.insert_primitive(MonochromeSprite {
         order: 0,
         pad: 0,
         bounds: at(505., 700., 16., 16.),
-        content_mask: no_mask(),
+        content_mask: mask(clip),
         color: Hsla::from(rgba(0xffffffff)),
         tile: mono,
         transformation: TransformationMatrix::unit(),
@@ -298,7 +409,7 @@ fn content(harness: &Harness, offset: f32) -> Scene {
             order: 0,
             pad: 0,
             bounds: at(520., 505., 16., 16.),
-            content_mask: no_mask(),
+            content_mask: mask(clip),
             color: Hsla::from(rgba(0x000000ff)),
             tile: subpixel,
             transformation: TransformationMatrix::unit(),
@@ -310,12 +421,26 @@ fn content(harness: &Harness, offset: f32) -> Scene {
         grayscale: false.into(),
         opacity: 1.,
         bounds: at(300., 500., 20., 20.),
-        content_mask: no_mask(),
+        content_mask: mask(clip),
         corner_radii: Corners::all(ScaledPixels(4.)),
         tile: image_tile(harness),
     });
-    scene.finish();
-    scene
+}
+
+/// A path of lines and a curve across a tile edge.
+fn add_path(scene: &mut Scene, (ox, oy): (f32, f32), clip: Bounds<ScaledPixels>) {
+    let mut path = Path::new(point(px(480. + ox), px(300. + oy)));
+    path.line_to(point(px(560.5 + ox), px(330. + oy)));
+    path.curve_to(
+        point(px(500. + ox), px(560. + oy)),
+        point(px(600. + ox), px(450. + oy)),
+    );
+    path.line_to(point(px(480. + ox), px(300. + oy)));
+    path.content_mask = ContentMask {
+        bounds: clip.map(|c| px(c.0)),
+    };
+    path.color = Hsla::from(rgba(0x8800ffcc)).into();
+    scene.insert_primitive(path.scale(1.));
 }
 
 /// A 16×16 glyph of a made-up font, uploaded to the harness's atlas: a

@@ -667,6 +667,29 @@ pub(crate) fn draw_scene(
                 )),
                 range,
             ),
+            PrimitiveBatch::PolychromeSprites { texture_id, range }
+                if composite::is_layer_texture(texture_id) =>
+            {
+                let sprites = &draw.scene.polychrome_sprites;
+                for run in composite::tile_runs(sprites, range) {
+                    let Some(view) = composite::texture_for_batch(
+                        &state.layers,
+                        texture_id,
+                        &sprites[run.clone()],
+                    ) else {
+                        continue;
+                    };
+                    draw_batch(
+                        &mut pass,
+                        &mut bound,
+                        draw.globals,
+                        &pipelines.poly_sprites,
+                        &upload.polychrome_sprites,
+                        Some(&texture_bind_group("layer_tile_bind_group", view)),
+                        run,
+                    );
+                }
+            }
             PrimitiveBatch::PolychromeSprites { texture_id, range } => draw_batch(
                 &mut pass,
                 &mut bound,
