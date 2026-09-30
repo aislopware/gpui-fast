@@ -397,6 +397,9 @@ Added in this fork:
   `on_swipe` on every interactive element (`InteractiveGestures`); on iOS a rotation from
   `UIRotationGestureRecognizer`, recognized alongside the pinch. A swipe no listener
   stops still becomes the back or forward mouse button, as upstream makes it
+- build: core-video 0.6.1 (zed has 0.5.2): its texture cache takes a `CVImageBuffer`, so
+  the surface pass hands it the pixel buffer as one. An application sharing
+  `CVPixelBuffer` with GPUI (Slopty's `slopty-ui`) takes 0.6.1 with it
 - perf(gpui): the frame after one whose bounds-tree replay ran out of its search budget
   replays on 8,192 comparisons rather than 32,768 (`fast/bounds_tree.rs`), since a frame
   in motion spends the whole budget and builds the grid anyway; a frame at rest hands
