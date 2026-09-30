@@ -1227,7 +1227,7 @@ pub struct Window {
     /// it costs a handler per frame, so it is removed once the last observer is gone.
     presented_frame_sink: PresentedFrameSink,
     presented_frame_sink_installed: Cell<bool>,
-    hovered: Rc<Cell<bool>>,
+    pub(crate) hovered: Rc<Cell<bool>>,
     pub(crate) needs_present: Rc<Cell<bool>>,
     /// Tracks recent input event timestamps to determine if input is arriving at a high rate.
     /// Used to selectively enable VRR optimization only when input rate exceeds 60fps.
@@ -3155,7 +3155,11 @@ impl Window {
 
         let bounds = underline.bounds.intersect(&underline.content_mask.bounds);
         if bounds.is_empty() {
-            crate::fast::scene::culled(&mut self.next_frame.scene, &underline.bounds, &underline.content_mask.bounds);
+            crate::fast::scene::culled(
+                &mut self.next_frame.scene,
+                &underline.bounds,
+                &underline.content_mask.bounds,
+            );
             return;
         }
 
@@ -4685,7 +4689,11 @@ impl Window {
                     ..quad
                 });
             } else if !strip.is_empty() {
-                crate::fast::scene::culled(&mut self.next_frame.scene, &strip, &quad.content_mask.bounds);
+                crate::fast::scene::culled(
+                    &mut self.next_frame.scene,
+                    &strip,
+                    &quad.content_mask.bounds,
+                );
             }
         }
     }
