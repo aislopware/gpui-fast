@@ -821,4 +821,81 @@ mod paint {
             }
         });
     }
+
+    /// A scroll container whose content records the element offset it is
+    /// prepainted at.
+    struct Offsets {
+        scroll: crate::ScrollHandle,
+        seen: std::rc::Rc<std::cell::Cell<crate::Point<crate::Pixels>>>,
+    }
+
+    impl crate::Render for Offsets {
+        fn render(
+            &mut self,
+            _window: &mut crate::Window,
+            _cx: &mut crate::Context<Self>,
+        ) -> impl crate::IntoElement {
+            use crate::{
+                InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+                Styled as _,
+            };
+            let seen = self.seen.clone();
+            crate::div().size_full().child(
+                crate::div()
+                    .id("s")
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .h(crate::px(100.))
+                    .child(
+                        crate::canvas(
+                            move |_, window, _| seen.set(window.element_offset()),
+                            |_, _, _, _| {},
+                        )
+                        .h(crate::px(1000.))
+                        .w_full(),
+                    ),
+            )
+        }
+    }
+
+    #[crate::test]
+    fn scroll_offsets_land_on_device_pixels(cx: &mut crate::TestAppContext) {
+        let seen = std::rc::Rc::new(std::cell::Cell::new(crate::Point::default()));
+        let window = cx.add_window({
+            let seen = seen.clone();
+            |_, _| Offsets {
+                scroll: crate::ScrollHandle::new(),
+                seen,
+            }
+        });
+        cx.test_window(window.into())
+            .simulate_scale_factor_change(1.25);
+        window
+            .update(cx, |view, _, cx| {
+                view.scroll
+                    .set_offset(crate::point(crate::px(0.), crate::px(-10.37)));
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        let offset = seen.get();
+        if crate::fast::layers::COMPILED {
+            // -10.37 px is -12.9625 device px; the content goes to -13.
+            assert_eq!(offset.y * 1.25, crate::px(-13.));
+        } else {
+            assert_eq!(offset.y, crate::px(-10.37));
+        }
+
+        let snap = crate::fast::layers::paint::snap_offset;
+        let fractional = crate::point(crate::px(0.37), crate::px(-10.37));
+        assert_eq!(snap(fractional, 1.25, false), fractional);
+        let snapped = snap(fractional, 1.25, true);
+        assert_eq!(
+            (snapped.x * 1.25, snapped.y * 1.25),
+            (crate::px(0.), crate::px(-13.))
+        );
+        let whole = crate::point(crate::px(-8.), crate::px(-12.8));
+        assert_eq!(snap(whole, 1.25, true), whole, "whole device pixels stay");
+    }
 }

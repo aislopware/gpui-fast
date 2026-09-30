@@ -102,6 +102,7 @@ pub(crate) fn begin_children(
     scroll_offset: Point<Pixels>,
     style: &Style,
 ) -> Children {
+    let scroll_offset = snap_scroll_offset(window, scroll_offset);
     let bypass = Children {
         decision: Decision::Bypass,
         scroll_offset,
@@ -406,4 +407,27 @@ fn translated_scene(scene: &Scene, delta: Point<ScaledPixels>) -> Scene {
     }
     translated.finish();
     translated
+}
+
+/// `offset`, a scroll offset about to be applied, moved to whole device
+/// pixels where layers are compiled, with or without a layer, so that a
+/// layer's content and content drawn without one land on the same pixels
+/// (spec §5.3).
+pub(crate) fn snap_scroll_offset(window: &Window, offset: Point<Pixels>) -> Point<Pixels> {
+    snap_offset(offset, window.scale_factor(), COMPILED)
+}
+
+/// [`snap_scroll_offset`] at `scale_factor`, snapping only when `compiled`,
+/// rounding as [`Window::pixel_snap`] does.
+pub(crate) fn snap_offset(
+    offset: Point<Pixels>,
+    scale_factor: f32,
+    compiled: bool,
+) -> Point<Pixels> {
+    if !compiled {
+        return offset;
+    }
+    offset.map(|value| {
+        crate::px(crate::util::round_half_toward_zero(value.0 * scale_factor) / scale_factor)
+    })
 }
