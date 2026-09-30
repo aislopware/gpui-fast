@@ -349,3 +349,185 @@ mod uniform {
         assert_eq!(decision(cx, window), Some(Decision::Repaint));
     }
 }
+
+mod list {
+    use super::{
+        Decision, VIEWPORT_HEIGHT, VIEWPORT_WIDTH, composites, decision, draw, expanded_quads,
+        held_rows, row_color, wheel, wheel_deltas, with_window,
+    };
+    use crate::{
+        AnyWindowHandle, Context, IntoElement, ListAlignment, ListState, ParentElement as _,
+        Render, Styled as _, TestAppContext, Window, WindowHandle, div, px, rgb,
+    };
+    use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
+
+    /// How tall row `row` is: 20, 30 or 40 px.
+    fn row_height(row: usize) -> f32 {
+        20. + (row % 3) as f32 * 10.
+    }
+
+    /// A white panel holding a list of rows of varying heights, 100 px tall,
+    /// at the top left of the window. Every row the list renders is logged.
+    pub(super) struct ListPage {
+        pub(super) state: ListState,
+        pub(super) rendered: Rc<RefCell<Vec<usize>>>,
+    }
+
+    impl Render for ListPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let rendered = self.rendered.clone();
+            div().size_full().bg(rgb(0xffffff)).child(
+                crate::list(self.state.clone(), move |row, _, _| {
+                    rendered.borrow_mut().push(row);
+                    div()
+                        .w(px(VIEWPORT_WIDTH))
+                        .h(px(row_height(row)))
+                        .bg(row_color(row))
+                        .into_any_element()
+                })
+                .w(px(VIEWPORT_WIDTH))
+                .h(px(VIEWPORT_HEIGHT)),
+            )
+        }
+    }
+
+    fn page(
+        cx: &mut TestAppContext,
+        state: ListState,
+    ) -> (WindowHandle<ListPage>, Rc<RefCell<Vec<usize>>>) {
+        let rendered = Rc::new(RefCell::new(Vec::new()));
+        let log = rendered.clone();
+        let window = cx.add_window(move |_, _| ListPage {
+            state,
+            rendered: log,
+        });
+        draw(cx, window.into());
+        draw(cx, window.into());
+        (window, rendered)
+    }
+
+    fn promote(cx: &mut TestAppContext, window: AnyWindowHandle) {
+        wheel(cx, window, -20.);
+        assert_eq!(decision(cx, window), Some(Decision::Bypass));
+        wheel(cx, window, -20.);
+        assert_eq!(decision(cx, window), Some(Decision::Repaint));
+    }
+
+    /// The rows rendered since the log was last taken.
+    fn rendered(log: &Rc<RefCell<Vec<usize>>>) -> BTreeSet<usize> {
+        log.borrow_mut().drain(..).collect()
+    }
+
+    #[crate::test]
+    fn list_renders_only_new_rows_when_scrolling(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let state = ListState::new(1000, ListAlignment::Top, px(0.)).measure_all();
+        let (handle, log) = page(cx, state);
+        let window = handle.into();
+        promote(cx, window);
+        let mut held: BTreeSet<usize> = held_rows(cx, window).into_iter().collect();
+        assert!(held.contains(&0) && held.len() > 5, "held {held:?}");
+        rendered(&log);
+
+        let mut rendered_any = false;
+        for step in 0..30 {
+            wheel(cx, window, -15.);
+            assert_eq!(
+                decision(cx, window),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+            let rendered = rendered(&log);
+            let now: BTreeSet<usize> = held_rows(cx, window).into_iter().collect();
+            let added: BTreeSet<usize> = now.difference(&held).copied().collect();
+            assert_eq!(
+                rendered, added,
+                "step {step}: only the rows new to the layer are rendered"
+            );
+            assert!(rendered.len() <= 2, "step {step}: {rendered:?}");
+            rendered_any |= !rendered.is_empty();
+            held = now;
+        }
+        assert!(rendered_any);
+        assert!(
+            held.first().copied().unwrap_or(0) > 0,
+            "rows left behind are dropped"
+        );
+
+        for step in 0..10 {
+            wheel(cx, window, 25.);
+            assert_eq!(decision(cx, window), Some(Decision::Composite), "up {step}");
+            let rendered = rendered(&log);
+            let now: BTreeSet<usize> = held_rows(cx, window).into_iter().collect();
+            let added: BTreeSet<usize> = now.difference(&held).copied().collect();
+            assert_eq!(rendered, added, "up {step}");
+            held = now;
+        }
+    }
+
+    #[crate::test]
+    fn list_matches_layers_off_with_varying_heights(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let (with_layers, _) = page(cx, ListState::new(300, ListAlignment::Top, px(50.)));
+        let (without_layers, _) = page(cx, ListState::new(300, ListAlignment::Top, px(50.)));
+        let with_layers: AnyWindowHandle = with_layers.into();
+        let without_layers: AnyWindowHandle = without_layers.into();
+        with_window(cx, without_layers, |window, _| {
+            window.set_scroll_layers(false)
+        });
+        draw(cx, without_layers);
+
+        let mut composited = 0;
+        let mut deltas = wheel_deltas(50);
+        // And back up past where it started, through rows measured on the way.
+        deltas.extend([60., 60., 60., 45., 60., 60., 60., 60., 33., 60.]);
+        for (frame, dy) in deltas.into_iter().enumerate() {
+            wheel(cx, with_layers, dy);
+            wheel(cx, without_layers, dy);
+            if composites(cx, with_layers) {
+                composited += 1;
+            }
+            let expected = with_window(cx, without_layers, |window, _| {
+                assert!(window.rendered_frame.scene.layers.frames.is_empty());
+                expanded_quads(&window.rendered_frame.scene)
+            });
+            let actual = with_window(cx, with_layers, |window, _| {
+                expanded_quads(&window.rendered_frame.scene)
+            });
+            assert_eq!(actual, expected, "frame {frame}, scrolled by {dy}");
+        }
+        assert!(composited > 40, "the layer was composited ({composited})");
+    }
+
+    #[crate::test]
+    fn a_list_splice_repaints_the_layer(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let state = ListState::new(1000, ListAlignment::Top, px(0.)).measure_all();
+        let (handle, _) = page(cx, state);
+        let window = handle.into();
+        promote(cx, window);
+        wheel(cx, window, -20.);
+        assert_eq!(decision(cx, window), Some(Decision::Composite));
+
+        let frame = with_window(cx, window, |window, _| window.fast_layers.frame);
+        handle
+            .update(cx, |page, _, cx| {
+                page.state.splice(3..4, 2);
+                cx.notify();
+            })
+            .unwrap();
+        if with_window(cx, window, |window, _| window.fast_layers.frame) == frame {
+            draw(cx, window);
+        }
+        assert_eq!(decision(cx, window), Some(Decision::Repaint));
+
+        wheel(cx, window, -20.);
+        assert_eq!(decision(cx, window), Some(Decision::Composite));
+    }
+}

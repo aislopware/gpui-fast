@@ -16,8 +16,8 @@
 //!   [`begin_uniform_list`], [`render_rows`], [`row_indices`] and
 //!   [`end_rows`] where it prepaints its rows; [`begin_paint_rows`],
 //!   [`paint_row`] and [`end_paint_rows`] where it paints them.
-//! - `list`: [`begin_list`], [`keeps_row`], [`snap_list_offset`],
-//!   [`list_items_origin`], [`place_list_item`] and [`end_list`] where it lays
+//! - `list`: [`begin_list`], [`keeps_row`], [`snap_item_origin`],
+//!   [`place_list_item`] and [`end_list`] where it lays
 //!   out and prepaints its rows; [`begin_paint_list`], [`paint_row`] and
 //!   [`end_paint_list`] where it paints them. A `list` has no element id: its
 //!   layer is known by the id of the elements around it and its state.
@@ -28,10 +28,10 @@
 //! nested views and scroll containers are painted into the layer.
 
 use crate::{
-    AnyElement, App, Bounds, ContentMask, GlobalElementId, PaintIndex, Pixels, Point,
-    PrepaintStateIndex, Rgba, ScaledPixels, Scene, Size, TextStyle, Window,
+    AnyElement, App, AvailableSpace, Bounds, ContentMask, ElementId, GlobalElementId, PaintIndex,
+    Pixels, Point, PrepaintStateIndex, Rgba, ScaledPixels, Scene, Size, TextStyle, Window,
     fast::{
-        dependencies::{DependencyRecording, RenderDependencies},
+        dependencies::{DependencyRecording, RenderDependencies, StateVersion},
         layers::{
             COMPILED, active, invalidate,
             paint::{self, Painting},
@@ -122,6 +122,11 @@ enum Mode {
 /// What the frame being drawn does with a list's rows.
 struct RowsFrame {
     mode: Mode,
+    /// For a `list`, its state, to tell its hooks from a nested list's.
+    list: Option<usize>,
+    /// Whether the list leaves out the rows the layer holds when it lays
+    /// out the rows it shows.
+    skip_held: bool,
     /// The rows the layer is to hold after the frame.
     needed: Range<usize>,
     /// The rows the layer holds that stay.
@@ -147,6 +152,13 @@ struct RowsFrame {
     /// painted.
     order: Vec<usize>,
     next: usize,
+    /// A `list`'s first row shown and where it lies, as it prepaints its rows.
+    anchor: Option<(usize, Point<Pixels>)>,
+    /// The rows a `list` prepainted itself.
+    prepainted: Vec<usize>,
+    /// The rows rendered and prepainted here for a `list`, painted after its
+    /// own.
+    extra: Vec<(usize, AnyElement)>,
     paint: Option<PaintState>,
 }
 
@@ -354,6 +366,8 @@ pub(crate) fn begin_uniform_list(
     let order = slots.keys().copied().collect();
     let frame = RowsFrame {
         mode,
+        list: None,
+        skip_held: false,
         needed,
         keep: plan.keep.clone(),
         slots,
@@ -367,6 +381,9 @@ pub(crate) fn begin_uniform_list(
         dependencies: RenderDependencies::default(),
         order,
         next: 0,
+        anchor: None,
+        prepainted: Vec::new(),
+        extra: Vec::new(),
         paint: None,
     };
     window.fast_layers.painting = Some(marker(id, &frame));
@@ -483,6 +500,413 @@ fn frame_mut<'a>(window: &'a mut Window, id: &GlobalElementId) -> Option<&'a mut
         .layers
         .get_mut(id)
         .and_then(|layer| layer.rows.frame.as_mut())
+}
+
+/// The id a `list` whose state `version` counts changes of has: the id of
+/// the elements around it, and its state.
+fn list_id(window: &Window, version: &StateVersion) -> GlobalElementId {
+    let mut path: Vec<ElementId> = window.element_id_stack.to_vec();
+    path.push(ElementId::NamedInteger(
+        "fast-list".into(),
+        version.id() as u64,
+    ));
+    GlobalElementId::new(path.into())
+}
+
+/// The frame of the `list` whose rows are prepainting, if it is the one
+/// whose state `version` counts changes of.
+fn list_frame<'a>(window: &'a mut Window, version: &StateVersion) -> Option<&'a mut RowsFrame> {
+    let id = window.fast_layers.painting.as_ref()?.id.clone();
+    frame_mut(window, &id).filter(|frame| frame.list == Some(version.id()))
+}
+
+/// Decides what the `list` of `state`, laid out at `bounds`, does with its
+/// rows this frame, before it lays them out and prepaints them.
+pub(crate) fn begin_list(
+    window: &mut Window,
+    cx: &mut App,
+    state: &crate::StateInner,
+    bounds: Bounds<Pixels>,
+) {
+    if !COMPILED || paint::inside_layer(window) || !active(window, cx) {
+        return;
+    }
+    let version = state.version.clone();
+    let id = list_id(window, &version);
+    let viewport = window.content_mask().bounds.intersect(&bounds);
+    let scroll_top = state.scroll_top(&state.logical_scroll_top());
+    let scroll_offset = paint::snap_scroll_offset(window, point(px(0.), -scroll_top));
+    // A list lays out its rows itself, and is not taken for changed when a
+    // row is measured for the first time: its rows are checked where they
+    // are placed.
+    let decision = policy::decide(window, cx, &id, bounds, bounds.size, scroll_offset);
+    // Remembered as painted, for its scrolls to be told apart.
+    invalidate::painted_list(window, &id, &version);
+    if decision == Decision::Bypass {
+        return;
+    }
+    let layer = paint::layer_mut(window, &id);
+    let mode = if decision == Decision::Composite && layer.rows.list && layer.record.is_some() {
+        Mode::Extend
+    } else {
+        Mode::Repaint
+    };
+    let frame = RowsFrame {
+        mode,
+        list: Some(version.id()),
+        skip_held: mode == Mode::Extend && state.pending_scroll.is_none(),
+        needed: 0..0,
+        keep: 0..0,
+        slots: BTreeMap::new(),
+        viewport,
+        painted_region: viewport,
+        scroll_offset,
+        translation: Point::default(),
+        prepaint_start: window.prepaint_index(),
+        prepaint_range: window.prepaint_index()..window.prepaint_index(),
+        recording: Some(cx.begin_recording_dependencies()),
+        dependencies: RenderDependencies::default(),
+        order: Vec::new(),
+        next: 0,
+        anchor: None,
+        prepainted: Vec::new(),
+        extra: Vec::new(),
+        paint: None,
+    };
+    window.fast_layers.painting = Some(marker(&id, &frame));
+    paint::layer_mut(window, &id).rows.frame = Some(frame);
+}
+
+/// Whether a `list`, whose state `version` counts changes of, laying out the
+/// rows it shows, leaves out its row `ix`, whose size it knows when
+/// `measured`: the frame only scrolled its layer, which holds the row.
+pub(crate) fn keeps_row(
+    window: &Window,
+    version: &StateVersion,
+    ix: usize,
+    measured: bool,
+) -> bool {
+    if !measured {
+        return false;
+    }
+    let Some(painting) = window.fast_layers.painting.as_ref() else {
+        return false;
+    };
+    let Some(layer) = window.fast_layers.layers.get(&painting.id) else {
+        return false;
+    };
+    layer.rows.frame.as_ref().is_some_and(|frame| {
+        frame.list == Some(version.id()) && frame.skip_held && layer.rows.painted.contains(&ix)
+    })
+}
+
+/// Moves `origin`, where a `list` of `state` scrolled to `scroll_top` is
+/// about to place its first row shown, up by how far it is scrolled into
+/// that row, as the list does, but so that the list's offset from its first
+/// row is a whole number of device pixels where layers are compiled (see
+/// [`paint::snap_scroll_offset`]); and notes where the row lies, for the
+/// list's layer.
+pub(crate) fn snap_item_origin(
+    window: &mut Window,
+    state: &crate::StateInner,
+    scroll_top: &crate::ListOffset,
+    origin: &mut Point<Pixels>,
+) {
+    let offset = state.scroll_top(scroll_top);
+    let snapped = paint::snap_scroll_offset(window, point(px(0.), offset)).y;
+    origin.y -= scroll_top.offset_in_item + (snapped - offset);
+    if let Some(frame) = list_frame(window, &state.version) {
+        frame.anchor = Some((scroll_top.item_ix, *origin));
+        frame.prepainted.clear();
+    }
+}
+
+/// Moves `origin`, where a `list` is about to prepaint its row `ix`, to
+/// where the row lies, when it leaves out the rows its layer holds and so
+/// cannot add up the rows before it.
+pub(crate) fn place_list_item(
+    window: &mut Window,
+    state: &crate::StateInner,
+    ix: usize,
+    origin: &mut Point<Pixels>,
+) {
+    let Some(id) = window.fast_layers.painting.as_ref().map(|p| p.id.clone()) else {
+        return;
+    };
+    let scale_factor = window.scale_factor();
+    let Some(layer) = window.fast_layers.layers.get_mut(&id) else {
+        return;
+    };
+    let rows = &mut layer.rows;
+    let Some(frame) = rows.frame.as_mut() else {
+        return;
+    };
+    if frame.list != Some(state.version.id()) {
+        return;
+    }
+    frame.prepainted.push(ix);
+    let Some((anchor, anchor_origin)) = frame.anchor else {
+        return;
+    };
+    let heights = |row: usize| row_height(state, &rows.rows, row, scale_factor);
+    if let Some(y) = row_top(anchor, anchor_origin.y, ix, heights) {
+        origin.y = y;
+    }
+}
+
+/// The height of a `list`'s row `row`: as the list measured it, or as the
+/// layer holds it.
+fn row_height(
+    state: &crate::StateInner,
+    rows: &BTreeMap<usize, Row>,
+    row: usize,
+    scale_factor: f32,
+) -> Option<Pixels> {
+    let mut cursor = state.items.cursor::<crate::Count>(());
+    cursor.seek(&crate::Count(row), sum_tree::Bias::Right);
+    cursor
+        .item()
+        .and_then(|item| item.size())
+        .map(|size| size.height)
+        .or_else(|| {
+            rows.get(&row)
+                .map(|held| px(held.slot.size.height.0 / scale_factor))
+        })
+}
+
+/// The top of row `ix` of a list whose row `anchor` lies at `anchor_top`,
+/// adding up the heights of the rows between them in order, as the list
+/// does.
+fn row_top(
+    anchor: usize,
+    anchor_top: Pixels,
+    ix: usize,
+    mut height: impl FnMut(usize) -> Option<Pixels>,
+) -> Option<Pixels> {
+    let mut top = anchor_top;
+    if ix >= anchor {
+        for row in anchor..ix {
+            top += height(row)?;
+        }
+    } else {
+        for row in (ix..anchor).rev() {
+            top -= height(row)?;
+        }
+    }
+    Some(top)
+}
+
+/// Ends the layout and prepaint of the rows of the `list` of `state`, laid
+/// out at `bounds`: the rows around those it showed are rendered and
+/// prepainted into its layer with `render_item`, as far as the layer is to
+/// hold them.
+pub(crate) fn end_list(
+    window: &mut Window,
+    cx: &mut App,
+    state: &crate::StateInner,
+    render_item: &mut crate::RenderItemFn,
+    bounds: Bounds<Pixels>,
+) {
+    let Some(id) = window.fast_layers.painting.as_ref().map(|p| p.id.clone()) else {
+        return;
+    };
+    let scale_factor = window.scale_factor();
+    let Some(layer) = window.fast_layers.layers.get_mut(&id) else {
+        return;
+    };
+    let rows = &mut layer.rows;
+    let Some(frame) = rows.frame.as_mut() else {
+        return;
+    };
+    if frame.list != Some(state.version.id()) {
+        return;
+    }
+    let Some((anchor, anchor_origin)) = frame.anchor else {
+        // No row was shown: nothing is painted into the layer.
+        window.fast_layers.painting = None;
+        finish_prepaint(window, cx, &id);
+        if let Some(layer) = window.fast_layers.layers.get_mut(&id) {
+            layer.rows.frame = None;
+        }
+        return;
+    };
+    let item_count = state.items.summary().count;
+    let viewport = frame.viewport;
+
+    // The rows the layer holds stay where they are only if the first row
+    // shown lies at a whole number of device pixels from where the layer
+    // holds it, and every row it holds is as tall as the list measures it.
+    let mut translation = None;
+    if frame.mode == Mode::Extend
+        && let Some(held) = rows.rows.get(&anchor)
+    {
+        let x = anchor_origin.x.0 * scale_factor - held.slot.origin.x.0;
+        let y = anchor_origin.y.0 * scale_factor - held.slot.origin.y.0;
+        let whole = |value: f32| (value - value.round()).abs() < 0.01;
+        let heights_hold = rows.rows.iter().all(|(row, held)| {
+            let mut cursor = state.items.cursor::<crate::Count>(());
+            cursor.seek(&crate::Count(*row), sum_tree::Bias::Right);
+            cursor
+                .item()
+                .and_then(|item| item.size())
+                .is_none_or(|size| {
+                    (size.height.0 * scale_factor - held.slot.size.height.0).abs() < 0.01
+                })
+        });
+        let in_list = rows.painted.last().is_none_or(|last| *last < item_count);
+        if whole(x) && whole(y) && heights_hold && in_list {
+            translation = Some(point(ScaledPixels(x.round()), ScaledPixels(y.round())));
+        }
+    }
+    let frame = rows.frame.as_mut().unwrap();
+    if translation.is_none() {
+        frame.mode = Mode::Repaint;
+    }
+    frame.translation = translation.unwrap_or_default();
+
+    // The rows shown and a viewport's height of rows on each side.
+    let extent = viewport.size.height;
+    let (top, bottom) = (viewport.top() - extent, viewport.bottom() + extent);
+    let available = crate::size(
+        AvailableSpace::Definite(bounds.size.width),
+        AvailableSpace::MinContent,
+    );
+    let mut rendered: FxHashMap<usize, AnyElement> = FxHashMap::default();
+    let mut tops: BTreeMap<usize, (Pixels, Pixels)> = BTreeMap::new();
+    let mut height_of = |row: usize,
+                         window: &mut Window,
+                         cx: &mut App,
+                         rendered: &mut FxHashMap<usize, AnyElement>|
+     -> Pixels {
+        let rows = &window.fast_layers.layers[&id].rows.rows;
+        if let Some(height) = row_height(state, rows, row, scale_factor) {
+            return height;
+        }
+        let mut element = render_item(row, window, cx);
+        let size =
+            crate::fast::layout_key::layout_as_list_item(&mut element, row, available, window, cx);
+        rendered.insert(row, element);
+        size.height
+    };
+    let mut y = anchor_origin.y;
+    let mut row = anchor;
+    while row < item_count && y < bottom {
+        let height = height_of(row, window, cx, &mut rendered);
+        tops.insert(row, (y, height));
+        y += height;
+        row += 1;
+    }
+    let end = row;
+    let mut y = anchor_origin.y;
+    let mut row = anchor;
+    while row > 0 && y > top {
+        row -= 1;
+        let height = height_of(row, window, cx, &mut rendered);
+        y -= height;
+        tops.insert(row, (y, height));
+    }
+    let needed = row..end;
+
+    let layer = &mut window.fast_layers.layers.get_mut(&id).unwrap().rows;
+    let frame = layer.frame.as_mut().unwrap();
+    let held = match frame.mode {
+        Mode::Extend => layer.painted.clone(),
+        Mode::Repaint => BTreeSet::new(),
+    };
+    let plan = plan(&held, needed.clone());
+    let slot = |(top, height): (Pixels, Pixels)| Bounds {
+        origin: point(anchor_origin.x, top),
+        size: crate::size(bounds.size.width, height),
+    };
+    frame.slots = plan
+        .render
+        .iter()
+        .flat_map(|run| run.clone())
+        .map(|row| (row, slot(tops[&row])))
+        .collect();
+    frame.keep = plan.keep;
+    frame.needed = needed;
+    let mut painted_region = viewport;
+    if let (Some(first), Some(last)) = (tops.values().next(), tops.values().last()) {
+        painted_region = painted_region.union(&slot(*first)).union(&slot(*last));
+    }
+    frame.painted_region = painted_region;
+    if frame.mode == Mode::Repaint {
+        // Content space is window space as the rows are painted now.
+        frame.translation = Point::default();
+    }
+    let prepainted: BTreeSet<usize> = frame.prepainted.iter().copied().collect();
+    let to_prepaint: Vec<(usize, Pixels)> = frame
+        .slots
+        .iter()
+        .filter(|(row, _)| !prepainted.contains(row))
+        .map(|(row, slot)| (*row, slot.origin.y))
+        .collect();
+    if let Some(painting) = window.fast_layers.painting.as_mut() {
+        painting.painted_region = painted_region;
+    }
+
+    let mut extra = Vec::with_capacity(to_prepaint.len());
+    for (row, top) in to_prepaint {
+        let mut element = match rendered.remove(&row) {
+            Some(element) => element,
+            None => {
+                let mut element = render_item(row, window, cx);
+                crate::fast::layout_key::layout_as_list_item(
+                    &mut element,
+                    row,
+                    available,
+                    window,
+                    cx,
+                );
+                element
+            }
+        };
+        let origin = point(anchor_origin.x, top);
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            element.prepaint_at(origin, window, cx);
+        });
+        extra.push((row, element));
+    }
+    if !extra.is_empty() {
+        // Rows the list does not show ask for no autoscroll.
+        window.take_autoscroll();
+    }
+    window.fast_layers.painting = None;
+    finish_prepaint(window, cx, &id);
+    if let Some(frame) = frame_mut(window, &id) {
+        frame.extra = extra;
+    }
+}
+
+/// Starts painting the rows of the `list` of `state`.
+pub(crate) fn begin_paint_list(window: &mut Window, cx: &mut App, state: &crate::ListState) {
+    if !COMPILED || window.fast_layers.layers.is_empty() {
+        return;
+    }
+    let version = state.0.borrow().version.clone();
+    let id = list_id(window, &version);
+    begin_paint_rows(window, cx, Some(&id));
+}
+
+/// Ends painting the rows of the `list` of `state`: the rows rendered for
+/// its layer alone are painted, and the layer is composited.
+pub(crate) fn end_paint_list(window: &mut Window, cx: &mut App, state: &crate::ListState) {
+    if !COMPILED || window.fast_layers.layers.is_empty() {
+        return;
+    }
+    let version = state.0.borrow().version.clone();
+    let id = list_id(window, &version);
+    let Some(frame) = frame_mut(window, &id) else {
+        return;
+    };
+    let extra = mem::take(&mut frame.extra);
+    for (row, mut element) in extra {
+        paint_row(window, cx, Some(row), |window, cx| {
+            element.paint(window, cx)
+        });
+    }
+    end_paint_rows(window, cx, Some(&id));
 }
 
 /// Starts painting the rows of the list `id` as its prepaint decided.

@@ -179,16 +179,45 @@ pub(crate) fn note_scrolled(window: &mut Window, container: &ScrollContainer) {
 }
 
 /// Notes that a wheel moved the list whose state `version` counts changes
-/// of. A list has no id; its offset is known by its state.
-pub(crate) fn note_list_scrolled(window: &mut Window, version: &StateVersion) {
+/// of, as its scroll listener does before it notifies `view`, the view that
+/// painted it. A list has no id; its offset is known by its state, and the
+/// list by the id [`painted_list`] remembered it under, if it was painted.
+pub(crate) fn note_list_scrolled(window: &mut Window, version: &StateVersion, view: EntityId) {
     if !COMPILED {
         return;
     }
-    window
-        .fast_layers
-        .scrolls
+    let scrolls = &mut window.fast_layers.scrolls;
+    scrolls
         .scrolled_sources
         .insert(ScrollSource::of_state(version));
+    let list = scrolls.containers.iter().find_map(|(id, container)| {
+        container
+            .version
+            .as_ref()
+            .is_some_and(|(painted, _)| painted.id() == version.id())
+            .then(|| id.clone())
+    });
+    if let Some(id) = list {
+        *scrolls.scroll_notifies.entry(view).or_default() += 1;
+        scrolls.scrolled.insert(id);
+    }
+}
+
+/// Remembers the list whose state `version` counts changes of as a scroll
+/// container painted under the id `id`, which lists, having no id of their
+/// own, are given (see [`crate::fast::layers::lists`]). Its offset lives in
+/// its state, but a change of the state's version (a splice, a remeasure,
+/// a programmatic scroll) is taken for a change of its content, not for a
+/// scroll: the version counts both.
+pub(crate) fn painted_list(window: &mut Window, id: &GlobalElementId, version: &StateVersion) {
+    let container = Container {
+        id: id.clone(),
+        source: ScrollSource::Container(id.clone()),
+        version: Some(version.clone()),
+        view: window.current_view(),
+    };
+    let frame = window.fast_layers.frame;
+    window.fast_layers.scrolls.remember(&container, frame);
 }
 
 /// Whether the scroll container `id` scrolled since the last frame was
