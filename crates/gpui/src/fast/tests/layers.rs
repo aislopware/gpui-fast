@@ -2197,6 +2197,32 @@ mod decisions {
         assert_eq!(scroll(cx, window, 20.), Some(Decision::Composite));
     }
 
+    /// A scrollbar being dragged sets the offset itself and notifies the view
+    /// holding the container, as a wheel listener would: that notification
+    /// is the scroll's, and the layer composites.
+    #[crate::test]
+    fn a_scrollbar_drag_composites(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        promote(cx, window);
+        for step in 0..6 {
+            frame_after(cx, window, |cx| {
+                handle
+                    .update(cx, |page, _, cx| {
+                        let offset = page.handle.offset();
+                        page.handle.set_offset(point(offset.x, offset.y - px(10.)));
+                        cx.notify();
+                    })
+                    .unwrap();
+            });
+            assert_eq!(
+                decision(cx, window),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+        }
+    }
+
     #[crate::test]
     fn a_child_view_page_composites(cx: &mut TestAppContext) {
         let window = page(cx, true).into();

@@ -255,7 +255,10 @@ fn glyph_bounds_cache_keeps_a_tile_for_its_frame() {
     assert_eq!(cache.lookup(&glyph(7, 0)), None, "no glyph, no tile");
 
     cache.insert(&glyph(7, 0), device_bounds(5));
-    assert_eq!(cache.lookup(&glyph(7, 0)), Some((device_bounds(5), None, None)));
+    assert_eq!(
+        cache.lookup(&glyph(7, 0)),
+        Some((device_bounds(5), None, None))
+    );
     cache.insert_tile(&glyph(7, 0), tile);
     cache.insert_tile(&glyph(7, 1), tile);
     assert_eq!(
