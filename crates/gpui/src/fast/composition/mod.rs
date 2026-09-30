@@ -325,8 +325,8 @@ impl Window {
     }
 
     /// Draws a frame and presents it, as the platform's frame callback does.
-    #[cfg(test)]
-    pub(crate) fn draw_and_present(&mut self, cx: &mut App) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn draw_and_present(&mut self, cx: &mut App) {
         self.draw(cx).clear(cx);
         present_scene(self);
     }
@@ -355,6 +355,31 @@ pub(crate) fn present_scene(window: &mut Window) {
         .platform_window
         .present_natives(&window.rendered_frame.scene, &present);
     window.composition.presented = Some(present.frame);
+}
+
+/// What the test platform does after upstream's test draw of a window whose
+/// view changed: if the window composes natives, they are handed to the
+/// platform as a present hands them, so that the test platform's hosts
+/// record where each native was placed and whether it shows. The scene is
+/// not drawn to the platform window, as upstream's test draw doesn't.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn present_natives_in_test(window: &mut Window) {
+    if !window.composition.active {
+        return;
+    }
+    let present = window.native_present();
+    window.composition.presented_hit_map = Some(present.hit_map.clone());
+    if let Some(test) = window.platform_window.as_test() {
+        test.0.lock().composition.present(&present);
+    }
+    window.composition.presented = Some(present.frame);
+}
+
+/// [`present_natives_in_test`] for the window `handle`, from the app.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn present_window_natives_in_test(cx: &mut App, handle: crate::AnyWindowHandle) {
+    cx.update_window(handle, |_, window, _| present_natives_in_test(window))
+        .ok();
 }
 
 /// Whether the pointer is over a native that takes it, which then sets the

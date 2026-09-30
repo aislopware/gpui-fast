@@ -1858,6 +1858,7 @@ impl App {
                     {
                         self.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
                             .unwrap();
+                        crate::fast::composition::present_window_natives_in_test(self, window);
                     }
                 }
 
