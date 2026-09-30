@@ -775,15 +775,15 @@ mod paint {
             .update_window(window.into(), |_, window, _| window.scale_factor())
             .unwrap();
         with_record(cx, window, |record, _| {
-            // The viewport, 100 px, and one viewport of overscan below it;
+            // The viewport, 100 px, and two viewports of overscan below it;
             // nothing above, at the top.
             assert_eq!(record.viewport.size.height, crate::px(100.));
             assert_eq!(record.painted_region.origin.y, crate::px(0.));
-            assert_eq!(record.painted_region.size.height, crate::px(200.));
+            assert_eq!(record.painted_region.size.height, crate::px(300.));
             let rows = row_quads(&record.content, 40);
             assert_eq!(
                 rows.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
-                (0..10).collect::<Vec<_>>()
+                (0..15).collect::<Vec<_>>()
             );
             for (row, bounds) in rows {
                 assert_eq!(bounds.origin.y, ScaledPixels(row as f32 * 20. * scale));
@@ -792,9 +792,10 @@ mod paint {
             assert_eq!(record.generation, 1);
             let mut tiles: Vec<_> = record.tile_hashes.keys().copied().collect();
             tiles.sort();
-            // 200 px at the test window's scale of 2 is 400 device px: one
-            // tile high.
-            assert!(tiles.iter().all(|tile| tile.y == 0), "{tiles:?}");
+            // 300 px at the test window's scale of 2 is 600 device px: two
+            // tiles high.
+            assert!(tiles.iter().all(|tile| tile.y <= 1), "{tiles:?}");
+            assert!(tiles.iter().any(|tile| tile.y == 1), "{tiles:?}");
             assert_eq!(
                 record.dirty_tiles, tiles,
                 "a first paint dirties every tile"
@@ -819,13 +820,13 @@ mod paint {
             .update_window(window.into(), |_, window, _| window.scale_factor())
             .unwrap();
         with_record(cx, window, |record, _| {
-            // Overscan of one viewport above and below the one at 300..400.
-            assert_eq!(record.painted_region.origin.y, crate::px(-100.));
-            assert_eq!(record.painted_region.size.height, crate::px(300.));
+            // Overscan of two viewports above and below the one at 300..400.
+            assert_eq!(record.painted_region.origin.y, crate::px(-200.));
+            assert_eq!(record.painted_region.size.height, crate::px(500.));
             let rows = row_quads(&record.content, 40);
             assert_eq!(
                 rows.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
-                (10..25).collect::<Vec<_>>()
+                (5..30).collect::<Vec<_>>()
             );
             for (row, bounds) in rows {
                 assert_eq!(bounds.origin.y, ScaledPixels(row as f32 * 20. * scale));
@@ -2403,13 +2404,13 @@ mod decisions {
     fn exposing_past_the_margin_repaints(cx: &mut TestAppContext) {
         let window = page(cx, false).into();
         promote(cx, window);
-        // Painted at the offset it was promoted at, -40 px, one viewport
-        // (100 px) beyond each edge as far as the content goes. The margin is
-        // a quarter of that: the fourth 20 px scroll leaves less than 25 px
-        // painted below the viewport.
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        // Painted at the offset it was promoted at, -40 px, two viewports
+        // (200 px) beyond each edge as far as the content goes. The margin is
+        // a quarter of a viewport: the ninth 20 px scroll leaves less than
+        // 25 px painted below the viewport.
+        for _ in 0..8 {
+            assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        }
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
         let id = scroller_id(cx, window);
         let painted_at = with_window(cx, window, |window, _| {
@@ -2419,8 +2420,8 @@ mod decisions {
         assert_eq!(
             painted_at,
             (
-                point(px(0.), px(-120.)),
-                Bounds::from_corners(point(px(0.), px(-100.)), point(px(200.), px(200.)))
+                point(px(0.), px(-220.)),
+                Bounds::from_corners(point(px(0.), px(-200.)), point(px(200.), px(300.)))
             ),
             "re-centred on the viewport"
         );

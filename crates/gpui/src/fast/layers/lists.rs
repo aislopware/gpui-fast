@@ -483,7 +483,9 @@ pub(crate) fn begin_uniform_list(
         let bypassed = begin_bypass(window, id, None).then(|| id.clone());
         return Rows(None, bypassed);
     }
-    let overscan = (viewport.size.height / item_height).ceil().max(1.) as usize;
+    let overscan = (viewport.size.height * paint::OVERSCAN_VIEWPORTS / item_height)
+        .ceil()
+        .max(1.) as usize;
     let needed = needed_rows(visible, overscan, item_count);
     let layer = paint::layer_mut(window, id);
     let extends = decision == Decision::Composite
@@ -1007,7 +1009,7 @@ pub(crate) fn end_list(
     frame.translation = translation.unwrap_or_default();
 
     // The rows shown and a viewport's height of rows on each side.
-    let extent = viewport.size.height;
+    let extent = viewport.size.height * paint::OVERSCAN_VIEWPORTS;
     let (top, bottom) = (viewport.top() - extent, viewport.bottom() + extent);
     let available = crate::size(
         AvailableSpace::Definite(bounds.size.width),

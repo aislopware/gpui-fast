@@ -48,7 +48,7 @@ each frame it then takes one of three paths (`fast::layers::policy::decide`):
   as polychrome sprites with reserved texture ids.
 - **Repaint.** The content changed, or the scroll reached the edge of what was
   painted. The content is painted into the layer's own scene over the viewport
-  plus one viewport of overscan on each scrolled side. Each tile is hashed, and
+  plus two viewports of overscan on each scrolled side (`fast::layers::paint::OVERSCAN_VIEWPORTS`). Each tile is hashed, and
   the renderer rasterizes again only the tiles whose hash changed
   (`fast::layers::tiles`).
 - **Bypass.** The frame is drawn exactly as it would be without layers. This
@@ -97,13 +97,15 @@ pointer over the content. Linux, release build, retained views on, 300 frames:
 
 | Scenario | Layers off | Layers on |
 |---|---|---|
-| `scroll-child-view` | 0.644 ms, 8.84M instructions | 0.107 ms, 1.61M instructions |
-| `scroll-same-view` | 0.615 ms, 8.61M instructions | 0.285 ms, 3.88M instructions |
-| `scroll-uniform-list` | 0.412 ms, 5.36M | 0.393 ms, 5.35M (no list layers) |
-| `scroll-list` | 0.380 ms, 5.10M | 0.404 ms, 5.10M (no list layers) |
+| `scroll-child-view` | 0.618 ms, 8.83M instructions | 0.068 ms, 0.88M instructions |
+| `scroll-same-view` | 0.599 ms, 8.59M instructions | 0.226 ms, 3.19M instructions |
+| `scroll-uniform-list` | 0.393 ms, 5.35M | 0.399 ms, 5.35M (no list layers) |
+| `scroll-list` | 0.377 ms, 5.09M | 0.384 ms, 5.09M (no list layers) |
 
-GPUI Kit's Button story was measured at 145 Hz, with one wheel event per frame,
-over two 12-second runs of each:
+GPUI Kit's Button story, measured before the overscan was raised to two
+viewports, at 145 Hz, with one wheel event per frame, over two 12-second runs
+of each (a later run against `main`, same setup: 27-28 % and 1.53-1.57 ms on
+`main`, 18-19 % and 0.92-0.93 ms with layers):
 
 | | Process CPU | Main-thread draw per frame |
 |---|---|---|
