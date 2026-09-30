@@ -24,7 +24,16 @@ Two upstreams feed it:
   (`zed: import bd747337`).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
-  longbridge commit merged is `bef3abf` (#21, "put numbers together from their glyphs
+  longbridge commit merged is `1b381ad` (#23, "let GPUI Kit applications patch gpui-fast
+  in for gpui-pre"), in the commit "Merge longbridge/gpui-fast 1b381ad (#23) into Slopty's
+  fork". `compat/` holds one crate per `gpui-pre-*` snapshot crate GPUI Kit pins, under
+  that name and version (0.3.7), each `pub use`-ing ours, so our gpui-kit fork keeps
+  upstream's `gpui-pre` requirements and an application patches this fork in with
+  `[patch.crates-io]`; GPUI keeps its own names, and a build holds one GPUI. The version
+  has to follow the snapshot gpui-kit pins: a mismatched patch is ignored with a warning
+  and the crates.io snapshot is built beside this fork. #23's `fast/inspector.rs`, which
+  adapts a factory onto the older registry, is left out: the zed import already
+  registers factories. Before it `bef3abf` (#21, "put numbers together from their glyphs
   instead of shaping each one"), in the commit "Merge longbridge/gpui-fast bef3abf (#21)
   into Slopty's fork", with `1cc6b5c` checking it against CoreText in the system faces.
   On `gpui_perf --headless --retention on`, three alternating runs against `a5704c5`, it

@@ -56,7 +56,8 @@ only hold the hooks that call into it.
    from `gpui.rs` one item at a time:
    `#[cfg(any(test, feature = "test-support"))] pub use fast::stats::LayoutStats;`.
 6. **New files only inside `fast/`, or in our own crates** such as
-   `crates/gpui_perf` (benchmarks, examples and the frame-measuring app).
+   `crates/gpui_perf` (benchmarks, examples and the frame-measuring app) and
+   `compat/` (the `gpui-pre-*` stand-ins GPUI Kit applications patch in).
    Documentation goes in `docs/`.
 
 Which directories are upstream's is recorded in [`UPSTREAM`](../UPSTREAM) at
