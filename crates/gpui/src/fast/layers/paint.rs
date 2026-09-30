@@ -65,6 +65,8 @@ pub(crate) struct Painting {
     pub(crate) dependencies: RenderDependencies,
     /// What routing input into the content takes from painting it.
     pub(crate) input: crate::fast::layers::input::PaintingInput,
+    /// How the views prepainted inside the content were laid out.
+    pub(crate) view_layouts: FxHashMap<GlobalElementId, crate::fast::layers::reuse::KeptLayout>,
 }
 
 /// What a container's prepaint decided, for its paint to carry out.
@@ -168,6 +170,7 @@ pub(crate) fn begin_children(
                 recording: Some(cx.begin_recording_dependencies()),
                 dependencies: RenderDependencies::default(),
                 input: Default::default(),
+                view_layouts: FxHashMap::default(),
             });
             // Culling works in the painted region, not in the viewport and
             // whatever clips it; the composite clips to those.
@@ -708,6 +711,7 @@ fn repaint(
         views,
         has_paths,
         paths,
+        view_layouts: Rc::new(mem::take(&mut painting.view_layouts)),
     });
     let dirtied = layer
         .record

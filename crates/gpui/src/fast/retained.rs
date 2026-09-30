@@ -825,8 +825,22 @@ impl Window {
     ) -> Option<usize> {
         let layout_keys = self.finish_recording_claimed_layout_keys(recording.layout_keys);
         let mut dependencies = cx.finish_recording_dependencies(recording.dependencies);
-        self.retained_state.subtree_stack.pop();
-        let index = recording.index?;
+        let id = self.retained_state.subtree_stack.pop();
+        let Some(index) = recording.index else {
+            // Inside a layer's content: the layer keeps how it was laid out.
+            if let (Some(id), Some(layout), Some(layout_dependencies)) =
+                (id, layout, layout_dependencies)
+                && crate::fast::layers::paint::inside_layer(self)
+            {
+                crate::fast::layers::reuse::keep_view_layout(
+                    self,
+                    id,
+                    layout,
+                    layout_dependencies.all.union(&dependencies.all),
+                );
+            }
+            return None;
+        };
         let render_offset_reads = layout_dependencies
             .as_ref()
             .map(|layout| layout.own.offset_reads.clone());
@@ -1276,6 +1290,10 @@ enum ViewLayout {
     /// Built and laid out already, for a view around it that was to be drawn
     /// from last frame and could not be.
     Prebuilt(Box<Prebuilt>),
+    /// Laid out as the layer it is drawn in kept it, without being built,
+    /// for a frame expected to composite the layer. See
+    /// [`crate::fast::layers::reuse::KeptLayout`].
+    Kept(Rc<RetainedLayout>),
     /// Moved on to prepaint.
     Taken,
 }
@@ -1324,6 +1342,14 @@ impl<V: View> ViewElement<V> {
                             && let Some(layout_id) = window.reuse_retained_layout(previous, cx)
                         {
                             return (layout_id, ViewLayout::Retained { previous });
+                        }
+                        if !window.dirty_views.contains(&entity_id)
+                            && let Some((layout_id, kept)) =
+                                crate::fast::layers::reuse::reuse_kept_layout(
+                                    window, global_id, entity_id, cx,
+                                )
+                        {
+                            return (layout_id, ViewLayout::Kept(kept));
                         }
                         if window.dirty_views.contains(&entity_id)
                             && let Some(splice) = window.splice_layout(global_id, cx)
@@ -1458,6 +1484,23 @@ impl<V: View> ViewElement<V> {
                     }
                     self.build_at_retained_layout(previous, global_id, bounds, window, cx)
                 }
+                ViewLayout::Kept(layout) => {
+                    // The layer is painted afresh after all: the view is
+                    // built at the layout it kept.
+                    window
+                        .layout_engine
+                        .as_mut()
+                        .unwrap()
+                        .release_kept(&layout.keys);
+                    self.build_at_layout(
+                        Some(layout.root),
+                        layout.parent_layout_key,
+                        global_id,
+                        bounds,
+                        window,
+                        cx,
+                    )
+                }
                 ViewLayout::Prebuilt(mut prebuilt) => {
                     let prepaint = prebuilt.prepaint(Some(global_id), bounds, window, cx);
                     ViewPrepaint::Prebuilt(Box::new((*prebuilt, prepaint)))
@@ -1532,6 +1575,26 @@ impl<V: View> ViewElement<V> {
     ) -> ViewPrepaint {
         let root = window.retained_layout_root(previous);
         window.release_retained_layout(previous);
+        // Where it is drawn has not changed its place in the element tree.
+        let parent_layout_key = window.rendered_frame.retained.records[previous]
+            .rebuild
+            .as_ref()
+            .map(|rebuild| rebuild.parent_layout_key());
+        self.build_at_layout(root, parent_layout_key, global_id, bounds, window, cx)
+    }
+
+    /// Builds a view laid out at `root`, whose nodes were given back, as
+    /// [`Self::build_at_retained_layout`] does; `parent_layout_key` keys the
+    /// node of the element it hangs off.
+    fn build_at_layout(
+        &mut self,
+        root: Option<LayoutId>,
+        parent_layout_key: Option<u64>,
+        global_id: &GlobalElementId,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> ViewPrepaint {
         let layout_recording = window.begin_retained_layout(cx);
         let changes_before = window.layout_changes();
         let remeasures_before = window.layout_remeasures();
@@ -1562,11 +1625,6 @@ impl<V: View> ViewElement<V> {
             element.prepaint_at(bounds.origin, window, cx);
             window.request_animation_frame();
         }
-        // Where it is drawn has not changed its place in the element tree.
-        let parent_layout_key = window.rendered_frame.retained.records[previous]
-            .rebuild
-            .as_ref()
-            .map(|rebuild| rebuild.parent_layout_key());
         let rebuild = window.rebuild_here(&self.rebuild, None, parent_layout_key);
         let record = window.finish_retained_prepaint(
             recording,

@@ -573,6 +573,7 @@ fn marker(id: &GlobalElementId, frame: &RowsFrame) -> Painting {
         recording: None,
         dependencies: RenderDependencies::default(),
         input: Default::default(),
+        view_layouts: FxHashMap::default(),
     }
 }
 
@@ -1525,6 +1526,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
         views,
         has_paths,
         paths: Rc::from([]),
+        view_layouts: Rc::default(),
     });
     if frame.mode == Mode::Repaint && !has_paths {
         window

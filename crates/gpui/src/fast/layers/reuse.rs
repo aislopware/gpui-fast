@@ -12,7 +12,12 @@
 //! scene, which the layer's tiles stand for, and with the hitboxes moved by
 //! the scroll since the content was painted and clipped to the viewport.
 
-use crate::{Bounds, GlobalElementId, Pixels, Point, Window, fast::layers::input::LayerInput};
+use std::rc::Rc;
+
+use crate::{
+    App, Bounds, EntityId, GlobalElementId, LayoutId, Pixels, Point, Window,
+    fast::{dependencies::RenderDependencies, layers::input::LayerInput, retained::RetainedLayout},
+};
 
 /// Carries the prepaint records of the content of the layer of the
 /// container `id`, composited at `scroll_offset` in `viewport`, into the
@@ -155,4 +160,88 @@ pub(crate) fn carry_paint(window: &mut Window, id: &GlobalElementId) {
         record.paint_range = start..end;
     }
     layer.input.ranges_frame = Some(frame);
+}
+
+/// How a view drawn inside a layer's content was laid out when the content
+/// was painted, for frames that composite the layer to lay it out again
+/// without rendering it.
+///
+/// Views inside a layer's content keep no retained record of their own (the
+/// layer is their retention, see [`crate::fast::layers::paint::inside_layer`]),
+/// and a frame that composites the layer neither prepaints nor paints them;
+/// but the view holding the container renders it again, and lays out its
+/// children, a child view among them (pattern A). Without a record to reuse,
+/// the child view would render every frame; its layer keeps its layout
+/// instead.
+pub(crate) struct KeptLayout {
+    pub(crate) layout: Rc<RetainedLayout>,
+    /// Everything laying the view out and prepainting it read.
+    pub(crate) dependencies: RenderDependencies,
+}
+
+/// Keeps how the view `id`, prepainted inside the content of the layer being
+/// painted, was laid out, and what laying it out and prepainting it read.
+pub(crate) fn keep_view_layout(
+    window: &mut Window,
+    id: GlobalElementId,
+    layout: Rc<RetainedLayout>,
+    dependencies: RenderDependencies,
+) {
+    if let Some(painting) = window.fast_layers.painting.as_mut() {
+        painting.view_layouts.insert(
+            id,
+            KeptLayout {
+                layout,
+                dependencies,
+            },
+        );
+    }
+}
+
+/// Lays out the view `id`, of entity `entity`, which is not dirty, as the
+/// layer whose content it is drawn in kept it, if one kept it and nothing it
+/// read changed since, returning its node and the layout: the frame is then
+/// expected to composite the layer, and if it paints the content afresh
+/// after all, the view is rendered at that layout where it is prepainted.
+pub(crate) fn reuse_kept_layout(
+    window: &mut Window,
+    id: &GlobalElementId,
+    entity: EntityId,
+    cx: &mut App,
+) -> Option<(LayoutId, Rc<RetainedLayout>)> {
+    if window.fast_layers.layers.is_empty()
+        || crate::fast::layers::paint::inside_layer(window)
+        || !crate::fast::layers::active(window, cx)
+        || window.retained_state.notified_entities.contains(&entity)
+        || window.retained_state.dirty_subtrees.contains(id)
+    {
+        return None;
+    }
+    let kept = window.fast_layers.layers.values().find_map(|layer| {
+        let record = layer.record.as_ref()?;
+        record.view_layouts.get(id)
+    })?;
+    let layout = kept.layout.clone();
+    if layout.rem_size != window.rem_size()
+        || layout.text_style != window.text_style()
+        || cx.dependencies_changed(&kept.dependencies, window.inside_notified_view())
+        || crate::fast::layers::invalidate::offset_read_changed(window, &kept.dependencies)
+    {
+        return None;
+    }
+    let dependencies = kept.dependencies.clone();
+    if !window
+        .layout_engine
+        .as_mut()
+        .unwrap()
+        .try_keep_retained(&layout.keys)
+    {
+        return None;
+    }
+    window
+        .next_frame
+        .accessed_element_states
+        .extend(layout.element_states.iter().cloned());
+    cx.replay_dependencies(&dependencies);
+    Some((layout.root, layout))
 }

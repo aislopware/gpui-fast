@@ -2,8 +2,9 @@
 //! translation at paint, prepaint and paint ranges and dependencies (M3).
 
 use crate::{
-    Bounds, EntityId, HitboxId, PaintIndex, Path, Pixels, Point, PrepaintStateIndex, Rgba,
-    ScaledPixels, Scene, TileCoord, fast::dependencies::RenderDependencies,
+    Bounds, EntityId, GlobalElementId, HitboxId, PaintIndex, Path, Pixels, Point,
+    PrepaintStateIndex, Rgba, ScaledPixels, Scene, TileCoord,
+    fast::{dependencies::RenderDependencies, layers::reuse::KeptLayout},
 };
 use collections::FxHashMap;
 use std::{ops::Range, rc::Rc};
@@ -58,4 +59,8 @@ pub(crate) struct LayerRecord {
     /// content space, in drawing order: left out of `content`, and drawn
     /// into the frame over the layer's tiles wherever it is composited.
     pub(crate) paths: Rc<[Path<ScaledPixels>]>,
+    /// How the views drawn inside the content were laid out when it was
+    /// painted, by the views' ids: a frame that composites the layer lays
+    /// them out again from these instead of rendering them (spec §6.3).
+    pub(crate) view_layouts: Rc<FxHashMap<GlobalElementId, KeptLayout>>,
 }

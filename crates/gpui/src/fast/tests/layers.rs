@@ -3587,6 +3587,94 @@ mod integration {
         .unwrap()
     }
 
+    /// Rows in a view of their own, counting how often it renders.
+    struct CountedRows {
+        renders: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl Render for CountedRows {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use crate::rgb;
+            self.renders.set(self.renders.get() + 1);
+            div().children(
+                (0..40).map(|ix| div().h(px(20.)).bg(rgb(0x100000 + ix * 0x10)).child("row")),
+            )
+        }
+    }
+
+    /// A scroll container whose content is a child view (pattern A).
+    struct ChildViewPage {
+        rows: crate::Entity<CountedRows>,
+    }
+
+    impl Render for ChildViewPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use crate::{InteractiveElement as _, StatefulInteractiveElement as _, rgb};
+            div().size_full().bg(rgb(0xffffff)).child(
+                div()
+                    .id("scroller")
+                    .overflow_y_scroll()
+                    .w(px(200.))
+                    .h(px(100.))
+                    .child(self.rows.clone()),
+            )
+        }
+    }
+
+    fn child_view_page(
+        cx: &mut crate::App,
+    ) -> (ChildViewPage, std::rc::Rc<std::cell::Cell<usize>>) {
+        let renders = std::rc::Rc::new(std::cell::Cell::new(0));
+        let rows = cx.new(|_| CountedRows {
+            renders: renders.clone(),
+        });
+        (ChildViewPage { rows }, renders)
+    }
+
+    /// A frame that composites a layer whose content is a child view lays
+    /// the view out as it was, without rendering it (spec §6.3, pattern A):
+    /// only the view holding the container is rendered.
+    #[crate::test]
+    fn a_composited_child_view_is_not_rendered(cx: &mut TestAppContext) {
+        use super::decisions::{promote, scroll};
+        use crate::fast::layers::policy::Decision;
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = cx.add_window(|_, cx| child_view_page(cx).0);
+        let renders = handle
+            .read_with(cx, |page, cx| page.rows.read(cx).renders.clone())
+            .unwrap();
+        let window: crate::AnyWindowHandle = handle.into();
+        for _ in 0..2 {
+            cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+                .unwrap();
+        }
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -10.), Some(Decision::Composite));
+        let before = renders.get();
+        for step in 0..4 {
+            assert_eq!(
+                scroll(cx, window, -10.),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+        }
+        assert_eq!(renders.get(), before, "the child view was not rendered");
+    }
+
+    /// A child view laid out from what its layer kept draws as without
+    /// layers, on frames that composite it and on frames that paint it
+    /// afresh.
+    #[crate::test]
+    fn a_composited_child_view_matches_drawing_without_layers(cx: &mut TestAppContext) {
+        for scale_factor in [1., 1.6] {
+            let composited =
+                matches_drawing_without_layers(cx, scale_factor, |cx| child_view_page(cx).0);
+            assert!(composited >= 6, "composited {composited} frames");
+        }
+    }
+
     /// A scroll container around a smaller one, its content no taller than
     /// itself, as GPUI Kit's gallery holds a story's own scroll area.
     struct NestedScrollers {
