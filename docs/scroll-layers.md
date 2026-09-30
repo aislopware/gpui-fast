@@ -15,9 +15,9 @@ drawing as it does without layers, and how to verify and measure layers.
 
 ## Where layers apply
 
-- Linux, on the wgpu renderer, and macOS, on the Metal renderer. Everywhere
-  else layers are compiled out (`fast::layers::COMPILED`), and nothing
-  changes.
+- Linux, on the wgpu renderer; macOS, on the Metal renderer; and Windows, on
+  the Direct3D 11 renderer. Everywhere else layers are compiled out
+  (`fast::layers::COMPILED`), and nothing changes.
 - Scrolling `div`s (`overflow_x_scroll` / `overflow_y_scroll`), whether their
   content is a child view or plain elements in the same view.
 - `uniform_list` and `list` (`fast::layers::lists`), unless flipped
@@ -60,7 +60,9 @@ each frame it then takes one of three paths (`fast::layers::policy::decide`):
   painted. The content is painted into the layer's own scene over the viewport
   plus two viewports of overscan on each scrolled side (`fast::layers::paint::OVERSCAN_VIEWPORTS`). Each tile is hashed, and
   the renderer rasterizes again only the tiles whose hash changed
-  (`fast::layers::tiles`).
+  (`fast::layers::tiles`), and only once a frame shows them: a dirty tile in
+  the overscan waits, so a list whose rows keep arriving at the edge of its
+  overscan does not rasterize the tiles there on every frame.
 - **Bypass.** The frame is drawn exactly as it would be without layers. This
   happens when a layer cannot guarantee identical pixels or current window
   coordinates, for example:
@@ -108,6 +110,9 @@ frame.
 - `cargo test -p gpui_apple fast::layers` does the same on macOS with a
   headless Metal renderer (`crates/gpui_apple/src/fast/layers/`), which draws
   tiles as the wgpu renderer does.
+- `cargo test -p gpui_windows --features test-support fast::layers` does the
+  same for the Direct3D 11 renderer (`gpui_windows/src/fast/layers/`), on a
+  hardware device or WARP, on Windows.
 - `cargo run -p gpui_perf --release -- --headless --verify` also runs the
   scroll scenarios with layers on and off.
 
