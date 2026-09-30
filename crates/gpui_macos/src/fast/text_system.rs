@@ -37,7 +37,11 @@ impl SizedFonts {
 #[cfg(test)]
 mod tests {
     use crate::MacTextSystem;
-    use gpui::{FontRun, PlatformTextSystem, font, px};
+    use gpui::{
+        Font, FontRun, FontWeight, LineLayout, PlatformTextSystem, TextRun, TextSystem,
+        WindowTextSystem, font, px,
+    };
+    use std::sync::Arc;
 
     /// Fonts are made once per size and kept, so a line laid out with a kept
     /// font has to come out exactly as it did with a new one: the same glyphs
@@ -67,5 +71,106 @@ mod tests {
         assert_ne!(larger.0, first.0, "another size has to be another font");
         assert_eq!(shape(16.), first, "a size laid out again after another");
         assert_eq!(shape(24.), larger);
+    }
+
+    /// Numbers that GPUI puts together from their glyphs rather than asking
+    /// CoreText (`fast::number_shaping`) come out as CoreText shapes them:
+    /// the same glyphs, in the same places, in the system's UI and mono
+    /// faces at every weight and size an interface draws numbers at, long
+    /// after the first lines are checked against CoreText and the rest are
+    /// trusted.
+    #[test]
+    fn numbers_put_together_match_coretext() {
+        let platform: Arc<dyn PlatformTextSystem> = Arc::new(MacTextSystem::new());
+        let text_system = WindowTextSystem::new(Arc::new(TextSystem::new(platform.clone())));
+        let mut seed = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move |below: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % below as u64) as usize
+        };
+        let characters = b"0123456789.,+-%$KMBT";
+        let mut numbers = vec![
+            "0".to_owned(),
+            "59.94".to_owned(),
+            "120".to_owned(),
+            "-0.25".to_owned(),
+            "+1,234.56".to_owned(),
+            "99.9%".to_owned(),
+            "$1.2K".to_owned(),
+            "3.4M".to_owned(),
+            "11111".to_owned(),
+            "1.1.1.1".to_owned(),
+        ];
+        for _ in 0..600 {
+            let len = 1 + next(14);
+            numbers.push(
+                (0..len)
+                    .map(|_| characters[next(characters.len())] as char)
+                    .collect(),
+            );
+        }
+        let glyphs = |layout: &LineLayout| {
+            layout
+                .runs
+                .iter()
+                .flat_map(|run| run.glyphs.iter().map(|glyph| (glyph.id, glyph.position)))
+                .collect::<Vec<_>>()
+        };
+        let mut compared = 0;
+        for family in [".SystemUIFont", "Menlo", "Monaco", "Helvetica Neue"] {
+            for weight in [FontWeight::NORMAL, FontWeight::MEDIUM, FontWeight::SEMIBOLD, FontWeight::BOLD] {
+                let face = Font {
+                    weight,
+                    ..font(family)
+                };
+                let font_id = platform
+                    .font_id(&face)
+                    .unwrap_or_else(|error| panic!("{family} {weight:?}: {error}"));
+                for size in [9., 10., 11., 12., 13., 14., 16., 22.] {
+                    for number in &numbers {
+                        let ours = text_system.layout_line(
+                            number,
+                            px(size),
+                            &[TextRun {
+                                len: number.len(),
+                                font: face.clone(),
+                                ..TextRun::default()
+                            }],
+                            None,
+                        );
+                        let theirs = platform.layout_line(
+                            number,
+                            px(size),
+                            &[FontRun {
+                                font_id,
+                                len: number.len(),
+                            }],
+                        );
+                        let (ours_glyphs, theirs_glyphs) = (glyphs(&ours), glyphs(&theirs));
+                        assert_eq!(
+                            ours_glyphs.len(),
+                            theirs_glyphs.len(),
+                            "{family} {weight:?} {size} {number:?}"
+                        );
+                        for ((id, at), (their_id, their_at)) in ours_glyphs.iter().zip(&theirs_glyphs) {
+                            assert_eq!(id, their_id, "{family} {weight:?} {size} {number:?}");
+                            assert!(
+                                (at.x - their_at.x).abs() < px(1e-3)
+                                    && (at.y - their_at.y).abs() < px(1e-3),
+                                "{family} {weight:?} {size} {number:?}: {at:?} against {their_at:?}"
+                            );
+                        }
+                        assert!(
+                            (ours.width - theirs.width).abs() < px(1e-3),
+                            "{family} {weight:?} {size} {number:?}"
+                        );
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(compared, 4 * 4 * 8 * numbers.len());
     }
 }

@@ -30,6 +30,7 @@ pub(crate) mod layout;
 pub(crate) mod layout_bounds;
 pub(crate) mod layout_key;
 pub(crate) mod line_breaks;
+pub(crate) mod number_shaping;
 pub(crate) mod path_cache;
 pub(crate) mod retained;
 pub(crate) mod scene;
