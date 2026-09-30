@@ -554,7 +554,9 @@ A composited frame must be the frame drawn from scratch
   the scroll container culls against the painted region, not the viewport.
   Glyphs are culled by where they can reach, not by the top of their line,
   so a line painted in overscan and scrolled in shows the same glyphs as
-  when painted in place.
+  when painted in place. Where a glyph can reach is its font's bounding box
+  placed on its origin and baseline, widened to the font's ascent and
+  descent, worked out once a run.
 - **Paths.** A path's antialiasing depends on how its pixels pair in 2×2
   quads, so a path rasterized into a tile and moved by an odd number of
   pixels differs by one level. Paths are never rasterized into tiles: they

@@ -580,7 +580,7 @@ fn paint_line(
         let mut max_glyph_size = size(px(0.), px(0.));
         for (run_ix, run) in layout.runs.iter().enumerate() {
             max_glyph_size =
-                crate::fast::glyphs::bounding_box(window, cx, run.font_id, layout.font_size).size;
+                crate::fast::glyphs::begin_run(&mut glyph_painter, window, cx, run, layout);
 
             for (glyph_ix, glyph) in run.glyphs.iter().enumerate() {
                 glyph_origin.x += glyph.position.x - prev_glyph_position.x;
@@ -739,7 +739,7 @@ fn paint_line(
                 };
 
                 if crate::fast::glyphs::LineGlyphPainter::meets_mask(
-                    &mut glyph_painter,
+                    &glyph_painter,
                     &max_glyph_bounds,
                     baseline_offset.y + glyph.position.y,
                 ) {
