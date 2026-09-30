@@ -4,7 +4,6 @@
 //! over it: the primitives visible over the tile, in drawing order, moved
 //! into the tile's space. Two tiles hashing alike draw the same pixels, so a
 //! repaint that leaves a tile's hash alone keeps its texture.
-#![allow(dead_code, reason = "painting a layer uses it from the next task on")]
 
 use crate::{
     AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Point, ScaledPixels, Scene,

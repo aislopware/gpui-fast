@@ -2026,7 +2026,17 @@ impl Element for Div {
                 }
 
                 window.with_image_cache(image_cache, |window| {
-                    window.with_element_offset(scroll_offset, |window| {
+                    let fast_layer = crate::fast::layers::paint::begin_children(
+                        window,
+                        cx,
+                        global_id,
+                        bounds,
+                        child_min,
+                        content_size,
+                        scroll_offset,
+                        style,
+                    );
+                    crate::fast::layers::paint::prepaint_children(window, fast_layer, |window| {
                         if let Some(order_fn) = &self.prepaint_order_fn {
                             let order = order_fn(window, cx);
                             for idx in order {
@@ -2040,6 +2050,7 @@ impl Element for Div {
                             }
                         }
                     });
+                    crate::fast::layers::paint::end_children(window, cx, fast_layer);
 
                     if let Some(listener) = self.prepaint_listener.as_ref() {
                         listener(children_bounds, window, cx);
@@ -2081,9 +2092,16 @@ impl Element for Div {
                         return;
                     }
 
-                    for child in &mut self.children {
-                        child.paint(window, cx);
-                    }
+                    crate::fast::layers::paint::paint_children(
+                        window,
+                        cx,
+                        global_id,
+                        |window, cx| {
+                            for child in &mut self.children {
+                                child.paint(window, cx);
+                            }
+                        },
+                    );
                 },
             )
         });

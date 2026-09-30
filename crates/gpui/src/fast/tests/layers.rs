@@ -497,6 +497,7 @@ fn layout_stats_count_scroll_layer_work() {
 /// The paint stream (M3): painting a scroll container's content into a
 /// layer, tile diffing, snapping, background baking and compositing.
 mod paint {
+    use crate::AppContext as _;
     use crate::fast::layers::tiles::{dirty_tiles, tile_hashes};
     use crate::{Bounds, ContentMask, Hsla, Quad, ScaledPixels, Scene, TileCoord, point, size};
 
@@ -627,5 +628,197 @@ mod paint {
         let a = tile_hashes(&scene(&[at(sp(10., 10., 20., 20.))]), 512, region());
         let b = tile_hashes(&scene(&[at(sp(522., 522., 20., 20.))]), 512, region());
         assert_eq!(a[&TileCoord { x: 0, y: 0 }], b[&TileCoord { x: 1, y: 1 }]);
+    }
+
+    fn row_color(row: usize) -> Hsla {
+        crate::hsla(row as f32 / 64., 0.5, 0.5, 1.)
+    }
+
+    /// A white panel holding a 100 px scroll container of `rows` rows of
+    /// 20 px, each its own colour.
+    struct Rows {
+        rows: usize,
+        scroll: crate::ScrollHandle,
+    }
+
+    impl crate::Render for Rows {
+        fn render(
+            &mut self,
+            _window: &mut crate::Window,
+            _cx: &mut crate::Context<Self>,
+        ) -> impl crate::IntoElement {
+            use crate::{
+                InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+                Styled as _,
+            };
+            crate::div().size_full().bg(crate::white()).child(
+                crate::div()
+                    .id("s")
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .h(crate::px(100.))
+                    .children(
+                        (0..self.rows).map(|i| crate::div().h(crate::px(20.)).bg(row_color(i))),
+                    ),
+            )
+        }
+    }
+
+    fn rows_window(cx: &mut crate::TestAppContext, rows: usize) -> crate::WindowHandle<Rows> {
+        let window = cx.add_window(|_, _| Rows {
+            rows,
+            scroll: crate::ScrollHandle::new(),
+        });
+        // The first frame redraws everything, which never uses layers.
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        window
+    }
+
+    /// Draws `window` with its view rebuilt and every scroll container made
+    /// to decide `decision`.
+    fn draw_deciding(
+        cx: &mut crate::TestAppContext,
+        window: crate::WindowHandle<Rows>,
+        decision: crate::fast::layers::policy::Decision,
+    ) {
+        window
+            .update(cx, |_, window, cx| {
+                window.fast_layers.forced_decision = Some(decision);
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+
+    fn with_record<R>(
+        cx: &mut crate::TestAppContext,
+        window: crate::WindowHandle<Rows>,
+        f: impl FnOnce(&crate::fast::layers::record::LayerRecord, &crate::Window) -> R,
+    ) -> R {
+        cx.update_window(window.into(), |_, window, _| {
+            assert_eq!(window.fast_layers.layers.len(), 1, "one layer");
+            let layer = window.fast_layers.layers.values().next().unwrap();
+            f(
+                layer.record.as_ref().expect("the layer was painted"),
+                window,
+            )
+        })
+        .unwrap()
+    }
+
+    fn row_quads(scene: &Scene, rows: usize) -> Vec<(usize, Bounds<ScaledPixels>)> {
+        scene
+            .quads
+            .iter()
+            .filter_map(|quad| {
+                (0..rows)
+                    .find(|&row| quad.background == row_color(row).into())
+                    .map(|row| (row, quad.bounds))
+            })
+            .collect()
+    }
+
+    #[crate::test]
+    fn a_repainted_layer_holds_the_content_in_content_space(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+
+        let main_rows = cx
+            .update_window(window.into(), |_, window, _| {
+                row_quads(&window.rendered_frame.scene, 40)
+            })
+            .unwrap();
+        assert_eq!(main_rows, Vec::new(), "the rows are painted into the layer");
+
+        let scale = cx
+            .update_window(window.into(), |_, window, _| window.scale_factor())
+            .unwrap();
+        with_record(cx, window, |record, _| {
+            // The viewport, 100 px, and one viewport of overscan below it;
+            // nothing above, at the top.
+            assert_eq!(record.viewport.size.height, crate::px(100.));
+            assert_eq!(record.painted_region.origin.y, crate::px(0.));
+            assert_eq!(record.painted_region.size.height, crate::px(200.));
+            let rows = row_quads(&record.content, 40);
+            assert_eq!(
+                rows.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
+                (0..10).collect::<Vec<_>>()
+            );
+            for (row, bounds) in rows {
+                assert_eq!(bounds.origin.y, ScaledPixels(row as f32 * 20. * scale));
+                assert_eq!(bounds.size.height, ScaledPixels(20. * scale));
+            }
+            assert_eq!(record.generation, 1);
+            let mut tiles: Vec<_> = record.tile_hashes.keys().copied().collect();
+            tiles.sort();
+            // 200 px at the test window's scale of 2 is 400 device px: one
+            // tile high.
+            assert!(tiles.iter().all(|tile| tile.y == 0), "{tiles:?}");
+            assert_eq!(
+                record.dirty_tiles, tiles,
+                "a first paint dirties every tile"
+            );
+        });
+    }
+
+    #[crate::test]
+    fn scrolled_content_is_stored_where_it_was_before_the_scroll(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        window
+            .update(cx, |view, _, _| {
+                view.scroll
+                    .set_offset(crate::point(crate::px(0.), crate::px(-300.)))
+            })
+            .unwrap();
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+        let scale = cx
+            .update_window(window.into(), |_, window, _| window.scale_factor())
+            .unwrap();
+        with_record(cx, window, |record, _| {
+            // Overscan of one viewport above and below the one at 300..400.
+            assert_eq!(record.painted_region.origin.y, crate::px(-100.));
+            assert_eq!(record.painted_region.size.height, crate::px(300.));
+            let rows = row_quads(&record.content, 40);
+            assert_eq!(
+                rows.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
+                (10..25).collect::<Vec<_>>()
+            );
+            for (row, bounds) in rows {
+                assert_eq!(bounds.origin.y, ScaledPixels(row as f32 * 20. * scale));
+            }
+        });
+    }
+
+    #[crate::test]
+    fn overscan_is_clamped_to_content(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        // 60 px of rows in the 100 px viewport: nothing to scroll to.
+        let window = rows_window(cx, 3);
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+        with_record(cx, window, |record, window| {
+            assert_eq!(
+                record.painted_region, record.viewport,
+                "no overscan past the content"
+            );
+            assert_eq!(row_quads(&record.content, 3).len(), 3);
+            let region = record.painted_region.scale(window.scale_factor());
+            for tile in record.tile_hashes.keys() {
+                let top = tile.y as f32 * 512.;
+                assert!(
+                    top < region.bottom_right().y.0,
+                    "tile {tile:?} below the content"
+                );
+            }
+        });
     }
 }

@@ -39,6 +39,10 @@ pub(crate) struct WindowLayers {
     pub(crate) scrolls: invalidate::ScrollLog,
     /// The layer being painted, if any.
     pub(crate) painting: Option<paint::Painting>,
+    /// What every scroll container decides, in tests of one stream that
+    /// cannot wait for the policy to decide it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) forced_decision: Option<policy::Decision>,
 }
 
 impl Default for WindowLayers {
@@ -50,6 +54,8 @@ impl Default for WindowLayers {
                 && std::env::var("GPUI_SCROLL_LAYERS").map_or(true, |value| value != "0"),
             scrolls: invalidate::ScrollLog::default(),
             painting: None,
+            #[cfg(any(test, feature = "test-support"))]
+            forced_decision: None,
         }
     }
 }
@@ -69,6 +75,9 @@ pub(crate) struct Layer {
     pub(crate) rows: lists::LayerRows,
     /// The last frame the layer's tiles were composited in.
     pub(crate) last_composited_frame: u64,
+    /// What the frame being drawn prepainted the container for, for its
+    /// paint to finish.
+    pub(crate) prepainted: Option<paint::Prepainted>,
 }
 
 /// Whether layers may be used in `window` this frame (spec §6.5, first bullet).
