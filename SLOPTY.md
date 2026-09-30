@@ -24,7 +24,10 @@ Two upstreams feed it:
   (`zed: import bd747337`).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
-  longbridge commit merged is `b5b39b2` (#26, "scroll layers on Direct3D 11"), with
+  longbridge commit merged is `c22243e` (#30, "window composition", zed#62379), in the
+  commit "Merge longbridge/gpui-fast c22243e (#30) into Slopty's fork". The merge takes none
+  of #30: this fork keeps its own composition, and "Window composition, against
+  longbridge #30" below says why. Before it `b5b39b2` (#26, "scroll layers on Direct3D 11"), with
   `5b20933` (#24, scroll layers, #25 and #27 in it) before it, in the commit "Merge
   longbridge/gpui-fast b5b39b2 (#24, #26) into Slopty's fork" (see "Scroll layers"
   below). Before them `1b381ad` (#23, "let GPUI Kit applications patch gpui-fast
@@ -378,6 +381,39 @@ Merged ahead of longbridge, and not yet merged there:
       creates, most likely its prompt rail. So the layer is repainted until it is demoted.
     - Until that changes in Slopty, layers there only cost, and they stay compiled out on
       Apple.
+
+- Window composition, against longbridge #30 (zed#62379, merged in `c22243e` and left out
+  here). This fork composes natives its own way (docs/composition.md): under GPUI's single
+  drawable, through antialiased holes cut in painter's order. #30 stacks things differently:
+  a base drawable, then the native, then one more full-window `CAMetalLayer` for overlays.
+  Two mechanisms cannot live in one tree: both define `fast::composition` and hook the same
+  places in `window.rs`, `platform.rs` and the macOS window.
+  - **Correctness.** Ours puts everything painted after a native above it: the palette,
+    menus, toasts, focus rings and tile headers. Clipping, rounding, fade, hit testing and
+    focus come from GPUI's frame, and a present is transactional only when a native changes.
+    In #30, only deferred and window-level draws, or content painted with
+    `with_composition_surface`, sit above a native. The app places the native by hand, and
+    its surfaces present without one transaction.
+  - **Cost.** Measured per frame on a 3024×1964 window
+    (`cargo test -p gpui_apple --release --lib composition_overlay_gpu_cost -- --ignored
+    --nocapture`):
+
+    | | Ours | #30 |
+    |---|---|---|
+    | Palette open over a browser tile, GPU | 1.23 ms | 1.81 ms |
+    | Palette open over a remote screen, GPU | 1.40 ms | 1.78 ms |
+    | Palette open, instructions encoding | 90K | 142K |
+    | Palette closed, GPU | 0.75 ms (tile), 0.93 ms (screen) | 0.72 ms |
+    | Palette closed, instructions encoding | 80K | 129K |
+
+    With the palette closed, #30 saves the hole's blend: 0.2 ms over a native of most of the
+    window. But it still draws its empty overlay surface every frame. Each overlay surface
+    also holds up to three 23.8 MB drawables, and the WindowServer composites one more
+    full-window layer.
+  - **What #30 has that ours lacks.** Linux and Windows natives: Wayland subsurfaces, X11
+    child windows, DirectComposition. Slopty needs none of them.
+  - **Next for ours.** Skip base primitives an opaque native covers whole. That would take
+    back the hole's blend where the native covers most of the window.
 
 Added in this fork:
 

@@ -541,3 +541,202 @@ fn an_opaque_scene_renders_the_same_as_with_the_additive_alpha_blend() {
         assert!(now.pixels().all(|pixel| pixel[3] == 255));
     }
 }
+
+/// What a palette over a native costs the GPU, composed as this fork composes (one drawable:
+/// the native's hole, then the palette over it) against a second full-window GPUI surface
+/// for overlays, as longbridge/gpui-fast#30 (zed#62379) composes: the base surface drawn
+/// without the native, and the palette drawn alone on a transparent overlay drawable the
+/// size of the window, every frame, open or not. Per frame: CPU time and instructions
+/// encoding, and GPU time of the command buffers, at a 14" MacBook Pro's full window.
+///
+/// `cargo test -p gpui_apple --release --lib composition_overlay_gpu_cost -- --ignored --nocapture`
+#[test]
+#[ignore = "a measurement, not a check"]
+fn composition_overlay_gpu_cost() {
+    use objc::{msg_send, sel, sel_impl};
+    use std::time::{Duration, Instant};
+
+    const WIDTH: i32 = 3024;
+    const HEIGHT: i32 = 1964;
+    const FRAMES: usize = 300;
+    let window = size(DevicePixels(WIDTH), DevicePixels(HEIGHT));
+    let mask = ContentMask {
+        bounds: scaled(0., 0., WIDTH as f32, HEIGHT as f32),
+    };
+    let solid = |bounds: Bounds<ScaledPixels>, color: u32, radius: f32| Quad {
+        order: 0,
+        border_style: BorderStyle::Solid,
+        bounds,
+        content_mask: mask,
+        background: Background::from(Hsla::from(gpui::rgba(color))),
+        border_color: black().opacity(0.),
+        corner_radii: Corners::all(ScaledPixels(radius)),
+        border_widths: Edges::default(),
+    };
+    // The workspace: a panel, the navigator's rows and a strip of tiles with headers.
+    let base = |scene: &mut Scene| {
+        scene.insert_primitive(solid(
+            scaled(0., 0., WIDTH as f32, HEIGHT as f32),
+            0x18181bff,
+            0.,
+        ));
+        for row in 0..48 {
+            let y = 80. + row as f32 * 38.;
+            scene.insert_primitive(solid(scaled(16., y, 520., 32.), 0x232328ff, 6.));
+        }
+        for tile in 0..3 {
+            let x = 560. + tile as f32 * 820.;
+            scene.insert_primitive(solid(scaled(x, 60., 800., 1880.), 0x1e1e22ff, 12.));
+            scene.insert_primitive(solid(scaled(x, 60., 800., 44.), 0x2b2b30ff, 12.));
+        }
+    };
+    let palette = |scene: &mut Scene| {
+        let panel = scaled(912., 360., 1200., 880.);
+        scene.insert_primitive(Shadow {
+            order: 0,
+            blur_radius: ScaledPixels(48.),
+            bounds: panel.dilate(ScaledPixels(144.)),
+            corner_radii: Corners::all(ScaledPixels(20.)),
+            content_mask: mask,
+            color: hsla(0., 0., 0., 0.45),
+            element_bounds: panel,
+            element_corner_radii: Corners::all(ScaledPixels(20.)),
+            inset: 0,
+            pad: 0,
+        });
+        scene.insert_primitive(solid(panel, 0x26262bff, 20.));
+        for row in 0..14 {
+            let y = 460. + row as f32 * 54.;
+            let color = if row == 0 { 0x3fa66b40 } else { 0x2e2e33ff };
+            scene.insert_primitive(solid(scaled(936., y, 1152., 48.), color, 8.));
+            scene.insert_primitive(Underline {
+                order: 0,
+                pad: 0,
+                bounds: scaled(952., y + 47., 1120., 1.),
+                content_mask: mask,
+                color: hsla(0., 0., 1., 0.06),
+                thickness: ScaledPixels(1.),
+                wavy: false.into(),
+            });
+        }
+    };
+    let native = |bounds: Bounds<ScaledPixels>| NativePlacement {
+        order: 0,
+        id: NativeId(1),
+        hitbox: None,
+        focus: None,
+        bounds,
+        content_mask: mask,
+        corner_radii: Corners::all(ScaledPixels(12.)),
+        opacity: 1.,
+    };
+    let scene_of = |parts: &[&dyn Fn(&mut Scene)]| {
+        let mut scene = Scene::default();
+        for part in parts {
+            part(&mut scene);
+        }
+        scene.finish();
+        scene
+    };
+
+    let mut renderer = renderer();
+    renderer.update_path_intermediate_textures(window);
+    let target = || {
+        let descriptor = metal::TextureDescriptor::new();
+        descriptor.set_width(WIDTH as u64);
+        descriptor.set_height(HEIGHT as u64);
+        descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
+        descriptor
+            .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
+        descriptor.set_storage_mode(metal::MTLStorageMode::Private);
+        renderer.device.new_texture(&descriptor)
+    };
+    let (base_target, overlay_target) = (target(), target());
+    fn instructions() -> u64 {
+        unsafe extern "C" {
+            // libsystem_kernel: the thread's performance counters; kind 1 is
+            // instructions and cycles.
+            fn thread_selfcounts(kind: i32, buffer: *mut u64, size: usize) -> i32;
+        }
+        let mut counts = [0u64; 2];
+        // SAFETY: the buffer holds the two counters kind 1 writes.
+        unsafe { thread_selfcounts(1, counts.as_mut_ptr(), size_of_val(&counts)) };
+        counts[0]
+    }
+    // Encodes each (scene, target) pass into its own command buffer, as each surface's
+    // renderer does, and returns the CPU time and instructions encoding and the GPU time
+    // of all of them.
+    let mut frame = |passes: &[(&Scene, &metal::Texture)]| -> (Duration, u64, Duration) {
+        objc2::rc::autoreleasepool(|_| {
+            let start = Instant::now();
+            let before = instructions();
+            let buffers: Vec<_> = passes
+                .iter()
+                .map(|(scene, target)| {
+                    let buffer = renderer
+                        .render_frame(scene, target, window)
+                        .expect("frame encoded");
+                    buffer.commit();
+                    buffer
+                })
+                .collect();
+            let (cpu, encoded) = (start.elapsed(), instructions() - before);
+            let mut gpu = Duration::ZERO;
+            for buffer in &buffers {
+                buffer.wait_until_completed();
+                // SAFETY: `GPUStartTime` and `GPUEndTime` are `MTLCommandBuffer`
+                // properties, read after the buffer completed.
+                let (start, end): (f64, f64) = unsafe {
+                    (
+                        msg_send![buffer.as_ref(), GPUStartTime],
+                        msg_send![buffer.as_ref(), GPUEndTime],
+                    )
+                };
+                gpu += Duration::from_secs_f64((end - start).max(0.));
+            }
+            (cpu, encoded, gpu)
+        })
+    };
+    let mut measure = |name: &str, passes: &[(&Scene, &metal::Texture)]| {
+        let mut samples: Vec<(Duration, u64, Duration)> =
+            (0..FRAMES + 30).map(|_| frame(passes)).skip(30).collect();
+        let median = |samples: &mut Vec<(Duration, u64, Duration)>,
+                      key: fn(&(Duration, u64, Duration)) -> u128| {
+            samples.sort_by_key(key);
+            samples[samples.len() / 2]
+        };
+        let cpu = median(&mut samples, |s| s.0.as_nanos()).0;
+        let encoded = median(&mut samples, |s| u128::from(s.1)).1;
+        let gpu = median(&mut samples, |s| s.2.as_nanos()).2;
+        eprintln!("{name}: encode {cpu:?} ({encoded} instructions), gpu {gpu:?}");
+    };
+
+    for (what, bounds) in [
+        ("browser tile", scaled(1380., 104., 800., 1836.)),
+        ("remote screen", scaled(560., 104., 2440., 1836.)),
+    ] {
+        let hole = |scene: &mut Scene| scene.insert_native(native(bounds));
+        let ours_open = scene_of(&[&base, &hole, &palette]);
+        let ours_closed = scene_of(&[&base, &hole]);
+        let base_only = scene_of(&[&base]);
+        let palette_only = scene_of(&[&palette]);
+        let empty = scene_of(&[]);
+        eprintln!("-- palette over a {what}");
+        measure("ours, palette open", &[(&ours_open, &base_target)]);
+        measure(
+            "overlay surface, palette open",
+            &[(&base_only, &base_target), (&palette_only, &overlay_target)],
+        );
+        measure("ours, palette closed", &[(&ours_closed, &base_target)]);
+        measure(
+            "overlay surface, palette closed",
+            &[(&base_only, &base_target), (&empty, &overlay_target)],
+        );
+    }
+    let drawable = u64::from(WIDTH.unsigned_abs()) * u64::from(HEIGHT.unsigned_abs()) * 4;
+    eprintln!(
+        "an overlay surface's CAMetalLayer: up to 3 drawables of {:.1} MB, {:.1} MB",
+        drawable as f64 / 1e6,
+        3. * drawable as f64 / 1e6
+    );
+}
