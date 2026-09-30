@@ -104,6 +104,10 @@ pub use debug_overlay::*;
 pub use element::*;
 pub use elements::*;
 pub use executor::*;
+pub use fast::layers::scene::{
+    LAYER_TILE_TEXTURE_BASE, LayerKey, TileCoord, decode_layer_tile, layer_tile_id,
+    layer_tile_texture_id,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::stats::LayoutStats;
 pub use geometry::*;
