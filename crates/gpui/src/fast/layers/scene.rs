@@ -117,10 +117,7 @@ impl LayerFrame {
         for operation in &self.content.paint_operations {
             match operation {
                 PaintOperation::Primitive(primitive) => {
-                    let clipped = primitive
-                        .bounds()
-                        .intersect(&primitive.content_mask().bounds);
-                    if clipped.intersects(&bounds) {
+                    if visible_bounds(primitive).intersects(&bounds) {
                         scene.insert_primitive(translate_primitive(primitive, delta));
                     }
                 }
@@ -142,6 +139,72 @@ fn translate_bounds(
     Bounds {
         origin: bounds.origin + delta,
         size: bounds.size,
+    }
+}
+
+/// The part of window (or content) space `primitive` can draw into: what
+/// the renderer rasterizes for it, clipped to its content mask. A drop
+/// shadow reaches three blur radii past its bounds and an inset one fills
+/// its element's bounds (`vs_shadow`); a mono or subpixel sprite's bounds
+/// are transformed (`to_device_position_transformed`).
+pub(crate) fn visible_bounds(primitive: &Primitive) -> Bounds<ScaledPixels> {
+    let drawn = match primitive {
+        Primitive::Shadow(shadow) if shadow.inset != 0 => shadow.element_bounds,
+        Primitive::Shadow(shadow) => {
+            let margin = ScaledPixels(3. * shadow.blur_radius.0.max(0.));
+            Bounds {
+                origin: point(
+                    shadow.bounds.origin.x - margin,
+                    shadow.bounds.origin.y - margin,
+                ),
+                size: size(
+                    shadow.bounds.size.width + margin * 2.,
+                    shadow.bounds.size.height + margin * 2.,
+                ),
+            }
+        }
+        Primitive::MonochromeSprite(sprite) => {
+            transformed_bounds(sprite.bounds, &sprite.transformation)
+        }
+        Primitive::SubpixelSprite(sprite) => {
+            transformed_bounds(sprite.bounds, &sprite.transformation)
+        }
+        primitive => *primitive.bounds(),
+    };
+    drawn.intersect(&primitive.content_mask().bounds)
+}
+
+/// The smallest rectangle holding `bounds` transformed by `matrix`.
+fn transformed_bounds(
+    bounds: Bounds<ScaledPixels>,
+    matrix: &TransformationMatrix,
+) -> Bounds<ScaledPixels> {
+    if *matrix == TransformationMatrix::unit() {
+        return bounds;
+    }
+    let apply = |x: f32, y: f32| {
+        let m = &matrix.rotation_scale;
+        (
+            m[0][0] * x + m[0][1] * y + matrix.translation[0],
+            m[1][0] * x + m[1][1] * y + matrix.translation[1],
+        )
+    };
+    let (x0, y0) = (bounds.origin.x.0, bounds.origin.y.0);
+    let (x1, y1) = (x0 + bounds.size.width.0, y0 + bounds.size.height.0);
+    let corners = [apply(x0, y0), apply(x1, y0), apply(x0, y1), apply(x1, y1)];
+    let min_x = corners.iter().map(|c| c.0).fold(f32::INFINITY, f32::min);
+    let max_x = corners
+        .iter()
+        .map(|c| c.0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min);
+    let max_y = corners
+        .iter()
+        .map(|c| c.1)
+        .fold(f32::NEG_INFINITY, f32::max);
+    Bounds {
+        origin: point(ScaledPixels(min_x), ScaledPixels(min_y)),
+        size: size(ScaledPixels(max_x - min_x), ScaledPixels(max_y - min_y)),
     }
 }
 

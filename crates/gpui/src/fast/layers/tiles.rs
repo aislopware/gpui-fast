@@ -1,7 +1,8 @@
 //! Hashing a layer's tiles and finding the ones a repaint changed (M3).
 //!
 //! A tile's hash covers what [`crate::LayerFrame::tile_scene`] would draw
-//! over it: the primitives visible over the tile, in drawing order, moved
+//! over it: the primitives whose visible bounds (a shadow's blur and a
+//! transformed sprite included) reach the tile, in drawing order, moved
 //! into the tile's space. Two tiles hashing alike draw the same pixels, so a
 //! repaint that leaves a tile's hash alone keeps its texture.
 //!
@@ -13,7 +14,7 @@
 use crate::{
     AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Point, ScaledPixels, Scene,
     TileCoord, TransformationMatrix,
-    fast::layers::scene::translate_primitive,
+    fast::layers::scene::{translate_primitive, visible_bounds},
     point,
     scene::{PaintOperation, Primitive},
     size,
@@ -38,9 +39,7 @@ pub(crate) fn tile_hashes(
     for operation in &content.paint_operations {
         match operation {
             PaintOperation::Primitive(primitive) => {
-                let visible = primitive
-                    .bounds()
-                    .intersect(&primitive.content_mask().bounds);
+                let visible = visible_bounds(primitive);
                 for_tiles(&mut hashers, visible, tile_size, |hasher, origin| {
                     hasher.write_u8(0);
                     hash_primitive(&translate_primitive(primitive, origin), &tile, hasher);

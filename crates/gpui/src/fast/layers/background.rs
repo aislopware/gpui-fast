@@ -8,6 +8,7 @@
 use crate::{
     Bounds, Hsla, Quad, Rgba, ScaledPixels, Scene,
     color::BackgroundTag,
+    fast::layers::scene::visible_bounds,
     scene::{DrawOrder, PaintOperation, Primitive},
 };
 
@@ -40,9 +41,7 @@ pub(crate) fn bake_operations(
         let PaintOperation::Primitive(primitive) = operation else {
             continue;
         };
-        let visible = primitive
-            .bounds()
-            .intersect(&primitive.content_mask().bounds);
+        let visible = visible_bounds(primitive);
         if !visible.intersects(&viewport) {
             continue;
         }

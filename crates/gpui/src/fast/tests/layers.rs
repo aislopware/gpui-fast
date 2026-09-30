@@ -1436,3 +1436,126 @@ mod paint {
         .unwrap();
     }
 }
+
+/// Primitives that draw outside their bounds: a shadow's blur and a
+/// transformed sprite reach the tiles they draw over, not just the tiles
+/// their bounds cover.
+mod footprints {
+    use super::{atlas_tile, layer, sp, wide_mask};
+    use crate::fast::layers::tiles::{dirty_tiles, tile_hashes};
+    use crate::{
+        Hsla, MonochromeSprite, Radians, Scene, Shadow, TileCoord, TransformationMatrix, point,
+    };
+
+    fn shadow(color: Hsla) -> Shadow {
+        // Its blur reaches x = 500 + 3 * 10 = 530, inside tile (1, 0).
+        Shadow {
+            order: 0,
+            blur_radius: crate::ScaledPixels(10.),
+            bounds: sp(400., 100., 100., 100.),
+            corner_radii: Default::default(),
+            content_mask: wide_mask(),
+            color,
+            element_bounds: sp(400., 100., 100., 100.),
+            element_corner_radii: Default::default(),
+            inset: 0,
+            pad: 0,
+        }
+    }
+
+    fn rotated_sprite(color: Hsla) -> MonochromeSprite {
+        // A 70 px square ending 2 px short of tile (1, 0), turned an eighth
+        // around its centre (475, 135): its corners reach x = 524.5.
+        MonochromeSprite {
+            order: 0,
+            pad: 0,
+            bounds: sp(440., 100., 70., 70.),
+            content_mask: wide_mask(),
+            color,
+            tile: atlas_tile(),
+            transformation: TransformationMatrix::unit()
+                .translate(point(crate::ScaledPixels(475.), crate::ScaledPixels(135.)))
+                .rotate(Radians(std::f32::consts::FRAC_PI_4))
+                .translate(point(
+                    crate::ScaledPixels(-475.),
+                    crate::ScaledPixels(-135.),
+                )),
+        }
+    }
+
+    fn scene_of(primitive: impl Into<crate::scene::Primitive>) -> Scene {
+        let mut scene = Scene::default();
+        scene.insert_primitive(primitive);
+        scene.finish();
+        scene
+    }
+
+    fn dirty(old: &Scene, new: &Scene) -> Vec<TileCoord> {
+        let region = sp(0., 0., 1024., 512.);
+        dirty_tiles(
+            &tile_hashes(old, 512, region),
+            &tile_hashes(new, 512, region),
+        )
+    }
+
+    const BOTH: [TileCoord; 2] = [TileCoord { x: 0, y: 0 }, TileCoord { x: 1, y: 0 }];
+
+    #[test]
+    fn a_shadow_change_dirties_every_tile_its_blur_reaches() {
+        assert_eq!(
+            dirty(
+                &scene_of(shadow(Hsla::red())),
+                &scene_of(shadow(Hsla::blue()))
+            ),
+            BOTH
+        );
+    }
+
+    #[test]
+    fn a_tile_scene_holds_a_shadow_whose_blur_reaches_the_tile() {
+        let frame = layer(scene_of(shadow(Hsla::red())));
+        assert_eq!(frame.tile_scene(TileCoord { x: 1, y: 0 }).shadows.len(), 1);
+        assert!(
+            frame
+                .tile_scene(TileCoord { x: 1, y: 1 })
+                .shadows
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_shadow_masked_off_a_tile_leaves_it_alone() {
+        let masked = |color| Shadow {
+            content_mask: crate::ContentMask {
+                bounds: sp(0., 0., 512., 512.),
+            },
+            ..shadow(color)
+        };
+        assert_eq!(
+            dirty(
+                &scene_of(masked(Hsla::red())),
+                &scene_of(masked(Hsla::blue()))
+            ),
+            [TileCoord { x: 0, y: 0 }]
+        );
+    }
+
+    #[test]
+    fn a_rotated_sprite_change_dirties_every_tile_it_turns_into() {
+        assert_eq!(
+            dirty(
+                &scene_of(rotated_sprite(Hsla::red())),
+                &scene_of(rotated_sprite(Hsla::blue()))
+            ),
+            BOTH
+        );
+        let frame = layer(scene_of(rotated_sprite(Hsla::red())));
+        assert_eq!(
+            frame
+                .tile_scene(TileCoord { x: 1, y: 0 })
+                .monochrome_sprites
+                .len(),
+            1
+        );
+    }
+}
