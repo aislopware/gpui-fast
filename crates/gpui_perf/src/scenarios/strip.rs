@@ -15,7 +15,8 @@
 //!
 //! The scenarios differ in what changes each frame: one terminal printing,
 //! the strip's readout ticking, the strip scrolling, the pointer moving over
-//! the tile headers, or only the status bar's clock.
+//! the tile headers, the keyboard focus moving between terminals, or only
+//! the status bar's clock.
 
 use std::{ops::Range, rc::Rc};
 
@@ -55,6 +56,11 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             kind: Kind::Hover,
         }),
         Box::new(StripScenario {
+            name: "strip-focus",
+            description: "Eight terminal tiles, each ringed while it holds the keyboard; every ten frames the focus moves to the next terminal, as picking a tile does.",
+            kind: Kind::Focus,
+        }),
+        Box::new(StripScenario {
             name: "strip-clock",
             description: "Eight terminal tiles at rest; only the status bar's clock changes each frame.",
             kind: Kind::Clock,
@@ -88,6 +94,7 @@ enum Kind {
     Scroll,
     Spring,
     Hover,
+    Focus,
     Clock,
 }
 
@@ -108,8 +115,9 @@ impl crate::Scenario for StripScenario {
 
     fn build(&self, window: &mut Window, cx: &mut App) -> AnyView {
         let spring = self.kind == Kind::Spring;
-        let shell = cx.new(|cx| Shell::new(spring, cx));
-        if spring {
+        let ring = self.kind == Kind::Focus;
+        let shell = cx.new(|cx| Shell::new(spring, ring, cx));
+        if spring || ring {
             let focus = shell.read(cx).strip.read(cx).tiles[0]
                 .terminal
                 .read(cx)
@@ -157,6 +165,13 @@ impl crate::Scenario for StripScenario {
                     cx,
                 );
             }
+            Kind::Focus => {
+                if frame % 10 == 0 {
+                    let tile = &strip.read(cx).tiles[frame / 10 % TILES];
+                    let focus = tile.terminal.read(cx).focus.clone();
+                    window.focus(&focus, cx);
+                }
+            }
             Kind::Clock => status.update(cx, |status, cx| {
                 status.seconds = frame as u64;
                 cx.notify();
@@ -172,13 +187,13 @@ struct Shell {
 }
 
 impl Shell {
-    fn new(spring: bool, cx: &mut Context<Self>) -> Self {
+    fn new(spring: bool, ring: bool, cx: &mut Context<Self>) -> Self {
         let tiles = (0..TILES)
             .map(|index| Tile {
                 title: format!("shell {index}").into(),
                 cwd: format!("~/src/project-{index}/crates").into(),
                 running: (index % 3 == 0).then_some(12),
-                terminal: cx.new(|cx| Terminal::new(index, spring, cx)),
+                terminal: cx.new(|cx| Terminal::new(index, spring, ring, cx)),
             })
             .collect();
         Shell {
@@ -410,16 +425,19 @@ struct Terminal {
     spring: bool,
     /// What its grid wrote last, as Slopty's keeps its shaped rows.
     prepainted: usize,
+    /// Whether it is ringed while it holds the keyboard.
+    ring: bool,
 }
 
 impl Terminal {
-    fn new(index: usize, spring: bool, cx: &mut Context<Self>) -> Self {
+    fn new(index: usize, spring: bool, ring: bool, cx: &mut Context<Self>) -> Self {
         Terminal {
             lines: (0..ROWS).map(|row| line(index * 1000 + row)).collect(),
             focus: cx.focus_handle(),
             printed: 0,
             spring,
             prepainted: 0,
+            ring,
         }
     }
 
@@ -464,6 +482,11 @@ impl Render for Terminal {
             .size_full()
             .bg(BG)
             .p_1()
+            .when(self.ring, |this| {
+                this.border_1()
+                    .border_color(BG)
+                    .focus(|style| style.border_color(ACCENT))
+            })
             .on_key_down(cx.listener(|_, _, _, _| {}))
             .on_scroll_wheel(cx.listener(|_, _, _, _| {}))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, _| {}))
