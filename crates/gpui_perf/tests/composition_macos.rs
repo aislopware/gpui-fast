@@ -598,9 +598,14 @@ mod macos {
             .timer(Duration::from_millis(1500))
             .await;
         producer.join().expect("the producer finished");
-        cx.background_executor()
-            .timer(Duration::from_millis(200))
-            .await;
+        // The last picture is reported once the display has shown it, a refresh or two
+        // after it was presented; under load that can take longer than a fixed wait.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while reports.load(Ordering::Relaxed) < PICTURES && Instant::now() < deadline {
+            cx.background_executor()
+                .timer(Duration::from_millis(10))
+                .await;
+        }
         failures.check(
             reports.load(Ordering::Relaxed) == PICTURES,
             format!(
