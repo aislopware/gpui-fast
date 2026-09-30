@@ -323,6 +323,12 @@ const NO_GLYPHS: Point<f32> = Point {
 };
 
 impl Noting {
+    /// Whether an element being painted is noting.
+    #[inline]
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
+    }
+
     pub(crate) fn clear(&mut self) {
         self.active = false;
         self.glyphs = NO_GLYPHS;

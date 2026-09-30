@@ -2355,9 +2355,17 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
                     start.clone();
             }
             let in_motion = window.next_frame.retained.elements.roots[root as usize].motion > 0;
-            let around = crate::fast::scene::begin_noting(&mut window.next_frame.scene, in_motion);
-            drawable.paint(window, cx);
-            let noted = crate::fast::scene::end_noting(&mut window.next_frame.scene, around);
+            // Painted outside motion, with nothing around it noting, it notes
+            // nothing, and begins and ends nothing either.
+            let noted = if in_motion || crate::fast::scene::noting(&window.next_frame.scene) {
+                let around =
+                    crate::fast::scene::begin_noting(&mut window.next_frame.scene, in_motion);
+                drawable.paint(window, cx);
+                crate::fast::scene::end_noting(&mut window.next_frame.scene, around)
+            } else {
+                drawable.paint(window, cx);
+                Noted::UNKNOWN
+            };
             let end = window.paint_index();
             let elements = &mut window.next_frame.retained.elements;
             let root_start = &elements.roots[root as usize].paint_start;
@@ -2470,6 +2478,10 @@ fn reuse_paint(range: Range<PaintIndex>, noted: Noted, shift: u32, window: &mut 
     }
     let elements = &window.next_frame.retained.elements;
     let Shifted { by, operations } = &elements.shifts[shift as usize];
+    #[cfg_attr(
+        not(any(test, feature = "test-support")),
+        expect(unused_variables, reason = "only the debug bounds of tests move by it")
+    )]
     let (by, operations) = (*by, operations.start as usize..operations.end as usize);
     // What [`Window::reuse_paint`] copies besides primitives, `can_move`
     // found none of, but for the debug bounds of tests.
