@@ -117,9 +117,8 @@ impl LayerFrame {
         for operation in &self.content.paint_operations {
             match operation {
                 PaintOperation::Primitive(primitive) => {
-                    let clipped = primitive
-                        .bounds()
-                        .intersect(&primitive.content_mask().bounds);
+                    let clipped =
+                        drawn_bounds(primitive).intersect(&primitive.content_mask().bounds);
                     if clipped.intersects(&bounds) {
                         scene.insert_primitive(translate_primitive(primitive, delta));
                     }
@@ -133,6 +132,62 @@ impl LayerFrame {
         scene.finish();
         scene
     }
+}
+
+/// The rectangle `primitive` may draw in before its content mask clips it,
+/// as the shaders place it: a drop shadow's blur reaches three blur radii
+/// past its bounds (`vs_shadow`), an inset one fills its element's bounds,
+/// and a sprite's transformation moves its corners (`vs_mono_sprite`).
+fn drawn_bounds(primitive: &Primitive) -> Bounds<ScaledPixels> {
+    match primitive {
+        Primitive::Shadow(shadow) if shadow.inset != 0 => shadow.element_bounds,
+        Primitive::Shadow(shadow) => shadow
+            .bounds
+            .dilate(ScaledPixels(3. * shadow.blur_radius.0)),
+        Primitive::MonochromeSprite(sprite) => {
+            transformed_bounds(sprite.bounds, &sprite.transformation)
+        }
+        Primitive::SubpixelSprite(sprite) => {
+            transformed_bounds(sprite.bounds, &sprite.transformation)
+        }
+        primitive => *primitive.bounds(),
+    }
+}
+
+/// The bounding box of `bounds` with `matrix` applied (`R·p + t`).
+fn transformed_bounds(
+    bounds: Bounds<ScaledPixels>,
+    matrix: &TransformationMatrix,
+) -> Bounds<ScaledPixels> {
+    if *matrix == TransformationMatrix::unit() {
+        return bounds;
+    }
+    let r = matrix.rotation_scale;
+    let t = matrix.translation;
+    let corners = [
+        bounds.origin,
+        bounds.top_right(),
+        bounds.bottom_left(),
+        bounds.bottom_right(),
+    ]
+    .map(|p| {
+        (
+            r[0][0] * p.x.0 + r[0][1] * p.y.0 + t[0],
+            r[1][0] * p.x.0 + r[1][1] * p.y.0 + t[1],
+        )
+    });
+    let (mut min_x, mut min_y) = corners[0];
+    let (mut max_x, mut max_y) = corners[0];
+    for (x, y) in corners {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    Bounds::from_corners(
+        point(ScaledPixels(min_x), ScaledPixels(min_y)),
+        point(ScaledPixels(max_x), ScaledPixels(max_y)),
+    )
 }
 
 fn translate_bounds(
