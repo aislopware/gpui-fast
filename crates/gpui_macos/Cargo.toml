@@ -50,8 +50,9 @@ log.workspace = true
 mach2.workspace = true
 objc.workspace = true
 objc2.workspace = true
-objc2-app-kit.workspace = true
-objc2-core-graphics.workspace = true
+objc2-app-kit = { workspace = true, features = ["NSCursor", "objc2-core-graphics"] }
+objc2-core-foundation = { workspace = true, features = ["CFData"] }
+objc2-core-graphics = { workspace = true, features = ["CGColorSpace", "CGDataProvider", "CGImage"] }
 objc2-core-media.workspace = true
 objc2-foundation.workspace = true
 objc2-screen-capture-kit.workspace = true
@@ -81,4 +82,4 @@ objc2-app-kit = { workspace = true, features = [
     "NSStringDrawing",
     "objc2-core-graphics",
 ] }
-objc2-core-graphics = { workspace = true, features = ["CGEvent", "CGEventTypes"] }
+objc2-core-graphics = { workspace = true, features = ["CGBitmapContext", "CGContext", "CGEvent", "CGEventTypes"] }

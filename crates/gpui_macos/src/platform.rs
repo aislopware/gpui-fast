@@ -1172,6 +1172,10 @@ impl Platform for MacPlatform {
         }
     }
 
+    fn set_cursor_image(&self, id: gpui::CursorImageId, image: Option<gpui::CursorImage>) {
+        crate::fast::cursor::set_image(id, image);
+    }
+
     fn hide_cursor_until_mouse_moves(&self) {
         let cursor_visible = self.0.lock().cursor_visible.clone();
         if !cursor_visible.swap(false, Ordering::Relaxed) {

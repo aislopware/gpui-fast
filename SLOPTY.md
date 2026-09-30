@@ -443,6 +443,24 @@ Added in this fork:
 - perf(gpui): outside motion, painting neither begins nor ends noting, and culled
   primitives work nothing out for it (layout-colors +0.79% to +0.11% against the fork
   before `fbbb9f5`)
+- feat(gpui): a cursor with the application's own picture, `CursorStyle::Image(id)`, an
+  id the application points at a `CursorImage` (premultiplied BGRA, hotspot, pixels per
+  point) with `App::set_cursor_image` (`fast/cursor.rs`, `gpui_macos/src/fast/cursor.rs`).
+  A remote-desktop view hands the far side's pointer to the system as its cursor, so it
+  moves with the hand, with no frame of the app's per move (Slopty's pointer was one
+  app frame, 19 ms, behind the hand). macOS builds an `NSCursor` over a `CGImage` of the
+  picture, sized in points with the hotspot in points, registered as the view's cursor
+  rect like every other style; the last 64 cursors built are kept by content, so an id
+  flipping between pictures it showed builds nothing (a hit compares the pixels, not
+  only the key). Pointing an id at a new picture invalidates the rects of every window
+  showing it, so a window that was not key shows the latest picture when it is again,
+  and sets the cursor at once when the pointer is over the key window's view, before
+  any frame. The bytes are drawn as BGRA (`a_cursor_draws_its_pictures_colours_not_
+  its_byte_order` draws red, green, blue and half white into an sRGB RGBA bitmap). Measured (`a_shape_change_is_built_once_
+  and_set_in_microseconds`, 64 × 64 at 2×): a build 13–40 µs p50, a cached change
+  0.7 µs, `-[NSCursor set]` 60 µs, and the cursor set is `NSCursor.currentCursor` as
+  `set` returns. Other platforms show the arrow for an image style; iOS has no bitmap
+  pointer (`UIPointerShape` takes paths only)
 
 ### Candidates for longbridge
 

@@ -23,7 +23,7 @@ crates/gpui/src/key_dispatch.rs removed=55 # reuse_subtree's node-by-node copy i
 # They are features of their own rather than retained-mode hooks, kept in the
 # upstream files they extend, as in the zed fork they came from.
 crates/gpui/examples/frame_latency.rs any # Slopty: a submit-to-glass latency example
-crates/gpui/src/platform.rs hunk=20 added=55 unmarked=5 # Slopty: PresentedFrame and the presented-frame sink, CursorStyle::None; composition's two defaulted PlatformWindow methods (create_native_host, present_natives); zed #64866: ActivationPolicy and Platform::set_activation_policy
+crates/gpui/src/platform.rs hunk=20 added=62 unmarked=5 # Slopty: PresentedFrame and the presented-frame sink, CursorStyle::None, CursorStyle::Image and the defaulted Platform::set_cursor_image (fast::cursor); composition's two defaulted PlatformWindow methods (create_native_host, present_natives); zed #64866: ActivationPolicy and Platform::set_activation_policy
 crates/gpui/src/platform/keystroke.rs removed=30 unmarked=26 # Slopty: the secondary modifier is the command key on iOS as on macOS, a cfg on every match arm
 crates/gpui/src/platform/test/window.rs hunk=14 added=40 unmarked=4 # Slopty: the test window's presented-frame sink; composition: the test window's recording native hosts
 crates/gpui/src/style.rs hunk=20 added=40 unmarked=4 # Slopty: the outline style
@@ -33,7 +33,7 @@ crates/gpui/src/window/a11y.rs hunk=22 added=65 unmarked=6 # Slopty: the a11y tr
 crates/gpui_apple/build.rs hunk=12 added=20 unmarked=6 # Slopty: the iOS backend's shader build
 crates/gpui_apple/src/metal_renderer.rs any # Slopty: iOS rendering, video surfaces (Y'CbCr matrices, 10-bit, 4:4:4), presentation reports and pacing; scroll layers: the tile cache, cleared on a drawable size change, the raster before the frame and the tile composite in draw_polychrome_sprites
 crates/gpui_apple/src/presentation_pacing.rs any # Slopty: frames kept from queueing in front of the display
-crates/gpui_macos/src/window.rs hunk=35 added=131 unmarked=14 # Slopty: presentation reports and pacing, CursorStyle::None, covered windows drawn in test builds; composition: the GPUI view's hitTest:, the window's sendEvent:/makeFirstResponder:, two PlatformWindow forwards and the visibility bumps fast/composition.rs needs; rotateWithEvent: and smartMagnifyWithEvent: sent to the view event handler, which fast/gesture.rs converts
+crates/gpui_macos/src/window.rs hunk=35 added=133 unmarked=14 # Slopty: presentation reports and pacing, CursorStyle::None, CursorStyle::Image's cursor rect and the two visibility bumps fast/cursor.rs needs, covered windows drawn in test builds; composition: the GPUI view's hitTest:, the window's sendEvent:/makeFirstResponder:, two PlatformWindow forwards and the visibility bumps fast/composition.rs needs; rotateWithEvent: and smartMagnifyWithEvent: sent to the view event handler, which fast/gesture.rs converts
 crates/gpui/src/elements/surface.rs unmarked=7 # Slopty: the surface element on iOS too, a cfg widened per item
 crates/gpui/src/styled.rs unmarked=1 # Slopty: the outline style's builder
 crates/gpui/src/subscription.rs unmarked=1 # Slopty: SubscriberSet::is_empty, for the presented-frame sink
@@ -50,6 +50,7 @@ crates/gpui_linux/src/linux/wayland/client.rs unmarked=2 # Slopty: the momentum 
 crates/gpui_linux/src/linux/x11/client.rs unmarked=1 # Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None from X11
 crates/gpui_windows/src/direct_manipulation.rs unmarked=2 # Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None from Direct Manipulation
 crates/gpui_macros/src/styles.rs unmarked=1 # Slopty: CursorStyle::None's style method
+crates/gpui/src/gpui.rs hunk=9 # Slopty: fast::cursor's public types exported beside fast::gesture's, one hunk
 crates/gpui_macos/src/display_link.rs unmarked=1 # Slopty: whether the display link runs, for presentation pacing
 crates/gpui_macos/src/events.rs unmarked=2 # Slopty: a cancelled scroll or pinch is cancelled, not moved
 crates/gpui_platform/src/gpui_platform.rs unmarked=1 # Slopty: the iOS platform
@@ -63,4 +64,4 @@ crates/gpui/src/text_system/line_wrapper.rs hunk=29 added=62 removed=160 unmarke
 crates/gpui/src/text_system/line_layout.rs hunk=30 added=44 removed=34 unmarked=6 # zed #64624: compute_wrap_boundaries breaks where UAX #14 allows; its break opportunities come from fast::line_breaks
 crates/gpui_windows/src/events.rs hunk=10 unmarked=3 # zed #63402: keypad digits named kp0 to kp9; Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None from Windows
 crates/gpui/src/app.rs hunk=9 removed=23 unmarked=2 # zed #64866: Application::with_activation_policy and App::set_activation_policy, and the import list rustfmt reflows
-crates/gpui_macos/src/platform.rs hunk=13 added=50 unmarked=7 # zed #64866: the activation policy, Accessory applied before the run loop and Regular at launch as before
+crates/gpui_macos/src/platform.rs hunk=13 added=54 unmarked=7 # zed #64866: the activation policy, Accessory applied before the run loop and Regular at launch as before; Slopty: set_cursor_image forwarded to fast::cursor

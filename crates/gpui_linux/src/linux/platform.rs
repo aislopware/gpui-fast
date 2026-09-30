@@ -1009,6 +1009,7 @@ pub(super) fn cursor_style_to_icon_names(style: CursorStyle) -> &'static [&'stat
         CursorStyle::DragCopy => &["copy"],
         CursorStyle::ContextualMenu => &["context-menu"],
         CursorStyle::None => &["none"],
+        CursorStyle::Image(_fast_cursor) => &[DEFAULT_CURSOR_ICON_NAME],
     }
 }
 

@@ -376,6 +376,14 @@ pub trait Platform: 'static {
 
     fn set_cursor_style(&self, style: CursorStyle);
 
+    fn set_cursor_image(
+        &self,
+        id: crate::fast::cursor::CursorImageId,
+        image: Option<crate::fast::cursor::CursorImage>,
+    ) {
+        _ = (id, image);
+    }
+
     /// Hides the mouse cursor until the user moves the mouse over one of
     /// this application's windows.
     fn hide_cursor_until_mouse_moves(&self);
@@ -2693,6 +2701,9 @@ pub enum CursorStyle {
     /// cursor value `none`. Used when the element draws its own pointer, as a
     /// remote-desktop view does with the far side's cursor.
     None,
+
+    /// The picture `App::set_cursor_image` pointed the id at (fast::cursor).
+    Image(crate::fast::cursor::CursorImageId),
 }
 
 /// A clipboard item that should be copied to the clipboard
