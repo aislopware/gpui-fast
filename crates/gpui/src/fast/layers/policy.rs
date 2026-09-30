@@ -74,6 +74,8 @@ pub(crate) struct LayerPolicy {
     last_scrolled_frame: Option<u64>,
     /// The last frame the container was looked at.
     last_seen_frame: u64,
+    /// The offset the container had then.
+    last_offset: Option<Point<Pixels>>,
     /// Where the content in the layer was painted and what it inherited.
     painted_in: Option<LayerContext>,
     /// What was decided the last time the container was looked at.
@@ -152,9 +154,9 @@ pub(crate) fn decide(
         return Decision::Bypass;
     }
     let frame = window.fast_layers.frame;
-    let scrolled = invalidate::scrolled(window, id);
+    let noted = invalidate::scrolled(window, id);
     if !window.fast_layers.layers.contains_key(id) {
-        if !scrolled {
+        if !noted {
             return Decision::Bypass;
         }
         let key = LayerKey(window.fast_layers.next_key);
@@ -167,6 +169,11 @@ pub(crate) fn decide(
     let context = LayerContext::current(window, bounds, content_size);
     let layer = &window.fast_layers.layers[id];
     let policy = &layer.policy;
+    // A wheel moves the offset of every `div` under the pointer, and one that
+    // cannot scroll that far puts it back when it is prepainted: it only
+    // scrolled if its offset moved. A list clamps a wheel's scroll itself.
+    let scrolled =
+        noted && (invalidate::is_list(window, id) || policy.last_offset != Some(scroll_offset));
 
     let streak = if !scrolled {
         0
@@ -252,6 +259,7 @@ pub(crate) fn decide(
         policy.last_scrolled_frame = Some(frame);
     }
     policy.last_seen_frame = frame;
+    policy.last_offset = Some(scroll_offset);
     policy.last_decision = Some(decision);
     policy.change_history = history;
     policy.demoted_until = demoted_until;

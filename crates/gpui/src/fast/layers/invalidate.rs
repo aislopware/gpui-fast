@@ -220,6 +220,20 @@ pub(crate) fn painted_list(window: &mut Window, id: &GlobalElementId, version: &
     window.fast_layers.scrolls.remember(&container, frame);
 }
 
+/// Whether the scroll container `id` is a `list`, which has no id of its
+/// own nor a scroll handle: its offset lives in its state (see
+/// [`painted_list`]).
+pub(crate) fn is_list(window: &Window, id: &GlobalElementId) -> bool {
+    window
+        .fast_layers
+        .scrolls
+        .containers
+        .get(id)
+        .is_some_and(|container| {
+            matches!(container.source, ScrollSource::Container(_)) && container.version.is_some()
+        })
+}
+
 /// Whether the scroll container `id` scrolled since the last frame was
 /// drawn: a wheel moved it, or its shared scroll state changed, as
 /// [`crate::ScrollHandle::set_offset`] and the `scroll_to_…` methods change it.
@@ -719,8 +733,24 @@ fn owner_scrolled_only(
     // holding it) is judged by how often it was notified, above.
     let own = without_entity(&owner.own_dependencies, owner_view(window));
     let own = own.as_ref().unwrap_or(&owner.own_dependencies);
+    // Of the offsets the view read, only those its render read can shape the
+    // content (spec §6.2). What its elements read while prepainted or
+    // painted lies outside the content, which a composited frame neither
+    // prepaints nor paints, as a scrollbar beside it does; what the content
+    // itself reads is its record's.
+    let render_only;
+    let own = match &owner.render_offset_reads {
+        Some(reads) => {
+            render_only = RenderDependencies {
+                offset_reads: reads.clone(),
+                ..own.clone()
+            };
+            &render_only
+        }
+        None => own,
+    };
     !content_view_dirty
-        && !source.is_some_and(|source| render_read_offset(&owner.own_dependencies, source))
+        && !source.is_some_and(|source| render_read_offset(own, source))
         && !changed(window, cx, own, source)
 }
 

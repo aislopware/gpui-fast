@@ -1897,7 +1897,7 @@ mod decisions {
         GlobalElementId, Hsla, InteractiveElement as _, IntoElement, MouseMoveEvent,
         ParentElement as _, Pixels, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent,
         StatefulInteractiveElement as _, Styled as _, TestAppContext, TouchPhase, Window,
-        WindowHandle, div, point, px, rgb, size,
+        WindowHandle, canvas, div, point, px, rgb, size,
     };
     use std::{cell::Cell, rc::Rc};
 
@@ -1956,6 +1956,9 @@ mod decisions {
         pub(super) wide: bool,
         /// Whether its render asks for an animation frame.
         pub(super) animate: bool,
+        /// Whether it draws a scrollbar beside the scroll container, whose
+        /// prepaint and paint read the offset, as GPUI Kit's does.
+        pub(super) scrollbar: bool,
     }
 
     impl Render for LayerPage {
@@ -1982,7 +1985,30 @@ mod decisions {
                     scroller.children((0..ROWS).map(|index| row(index, self.hover, content_width)))
                 }
             };
-            div().size_full().bg(rgb(0xffffff)).child(scroller)
+            let page = div().size_full().bg(rgb(0xffffff)).child(scroller);
+            if !self.scrollbar {
+                return page;
+            }
+            let prepaint_handle = self.handle.clone();
+            let paint_handle = self.handle.clone();
+            page.child(
+                canvas(
+                    move |_, _, _| prepaint_handle.offset().y,
+                    move |bounds, _, window, _| {
+                        let offset = paint_handle.offset().y;
+                        let thumb = crate::Bounds::new(
+                            point(bounds.origin.x, bounds.origin.y - offset / 8.),
+                            size(px(6.), px(20.)),
+                        );
+                        window.paint_quad(crate::fill(thumb, rgb(0x888888)));
+                    },
+                )
+                .absolute()
+                .left(viewport().size.width)
+                .top(px(0.))
+                .w(px(6.))
+                .h(viewport().size.height),
+            )
         }
     }
 
@@ -1995,6 +2021,7 @@ mod decisions {
             extra: None,
             wide: false,
             animate: false,
+            scrollbar: false,
         }
     }
 
@@ -2182,6 +2209,25 @@ mod decisions {
         });
         let window = handle.into();
         draw(cx, window);
+        draw(cx, window);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+    }
+
+    /// A scrollbar beside the container reads the offset while it is
+    /// prepainted and painted, outside the content: the content is
+    /// composited, and the scrollbar drawn afresh around it.
+    #[crate::test]
+    fn an_owner_that_reads_the_offset_outside_the_content_composites(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        handle
+            .update(cx, |page, _, cx| {
+                page.scrollbar = true;
+                cx.notify();
+            })
+            .unwrap();
         draw(cx, window);
         promote(cx, window);
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
@@ -2537,8 +2583,10 @@ mod policies {
             with_window(cx, window, |window, cx| window.blur(cx));
         });
         let mut decisions = Vec::new();
+        // Down, where there is room to scroll: at the top the wheel would
+        // move nothing, which is no scroll.
         for _ in 0..12 {
-            decisions.push(scroll(cx, window, 10.).unwrap());
+            decisions.push(scroll(cx, window, -10.).unwrap());
         }
         assert!(
             decisions.contains(&Decision::Composite),
@@ -3423,40 +3471,70 @@ mod integration {
     fn path_over_tiles_matches_drawing_without_layers(cx: &mut TestAppContext, scale_factor: f32) {
         use super::decisions::{LayerPage, new_page};
         use crate::{Path, canvas, point, size};
-        if !crate::fast::layers::COMPILED {
-            return;
-        }
-        let open = |cx: &mut TestAppContext, layers: bool| {
-            let window = cx.add_window(|_, cx| LayerPage {
-                extra: Some(std::rc::Rc::new(|| {
-                    canvas(
-                        |_, _, _| {},
-                        |bounds, _, window, _| {
-                            // Two paths, the second over the first, as a
-                            // progress circle draws its track and its arc.
-                            for (inset, color) in [(0., crate::red()), (3., crate::green())] {
-                                let origin = bounds.origin + point(px(20. + inset), px(70.));
-                                let mut path = Path::new(origin);
-                                path.line_to(origin + point(px(12.), px(0.)));
-                                path.curve_to(
-                                    origin + point(px(0.), px(12.)),
-                                    origin + point(px(14.), px(14.)),
-                                );
-                                path.line_to(origin);
-                                window.paint_path(path, color);
-                            }
-                            window.paint_quad(crate::fill(
-                                crate::Bounds::new(bounds.origin, size(px(10.), px(10.))),
-                                crate::blue(),
-                            ));
-                        },
-                    )
-                    .w(px(100.))
-                    .h(px(100.))
-                    .into_any_element()
-                })),
+        let composited = matches_drawing_without_layers(cx, scale_factor, |cx| LayerPage {
+            extra: Some(std::rc::Rc::new(|| {
+                canvas(
+                    |_, _, _| {},
+                    |bounds, _, window, _| {
+                        // Two paths, the second over the first, as a progress
+                        // circle draws its track and its arc.
+                        for (inset, color) in [(0., crate::red()), (3., crate::green())] {
+                            let origin = bounds.origin + point(px(20. + inset), px(70.));
+                            let mut path = Path::new(origin);
+                            path.line_to(origin + point(px(12.), px(0.)));
+                            path.curve_to(
+                                origin + point(px(0.), px(12.)),
+                                origin + point(px(14.), px(14.)),
+                            );
+                            path.line_to(origin);
+                            window.paint_path(path, color);
+                        }
+                        window.paint_quad(crate::fill(
+                            crate::Bounds::new(bounds.origin, size(px(10.), px(10.))),
+                            crate::blue(),
+                        ));
+                    },
+                )
+                .w(px(100.))
+                .h(px(100.))
+                .into_any_element()
+            })),
+            ..new_page(false, cx)
+        });
+        assert!(composited >= 6, "composited {composited} frames");
+    }
+
+    /// A scrollbar beside the container, which reads the offset where it is
+    /// prepainted and painted, moves with the offset while the content is
+    /// composited, as it does without layers.
+    #[crate::test]
+    fn a_scrollbar_beside_a_composited_layer_matches_drawing_without_layers(
+        cx: &mut TestAppContext,
+    ) {
+        use super::decisions::{LayerPage, new_page};
+        for scale_factor in [1., 1.6] {
+            let composited = matches_drawing_without_layers(cx, scale_factor, |cx| LayerPage {
+                scrollbar: true,
                 ..new_page(false, cx)
             });
+            assert!(composited >= 6, "composited {composited} frames");
+        }
+    }
+
+    /// Scrolls a window with layers and one without, each holding the page
+    /// `page` builds, at `scale_factor`, and checks after every scroll that
+    /// they draw the same. Returns how many frames composited a layer.
+    fn matches_drawing_without_layers<V: crate::Render>(
+        cx: &mut TestAppContext,
+        scale_factor: f32,
+        page: impl Fn(&mut crate::App) -> V,
+    ) -> u64 {
+        use crate::point;
+        if !crate::fast::layers::COMPILED {
+            return u64::MAX;
+        }
+        let mut open = |cx: &mut TestAppContext, layers: bool| {
+            let window = cx.add_window(|_, cx| page(cx));
             cx.simulate_window_scale_factor_change(window.into(), scale_factor);
             cx.update_window(window.into(), |_, window, cx| {
                 window.set_scroll_layers(layers);
@@ -3467,7 +3545,7 @@ mod integration {
         };
         let layered = open(cx, true);
         let plain = open(cx, false);
-        let drawn = |cx: &mut TestAppContext, window: crate::WindowHandle<LayerPage>| {
+        let drawn = |cx: &mut TestAppContext, window: crate::WindowHandle<V>| {
             cx.update_window(window.into(), |_, window, _| window.painted_primitives())
                 .unwrap()
         };
@@ -3496,18 +3574,89 @@ mod integration {
                     a.iter().filter(|line| !b.contains(line)).cloned().collect()
                 };
                 panic!(
-                    "step {step}, scrolled by {dy}: only with layers {:#?}, only without {:#?}",
+                    "scale {scale_factor}, step {step}, scrolled by {dy}: only with layers \
+                     {:#?}, only without {:#?}",
                     only(&actual, &expected),
                     only(&expected, &actual)
                 );
             }
         }
-        let composited = cx
-            .update_window(layered.into(), |_, window, _| {
-                window.layout_stats().layer_frames_composited
+        cx.update_window(layered.into(), |_, window, _| {
+            window.layout_stats().layer_frames_composited
+        })
+        .unwrap()
+    }
+
+    /// A scroll container around a smaller one, its content no taller than
+    /// itself, as GPUI Kit's gallery holds a story's own scroll area.
+    struct NestedScrollers {
+        outer: crate::ScrollHandle,
+        inner: crate::ScrollHandle,
+    }
+
+    impl Render for NestedScrollers {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use crate::{InteractiveElement as _, StatefulInteractiveElement as _, rgb};
+            div().size_full().bg(rgb(0xffffff)).child(
+                div()
+                    .id("outer")
+                    .overflow_y_scroll()
+                    .track_scroll(&self.outer)
+                    .w(px(200.))
+                    .h(px(100.))
+                    .child(
+                        div()
+                            .id("scroller")
+                            .overflow_y_scroll()
+                            .track_scroll(&self.inner)
+                            .w(px(200.))
+                            .h(px(100.))
+                            .children(
+                                (0..40).map(|ix| div().h(px(20.)).bg(rgb(0x100000 + ix * 0x10))),
+                            ),
+                    ),
+            )
+        }
+    }
+
+    /// A wheel over the inner container moves the outer one's offset too,
+    /// which it cannot scroll and puts back when it is prepainted: the outer
+    /// container did not scroll, and the inner one gets the layer.
+    #[crate::test]
+    fn a_container_that_cannot_scroll_is_not_promoted_by_the_wheel(cx: &mut TestAppContext) {
+        use super::decisions::{decision, promote, scroll};
+        use crate::fast::layers::policy::Decision;
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = cx.add_window(|_, _| NestedScrollers {
+            outer: crate::ScrollHandle::new(),
+            inner: crate::ScrollHandle::new(),
+        });
+        let window: crate::AnyWindowHandle = handle.into();
+        for _ in 0..2 {
+            cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+                .unwrap();
+        }
+        promote(cx, window);
+        for step in 0..4 {
+            assert_eq!(
+                scroll(cx, window, -10.),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+        }
+        let outer_painted = cx
+            .update_window(window, |_, window, _| {
+                window
+                    .fast_layers
+                    .layers
+                    .iter()
+                    .any(|(id, layer)| id.last() == Some(&"outer".into()) && layer.record.is_some())
             })
             .unwrap();
-        assert!(composited >= 6, "composited {composited} frames");
+        assert!(!outer_painted, "the outer container has no layer");
+        assert_eq!(decision(cx, window), Some(Decision::Composite));
     }
 
     /// A glyph sits on its line's baseline, below the top of a tall line: it

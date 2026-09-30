@@ -78,6 +78,12 @@ pub(crate) struct RetainedSubtree {
     /// none of it changed, the subtree can be drawn again around nested
     /// subtrees that are built again. See [`crate::fast::splice`].
     pub(crate) own_dependencies: RenderDependencies,
+    /// The scroll offsets the subtree's render read itself, outside nested
+    /// subtrees, when it was rendered: unlike offsets read while it was
+    /// prepainted or painted, they shape the elements it built, a scroll
+    /// container's content included. `None` when it was laid out without
+    /// being rendered. See [`crate::fast::layers::invalidate`].
+    pub(crate) render_offset_reads: Option<crate::fast::layers::invalidate::OffsetReads>,
     /// The hovers the subtree was painted by, nested subtrees included.
     pub(crate) hover_dependencies: Rc<[(HitboxId, bool)]>,
     /// The hovers it was painted by itself, outside nested subtrees.
@@ -690,6 +696,7 @@ impl Window {
                 context: record.context.clone(),
                 dependencies: record.dependencies.written_up_to(writes_now),
                 own_dependencies: record.own_dependencies.written_up_to(writes_now),
+                render_offset_reads: record.render_offset_reads.clone(),
                 hover_dependencies: record.hover_dependencies.clone(),
                 own_hovers: record.own_hovers.clone(),
                 layout_keys: record.layout_keys.clone(),
@@ -784,6 +791,7 @@ impl Window {
                 }),
                 dependencies: RenderDependencies::default(),
                 own_dependencies: RenderDependencies::default(),
+                render_offset_reads: None,
                 hover_dependencies: Rc::new([]),
                 own_hovers: Rc::new([]),
                 layout_keys: Rc::new([]),
@@ -819,6 +827,9 @@ impl Window {
         let mut dependencies = cx.finish_recording_dependencies(recording.dependencies);
         self.retained_state.subtree_stack.pop();
         let index = recording.index?;
+        let render_offset_reads = layout_dependencies
+            .as_ref()
+            .map(|layout| layout.own.offset_reads.clone());
         if let Some(layout_dependencies) = layout_dependencies {
             dependencies = RecordedDependencies {
                 all: layout_dependencies.all.union(&dependencies.all),
@@ -842,6 +853,7 @@ impl Window {
         record.context = Rc::new(context);
         record.dependencies = dependencies.all;
         record.own_dependencies = dependencies.own;
+        record.render_offset_reads = render_offset_reads;
         record.layout_keys = layout_keys.into();
         record.layout = layout;
         record.rebuild = rebuild.map(Rc::new);
