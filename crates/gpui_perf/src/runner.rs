@@ -597,19 +597,31 @@ fn compare_quads(off: &[String], on: &[String], what: &str) -> Option<String> {
     if off == on {
         return None;
     }
-    if off.len() != on.len() {
-        return Some(format!(
-            "{} primitives painted without {what}, {} with",
-            off.len(),
-            on.len()
-        ));
-    }
     let mut counts: HashMap<&str, isize> = HashMap::new();
     for quad in off {
         *counts.entry(quad).or_default() += 1;
     }
     for quad in on {
         *counts.entry(quad).or_default() -= 1;
+    }
+    if off.len() != on.len() {
+        // A primitive one window painted more often than the other, the
+        // first in the drawing order of the window painting more.
+        let (more, sign) = if off.len() > on.len() {
+            (off, 1)
+        } else {
+            (on, -1)
+        };
+        let extra = more
+            .iter()
+            .find(|quad| counts[quad.as_str()] * sign > 0)
+            .map_or("", String::as_str);
+        return Some(format!(
+            "{} primitives painted without {what}, {} with; only {} paints {extra}",
+            off.len(),
+            on.len(),
+            if sign > 0 { "without" } else { "with" }
+        ));
     }
     let first = off.iter().zip(on).position(|(a, b)| a != b).unwrap();
     if counts.values().all(|&count| count == 0) {
@@ -907,6 +919,18 @@ pub fn to_json(options: &Options, reports: &[ScenarioReport]) -> String {
 mod tests {
     use super::*;
     use gpui::{Entity, SharedString, div, prelude::*};
+
+    /// A frame one window painted more primitives in names one of them.
+    #[test]
+    fn a_mismatch_in_count_names_a_primitive_only_one_window_painted() {
+        let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let detail =
+            compare_quads(&strings(&["a", "b"]), &strings(&["a", "c", "b"]), "layers").unwrap();
+        assert!(detail.ends_with("only with paints c"), "{detail}");
+        let detail =
+            compare_quads(&strings(&["a", "d", "b"]), &strings(&["a", "b"]), "layers").unwrap();
+        assert!(detail.ends_with("only without paints d"), "{detail}");
+    }
 
     struct Counter {
         ticks: usize,
