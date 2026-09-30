@@ -102,7 +102,39 @@ pub(crate) fn inside_layer(window: &Window) -> bool {
 /// `bounds` are the container's, `child_min` and `content_size` where its
 /// children lie before scrolling.
 #[allow(clippy::too_many_arguments)]
+#[inline(always)]
 pub(crate) fn begin_children(
+    window: &mut Window,
+    cx: &mut App,
+    id: Option<&GlobalElementId>,
+    bounds: Bounds<Pixels>,
+    child_min: Point<Pixels>,
+    content_size: Size<Pixels>,
+    scroll_offset: Point<Pixels>,
+    style: &Style,
+) -> Children {
+    // Nearly every div: it does not scroll, and has no offset to snap.
+    if !scrolls(style) && scroll_offset == Point::default() {
+        return Children {
+            decision: Decision::Bypass,
+            scroll_offset,
+        };
+    }
+    begin_scrolling_children(
+        window,
+        cx,
+        id,
+        bounds,
+        child_min,
+        content_size,
+        scroll_offset,
+        style,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn begin_scrolling_children(
     window: &mut Window,
     cx: &mut App,
     id: Option<&GlobalElementId>,
@@ -188,6 +220,7 @@ pub(crate) fn begin_children(
 /// Prepaints a container's children as [`begin_children`] decided: `f` is
 /// the children's prepaint, run at the container's scroll offset unless
 /// the layer is composited.
+#[inline(always)]
 pub(crate) fn prepaint_children(
     window: &mut Window,
     children: Children,
@@ -199,10 +232,16 @@ pub(crate) fn prepaint_children(
 }
 
 /// Ends what [`begin_children`] began, once the children are prepainted.
+#[inline(always)]
 pub(crate) fn end_children(window: &mut Window, cx: &mut App, children: Children) {
     if children.decision != Decision::Repaint {
         return;
     }
+    end_repainted_children(window, cx);
+}
+
+#[inline(never)]
+fn end_repainted_children(window: &mut Window, cx: &mut App) {
     window.content_mask_stack.pop();
     let Some(mut painting) = window.fast_layers.painting.take() else {
         debug_assert!(false, "a layer's prepaint ended without beginning");
@@ -218,7 +257,21 @@ pub(crate) fn end_children(window: &mut Window, cx: &mut App, children: Children
 
 /// Paints a container's children as its prepaint decided: `f` is the
 /// children's paint.
+#[inline(always)]
 pub(crate) fn paint_children(
+    window: &mut Window,
+    cx: &mut App,
+    id: Option<&GlobalElementId>,
+    f: impl FnOnce(&mut Window, &mut App),
+) {
+    if window.fast_layers.layers.is_empty() {
+        return f(window, cx);
+    }
+    paint_children_of_layers(window, cx, id, f)
+}
+
+#[inline(never)]
+fn paint_children_of_layers(
     window: &mut Window,
     cx: &mut App,
     id: Option<&GlobalElementId>,
