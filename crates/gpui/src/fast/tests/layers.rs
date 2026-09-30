@@ -2654,6 +2654,9 @@ mod input {
         drags: Rc<RefCell<Vec<Seen>>>,
         inner: Option<ScrollHandle>,
         tooltip: bool,
+        /// Paints the page's background translucent, which a layer's tiles
+        /// cannot be cleared with.
+        translucent: bool,
     }
 
     /// What a row of an [`InputPage`] is dragged as.
@@ -2723,7 +2726,12 @@ mod input {
                 }
                 None => scroller.children(rows),
             };
-            div().size_full().bg(rgb(0xffffff)).child(scroller)
+            let background = if self.translucent {
+                crate::rgba(0xffffff80)
+            } else {
+                rgb(0xffffff)
+            };
+            div().size_full().bg(background).child(scroller)
         }
     }
 
@@ -2745,6 +2753,7 @@ mod input {
             drags: Rc::default(),
             inner,
             tooltip,
+            translucent: false,
         });
         draw(cx, window.into());
         draw(cx, window.into());
@@ -3141,5 +3150,149 @@ mod input {
                 .unwrap()
         };
         assert_eq!(outer(cx, with), outer(cx, without));
+    }
+
+    /// How often observers of the page's view were told it changed, from
+    /// now on.
+    fn count_observations(
+        cx: &mut TestAppContext,
+        window: WindowHandle<InputPage>,
+    ) -> Rc<Cell<usize>> {
+        let count = Rc::new(Cell::new(0));
+        let entity = window.update(cx, |_, _, cx| cx.entity()).unwrap();
+        let counter = count.clone();
+        cx.update(|cx| {
+            cx.observe(&entity, move |_, _| counter.set(counter.get() + 1))
+                .detach()
+        });
+        count
+    }
+
+    #[crate::test]
+    fn a_rebuild_for_input_is_not_seen_by_observers(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let (with, without) = page_with_and_without_layers(cx);
+        let mut counts = Vec::new();
+        for window in [with, without] {
+            let count = count_observations(cx, window);
+            scroll_five_times(cx, window.into());
+            dispatch(
+                cx,
+                window.into(),
+                [mouse_move(point(px(20.), px(50.)), false)],
+            );
+            cx.run_until_parked();
+            counts.push(count.get());
+        }
+        assert_eq!(rebuilds(cx, with.into()), 1);
+        assert_eq!(counts[0], counts[1]);
+    }
+
+    fn repaints(cx: &mut TestAppContext, window: AnyWindowHandle) -> u64 {
+        with_window(cx, window, |window, _| {
+            window.layout_stats().layer_frames_repainted
+        })
+    }
+
+    #[crate::test]
+    fn rebuilds_for_input_do_not_demote(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window: AnyWindowHandle = handle.into();
+        scroll_five_times(cx, window);
+        // Scrolling with the pointer moving in the viewport between scrolls,
+        // beside the rows, where it hovers none: each move rebuilds, none
+        // changes the content.
+        for step in 0..12 {
+            assert_eq!(
+                scroll(cx, window, 5.),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+            let y = px(50. + (step % 2) as f32);
+            let repainted = repaints(cx, window);
+            dispatch(cx, window, [mouse_move(point(px(150.), y), false)]);
+            assert_eq!(repaints(cx, window), repainted + 1, "step {step}");
+        }
+        assert_eq!(rebuilds(cx, window), 12);
+        let id = super::decisions::scroller_id(cx, window);
+        let (demoted, changes) = with_window(cx, window, |window, _| {
+            let layer = &window.fast_layers.layers[&id];
+            (
+                window.layout_stats().layers_demoted,
+                layer.policy.change_history.count_ones(),
+            )
+        });
+        assert_eq!((demoted, changes), (0, 0));
+    }
+
+    #[crate::test]
+    fn content_painted_without_tiles_is_not_rebuilt_for_input(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window: AnyWindowHandle = handle.into();
+        scroll_five_times(cx, window);
+        // The layer's tiles cannot be cleared with a translucent background:
+        // its content is painted straight into the frame, at the offset
+        // shown.
+        let repainted = repaints(cx, window);
+        frame_after(cx, window, |cx| {
+            handle
+                .update(cx, |page, _, cx| {
+                    page.translucent = true;
+                    cx.notify();
+                })
+                .unwrap();
+        });
+        assert_eq!(decision(cx, window), Some(Decision::Repaint));
+        assert_eq!(repaints(cx, window), repainted, "painted without tiles");
+        dispatch(cx, window, [mouse_move(point(px(20.), px(50.)), false)]);
+        assert_eq!(rebuilds(cx, window), 0);
+    }
+
+    #[crate::test]
+    fn bounds_for_item_matches_after_the_tracked_element_goes(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let (with_inner, without_inner) = (ScrollHandle::new(), ScrollHandle::new());
+        let (with, without) = pages_with_and_without_layers(
+            cx,
+            Some(with_inner.clone()),
+            Some(without_inner.clone()),
+        );
+        assert_eq!(
+            scroll_five_times(cx, with.into()),
+            vec![Some(Decision::Composite); 3]
+        );
+        scroll_five_times(cx, without.into());
+        // The rows' div stops being rendered; its handle, kept, holds the
+        // bounds its children had when last shown, as without a layer.
+        for window in [with, without] {
+            window
+                .update(cx, |page, _, cx| {
+                    page.inner = None;
+                    cx.notify();
+                })
+                .unwrap();
+            draw(cx, window.into());
+        }
+        for _ in 0..3 {
+            scroll(cx, with.into(), 5.);
+            scroll(cx, without.into(), 5.);
+        }
+        for row in 0..ROWS {
+            assert_eq!(
+                with_inner.bounds_for_item(row),
+                without_inner.bounds_for_item(row),
+                "row {row}"
+            );
+        }
     }
 }

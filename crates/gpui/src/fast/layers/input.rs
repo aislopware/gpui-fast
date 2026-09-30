@@ -9,10 +9,10 @@
 //! before it sees input that could observe them.
 
 use crate::{
-    App, Bounds, ContentMask, EntityId, GlobalElementId, Hitbox, Pixels, PlatformInput, Point,
-    Window,
+    App, Bounds, ContentMask, GlobalElementId, Hitbox, Pixels, PlatformInput, Point, Window,
     elements::ScrollHandleState,
-    fast::layers::{COMPILED, Layer, invalidate, policy::Decision},
+    fast::layers::{COMPILED, Layer, policy::Decision},
+    fast::splice::view_entity,
 };
 use collections::FxHashMap;
 use std::{
@@ -34,10 +34,14 @@ pub(crate) struct LayerInput {
     /// painted: how far behind the positions its closures and element
     /// states hold are.
     pub(crate) stale: Point<Pixels>,
+    /// Whether the content is to be painted again at the offset shown the
+    /// next time the container is prepainted, though nothing it is built
+    /// from changed: it is about to see input (see [`before_dispatch`]).
+    pub(crate) rebuild: bool,
     /// The container's clip rect in window space, last frame.
     pub(crate) viewport: Bounds<Pixels>,
-    /// The view holding the container, last frame.
-    pub(crate) owner: Option<EntityId>,
+    /// The retained subtree of the view holding the container, last frame.
+    pub(crate) owner: Option<GlobalElementId>,
     /// How far the content shown has scrolled since it was painted, shared
     /// with the scroll handles tracking elements inside it.
     pub(crate) handle_offset: Rc<Cell<Point<Pixels>>>,
@@ -99,21 +103,36 @@ impl LayerInput {
 /// `decision`: a layer is composited only if what its content added to the
 /// last frame can be carried into this one, which a frame drawn without
 /// the container prepainting its children in between (a reused view, a
-/// refresh) prevents. It is painted again otherwise.
+/// refresh) prevents, and its content is not about to see input. It is
+/// painted again otherwise, which the policy does not take for a change of
+/// the content.
 pub(crate) fn decide(window: &mut Window, id: &GlobalElementId, decision: Decision) -> Decision {
     let frame = window.fast_layers.frame;
-    let owner = invalidate::owner_view(window);
+    let owner = window.retained_state.subtree_stack.last();
     let Some(layer) = window.fast_layers.layers.get_mut(id) else {
         return decision;
     };
+    let has_record = layer.record.is_some();
     let input = &mut layer.input;
-    input.owner = owner;
-    if decision == Decision::Composite
-        && input
-            .ranges_frame
-            .is_none_or(|painted| painted + 1 != frame)
+    if input.owner.as_ref() != owner {
+        input.owner = owner.cloned();
+    }
+    let rebuild = std::mem::take(&mut input.rebuild);
+    let decision = if decision == Decision::Composite
+        && (rebuild
+            || !has_record
+            || input
+                .ranges_frame
+                .is_none_or(|painted| painted + 1 != frame))
     {
-        return Decision::Repaint;
+        Decision::Repaint
+    } else {
+        decision
+    };
+    if decision != Decision::Composite {
+        // The content is painted at the offset shown, into the layer or
+        // straight into the frame.
+        input.stale = Point::default();
     }
     decision
 }
@@ -142,32 +161,47 @@ pub(crate) fn before_dispatch(window: &mut Window, cx: &mut App, event: &Platfor
     };
     let mut owners = Vec::new();
     let mut unknown_owner = false;
+    let mut rebuilt = 0;
     for layer in window.fast_layers.layers.values() {
         if layer.input.stale != Point::default() && reaches(window, layer) {
-            match layer.input.owner {
-                Some(owner) => owners.push(owner),
-                None => unknown_owner = true,
+            rebuilt += 1;
+            match layer.input.owner.as_ref() {
+                Some(owner) if view_entity(owner).is_some() => {
+                    if !owners.contains(owner) {
+                        owners.push(owner.clone());
+                    }
+                }
+                _ => unknown_owner = true,
             }
         }
     }
-    let rebuilt = owners.len() + unknown_owner as usize;
     if rebuilt == 0 {
         return;
     }
     for layer in window.fast_layers.layers.values_mut() {
-        if layer.input.stale != Point::default()
-            && layer
-                .input
-                .owner
-                .is_none_or(|owner| owners.contains(&owner))
+        let input = &mut layer.input;
+        if input.stale != Point::default()
+            && (unknown_owner
+                || input
+                    .owner
+                    .as_ref()
+                    .is_some_and(|owner| owners.contains(owner)))
         {
-            layer.input.stale = Point::default();
+            input.rebuild = true;
         }
     }
-    // The view holding the container is built again, as for any change of
-    // the content, and the container paints its layer.
-    for owner in owners {
-        cx.notify(owner);
+    // The view holding the container is built again, as when an
+    // interaction inside it changes it, and the container, told to by
+    // `rebuild`, paints its layer. The view is not notified: nothing it is
+    // built from changed, and its observers are not to hear otherwise.
+    for owner in &owners {
+        window.retained_state.dirty_subtrees.insert(owner.clone());
+        if let Some(view) = view_entity(owner) {
+            window.dirty_views.insert(view);
+            for view in window.rendered_frame.dispatch_tree.view_path_reversed(view) {
+                window.dirty_views.insert(view);
+            }
+        }
     }
     if unknown_owner {
         window.refresh();
