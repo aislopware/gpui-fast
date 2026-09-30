@@ -275,27 +275,44 @@ fn glyph_bounds_cache_keeps_a_tile_for_its_frame() {
     );
 }
 
-/// A line tests its glyphs against its mask pushed out by their reach once a
-/// run; that is the box a glyph may draw in, the bounding box's height above
-/// and below the baseline and before the origin and its width after it, each
-/// plus a 2px margin, overlapping the mask.
+/// A line tests its glyphs against its mask pushed out by their run's extent
+/// once a run; that is the box a glyph may draw in, the font's bounding box
+/// placed on the glyph's origin and baseline, widened to the font's ascent
+/// and descent, plus a 2px margin, overlapping the mask. A text system whose
+/// bounding box starts on the baseline, leaving out descenders, has them
+/// back from the descent.
 #[test]
-fn a_glyph_may_reach_the_mask_where_its_box_overlaps_it() {
+fn a_glyph_may_reach_the_mask_where_its_font_box_overlaps_it() {
     let mask = Bounds::new(point(px(40.), px(30.)), size(px(100.), px(50.)));
-    let (width, height) = (px(6.), px(12.));
-    for x in -40..200 {
-        for y in -40..140 {
-            let (x, y) = (px(x as f32), px(y as f32));
-            let line_glyph = Bounds::new(point(x, y - px(9.)), size(width, height));
-            let reach = Bounds::from_corners(
-                point(x - height - px(2.), y - height - px(2.)),
-                point(x + width + px(2.), y + height + px(2.)),
-            );
-            assert_eq!(
-                may_reach(line_glyph, px(9.), &mask),
-                reach.intersects(&mask),
-                "a glyph at {x:?}, {y:?}"
-            );
+    // Font boxes in the font's y-up coordinates: one reaching left of the
+    // origin and below the baseline, as Core Text's and DirectWrite's do,
+    // and one on the baseline, as cosmic-text's is.
+    let fonts = [
+        (
+            Bounds::new(point(px(-3.), px(-4.)), size(px(10.), px(16.))),
+            (px(-3.), px(7.), px(12.), px(4.)),
+        ),
+        (
+            Bounds::new(point(px(0.), px(0.)), size(px(6.), px(15.))),
+            (px(0.), px(6.), px(15.), px(3.)),
+        ),
+    ];
+    let (ascent, descent) = (px(11.), px(-3.));
+    for (font_box, (left, right, above, below)) in fonts {
+        for x in -40..200 {
+            for y in -40..140 {
+                let (x, y) = (px(x as f32), px(y as f32));
+                let origin = point(x, y - px(9.));
+                let reach = Bounds::from_corners(
+                    point(x + left - px(2.), y - above - px(2.)),
+                    point(x + right + px(2.), y + below + px(2.)),
+                );
+                assert_eq!(
+                    may_reach((font_box, ascent, descent), origin, px(9.), &mask),
+                    reach.intersects(&mask),
+                    "a glyph at {x:?}, {y:?} in {font_box:?}"
+                );
+            }
         }
     }
 }

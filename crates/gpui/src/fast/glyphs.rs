@@ -2,9 +2,9 @@
 
 use crate::{
     App, AtlasTile, Bounds, ContentMask, DecorationRun, DevicePixels, FontId, GlyphId, Hsla,
-    IsZero, MonochromeSprite, Pixels, Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ScaledPixels, Size, SubpixelSprite, TransformationMatrix, Window,
-    util::round_half_toward_zero,
+    IsZero, LineLayout, MonochromeSprite, Pixels, Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
+    SUBPIXEL_VARIANTS_Y, ScaledPixels, ShapedRun, Size, SubpixelSprite, TransformationMatrix,
+    Window, util::round_half_toward_zero,
 };
 use anyhow::Result;
 use std::borrow::Cow;
@@ -47,23 +47,57 @@ pub(crate) fn quantize_emoji_origin(origin: Point<ScaledPixels>) -> Point<Scaled
     })
 }
 
-/// [`LineGlyphPainter::meets_mask`] for a glyph on its own.
+/// [`LineGlyphPainter::meets_mask`] for a glyph on its own, in a font whose
+/// bounding box is `font_box` and whose ascent and descent are given.
 #[cfg(test)]
 pub(crate) fn may_reach(
-    line_glyph: Bounds<Pixels>,
+    font: (Bounds<Pixels>, Pixels, Pixels),
+    origin: Point<Pixels>,
     baseline: Pixels,
     mask: &Bounds<Pixels>,
 ) -> bool {
-    GlyphReach::new(line_glyph.size, mask)
-        .contains(line_glyph.origin.x, line_glyph.origin.y + baseline)
+    let (font_box, ascent, descent) = font;
+    GlyphReach::new(&GlyphExtent::new(font_box, ascent, descent), mask)
+        .contains(origin.x, origin.y + baseline)
 }
 
-/// [`LineGlyphPainter::meets_mask`] for glyphs sized alike in one mask: the
-/// mask's edges pushed out by the glyphs' reach, which a line works out once
-/// a run, so that each glyph only compares its origin and baseline with them.
+/// How far a font's glyphs may draw from where they are placed, at one size:
+/// left of and right of the glyph's origin, above and below its baseline,
+/// each plus a margin for glyph dilation and subpixel positioning.
+///
+/// It is the font's bounding box, which encloses every glyph of the font,
+/// placed on the baseline as the font's y-up coordinates put it, widened to
+/// the font's ascent and descent: not every text system's bounding box is the
+/// font's (cosmic-text's starts on the baseline and is ascent plus descent
+/// tall, which leaves out descenders).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GlyphExtent {
+    before: Pixels,
+    after: Pixels,
+    above: Pixels,
+    below: Pixels,
+}
+
+impl GlyphExtent {
+    const MARGIN: Pixels = Pixels(2.);
+
+    fn new(font_box: Bounds<Pixels>, ascent: Pixels, descent: Pixels) -> Self {
+        let zero = Pixels::ZERO;
+        Self {
+            before: (-font_box.origin.x).max(zero) + Self::MARGIN,
+            after: (font_box.origin.x + font_box.size.width).max(zero) + Self::MARGIN,
+            above: (font_box.origin.y + font_box.size.height).max(ascent) + Self::MARGIN,
+            below: (-font_box.origin.y).max(-descent).max(zero) + Self::MARGIN,
+        }
+    }
+}
+
+/// [`LineGlyphPainter::meets_mask`] for the glyphs of a run: the mask's
+/// edges pushed out by the glyphs' [`GlyphExtent`], which a line works out
+/// once a run, so that each glyph only compares its origin and baseline with
+/// them.
 #[derive(Clone, Copy)]
 struct GlyphReach {
-    size: Size<Pixels>,
     left: Pixels,
     top: Pixels,
     right: Pixels,
@@ -71,47 +105,25 @@ struct GlyphReach {
 }
 
 impl GlyphReach {
-    /// A reach [`GlyphReach::is_for`] no size, to be worked out on first use.
-    const UNSET: Self = Self {
-        size: Size {
-            width: Pixels(f32::NAN),
-            height: Pixels(f32::NAN),
-        },
-        left: Pixels(0.),
-        top: Pixels(0.),
-        right: Pixels(0.),
-        bottom: Pixels(0.),
+    /// A reach nothing is inside, for a line whose first run has not begun.
+    const NOWHERE: Self = Self {
+        left: Pixels(f32::INFINITY),
+        top: Pixels(f32::INFINITY),
+        right: Pixels(f32::NEG_INFINITY),
+        bottom: Pixels(f32::NEG_INFINITY),
     };
 
-    /// Whether this is the reach of glyphs of `size`, comparing bits, as a
-    /// size's only use is to work out the same reach again.
-    #[inline]
-    fn is_for(&self, size: Size<Pixels>) -> bool {
-        self.size.width.0.to_bits() == size.width.0.to_bits()
-            && self.size.height.0.to_bits() == size.height.0.to_bits()
-    }
-
-    fn new(size: Size<Pixels>, mask: &Bounds<Pixels>) -> Self {
-        const MARGIN: Pixels = Pixels(2.);
+    fn new(extent: &GlyphExtent, mask: &Bounds<Pixels>) -> Self {
         // An empty mask's edges would let in the glyphs straddling it.
         if mask.is_empty() {
-            return Self {
-                size,
-                left: Pixels(f32::INFINITY),
-                top: Pixels(f32::INFINITY),
-                right: Pixels(f32::NEG_INFINITY),
-                bottom: Pixels(f32::NEG_INFINITY),
-            };
+            return Self::NOWHERE;
         }
-        let height = size.height + MARGIN;
-        let width = size.width + MARGIN;
         let end = mask.bottom_right();
         Self {
-            size,
-            left: mask.origin.x - width,
-            top: mask.origin.y - height,
-            right: end.x + height,
-            bottom: end.y + height,
+            left: mask.origin.x - extent.after,
+            top: mask.origin.y - extent.below,
+            right: end.x + extent.before,
+            bottom: end.y + extent.above,
         }
     }
 
@@ -252,9 +264,9 @@ impl Window {
 
 /// Paints the glyphs of a line, working out what they share once rather than
 /// once a glyph: the content mask, which nothing painted along a line
-/// changes, snapped for its sprites and pushed out by each run's glyph reach
-/// for [`LineGlyphPainter::meets_mask`], and the rendering of each run, which
-/// only changes with the run's font or color.
+/// changes, snapped for its sprites and pushed out by each run's glyph
+/// extent for [`LineGlyphPainter::meets_mask`], and the rendering of each
+/// run, which only changes with the run's font or color.
 pub(crate) struct LineGlyphPainter {
     snapped_content_mask: ContentMask<ScaledPixels>,
     content_mask: Bounds<Pixels>,
@@ -267,35 +279,29 @@ impl LineGlyphPainter {
         Self {
             snapped_content_mask: window.snapped_content_mask(),
             content_mask: window.content_mask().bounds,
-            reach: GlyphReach::UNSET,
+            reach: GlyphReach::NOWHERE,
             run_rendering: None,
         }
     }
 
-    /// Whether the line's next glyph may draw inside the line's content
+    /// Whether the run's next glyph may draw inside the line's content
     /// mask, for the line to skip the glyphs it need not paint. `line_glyph`
-    /// is the line's glyph box as upstream builds it: the glyph's origin on
-    /// the top of its line, sized by the font's bounding box. The glyph
-    /// itself is drawn `baseline` further down, on the line's baseline, where
-    /// a tall line puts it well below the top; upstream's
-    /// `line_glyph.intersects(mask)` then skips glyphs that reach into the
-    /// mask.
+    /// is the line's glyph box as upstream builds it, whose origin is the
+    /// glyph's origin on the top of its line; the glyph itself is drawn
+    /// `baseline` further down, on the line's baseline, where a tall line
+    /// puts it well below the top. Upstream's `line_glyph.intersects(mask)`
+    /// takes the box at the top of the line, and skips glyphs low on a tall
+    /// line that reach into the mask.
     ///
     /// This test is only conservative, leaving the exact test to the scene,
-    /// which drops a sprite outside its content mask: vertically it takes the
-    /// bounding box's height above and below the baseline; horizontally, as
-    /// upstream does, the bounding box's width from the glyph's origin on,
-    /// and its height before it, for glyphs reaching left of their origin;
-    /// each plus a margin for glyph dilation and subpixel positioning.
-    /// Nothing reaches into an empty mask. Where a glyph is drawn therefore
-    /// depends on its sprite alone, so a line painted in a scroll layer's
-    /// overscan and scrolled into view shows the same glyphs as the line
-    /// painted in place.
+    /// which drops a sprite outside its content mask: it takes the run's
+    /// [`GlyphExtent`] around the glyph's origin on the baseline. Nothing
+    /// reaches into an empty mask. Where a glyph is drawn therefore depends
+    /// on its sprite alone, so a line painted in a scroll layer's overscan
+    /// and scrolled into view shows the same glyphs as the line painted in
+    /// place.
     #[inline]
-    pub(crate) fn meets_mask(&mut self, line_glyph: &Bounds<Pixels>, baseline: Pixels) -> bool {
-        if !self.reach.is_for(line_glyph.size) {
-            self.reach = GlyphReach::new(line_glyph.size, &self.content_mask);
-        }
+    pub(crate) fn meets_mask(&self, line_glyph: &Bounds<Pixels>, baseline: Pixels) -> bool {
         self.reach
             .contains(line_glyph.origin.x, line_glyph.origin.y + baseline)
     }
@@ -360,7 +366,7 @@ pub(crate) struct GlyphBoundsCache {
     /// Counts the frames the window finished painting, telling a tile looked
     /// up in this one from one looked up before.
     frame: u64,
-    bounding_boxes: Vec<(FontId, Pixels, Bounds<Pixels>)>,
+    font_extents: Vec<(FontId, Pixels, Bounds<Pixels>, GlyphExtent)>,
 }
 
 /// What [`GlyphBoundsCache`] keeps of a glyph.
@@ -378,7 +384,7 @@ impl Default for GlyphBoundsCache {
         Self {
             slots: vec![None; 1 << GLYPH_BOUNDS_SLOT_BITS].into_boxed_slice(),
             frame: 0,
-            bounding_boxes: Vec::new(),
+            font_extents: Vec::new(),
         }
     }
 }
@@ -459,34 +465,56 @@ impl GlyphBoundsCache {
     }
 }
 
-/// How many fonts' bounding boxes [`bounding_box`] keeps, most recent last.
-const BOUNDING_BOXES: usize = 16;
+/// Begins painting `run` of `layout` with `painter`, and returns the size of
+/// the run's font's bounding box, which a line takes for the width of its
+/// glyphs where it has no glyph to measure.
+pub(crate) fn begin_run(
+    painter: &mut LineGlyphPainter,
+    window: &mut Window,
+    cx: &App,
+    run: &ShapedRun,
+    layout: &LineLayout,
+) -> Size<Pixels> {
+    let (font_box, extent) = font_extent(window, cx, run.font_id, layout.font_size);
+    painter.reach = GlyphReach::new(&extent, &painter.content_mask);
+    font_box.size
+}
 
-/// [`TextSystem::bounding_box`](crate::TextSystem::bounding_box), which
-/// painting a line asks for once a run: it takes a lock and hashes the font to
-/// find its metrics, where a window paints its text in a handful of fonts and
-/// sizes, whose bounding boxes it keeps.
+/// How many fonts' extents [`font_extent`] keeps, most recent last.
+const FONT_EXTENTS: usize = 16;
+
+/// [`TextSystem::bounding_box`](crate::TextSystem::bounding_box) and the
+/// [`GlyphExtent`] worked out from it, which painting a line asks for once a
+/// run: the text system takes a lock and hashes the font to find its
+/// metrics, where a window paints its text in a handful of fonts and sizes,
+/// whose extents it keeps.
 #[inline]
-pub(crate) fn bounding_box(
+fn font_extent(
     window: &mut Window,
     cx: &App,
     font_id: FontId,
     font_size: Pixels,
-) -> Bounds<Pixels> {
-    let boxes = &mut window.fast_glyph_bounds.bounding_boxes;
-    if let Some((_, _, bounds)) = boxes
+) -> (Bounds<Pixels>, GlyphExtent) {
+    let extents = &mut window.fast_glyph_bounds.font_extents;
+    if let Some((_, _, font_box, extent)) = extents
         .iter()
         .rev()
-        .find(|(id, size, _)| *id == font_id && *size == font_size)
+        .find(|(id, size, _, _)| *id == font_id && *size == font_size)
     {
-        return *bounds;
+        return (*font_box, *extent);
     }
-    let bounds = cx.text_system().bounding_box(font_id, font_size);
-    if boxes.len() == BOUNDING_BOXES {
-        boxes.remove(0);
+    let text_system = cx.text_system();
+    let font_box = text_system.bounding_box(font_id, font_size);
+    let extent = GlyphExtent::new(
+        font_box,
+        text_system.ascent(font_id, font_size),
+        text_system.descent(font_id, font_size),
+    );
+    if extents.len() == FONT_EXTENTS {
+        extents.remove(0);
     }
-    boxes.push((font_id, font_size, bounds));
-    bounds
+    extents.push((font_id, font_size, font_box, extent));
+    (font_box, extent)
 }
 
 /// Whether none of a line's decoration runs has a background, so painting its
