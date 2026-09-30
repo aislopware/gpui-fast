@@ -81,6 +81,9 @@ pub struct LayoutStats {
     /// they were built this frame as they were built then, each element of
     /// a subtree drawn again counted.
     pub elements_reused: u64,
+    /// Of the elements drawn again from last frame, those drawn again moved,
+    /// as a row under a scroll is.
+    pub elements_moved: u64,
 }
 
 /// How long each phase of the frame took, waiting to be folded into the

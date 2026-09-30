@@ -122,12 +122,14 @@ and element retention is off then. Text a layout measured again this frame is
 built again, since it may break into other lines at the same size.
 
 An element nested in no other that is recorded is recorded only once it is
-drawn twice in a row in the same place, and one nested in a recorded element
-that moves is recorded only as moving: rows under a scroll, or below rows
-inserted above them, could never be drawn again from last frame, and are not
-compared and recorded every frame for nothing. Where it stood last frame is
-checked first, before anything nested in it is compared, so a moving root
-costs one lookup rather than a walk of its subtree. A root that cannot take
+drawn twice in a row in the same place, or moved by a whole number of device
+pixels on two frames in a row, and one nested in a recorded element that
+moves otherwise is recorded only as moving: rows below a line inserted once
+above them would not be drawn again from last frame, and are not compared
+and recorded for nothing, while rows under a scroll are drawn again moved
+(see [Elements drawn again moved](#elements-drawn-again-moved)). Where it
+stood last frame is checked first, before anything nested in it is compared,
+so a moving root costs one lookup rather than a walk of its subtree. A root that cannot take
 part itself (a row holding a button) still keeps its place from frame to
 frame, so the plain cells inside it are recorded as standing still and drawn
 again on their own.
@@ -168,6 +170,51 @@ to it, to reconcile with whatever longbridge lands:
   oracle's ticking quote.
 - `gpui_perf` has a Slopty-shaped screen (`strip-*`: tiles of terminals with
   headers, icons and a status bar) and counts elements built and reused.
+
+### Elements drawn again moved
+
+An element whose only change since last frame is where it is drawn, moved by
+a whole number of device pixels at the same size — a row under a scroll, a
+tile in a strip sliding sideways, rows below rows inserted at the head of a
+list — is drawn again from last frame too: its records are taken over with
+their bounds moved, and its primitives are copied moved. The code is in
+`crates/gpui/src/fast/shift.rs`, and `element.rs` decides when it applies.
+
+Moving what an element painted has to give exactly what painting it afresh
+at the new place gives, so a move is refused, and the element painted
+afresh, unless:
+
+- It moved by whole device pixels, so everything snapped to device pixels or
+  quantized to glyph subpixel steps lands on the same steps, moved. Every
+  place it paints is a multiple of 1/64 of a device pixel, where moving adds
+  without rounding; the side of a border drawn around a rounded corner of a
+  fractional radius is not, and is painted afresh.
+- Along the axes it moves, the element, everything nested in it and every
+  glyph it placed lie at or past the window's top and left edges before and
+  after: coordinates round half toward zero, which rounds the same way only
+  on one side of zero.
+- What it is clipped by is known: either the content mask moved with it,
+  and every mask inside it too, or the mask stood still (a list's viewport)
+  and every mask inside it lies clear of its edges, and nothing it left out
+  for lying outside the mask comes into it with the move, which is checked
+  against the side and the distance it lay beyond.
+- No primitive leaves its mask with the move, and no paint layer reaches the
+  mask's edge, where a clip can't be told from the edge.
+- It holds only primitives: no hitbox, listener, input handler, cursor
+  style, tooltip, deferred draw, path, surface or native view, whose places
+  are held by code the move can't reach.
+
+What a primitive can't tell — where each glyph was placed before rounding,
+and what was left out for lying outside a mask — painting notes as it goes,
+into each record. Noting costs every element painted, so it is done only
+while an element is in motion: from the frame a root, or anything nested in
+it, moves, for 30 frames after it last did. An element painted outside that
+is noted as unknown and is never moved; the first frame of a motion paints
+afresh what moves, and draws it again moved from the second frame on. A
+move is worked out once, while the element is prepainted, into a list of
+moved operations its paint inserts as they are.
+
+`LayoutStats::elements_moved` counts the elements drawn again moved.
 
 ### Records per retained subtree
 
@@ -255,6 +302,12 @@ A retained frame has to be the frame drawing from scratch would have produced.
   inserted, removed and moved, components, interactive elements among plain
   ones, inherited text styles, opacity and clips, scrolling, focus and
   deferred draws, comparing the dispatch tree, listeners and focus too.
+- `crates/gpui/src/fast/tests/shift.rs` drives the same pair of windows
+  through moves: rows under a scroll, past the window's top and left edges,
+  in a clip that moves with them and in one that stands still, boxes and
+  lines sliding through a clip, moves by part of a device pixel, and rounded
+  borders that can't be moved, requiring every frame to match and moves to
+  have happened where they can.
 - `crates/gpui/src/fast/tests/retained.rs` covers reuse, rebuilding when a
   dependency or a hover changes, moved views and retention turned off.
 - `cargo run -p gpui_perf --release -- --headless --verify` compares the quads,

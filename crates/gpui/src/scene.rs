@@ -95,6 +95,7 @@ impl Scene {
             .intersect(&primitive.content_mask().bounds);
 
         if clipped_bounds.is_empty() {
+            crate::fast::scene::culled(self, primitive.bounds(), &primitive.content_mask().bounds);
             return;
         }
 
