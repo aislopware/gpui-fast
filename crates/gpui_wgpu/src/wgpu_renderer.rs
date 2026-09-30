@@ -56,9 +56,9 @@ fn least_common_multiple(left: u64, right: u64) -> u64 {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct GlobalParams {
-    viewport_size: [f32; 2],
-    premultiplied_alpha: u32,
-    pad: u32,
+    pub(crate) viewport_size: [f32; 2],
+    pub(crate) premultiplied_alpha: u32,
+    pub(crate) pad: u32,
 }
 
 #[repr(C)]
@@ -87,11 +87,11 @@ struct SurfaceParams {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct GammaParams {
-    gamma_ratios: [f32; 4],
-    grayscale_enhanced_contrast: f32,
-    subpixel_enhanced_contrast: f32,
-    is_bgr: u32,
-    _pad: u32,
+    pub(crate) gamma_ratios: [f32; 4],
+    pub(crate) grayscale_enhanced_contrast: f32,
+    pub(crate) subpixel_enhanced_contrast: f32,
+    pub(crate) is_bgr: u32,
+    pub(crate) _pad: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -155,7 +155,7 @@ struct InstanceBindings {
 }
 
 pub(crate) struct WgpuBindGroupLayouts {
-    globals: wgpu::BindGroupLayout,
+    pub(crate) globals: wgpu::BindGroupLayout,
     pub(crate) instances: wgpu::BindGroupLayout,
     pub(crate) texture: wgpu::BindGroupLayout,
     surfaces: wgpu::BindGroupLayout,
@@ -211,7 +211,7 @@ pub struct WgpuRenderer {
     #[allow(dead_code)]
     compositor_gpu: Option<CompositorGpuHint>,
     resources: Option<WgpuResources>,
-    surface_config: wgpu::SurfaceConfiguration,
+    pub(crate) surface_config: wgpu::SurfaceConfiguration,
     pub(crate) atlas: Arc<WgpuAtlas>,
     pub(crate) path_globals_offset: u64,
     pub(crate) gamma_offset: u64,
@@ -219,7 +219,7 @@ pub struct WgpuRenderer {
     max_instance_data_size: u64,
     pub(crate) instance_data_alignment: u64,
     pub(crate) uses_webgl_instance_data: bool,
-    rendering_params: RenderingParameters,
+    pub(crate) rendering_params: RenderingParameters,
     is_bgr: bool,
     dual_source_blending: bool,
     adapter_info: wgpu::AdapterInfo,
@@ -609,7 +609,7 @@ impl WgpuRenderer {
         })
     }
 
-    fn create_bind_group_layouts(
+    pub(crate) fn create_bind_group_layouts(
         device: &wgpu::Device,
         uses_webgl_instance_data: bool,
     ) -> WgpuBindGroupLayouts {
@@ -780,7 +780,7 @@ impl WgpuRenderer {
         )
     }
 
-    fn create_pipelines(
+    pub(crate) fn create_pipelines(
         device: &wgpu::Device,
         layouts: &WgpuBindGroupLayouts,
         surface_format: wgpu::TextureFormat,
@@ -1069,7 +1069,7 @@ impl WgpuRenderer {
         }
     }
 
-    fn create_path_intermediate(
+    pub(crate) fn create_path_intermediate(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         width: u32,
@@ -1093,7 +1093,7 @@ impl WgpuRenderer {
         (texture, view)
     }
 
-    fn create_msaa_if_needed(
+    pub(crate) fn create_msaa_if_needed(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         width: u32,
@@ -2141,15 +2141,15 @@ fn create_surface(
     }
 }
 
-struct RenderingParameters {
-    path_sample_count: u32,
-    gamma_ratios: [f32; 4],
-    grayscale_enhanced_contrast: f32,
-    subpixel_enhanced_contrast: f32,
+pub(crate) struct RenderingParameters {
+    pub(crate) path_sample_count: u32,
+    pub(crate) gamma_ratios: [f32; 4],
+    pub(crate) grayscale_enhanced_contrast: f32,
+    pub(crate) subpixel_enhanced_contrast: f32,
 }
 
 impl RenderingParameters {
-    fn new(adapter: &wgpu::Adapter, surface_format: wgpu::TextureFormat) -> Self {
+    pub(crate) fn new(adapter: &wgpu::Adapter, surface_format: wgpu::TextureFormat) -> Self {
         use std::env;
 
         let format_features = adapter.get_texture_format_features(surface_format);
