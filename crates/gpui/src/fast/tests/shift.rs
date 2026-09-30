@@ -600,3 +600,53 @@ fn a_line_sliding_into_a_still_clip_matches() {
         step(&mut cx, windows, |ticker| ticker.margin -= 5.);
     }
 }
+
+/// A box whose clip is switched on and off, holding a card that lies past
+/// its right edge, with a panel inside the card.
+struct Clipped {
+    clipped: bool,
+}
+
+impl Render for Clipped {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let root = div().relative().w(px(100.)).h(px(100.)).bg(hsla(0.3, 0.3, 0.6, 1.));
+        let root = if self.clipped {
+            root.overflow_hidden()
+        } else {
+            root
+        };
+        root.child(
+            div()
+                .absolute()
+                .left(px(150.))
+                .top(px(10.))
+                .w(px(60.))
+                .h(px(60.))
+                .bg(hsla(0.6, 0.5, 0.5, 1.))
+                .child(
+                    div()
+                        .m(px(4.))
+                        .w(px(40.))
+                        .h(px(40.))
+                        .border_1()
+                        .border_color(hsla(0.1, 0.8, 0.5, 1.)),
+                ),
+        )
+    }
+}
+
+/// A card the clip around it left out entirely, painted before anything
+/// moved and so noting nothing, comes back when the clip is switched off:
+/// it stood still, but the mask around it grew, and what it left out is
+/// not known to lie outside the new one.
+#[test]
+fn what_a_clip_left_out_comes_back_when_the_clip_is_switched_off() {
+    let mut cx = text_cx();
+    let windows = windows(&mut cx, || Clipped { clipped: true });
+    for _ in 0..2 {
+        step(&mut cx, windows, |_| {});
+    }
+    for _ in 0..4 {
+        step(&mut cx, windows, |view| view.clipped = !view.clipped);
+    }
+}
