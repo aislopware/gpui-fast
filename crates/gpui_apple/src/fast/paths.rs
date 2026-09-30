@@ -26,6 +26,7 @@ use gpui::{
     Bounds, DevicePixels, PrimitiveBatch, ScaledPixels, Scene, Size, composition::ComposedBatch,
 };
 
+use super::occlusion::Interiors;
 use crate::metal_renderer::{
     InstanceBinding, InstanceBindings, InstanceBufferWriter, MetalRenderer,
     PathRasterizationInputIndex, PathRasterizationVertex,
@@ -95,19 +96,34 @@ pub(crate) fn draw_primitives_to_texture(
         None => false,
     };
 
+    let interiors = Interiors::of(scene, writer)?;
+    let stencil = renderer
+        .fast_occlusion
+        .stencil_for(&renderer.device, texture);
     let mut command_encoder = new_command_encoder_for_texture(
         command_buffer,
         texture,
+        &stencil,
         viewport_size,
         Some(metal::MTLClearColor::new(0., 0., 0., alpha)),
     );
     let mut binds = Binds::default();
+    if let Some(interiors) = &interiors {
+        interiors.begin_pass(renderer, viewport_size, command_encoder, &mut binds, true);
+    }
+    // The holes drawn so far, and what the pass culls for.
+    let (mut holes_drawn, mut culling_for) = (0, 0);
     let mut path_batches = path_batches.iter().enumerate();
 
     for batch in scene.composed_batches() {
+        if interiors.is_some() && culling_for != holes_drawn {
+            Interiors::before(command_encoder, holes_drawn);
+            culling_for = holes_drawn;
+        }
         let batch = match batch {
             ComposedBatch::Primitives(batch) => batch,
             ComposedBatch::Holes(range) => {
+                holes_drawn = range.end;
                 renderer.draw_holes_bound(
                     range,
                     instance_bindings,
@@ -147,10 +163,22 @@ pub(crate) fn draw_primitives_to_texture(
                     command_encoder = new_command_encoder_for_texture(
                         command_buffer,
                         texture,
+                        &stencil,
                         viewport_size,
                         None,
                     );
                     binds.forget();
+                    if let Some(interiors) = &interiors {
+                        interiors.begin_pass(
+                            renderer,
+                            viewport_size,
+                            command_encoder,
+                            &mut binds,
+                            false,
+                        );
+                        Interiors::before(command_encoder, holes_drawn);
+                        culling_for = holes_drawn;
+                    }
                 }
                 // A batch without vertices left its bounds in the cleared
                 // texture transparent: compositing them draws nothing.

@@ -117,9 +117,13 @@ fn encode(
                     break 'layers;
                 }
             };
+            let stencil = renderer
+                .fast_occlusion
+                .stencil_for(&renderer.device, &texture);
             let command_encoder = new_command_encoder_for_texture(
                 command_buffer,
                 &texture,
+                &stencil,
                 viewport_size,
                 Some(clear_color(layer.background)),
             );

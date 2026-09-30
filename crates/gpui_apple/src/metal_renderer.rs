@@ -191,6 +191,7 @@ pub struct MetalRenderer {
     quads_pipeline_state: metal::RenderPipelineState,
     /// Draws the holes natives cut: quads that clear what is under them.
     holes_pipeline_state: metal::RenderPipelineState,
+    pub(crate) fast_occlusion: crate::fast::occlusion::Occlusion,
     underlines_pipeline_state: metal::RenderPipelineState,
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     pub(crate) polychrome_sprites_pipeline_state: metal::RenderPipelineState,
@@ -478,6 +479,8 @@ impl MetalRenderer {
             target_format,
         );
 
+        let fast_occlusion =
+            crate::fast::occlusion::Occlusion::new(&device, &library, target_format, is_apple_gpu);
         let command_queue = device.new_command_queue();
         let supports_shared_storage = cfg!(target_os = "ios") || is_apple_gpu;
         let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), supports_shared_storage));
@@ -502,6 +505,7 @@ impl MetalRenderer {
             shadows_pipeline_state,
             quads_pipeline_state,
             holes_pipeline_state,
+            fast_occlusion,
             underlines_pipeline_state,
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
@@ -898,9 +902,15 @@ impl MetalRenderer {
         let command_buffer = command_queue.new_command_buffer();
         let alpha = if self.opaque { 1. } else { 0. };
 
+        let stencil = crate::fast::occlusion::Occlusion::stencil_for(
+            &mut self.fast_occlusion,
+            &self.device,
+            texture,
+        );
         let mut command_encoder = new_command_encoder_for_texture(
             command_buffer,
             texture,
+            &stencil,
             viewport_size,
             Some(metal::MTLClearColor::new(0., 0., 0., alpha)),
         );
@@ -934,6 +944,7 @@ impl MetalRenderer {
                     command_encoder = new_command_encoder_for_texture(
                         command_buffer,
                         texture,
+                        &stencil,
                         viewport_size,
                         None,
                     );
@@ -1928,10 +1939,12 @@ mod ycbcr_tests {
 pub(crate) fn new_command_encoder_for_texture<'a>(
     command_buffer: &'a metal::CommandBufferRef,
     texture: &'a metal::TextureRef,
+    stencil: &metal::TextureRef,
     viewport_size: Size<DevicePixels>,
     clear_color: Option<metal::MTLClearColor>,
 ) -> &'a metal::RenderCommandEncoderRef {
     let render_pass_descriptor = metal::RenderPassDescriptor::new();
+    crate::fast::occlusion::attach_stencil(render_pass_descriptor, stencil);
     let color_attachment = render_pass_descriptor
         .color_attachments()
         .object_at(0)
@@ -2016,6 +2029,7 @@ fn build_pipeline_state(
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
     color_attachment.set_destination_alpha_blend_factor(destination_alpha_blend_factor());
 
+    descriptor.set_stencil_attachment_pixel_format(crate::fast::occlusion::STENCIL_FORMAT);
     device
         .new_render_pipeline_state(&descriptor)
         .expect("could not create render pipeline state")
@@ -2049,6 +2063,7 @@ fn build_hole_pipeline_state(
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
     color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
+    descriptor.set_stencil_attachment_pixel_format(crate::fast::occlusion::STENCIL_FORMAT);
     device
         .new_render_pipeline_state(&descriptor)
         .expect("could not create render pipeline state")
@@ -2083,6 +2098,7 @@ fn build_path_sprite_pipeline_state(
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
     color_attachment.set_destination_alpha_blend_factor(destination_alpha_blend_factor());
 
+    descriptor.set_stencil_attachment_pixel_format(crate::fast::occlusion::STENCIL_FORMAT);
     device
         .new_render_pipeline_state(&descriptor)
         .expect("could not create render pipeline state")

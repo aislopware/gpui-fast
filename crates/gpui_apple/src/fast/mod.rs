@@ -8,5 +8,6 @@
 //! tests — is written here, one file per topic.
 
 pub(crate) mod layers;
+pub(crate) mod occlusion;
 pub(crate) mod paths;
 pub mod video_layer;

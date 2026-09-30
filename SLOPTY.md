@@ -412,8 +412,18 @@ Merged ahead of longbridge, and not yet merged there:
     full-window layer.
   - **What #30 has that ours lacks.** Linux and Windows natives: Wayland subsurfaces, X11
     child windows, DirectComposition. Slopty needs none of them.
-  - **Next for ours.** Skip base primitives an opaque native covers whole. That would take
-    back the hole's blend where the native covers most of the window.
+  - **Done since: what an opaque native covers whole is neither drawn nor cleared**
+    (`fast/occlusion.rs`, docs/composition.md). On the same measurement:
+
+    | Case | Before | After | #30 |
+    |---|---|---|---|
+    | Palette closed over a browser tile | 0.75 ms | 0.55 ms | 0.72 ms |
+    | Palette closed over a remote screen | 0.93 ms | 0.31 ms | 0.72 ms |
+    | Palette open over a browser tile | 1.23 ms | 0.91–1.02 ms | 1.52–1.81 ms |
+    | Palette open over a remote screen | 1.40 ms | 0.76 ms | 1.52–1.81 ms |
+
+    Encoding costs about 6K more instructions a frame with a native. Every pass also costs
+    about 2.5K for its stencil attachment.
 
 Added in this fork:
 
