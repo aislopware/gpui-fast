@@ -1092,4 +1092,271 @@ mod paint {
         })
         .unwrap();
     }
+
+    /// The layer tiles `scene` composites, with the layer each belongs to.
+    fn tile_quads(scene: &Scene) -> Vec<(crate::LayerKey, TileCoord, crate::PolychromeSprite)> {
+        scene
+            .polychrome_sprites
+            .iter()
+            .filter_map(|sprite| {
+                crate::decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id)
+                    .map(|(key, coord)| (key, coord, *sprite))
+            })
+            .collect()
+    }
+
+    #[crate::test]
+    fn tile_quads_cover_the_viewport_at_the_current_offset(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, Decision::Repaint);
+        window
+            .update(cx, |view, _, _| {
+                view.scroll
+                    .set_offset(crate::point(crate::px(0.), crate::px(-130.)))
+            })
+            .unwrap();
+        draw_deciding(cx, window, Decision::Composite);
+
+        cx.update_window(window.into(), |_, window, _| {
+            let scale = window.scale_factor();
+            let layer = window.fast_layers.layers.values().next().expect("a layer");
+            let record = layer.record.as_ref().expect("painted");
+            let scene = &window.rendered_frame.scene;
+            assert_eq!(row_quads(scene, 40), Vec::new(), "the rows are not drawn");
+
+            // The viewport, snapped as every content mask is.
+            let viewport = record.viewport;
+            let floor = |v: crate::Pixels| crate::util::floor_to_device_pixel(v.0, scale);
+            let ceil = |v: crate::Pixels| crate::util::ceil_to_device_pixel(v.0, scale);
+            let mask = Bounds::from_corners(
+                point(
+                    ScaledPixels(floor(viewport.left())),
+                    ScaledPixels(floor(viewport.top())),
+                ),
+                point(
+                    ScaledPixels(ceil(viewport.right())),
+                    ScaledPixels(ceil(viewport.bottom())),
+                ),
+            );
+            let translation = point(ScaledPixels(0.), ScaledPixels(-130. * scale));
+
+            assert_eq!(scene.layers.frames.len(), 1);
+            let frame = &scene.layers.frames[0];
+            assert_eq!(frame.key, layer.key);
+            assert!(std::rc::Rc::ptr_eq(&frame.content, &record.content));
+            assert_eq!(frame.generation, record.generation);
+            assert_eq!(frame.background, record.background);
+            assert_eq!(frame.tile_size, 512);
+            assert_eq!(frame.dirty_tiles, record.dirty_tiles);
+
+            let quads = tile_quads(scene);
+            let mut expected = Vec::new();
+            let content_viewport = Bounds {
+                origin: mask.origin - translation,
+                size: mask.size,
+            };
+            for y in -4..4 {
+                for x in -4..8 {
+                    let tile = TileCoord { x, y };
+                    if frame.tile_bounds(tile).intersects(&content_viewport) {
+                        expected.push(tile);
+                    }
+                }
+            }
+            let mut coords: Vec<_> = quads.iter().map(|(_, coord, _)| *coord).collect();
+            coords.sort();
+            assert!(!expected.is_empty());
+            assert_eq!(coords, expected);
+            let order = quads[0].2.order;
+            for (key, coord, sprite) in &quads {
+                assert_eq!(*key, layer.key);
+                let tile = frame.tile_bounds(*coord);
+                assert_eq!(
+                    sprite.bounds,
+                    Bounds {
+                        origin: tile.origin + translation,
+                        size: tile.size,
+                    }
+                );
+                assert_eq!(sprite.content_mask.bounds, mask);
+                assert_eq!(sprite.order, order, "the tiles share one draw order");
+                assert_eq!(sprite.opacity, 1.);
+                assert_eq!(sprite.tile.bounds.size.width.0, 512);
+                assert_eq!(sprite.tile.bounds.size.height.0, 512);
+                assert_eq!(sprite.tile.bounds.origin, crate::Point::default());
+            }
+        })
+        .unwrap();
+    }
+
+    #[crate::test]
+    fn a_repainted_layer_is_composited_where_it_was_painted(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        cx.update_window(window.into(), |_, window, _| window.reset_layout_stats())
+            .unwrap();
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+        cx.update_window(window.into(), |_, window, _| {
+            let scene = &window.rendered_frame.scene;
+            let quads = tile_quads(scene);
+            assert!(!quads.is_empty());
+            for (_, coord, sprite) in &quads {
+                let tile = scene.layers.frames[0].tile_bounds(*coord);
+                assert_eq!(sprite.bounds, tile, "no translation at offset 0");
+            }
+            let stats = window.layout_stats();
+            assert_eq!(stats.layer_frames_repainted, 1);
+            assert_eq!(stats.layer_frames_composited, 1);
+            assert_eq!(
+                stats.tiles_dirtied,
+                scene.layers.frames[0].dirty_tiles.len() as u64
+            );
+        })
+        .unwrap();
+    }
+
+    #[crate::test]
+    fn a_reused_view_keeps_compositing_its_layer(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+        let before = cx
+            .update_window(window.into(), |_, window, _| {
+                tile_quads(&window.rendered_frame.scene).len()
+            })
+            .unwrap();
+        // Nothing changed: the view is reused, its scene replayed.
+        cx.update_window(window.into(), |_, window, cx| {
+            window.reset_layout_stats();
+            window.draw(cx).clear(cx)
+        })
+        .unwrap();
+        cx.update_window(window.into(), |_, window, _| {
+            let scene = &window.rendered_frame.scene;
+            assert_eq!(tile_quads(scene).len(), before);
+            assert_eq!(scene.layers.frames.len(), 1, "the layer frame comes along");
+            let stats = window.layout_stats();
+            assert_eq!(stats.layer_frames_repainted, 0, "the view was reused");
+            assert!(stats.views_reused > 0, "the view was reused");
+        })
+        .unwrap();
+    }
+
+    #[crate::test]
+    fn a_composited_layer_over_a_background_it_cannot_bake_is_drawn_into_the_frame(
+        cx: &mut crate::TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        let window = rows_window(cx, 40);
+        let direct = cx
+            .update_window(window.into(), |_, window, _| {
+                row_quads(&window.rendered_frame.scene, 40)
+            })
+            .unwrap();
+        draw_deciding(cx, window, Decision::Repaint);
+        draw_over(cx, window, Hsla::blue().opacity(0.5), Decision::Composite);
+        cx.update_window(window.into(), |_, window, _| {
+            let scene = &window.rendered_frame.scene;
+            assert!(tile_quads(scene).is_empty());
+            assert!(scene.layers.frames.is_empty());
+            assert_eq!(row_quads(scene, 40), direct, "the rows as without a layer");
+            let layer = window.fast_layers.layers.values().next().expect("a layer");
+            assert!(layer.record.is_none(), "painted afresh next time");
+        })
+        .unwrap();
+    }
+
+    /// A scroll container whose content paints a path under a row.
+    struct PathRows;
+
+    impl crate::Render for PathRows {
+        fn render(
+            &mut self,
+            _window: &mut crate::Window,
+            _cx: &mut crate::Context<Self>,
+        ) -> impl crate::IntoElement {
+            use crate::{
+                InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+                Styled as _,
+            };
+            crate::div().size_full().bg(crate::white()).child(
+                crate::div()
+                    .id("s")
+                    .overflow_y_scroll()
+                    .h(crate::px(100.))
+                    .child(
+                        crate::canvas(
+                            |_, _, _| {},
+                            |bounds, _, window, _| {
+                                let origin = bounds.origin;
+                                let mut path = crate::Path::new(origin);
+                                path.line_to(origin + crate::point(crate::px(30.), crate::px(0.)));
+                                path.line_to(origin + crate::point(crate::px(0.), crate::px(30.)));
+                                window.paint_path(path, crate::black());
+                            },
+                        )
+                        .h(crate::px(40.))
+                        .w_full(),
+                    )
+                    .children((0..20).map(|i| crate::div().h(crate::px(20.)).bg(row_color(i)))),
+            )
+        }
+    }
+
+    #[crate::test]
+    fn content_with_paths_is_drawn_into_the_frame_not_composited(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = cx.add_window(|_, _| PathRows);
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        let (direct_paths, direct_rows) = cx
+            .update_window(window.into(), |_, window, _| {
+                let scene = &window.rendered_frame.scene;
+                (scene.paths.len(), row_quads(scene, 20))
+            })
+            .unwrap();
+        assert_eq!(direct_paths, 1);
+
+        window
+            .update(cx, |_, window, cx| {
+                window.fast_layers.forced_decision =
+                    Some(crate::fast::layers::policy::Decision::Repaint);
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        cx.update_window(window.into(), |_, window, _| {
+            let layer = window.fast_layers.layers.values().next().expect("a layer");
+            assert!(layer.record.as_ref().expect("painted").has_paths);
+            let scene = &window.rendered_frame.scene;
+            assert!(
+                scene.polychrome_sprites.iter().all(|sprite| {
+                    crate::decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id).is_none()
+                }),
+                "no tile quads"
+            );
+            assert!(scene.layers.frames.is_empty(), "no layer frames");
+            assert_eq!(scene.paths.len(), 1, "the path is in the frame");
+            assert_eq!(
+                row_quads(scene, 20),
+                direct_rows,
+                "the rows are drawn as without a layer"
+            );
+        })
+        .unwrap();
+    }
 }

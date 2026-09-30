@@ -15,20 +15,25 @@
 //!   tiles are composited at the new offset.
 
 use crate::{
-    App, Bounds, ContentMask, GlobalElementId, Overflow, Pixels, Point, PrepaintStateIndex, Rgba,
-    ScaledPixels, Scene, Size, Style, TileCoord, Window, WindowBackgroundAppearance,
+    App, AtlasTile, Bounds, ContentMask, Corners, DevicePixels, GlobalElementId, Overflow, Pixels,
+    Point, PolychromeSprite, PrepaintStateIndex, Rgba, ScaledPixels, Scene, Size, Style, TileCoord,
+    Window, WindowBackgroundAppearance,
     fast::{
         dependencies::{DependencyRecording, RenderDependencies},
         layers::{
             COMPILED, Layer, active, background,
             policy::{self, Decision},
             record::LayerRecord,
-            scene::{LayerKey, translate_primitive},
+            scene::{
+                LayerFrame, LayerKey, decode_layer_tile, layer_tile_id, layer_tile_texture_id,
+                translate_primitive,
+            },
             tiles::{dirty_tiles, tile_hashes},
         },
     },
     point,
-    scene::PaintOperation,
+    scene::{PaintOperation, Primitive},
+    size as size2,
 };
 use collections::FxHashMap;
 use std::{mem, ops::Range, rc::Rc};
@@ -65,7 +70,7 @@ pub(crate) enum Prepainted {
     /// The content was prepainted into the layer, and is painted into it.
     Repaint(Painting),
     /// The content was not prepainted; the layer's tiles are composited.
-    #[allow(dead_code, reason = "compositing reads them from the next task on")]
+    #[allow(dead_code, reason = "the input stream reads the viewport")]
     Composite {
         viewport: Bounds<Pixels>,
         scroll_offset: Point<Pixels>,
@@ -225,9 +230,9 @@ pub(crate) fn paint_children(
             Some(background) => repaint(window, cx, painting, background, f),
             None => paint_unbaked(window, cx, painting, f),
         },
-        Some(Prepainted::Composite { .. }) => {
+        Some(Prepainted::Composite { scroll_offset, .. }) => {
             if let Some(id) = id {
-                composite(window, id);
+                composite(window, id, scroll_offset);
             }
         }
     }
@@ -260,14 +265,17 @@ fn paint_unbaked(
     layer_mut(window, &id).record = None;
 }
 
-/// Carries out a `Composite` decision for the container `id`: the layer's
-/// content stands, cleared with the background now under it.
-fn composite(window: &mut Window, id: &GlobalElementId) {
+/// Carries out a `Composite` decision for the container `id`, scrolled to
+/// `scroll_offset`: the layer's content stands, cleared with the background
+/// now under it, and is composited at the offset.
+fn composite(window: &mut Window, id: &GlobalElementId, scroll_offset: Point<Pixels>) {
     let background = bake_background(window);
+    let translation = translation(window, scroll_offset);
     let layer = layer_mut(window, id);
     let Some(record) = layer.record.as_mut() else {
         return;
     };
+    let mut dirtied = 0;
     match background {
         Some(background) if background == record.background => {}
         Some(background) => {
@@ -276,8 +284,198 @@ fn composite(window: &mut Window, id: &GlobalElementId) {
             record.background = background;
             record.generation += 1;
             record.dirty_tiles = all_tiles(&record.tile_hashes);
+            dirtied = record.dirty_tiles.len();
         }
-        None => layer.record = None,
+        None => {
+            // The tiles cannot be cleared with what is under them now: the
+            // content is drawn into the frame, and painted afresh next time.
+            let record = layer.record.take().expect("checked above");
+            let delta = translation - record.translation;
+            draw_into_frame(window, &record.content, delta);
+            return;
+        }
+    }
+    insert_layer(window, id, translation, dirtied);
+}
+
+/// Composites the layer of the container `id` into the frame at
+/// `translation`, `dirtied` of its tiles new this frame: its tile quads
+/// over the viewport, the current content mask, and its [`LayerFrame`].
+/// Content holding paths is drawn into the frame instead.
+fn insert_layer(
+    window: &mut Window,
+    id: &GlobalElementId,
+    translation: Point<ScaledPixels>,
+    dirtied: usize,
+) {
+    let viewport = window.snapped_content_mask().bounds;
+    let Some(layer) = window.fast_layers.layers.get(id) else {
+        return;
+    };
+    let Some(record) = layer.record.as_ref() else {
+        return;
+    };
+    if record.has_paths {
+        let content = record.content.clone();
+        let delta = translation - record.translation;
+        draw_into_frame(window, &content, delta);
+        return;
+    }
+    insert_tile_quads(&mut window.next_frame.scene, layer, viewport, translation);
+    let stats = &mut window.layout_engine.as_mut().unwrap().retention.stats;
+    stats.layer_frames_composited += 1;
+    stats.tiles_dirtied += dirtied as u64;
+}
+
+/// Inserts into `scene` the quads of the tiles of `layer` that show in
+/// `viewport` with its content moved by `translation`, all at one draw
+/// order, and the layer's [`LayerFrame`] they are rasterized from (spec
+/// §5.1).
+pub(crate) fn insert_tile_quads(
+    scene: &mut Scene,
+    layer: &Layer,
+    viewport: Bounds<ScaledPixels>,
+    translation: Point<ScaledPixels>,
+) {
+    let Some(record) = layer.record.as_ref() else {
+        return;
+    };
+    if viewport.is_empty() {
+        return;
+    }
+    let frame = LayerFrame {
+        key: layer.key,
+        generation: record.generation,
+        background: record.background,
+        tile_size: TILE_SIZE,
+        content: record.content.clone(),
+        dirty_tiles: record.dirty_tiles.clone(),
+    };
+    let size = TILE_SIZE as f32;
+    let content_viewport = Bounds {
+        origin: viewport.origin - translation,
+        size: viewport.size,
+    };
+    let min = content_viewport.origin;
+    let max = content_viewport.bottom_right();
+    let (x0, y0) = (
+        (min.x.0 / size).floor() as i32,
+        (min.y.0 / size).floor() as i32,
+    );
+    let (x1, y1) = (
+        (max.x.0 / size).ceil() as i32,
+        (max.y.0 / size).ceil() as i32,
+    );
+    scene.push_layer(viewport);
+    let texture_id = layer_tile_texture_id(layer.key);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let coord = TileCoord { x, y };
+            let tile = frame.tile_bounds(coord);
+            scene.insert_primitive(PolychromeSprite {
+                order: 0,
+                pad: 0,
+                grayscale: false.into(),
+                opacity: 1.,
+                bounds: Bounds {
+                    origin: tile.origin + translation,
+                    size: tile.size,
+                },
+                content_mask: ContentMask { bounds: viewport },
+                corner_radii: Corners::default(),
+                tile: AtlasTile {
+                    texture_id,
+                    tile_id: layer_tile_id(coord),
+                    padding: 0,
+                    bounds: Bounds {
+                        origin: Point::default(),
+                        size: size2(
+                            DevicePixels(TILE_SIZE as i32),
+                            DevicePixels(TILE_SIZE as i32),
+                        ),
+                    },
+                },
+            });
+        }
+    }
+    scene.pop_layer();
+    scene.layers.frames.push(frame);
+}
+
+/// Carries into `scene` the [`LayerFrame`]s of the tile quads that
+/// `scene.replay` copies from the operations `range` of `previous`, so
+/// that a retained subtree holding a layer composites it when it is reused.
+pub(crate) fn replay_layers(scene: &mut Scene, range: Range<usize>, previous: &Scene) {
+    if previous.layers.frames.is_empty() {
+        return;
+    }
+    for operation in &previous.paint_operations[range] {
+        let PaintOperation::Primitive(Primitive::PolychromeSprite(sprite)) = operation else {
+            continue;
+        };
+        let Some((key, _)) = decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id) else {
+            continue;
+        };
+        if scene.layers.frames.iter().any(|frame| frame.key == key) {
+            continue;
+        }
+        if let Some(frame) = previous.layers.frames.iter().find(|frame| frame.key == key) {
+            scene.layers.frames.push(LayerFrame {
+                key: frame.key,
+                generation: frame.generation,
+                background: frame.background,
+                tile_size: frame.tile_size,
+                content: frame.content.clone(),
+                dirty_tiles: frame.dirty_tiles.clone(),
+            });
+        }
+    }
+}
+
+/// Draws the primitives of `content`, moved by `delta` into window space,
+/// straight into the frame, clipped to the viewport, the current content
+/// mask: what painting the content into the frame would have drawn.
+fn draw_into_frame(window: &mut Window, content: &Scene, delta: Point<ScaledPixels>) {
+    let viewport = window.snapped_content_mask().bounds;
+    let scene = &mut window.next_frame.scene;
+    for operation in &content.paint_operations {
+        match operation {
+            PaintOperation::Primitive(primitive) => {
+                let mut primitive = translate_primitive(primitive, delta);
+                clip_primitive(&mut primitive, &viewport);
+                scene.insert_primitive(primitive);
+            }
+            PaintOperation::StartLayer(bounds) => {
+                let bounds = Bounds {
+                    origin: bounds.origin + delta,
+                    size: bounds.size,
+                };
+                scene.push_layer(bounds.intersect(&viewport));
+            }
+            PaintOperation::EndLayer => scene.pop_layer(),
+        }
+    }
+}
+
+/// Narrows every content mask `primitive` carries to `mask`.
+fn clip_primitive(primitive: &mut Primitive, mask: &Bounds<ScaledPixels>) {
+    let clip = |content_mask: &mut ContentMask<ScaledPixels>| {
+        content_mask.bounds = content_mask.bounds.intersect(mask);
+    };
+    match primitive {
+        Primitive::Shadow(p) => clip(&mut p.content_mask),
+        Primitive::Quad(p) => clip(&mut p.content_mask),
+        Primitive::Path(p) => {
+            clip(&mut p.content_mask);
+            for vertex in &mut p.vertices {
+                clip(&mut vertex.content_mask);
+            }
+        }
+        Primitive::Underline(p) => clip(&mut p.content_mask),
+        Primitive::MonochromeSprite(p) => clip(&mut p.content_mask),
+        Primitive::SubpixelSprite(p) => clip(&mut p.content_mask),
+        Primitive::PolychromeSprite(p) => clip(&mut p.content_mask),
+        Primitive::Surface(p) => clip(&mut p.content_mask),
     }
 }
 
@@ -333,6 +531,10 @@ fn repaint(
         size: region.size,
     };
     let hashes = tile_hashes(&content, TILE_SIZE, region);
+    let has_paths = !content.paths.is_empty();
+    if has_paths {
+        draw_into_frame(window, &painting.scene, Point::default());
+    }
 
     let layer = layer_mut(window, &painting.id);
     let (generation, dirty) = match &layer.record {
@@ -358,7 +560,12 @@ fn repaint(
         background,
         hovers,
         dependencies: painting.dependencies.union(&paint_dependencies),
+        has_paths,
     });
+    let dirtied = layer
+        .record
+        .as_ref()
+        .map_or(0, |record| record.dirty_tiles.len());
     window
         .layout_engine
         .as_mut()
@@ -366,6 +573,9 @@ fn repaint(
         .retention
         .stats
         .layer_frames_repainted += 1;
+    if !has_paths {
+        insert_layer(window, &painting.id, translation, dirtied);
+    }
 }
 
 /// Ends the layers' part of the frame being drawn, before it becomes the

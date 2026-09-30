@@ -44,4 +44,9 @@ pub(crate) struct LayerRecord {
     pub(crate) hovers: Rc<[(HitboxId, bool)]>,
     /// What prepainting and painting the content read.
     pub(crate) dependencies: RenderDependencies,
+    /// Whether `content` holds a path. Paths are never composited from
+    /// tiles: their antialiasing pairs pixels in 2×2 quads, so a path moved
+    /// by an odd number of device pixels would not match a direct draw
+    /// (spec §5.6). Such content is drawn into the frame instead.
+    pub(crate) has_paths: bool,
 }
