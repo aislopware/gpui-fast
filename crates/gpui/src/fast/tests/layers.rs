@@ -634,10 +634,11 @@ mod paint {
         crate::hsla(row as f32 / 64., 0.5, 0.5, 1.)
     }
 
-    /// A white panel holding a 100 px scroll container of `rows` rows of
+    /// A panel, white at first, holding a 100 px scroll container of `rows` rows of
     /// 20 px, each its own colour.
     struct Rows {
         rows: usize,
+        panel: Hsla,
         scroll: crate::ScrollHandle,
     }
 
@@ -651,7 +652,7 @@ mod paint {
                 InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
                 Styled as _,
             };
-            crate::div().size_full().bg(crate::white()).child(
+            crate::div().size_full().bg(self.panel).child(
                 crate::div()
                     .id("s")
                     .overflow_y_scroll()
@@ -667,6 +668,7 @@ mod paint {
     fn rows_window(cx: &mut crate::TestAppContext, rows: usize) -> crate::WindowHandle<Rows> {
         let window = cx.add_window(|_, _| Rows {
             rows,
+            panel: crate::white(),
             scroll: crate::ScrollHandle::new(),
         });
         // The first frame redraws everything, which never uses layers.
@@ -897,5 +899,197 @@ mod paint {
         );
         let whole = crate::point(crate::px(-8.), crate::px(-12.8));
         assert_eq!(snap(whole, 1.25, true), whole, "whole device pixels stay");
+    }
+
+    fn bake(quads: &[Quad], window_opaque: bool) -> Option<crate::Rgba> {
+        crate::fast::layers::background::bake(
+            &scene(quads),
+            sp(100., 100., 200., 300.),
+            window_opaque,
+        )
+    }
+
+    #[test]
+    fn an_opaque_panel_under_the_viewport_is_baked() {
+        let panel = quad(sp(0., 0., 1000., 1000.), Hsla::blue());
+        assert_eq!(bake(&[panel], true), Some(Hsla::blue().into()));
+        // Something painted later away from the viewport changes nothing.
+        let elsewhere = quad(sp(500., 500., 10., 10.), Hsla::red());
+        assert_eq!(bake(&[panel, elsewhere], true), Some(Hsla::blue().into()));
+        // The topmost panel is the one baked.
+        let above = quad(sp(50., 50., 400., 400.), Hsla::green());
+        assert_eq!(bake(&[panel, above], true), Some(Hsla::green().into()));
+    }
+
+    #[test]
+    fn only_a_solid_opaque_panel_covering_the_viewport_is_baked() {
+        let panel = quad(sp(0., 0., 1000., 1000.), Hsla::blue());
+        assert_eq!(bake(&[panel], false), None, "transparent window");
+
+        let gradient = Quad {
+            background: crate::linear_gradient(
+                0.,
+                crate::linear_color_stop(Hsla::red(), 0.),
+                crate::linear_color_stop(Hsla::blue(), 1.),
+            ),
+            ..panel
+        };
+        assert_eq!(bake(&[gradient], true), None, "gradient");
+
+        let translucent = quad(sp(0., 0., 1000., 1000.), Hsla::blue().opacity(0.5));
+        assert_eq!(bake(&[translucent], true), None, "translucent");
+
+        let partly_inside = quad(sp(250., 250., 100., 100.), Hsla::red());
+        assert_eq!(bake(&[panel, partly_inside], true), None, "partly covered");
+
+        let short = quad(sp(0., 0., 1000., 350.), Hsla::blue());
+        assert_eq!(bake(&[short], true), None, "does not cover the viewport");
+
+        let clipped = Quad {
+            content_mask: ContentMask {
+                bounds: sp(0., 0., 1000., 200.),
+            },
+            ..panel
+        };
+        assert_eq!(
+            bake(&[clipped], true),
+            None,
+            "clipped short of the viewport"
+        );
+
+        let rounded_inside = Quad {
+            bounds: sp(90., 90., 500., 500.),
+            corner_radii: crate::Corners::all(ScaledPixels(20.)),
+            ..panel
+        };
+        assert_eq!(bake(&[rounded_inside], true), None, "corner inside");
+        let rounded_outside = Quad {
+            bounds: sp(0., 0., 1000., 1000.),
+            corner_radii: crate::Corners::all(ScaledPixels(20.)),
+            ..panel
+        };
+        assert_eq!(
+            bake(&[rounded_outside], true),
+            Some(Hsla::blue().into()),
+            "corners away from the viewport"
+        );
+
+        let bordered = Quad {
+            bounds: sp(95., 0., 1000., 1000.),
+            border_widths: crate::Edges::all(ScaledPixels(10.)),
+            border_color: Hsla::red(),
+            ..panel
+        };
+        assert_eq!(bake(&[bordered], true), None, "border inside");
+        let transparent_border = Quad {
+            border_color: Hsla::transparent_black(),
+            ..bordered
+        };
+        assert_eq!(
+            bake(&[transparent_border], true),
+            Some(Hsla::blue().into()),
+            "an invisible border"
+        );
+    }
+
+    /// Draws `window` over a panel of colour `panel`, every scroll container
+    /// made to decide `decision`.
+    fn draw_over(
+        cx: &mut crate::TestAppContext,
+        window: crate::WindowHandle<Rows>,
+        panel: Hsla,
+        decision: crate::fast::layers::policy::Decision,
+    ) {
+        window
+            .update(cx, |view, window, cx| {
+                view.panel = panel;
+                window.fast_layers.forced_decision = Some(decision);
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+
+    #[crate::test]
+    fn a_layer_bakes_the_panel_under_it(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+        with_record(cx, window, |record, _| {
+            assert_eq!(record.background, crate::white().into());
+        });
+    }
+
+    #[crate::test]
+    fn background_change_repaints_layer(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, Decision::Repaint);
+        let (generation, tiles) = with_record(cx, window, |record, _| {
+            let mut tiles: Vec<_> = record.tile_hashes.keys().copied().collect();
+            tiles.sort();
+            (record.generation, tiles)
+        });
+
+        // Painted again with nothing changed but the panel: every tile is
+        // cleared with another colour, so every tile is dirty.
+        draw_over(cx, window, Hsla::blue(), Decision::Repaint);
+        let generation = with_record(cx, window, |record, _| {
+            assert_eq!(record.background, Hsla::blue().into());
+            assert_eq!(record.generation, generation + 1);
+            assert_eq!(record.dirty_tiles, tiles);
+            record.generation
+        });
+
+        // Composited over another panel: the content stands, the tiles are
+        // cleared with the new colour.
+        draw_over(cx, window, Hsla::green(), Decision::Composite);
+        with_record(cx, window, |record, _| {
+            assert_eq!(record.background, Hsla::green().into());
+            assert_eq!(record.generation, generation + 1);
+            assert_eq!(record.dirty_tiles, tiles);
+        });
+
+        // Nothing changed: the same tiles, nothing dirty.
+        draw_deciding(cx, window, Decision::Repaint);
+        with_record(cx, window, |record, _| {
+            assert_eq!(record.background, Hsla::green().into());
+            assert_eq!(record.dirty_tiles, Vec::new());
+        });
+    }
+
+    #[crate::test]
+    fn no_layer_is_painted_over_a_background_it_cannot_bake(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        draw_over(
+            cx,
+            window,
+            Hsla::blue().opacity(0.5),
+            crate::fast::layers::policy::Decision::Repaint,
+        );
+        cx.update_window(window.into(), |_, window, _| {
+            assert_eq!(
+                row_quads(&window.rendered_frame.scene, 40).len(),
+                5,
+                "the rows are painted as without layers"
+            );
+            assert!(
+                window
+                    .fast_layers
+                    .layers
+                    .values()
+                    .all(|layer| layer.record.is_none())
+            );
+        })
+        .unwrap();
     }
 }

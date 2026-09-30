@@ -15,12 +15,12 @@
 //!   tiles are composited at the new offset.
 
 use crate::{
-    App, Bounds, ContentMask, GlobalElementId, Overflow, Pixels, Point, PrepaintStateIndex,
-    ScaledPixels, Scene, Size, Style, Window,
+    App, Bounds, ContentMask, GlobalElementId, Overflow, Pixels, Point, PrepaintStateIndex, Rgba,
+    ScaledPixels, Scene, Size, Style, TileCoord, Window, WindowBackgroundAppearance,
     fast::{
         dependencies::{DependencyRecording, RenderDependencies},
         layers::{
-            COMPILED, Layer, active,
+            COMPILED, Layer, active, background,
             policy::{self, Decision},
             record::LayerRecord,
             scene::{LayerKey, translate_primitive},
@@ -30,6 +30,7 @@ use crate::{
     point,
     scene::PaintOperation,
 };
+use collections::FxHashMap;
 use std::{mem, ops::Range, rc::Rc};
 
 /// The side of a tile, in device pixels.
@@ -220,9 +221,71 @@ pub(crate) fn paint_children(
     };
     match prepainted {
         None => f(window, cx),
-        Some(Prepainted::Repaint(painting)) => repaint(window, cx, painting, f),
-        Some(Prepainted::Composite { .. }) => {}
+        Some(Prepainted::Repaint(painting)) => match bake_background(window) {
+            Some(background) => repaint(window, cx, painting, background, f),
+            None => paint_unbaked(window, cx, painting, f),
+        },
+        Some(Prepainted::Composite { .. }) => {
+            if let Some(id) = id {
+                composite(window, id);
+            }
+        }
     }
+}
+
+/// The opaque colour a layer's tiles are cleared with: what the frame has
+/// painted so far under the viewport, the current content mask, if it is
+/// one solid quad covering it (spec §5.2).
+fn bake_background(window: &Window) -> Option<Rgba> {
+    let window_opaque =
+        window.platform_window.background_appearance() == WindowBackgroundAppearance::Opaque;
+    let viewport = window.snapped_content_mask().bounds;
+    background::bake(&window.next_frame.scene, viewport, window_opaque)
+}
+
+/// Paints content prepainted for a layer straight into the frame, as
+/// without one, because the layer's tiles could not be cleared with what is
+/// under them. The layer keeps no content, so that it is painted afresh.
+fn paint_unbaked(
+    window: &mut Window,
+    cx: &mut App,
+    painting: Painting,
+    f: impl FnOnce(&mut Window, &mut App),
+) {
+    let id = painting.id.clone();
+    // Nested views were prepainted inside the layer, and are painted so.
+    window.fast_layers.painting = Some(painting);
+    f(window, cx);
+    window.fast_layers.painting = None;
+    layer_mut(window, &id).record = None;
+}
+
+/// Carries out a `Composite` decision for the container `id`: the layer's
+/// content stands, cleared with the background now under it.
+fn composite(window: &mut Window, id: &GlobalElementId) {
+    let background = bake_background(window);
+    let layer = layer_mut(window, id);
+    let Some(record) = layer.record.as_mut() else {
+        return;
+    };
+    match background {
+        Some(background) if background == record.background => {}
+        Some(background) => {
+            // Every tile is cleared with another colour: a new generation of
+            // the same content, all of it dirty.
+            record.background = background;
+            record.generation += 1;
+            record.dirty_tiles = all_tiles(&record.tile_hashes);
+        }
+        None => layer.record = None,
+    }
+}
+
+/// Every tile of `hashes`, sorted.
+fn all_tiles(hashes: &FxHashMap<TileCoord, u64>) -> Vec<TileCoord> {
+    let mut all: Vec<_> = hashes.keys().copied().collect();
+    all.sort();
+    all
 }
 
 /// Paints the content into the layer's scene and records it.
@@ -230,6 +293,7 @@ fn repaint(
     window: &mut Window,
     cx: &mut App,
     mut painting: Painting,
+    background: Rgba,
     f: impl FnOnce(&mut Window, &mut App),
 ) {
     window.content_mask_stack.push(ContentMask {
@@ -269,18 +333,16 @@ fn repaint(
         size: region.size,
     };
     let hashes = tile_hashes(&content, TILE_SIZE, region);
-    let background = crate::rgba(0x00000000);
 
     let layer = layer_mut(window, &painting.id);
     let (generation, dirty) = match &layer.record {
         Some(old) if old.background == background => {
             (old.generation + 1, dirty_tiles(&old.tile_hashes, &hashes))
         }
-        old => {
-            let mut all: Vec<_> = hashes.keys().copied().collect();
-            all.sort();
-            (old.as_ref().map_or(1, |old| old.generation + 1), all)
-        }
+        old => (
+            old.as_ref().map_or(1, |old| old.generation + 1),
+            all_tiles(&hashes),
+        ),
     };
     layer.record = Some(LayerRecord {
         content: Rc::new(content),
