@@ -4102,6 +4102,7 @@ impl Window {
         if let Some(mask) = mask {
             let mask = mask.intersect(&self.content_mask());
             self.content_mask_stack.push(mask);
+            crate::fast::keyed::content_mask_pushed(self);
             let result = f(self);
             self.content_mask_stack.pop();
             result

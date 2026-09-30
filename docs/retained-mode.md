@@ -216,6 +216,46 @@ moved operations its paint inserts as they are.
 
 `LayoutStats::elements_moved` counts the elements drawn again moved.
 
+### Keyed paint
+
+An element that paints itself, rather than building children — a
+terminal's grid, a chart, a code view — builds nothing that could be
+compared, and paints every frame whole. `Window::paint_keyed(key, origin,
+paint)` lets it name a stretch of what it paints, a row say, by a `u64` key
+that stands for everything `paint` paints relative to `origin`. The code is
+in `crates/gpui/src/fast/keyed.rs`.
+
+- A stretch whose key was painted last frame is not painted: its paint
+  operations are copied from last frame's scene. Where the origin, the
+  content mask, the opacity, the paint layer and the scale factor are all as
+  they were, it is copied as it is. Where only the origin moved, by whole
+  device pixels, it is copied moved, under the rules for an element drawn
+  again moved; painting a stretch always notes what moving it needs.
+  Otherwise `paint` is called.
+- The key is the caller's promise. Two stretches under one key paint the
+  same primitives relative to their origins, including every texture they
+  paint that can leave the atlas between frames. Keys are one space per
+  window: a key found anywhere in last frame is taken, which the promise
+  makes sound, and an element whose keys must not meet another's folds in
+  what tells them apart.
+- A stretch paints primitives only: quads, glyphs, sprites, underlines,
+  shadows, paint layers and content masks. One that registered a listener,
+  a hitbox's input handler, a cursor style, a tab stop or a window control,
+  read element state or laid out text is painted every frame, because
+  drawing it again would leave those out. A stretch that pushed a content
+  mask of its own is not moved under a mask that stood still, since its own
+  mask can't be told from the one around it.
+- A view or element drawn again whole carries the keyed stretches it holds
+  into the new frame, so an element painted every few frames still finds
+  them. A stretch that painted nothing, all of it culled, is carried only
+  from inside what was drawn again, never from its ends, where it may be of
+  what was painted beside it.
+- With retention off, or while the window refreshes, every stretch is
+  painted.
+
+`LayoutStats::paints_keyed` counts the stretches painted, `paints_replayed`
+those drawn again, and `paints_moved` those of them drawn again moved.
+
 ### Records per retained subtree
 
 Each frame keeps a record per retained subtree: where its hitboxes, dispatch
@@ -308,6 +348,13 @@ A retained frame has to be the frame drawing from scratch would have produced.
   lines sliding through a clip, moves by part of a device pixel, and rounded
   borders that can't be moved, requiring every frame to match and moves to
   have happened where they can.
+- `crates/gpui/src/fast/tests/keyed.rs` drives the pair through stretches
+  painted under keys, re-keyed, added, dropped and moved at random, whole or
+  by part of a device pixel, under clips that move or stand still, in paint
+  layers, with clips of their own and listeners, and requires every frame
+  and the listeners to match and stretches to have been drawn again, moved
+  or not. `gpui_perf`'s `strip-output-keyed` and `strip-scroll-keyed` verify
+  it on a terminal strip.
 - `crates/gpui/src/fast/tests/retained.rs` covers reuse, rebuilding when a
   dependency or a hover changes, moved views and retention turned off.
 - `cargo run -p gpui_perf --release -- --headless --verify` compares the quads,

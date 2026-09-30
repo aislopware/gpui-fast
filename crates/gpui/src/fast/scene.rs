@@ -46,6 +46,8 @@ pub(crate) struct Painted {
     sorts: [Sorted; KINDS],
     /// What painting noted since [`take_noted`].
     noted: Noting,
+    /// The stretches painted under keys. See [`crate::fast::keyed`].
+    pub(crate) keyed: crate::fast::keyed::KeyedPaints,
 }
 
 /// The keys a kind's primitives were sorted by, and the order sorting put
@@ -81,6 +83,7 @@ pub(crate) fn clear(scene: &mut Scene) {
     scene.fast_painted.entries.clear();
     scene.fast_painted.gathered = [false; KINDS];
     scene.fast_painted.noted.clear();
+    scene.fast_painted.keyed.clear();
 }
 
 /// Notes that a primitive at `bounds` was left out for lying outside
@@ -211,7 +214,8 @@ pub(crate) fn take_orderings(next: &mut Scene, rendered: &mut Scene) {
 pub(crate) fn replay(scene: &mut Scene, range: Range<usize>, previous: &Scene) {
     scene.paint_operations.reserve(range.len());
     scene.fast_painted.entries.reserve(range.len());
-    for index in range {
+    let start = scene.paint_operations.len();
+    for index in range.clone() {
         let entry = previous.fast_painted.entries[index];
         match &previous.paint_operations[index] {
             PaintOperation::Primitive(at) => replay_primitive(scene, previous, *at, entry),
@@ -231,6 +235,16 @@ pub(crate) fn replay(scene: &mut Scene, range: Range<usize>, previous: &Scene) {
                 crate::fast::composition::scene::replay(scene, placement)
             }
         }
+    }
+    // Each operation is drawn again as one, so the keyed stretches inside
+    // lie where they did, moved along with the range.
+    if scene.paint_operations.len() - start == range.len() {
+        crate::fast::keyed::KeyedPaints::carry(
+            &mut scene.fast_painted.keyed,
+            &previous.fast_painted.keyed,
+            range,
+            start,
+        );
     }
 }
 

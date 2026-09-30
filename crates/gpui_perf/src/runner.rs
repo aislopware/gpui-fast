@@ -135,6 +135,11 @@ pub struct PhaseAverages {
     pub views_reused: f64,
     pub elements_built: f64,
     pub elements_reused: f64,
+    pub elements_moved: f64,
+    /// Stretches painted under a key, and drawn again from last frame.
+    pub paints_keyed: f64,
+    pub paints_replayed: f64,
+    pub paints_moved: f64,
 }
 
 impl PhaseAverages {
@@ -159,6 +164,10 @@ impl PhaseAverages {
             views_reused: stats.views_reused as f64 / n,
             elements_built: stats.elements_built as f64 / n,
             elements_reused: stats.elements_reused as f64 / n,
+            elements_moved: stats.elements_moved as f64 / n,
+            paints_keyed: stats.paints_keyed as f64 / n,
+            paints_replayed: stats.paints_replayed as f64 / n,
+            paints_moved: stats.paints_moved as f64 / n,
         }
     }
 }
@@ -686,7 +695,7 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
         let _ = writeln!(out);
 
         type Row = (&'static str, fn(&RunReport) -> f64, usize);
-        let rows: [Row; 26] = [
+        let rows: [Row; 30] = [
             ("frame mean ms", |r| r.frame.mean_ms, 3),
             ("frame p50 ms", |r| r.frame.p50_ms, 3),
             ("frame p95 ms", |r| r.frame.p95_ms, 3),
@@ -710,6 +719,10 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
             ("views reused", |r| r.phases.views_reused, 1),
             ("elements built", |r| r.phases.elements_built, 1),
             ("elements reused", |r| r.phases.elements_reused, 1),
+            ("elements moved", |r| r.phases.elements_moved, 1),
+            ("paints keyed", |r| r.phases.paints_keyed, 1),
+            ("paints replayed", |r| r.phases.paints_replayed, 1),
+            ("paints moved", |r| r.phases.paints_moved, 1),
             ("allocations", |r| r.allocations, 1),
             ("allocated KiB", |r| r.allocated_kib, 1),
             ("step ms (not counted)", |r| r.step.mean_ms, 3),

@@ -34,36 +34,55 @@ pub fn scenarios() -> Vec<Box<dyn crate::Scenario>> {
             name: "strip-output",
             description: "Eight terminal tiles in a strip; each frame one terminal prints a line, notifying only its own view.",
             kind: Kind::Output,
+            keyed: false,
         }),
         Box::new(StripScenario {
             name: "strip-readout",
             description: "Eight terminal tiles; each frame the strip is notified as a running command's readout ticks, building every tile header again.",
             kind: Kind::Readout,
+            keyed: false,
         }),
         Box::new(StripScenario {
             name: "strip-scroll",
             description: "Eight terminal tiles; the strip scrolls sideways 6.5px a frame, moving every tile and its terminal.",
             kind: Kind::Scroll,
+            keyed: false,
         }),
         Box::new(StripScenario {
             name: "strip-spring",
             description: "strip-scroll with a terminal holding the keyboard: each grid writes its view as it is prepainted and registers an input handler as it is painted, as Slopty's does.",
             kind: Kind::Spring,
+            keyed: false,
         }),
         Box::new(StripScenario {
             name: "strip-hover",
             description: "Eight terminal tiles; the pointer sweeps across the tile headers and their icon buttons, one move a frame.",
             kind: Kind::Hover,
+            keyed: false,
         }),
         Box::new(StripScenario {
             name: "strip-focus",
             description: "Eight terminal tiles, each ringed while it holds the keyboard; every ten frames the focus moves to the next terminal, as picking a tile does.",
             kind: Kind::Focus,
+            keyed: false,
         }),
         Box::new(StripScenario {
             name: "strip-clock",
             description: "Eight terminal tiles at rest; only the status bar's clock changes each frame.",
             kind: Kind::Clock,
+            keyed: false,
+        }),
+        Box::new(StripScenario {
+            name: "strip-output-keyed",
+            description: "strip-output with each grid painting its rows under keys (Window::paint_keyed), as a terminal element opting in does.",
+            kind: Kind::Output,
+            keyed: true,
+        }),
+        Box::new(StripScenario {
+            name: "strip-scroll-keyed",
+            description: "strip-scroll with each grid painting its rows under keys (Window::paint_keyed).",
+            kind: Kind::Scroll,
+            keyed: true,
         }),
     ]
 }
@@ -102,6 +121,8 @@ struct StripScenario {
     name: &'static str,
     description: &'static str,
     kind: Kind,
+    /// Whether the grids paint their rows under keys.
+    keyed: bool,
 }
 
 impl crate::Scenario for StripScenario {
@@ -116,7 +137,8 @@ impl crate::Scenario for StripScenario {
     fn build(&self, window: &mut Window, cx: &mut App) -> AnyView {
         let spring = self.kind == Kind::Spring;
         let ring = self.kind == Kind::Focus;
-        let shell = cx.new(|cx| Shell::new(spring, ring, cx));
+        let keyed = self.keyed;
+        let shell = cx.new(|cx| Shell::new(spring, ring, keyed, cx));
         if spring || ring {
             let focus = shell.read(cx).strip.read(cx).tiles[0]
                 .terminal
@@ -187,13 +209,13 @@ struct Shell {
 }
 
 impl Shell {
-    fn new(spring: bool, ring: bool, cx: &mut Context<Self>) -> Self {
+    fn new(spring: bool, ring: bool, keyed: bool, cx: &mut Context<Self>) -> Self {
         let tiles = (0..TILES)
             .map(|index| Tile {
                 title: format!("shell {index}").into(),
                 cwd: format!("~/src/project-{index}/crates").into(),
                 running: (index % 3 == 0).then_some(12),
-                terminal: cx.new(|cx| Terminal::new(index, spring, ring, cx)),
+                terminal: cx.new(|cx| Terminal::new(index, spring, ring, keyed, cx)),
             })
             .collect();
         Shell {
@@ -427,11 +449,14 @@ struct Terminal {
     prepainted: usize,
     /// Whether it is ringed while it holds the keyboard.
     ring: bool,
+    /// Whether its grid paints its rows under keys.
+    keyed: bool,
 }
 
 impl Terminal {
-    fn new(index: usize, spring: bool, ring: bool, cx: &mut Context<Self>) -> Self {
+    fn new(index: usize, spring: bool, ring: bool, keyed: bool, cx: &mut Context<Self>) -> Self {
         Terminal {
+            keyed,
             lines: (0..ROWS).map(|row| line(index * 1000 + row)).collect(),
             focus: cx.focus_handle(),
             printed: 0,
@@ -494,6 +519,7 @@ impl Render for Terminal {
             .child(Grid {
                 lines: Rc::from(self.lines.as_slice()),
                 view: self.spring.then(|| (cx.entity(), self.focus.clone())),
+                keyed: self.keyed,
             })
     }
 }
@@ -502,6 +528,9 @@ impl Render for Terminal {
 struct Grid {
     lines: Rc<[SharedString]>,
     view: Option<(Entity<Terminal>, FocusHandle)>,
+    /// Whether each row is painted under a key: its text and whether it is
+    /// highlighted, which is all it paints relative to its origin.
+    keyed: bool,
 }
 
 impl IntoElement for Grid {
@@ -582,10 +611,13 @@ impl Element for Grid {
             window.handle_input(focus, ElementInputHandler::new(bounds, view.clone()), cx);
         }
         let cell = px(FONT_SIZE * 0.6);
+        let keyed = self.keyed;
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             for (row, line) in lines.iter().enumerate() {
                 let origin = bounds.origin + point(px(0.), px(row as f32 * LINE_HEIGHT));
-                if row % 4 == 1 {
+                let highlighted = row % 4 == 1;
+                let mut paint = |window: &mut Window| {
+                if highlighted {
                     // A selection, and a highlighted prompt.
                     window.paint_quad(fill(
                         Bounds::new(
@@ -607,6 +639,19 @@ impl Element for Grid {
                     window,
                     cx,
                 );
+                };
+                if keyed {
+                    let key = {
+                        use std::hash::{Hash as _, Hasher as _};
+                        let mut hasher = std::hash::DefaultHasher::new();
+                        line.text.hash(&mut hasher);
+                        highlighted.hash(&mut hasher);
+                        hasher.finish()
+                    };
+                    window.paint_keyed(key, origin, paint);
+                } else {
+                    paint(window);
+                }
             }
         });
     }
