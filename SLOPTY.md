@@ -388,6 +388,12 @@ Added in this fork:
   `on_swipe` on every interactive element (`InteractiveGestures`); on iOS a rotation from
   `UIRotationGestureRecognizer`, recognized alongside the pinch. A swipe no listener
   stops still becomes the back or forward mouse button, as upstream makes it
+- perf(gpui): the frame after one whose bounds-tree replay ran out of its search budget
+  replays on 8,192 comparisons rather than 32,768 (`fast/bounds_tree.rs`), since a frame
+  in motion spends the whole budget and builds the grid anyway; a frame at rest hands
+  the next one the whole budget again. Instructions per frame: list-uniform-scroll
+  −11.6%, strip-scroll and strip-spring −2.2%, the workspace's scrolls −1.4 to −1.9%,
+  nothing else past −0.8 to +0.3%
 - perf(gpui): outside motion, painting neither begins nor ends noting, and culled
   primitives work nothing out for it (layout-colors +0.79% to +0.11% against the fork
   before `fbbb9f5`)
