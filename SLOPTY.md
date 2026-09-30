@@ -461,6 +461,19 @@ Added in this fork:
   0.7 µs, `-[NSCursor set]` 60 µs, and the cursor set is `NSCursor.currentCursor` as
   `set` returns. Other platforms show the arrow for an image style; iOS has no bitmap
   pointer (`UIPointerShape` takes paths only)
+- feat(gpui_platform): the platform's text system without the platform,
+  `gpui_platform::text_system()` (`gpui_platform/src/fast/text_system.rs`, with
+  `gpui_macos::text_system` in `gpui_macos/src/fast/text_system.rs` and
+  `gpui_ios::text_system`). `MacPlatform::new` panics off the main thread, and a test
+  never runs on it, so a test that wanted real glyphs (Slopty's terminal paint oracle
+  compares a keyed replay with a fresh paint on Core Text) had no way to them: the Mac's
+  text system was crate-private and came only with the platform. Core Text needs no main
+  thread; on macOS and iOS the text system is now made alone, as the platform makes it
+  (GPUI's no-op one on macOS without `font-kit`). Windows' and Linux's come with their
+  platform's devices and are still taken from a headless platform. `bench_text_system`
+  takes it from here too, so a benchmark on macOS no longer makes a platform for it.
+  Tested off the main thread (`the_text_system_is_made_and_used_off_the_main_thread`:
+  Menlo resolves, "gpui" shapes to four glyphs, one rasterises into ink)
 
 ### Candidates for longbridge
 

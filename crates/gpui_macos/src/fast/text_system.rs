@@ -3,7 +3,17 @@
 use collections::HashMap;
 use core_text::font::CTFont;
 use font_kit::font::Font as FontKitFont;
-use gpui::{FontId, Pixels};
+use gpui::{FontId, Pixels, PlatformTextSystem};
+use std::sync::Arc;
+
+/// The Mac's text system on its own, without the platform around it.
+///
+/// `MacPlatform::new` has to run on the main thread, but Core Text and
+/// font-kit do not: a test, which runs on a thread of its own, or a benchmark
+/// that only shapes and rasterises text takes the text system from here.
+pub fn text_system() -> Arc<dyn PlatformTextSystem> {
+    Arc::new(crate::MacTextSystem::new())
+}
 
 /// Each font at each size a line has been laid out at. CoreText keeps the
 /// caches it builds for shaping — the advances and glyphs of ASCII among
