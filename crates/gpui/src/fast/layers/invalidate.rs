@@ -14,11 +14,6 @@
 //! the wheel scrolled what it holds ([`OwnerWatch`]), and no container
 //! inside the layer's content scrolled, which the count cannot tell apart.
 
-#![allow(
-    dead_code,
-    reason = "the paint stream's hook around a scroll container's children calls policy::decide; remove once it is merged"
-)]
-
 use std::{cell::RefCell, ops::Range, rc::Rc};
 
 use collections::{FxHashMap, FxHashSet};
@@ -26,7 +21,7 @@ use collections::{FxHashMap, FxHashSet};
 use crate::fast::dependencies::{RenderDependencies, StateVersion};
 use crate::fast::layers::COMPILED;
 use crate::fast::layers::record::LayerRecord;
-use crate::{App, EntityId, GlobalElementId, Interactivity, Window};
+use crate::{App, EntityId, GlobalElementId, Interactivity, PrepaintStateIndex, Window};
 
 /// Where a scroll container's offset lives, which scrolls and reads of it are
 /// noted under.
@@ -98,7 +93,7 @@ const FORGET_AFTER_FRAMES: u64 = 120;
 
 impl ScrollLog {
     /// The scroll containers painted lately.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn containers(&self) -> impl Iterator<Item = &GlobalElementId> {
         self.containers.keys()
     }
@@ -586,7 +581,37 @@ pub(crate) fn scroll_only(
     !changed(window, cx, &record.dependencies, source.as_ref())
         && window.hovers_unchanged(&record.hovers)
         && !nested_container_scrolled(window, id)
+        && !content_view_notified(window, record)
         && owner_scrolled_only(window, cx, id, source.as_ref())
+}
+
+/// The views drawn inside a scroll container's content this frame, which
+/// prepainting it, over `prepaint`, added to the dispatch tree: they render
+/// while the view holding the container lays out, before its content is
+/// recorded, so what they read is not the record's.
+pub(crate) fn content_views(
+    window: &Window,
+    prepaint: &Range<PrepaintStateIndex>,
+) -> Rc<[EntityId]> {
+    let nodes = &window.next_frame.dispatch_tree.nodes;
+    let start = prepaint.start.dispatch_tree_index.min(nodes.len());
+    let end = prepaint.end.dispatch_tree_index.clamp(start, nodes.len());
+    nodes[start..end]
+        .iter()
+        .filter_map(|node| node.view_id)
+        .collect()
+}
+
+/// Whether a view drawn inside the content `record` holds was notified, or
+/// is dirty, since the last frame. On frames that composite the layer those
+/// views are neither prepainted nor painted, so the last frame's retained
+/// views and dispatch tree do not hold them: the record remembers them.
+fn content_view_notified(window: &Window, record: &LayerRecord) -> bool {
+    let notified = &window.retained_state.notified_entities;
+    record
+        .views
+        .iter()
+        .any(|view| notified.contains(view) || window.dirty_views.contains(view))
 }
 
 /// Whether a scroll container inside the content of the scroll container

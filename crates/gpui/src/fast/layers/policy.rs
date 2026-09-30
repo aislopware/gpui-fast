@@ -14,11 +14,6 @@
 //! still does. Layers are dropped when the window is resized or rescaled,
 //! and when they have not been composited for long.
 
-#![allow(
-    dead_code,
-    reason = "the paint stream's hook around a scroll container's children calls decide; remove once it is merged"
-)]
-
 use crate::fast::layers::invalidate::OwnerWatch;
 use crate::fast::layers::record::LayerRecord;
 use crate::fast::layers::{Layer, WindowLayers, input, invalidate, lists, scene::LayerKey};
@@ -425,7 +420,7 @@ fn new_layer(key: LayerKey, frame: u64) -> Layer {
 
 /// What the scroll container `id` decided in the last frame drawn, if it
 /// was looked at in it.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(crate) fn last_decision(window: &Window, id: &GlobalElementId) -> Option<Decision> {
     let policy = &window.fast_layers.layers.get(id)?.policy;
     (policy.last_seen_frame + 1 == window.fast_layers.frame)

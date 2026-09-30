@@ -2,8 +2,8 @@
 //! translation at paint, prepaint and paint ranges and dependencies (M3).
 
 use crate::{
-    Bounds, HitboxId, PaintIndex, Pixels, Point, PrepaintStateIndex, Rgba, ScaledPixels, Scene,
-    TileCoord, fast::dependencies::RenderDependencies,
+    Bounds, EntityId, HitboxId, PaintIndex, Pixels, Point, PrepaintStateIndex, Rgba, ScaledPixels,
+    Scene, TileCoord, fast::dependencies::RenderDependencies,
 };
 use collections::FxHashMap;
 use std::{ops::Range, rc::Rc};
@@ -45,6 +45,9 @@ pub(crate) struct LayerRecord {
     pub(crate) hovers: Rc<[(HitboxId, bool)]>,
     /// What prepainting and painting the content read.
     pub(crate) dependencies: RenderDependencies,
+    /// The views drawn inside the content, which render before it is
+    /// recorded.
+    pub(crate) views: Rc<[EntityId]>,
     /// Whether `content` holds a path. Paths are never composited from
     /// tiles: their antialiasing pairs pixels in 2×2 quads, so a path moved
     /// by an odd number of device pixels would not match a direct draw

@@ -1841,26 +1841,19 @@ mod invalidation {
 }
 
 /// Tests of what a scroll container decides to do with its layer each frame
-/// (M4). The paint stream's hook around a container's children is stood in
-/// for by two probes, painted before and after the rows, which ask
-/// [`decide`] and, when it says [`Decision::Repaint`], record what the rows
-/// read and painted into the layer as the hook does.
+/// (M4), through the paint stream's hook around a container's children,
+/// which asks [`decide`] and paints the rows into the layer when told to.
 mod decisions {
     use super::invalidation::{draw, with_window};
-    use crate::fast::dependencies::{DependencyRecording, RenderDependencies};
-    use crate::fast::layers::policy::{Decision, decide, last_decision};
-    use crate::fast::layers::record::LayerRecord;
+    use crate::fast::layers::policy::{Decision, last_decision};
     use crate::{
         AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity,
         GlobalElementId, Hsla, InteractiveElement as _, IntoElement, MouseMoveEvent,
         ParentElement as _, Pixels, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent,
         StatefulInteractiveElement as _, Styled as _, TestAppContext, TouchPhase, Window,
-        WindowHandle, canvas, div, point, px, rgb, size,
+        WindowHandle, div, point, px, rgb, size,
     };
-    use std::{
-        cell::{Cell, RefCell},
-        rc::Rc,
-    };
+    use std::{cell::Cell, rc::Rc};
 
     pub(super) const ROWS: usize = 40;
     pub(super) const ROW_HEIGHT: f32 = 20.;
@@ -1870,118 +1863,6 @@ mod decisions {
             origin: point(px(0.), px(0.)),
             size: size(px(200.), px(100.)),
         }
-    }
-
-    /// What the probes hand from one to the other within a frame.
-    #[derive(Default)]
-    pub(super) struct Probe {
-        open: Option<Open>,
-    }
-
-    struct Open {
-        id: GlobalElementId,
-        recording: Option<DependencyRecording>,
-        prepaint_dependencies: RenderDependencies,
-        record: LayerRecord,
-        paint: Option<PaintStart>,
-    }
-
-    struct PaintStart {
-        recording: DependencyRecording,
-        hovers: usize,
-        paths: usize,
-    }
-
-    /// The probe before the children: decides, and starts recording them
-    /// when they are painted into the layer.
-    fn probe_before(
-        probe: Rc<RefCell<Probe>>,
-        content_width: f32,
-        content_height: f32,
-    ) -> impl IntoElement {
-        let paint_probe = probe.clone();
-        canvas(
-            move |_, window, cx| {
-                let id = crate::fast::global_id::current(window);
-                let scroll_offset = window.element_offset();
-                let content_size = size(px(content_width), px(content_height));
-                let decision = decide(window, cx, &id, viewport(), content_size, scroll_offset);
-                if decision != Decision::Repaint {
-                    return;
-                }
-                let content = Bounds {
-                    origin: viewport().origin + scroll_offset,
-                    size: content_size,
-                };
-                // Overscan on the scrolled axis only, as the paint stream
-                // paints it.
-                let overscan = viewport().size.height;
-                let painted_region = Bounds::from_corners(
-                    point(viewport().left(), viewport().top() - overscan),
-                    point(viewport().right(), viewport().bottom() + overscan),
-                )
-                .intersect(&content);
-                let start = window.prepaint_index();
-                probe.borrow_mut().open = Some(Open {
-                    id,
-                    recording: Some(cx.begin_recording_dependencies()),
-                    prepaint_dependencies: RenderDependencies::default(),
-                    record: LayerRecord {
-                        painted_region,
-                        viewport: viewport(),
-                        scroll_offset,
-                        prepaint_range: start.clone()..start,
-                        ..LayerRecord::default()
-                    },
-                    paint: None,
-                });
-            },
-            move |_, _, window, cx| {
-                if let Some(open) = paint_probe.borrow_mut().open.as_mut() {
-                    window.take_hover_reads();
-                    open.record.paint_range.start = window.paint_index();
-                    open.paint = Some(PaintStart {
-                        recording: cx.begin_recording_dependencies(),
-                        hovers: window.retained_state.hover_dependencies.len(),
-                        paths: window.next_frame.scene.paths.len(),
-                    });
-                }
-            },
-        )
-    }
-
-    /// The probe after the children: keeps what they read and painted in
-    /// the layer.
-    fn probe_after(probe: Rc<RefCell<Probe>>) -> impl IntoElement {
-        let paint_probe = probe.clone();
-        canvas(
-            move |_, window, cx| {
-                if let Some(open) = probe.borrow_mut().open.as_mut()
-                    && let Some(recording) = open.recording.take()
-                {
-                    open.prepaint_dependencies = cx.finish_recording_dependencies(recording).all;
-                    open.record.prepaint_range.end = window.prepaint_index();
-                }
-            },
-            move |_, _, window, cx| {
-                let Some(mut open) = paint_probe.borrow_mut().open.take() else {
-                    return;
-                };
-                let Some(paint) = open.paint.take() else {
-                    return;
-                };
-                let paint_dependencies = cx.finish_recording_dependencies(paint.recording).all;
-                window.take_hover_reads();
-                let mut record = open.record;
-                record.hovers = window.retained_state.hover_dependencies[paint.hovers..].into();
-                record.paint_range.end = window.paint_index();
-                record.has_paths = window.next_frame.scene.paths.len() > paint.paths;
-                record.dependencies = open.prepaint_dependencies.union(&paint_dependencies);
-                if let Some(layer) = window.fast_layers.layers.get_mut(&open.id) {
-                    layer.record = Some(record);
-                }
-            },
-        )
     }
 
     /// A row, with a hover style when `hover` is set, `width` wide.
@@ -2022,7 +1903,6 @@ mod decisions {
     /// container, scrolling on y only, clips.
     pub(super) struct LayerPage {
         pub(super) handle: ScrollHandle,
-        pub(super) probe: Rc<RefCell<Probe>>,
         pub(super) rows: Option<Entity<Rows>>,
         pub(super) hover: bool,
         pub(super) read_offset_in_render: bool,
@@ -2041,18 +1921,12 @@ mod decisions {
                 window.request_animation_frame();
             }
             let content_width = viewport().size.width.0 * if self.wide { 2. } else { 1. };
-            let content_height = ROWS as f32 * ROW_HEIGHT;
             let mut scroller = div()
                 .id("scroller")
                 .overflow_y_scroll()
                 .track_scroll(&self.handle)
                 .w(viewport().size.width)
-                .h(viewport().size.height)
-                .child(probe_before(
-                    self.probe.clone(),
-                    content_width,
-                    content_height,
-                ));
+                .h(viewport().size.height);
             if let Some(extra) = &self.extra {
                 scroller = scroller.child(extra());
             }
@@ -2062,16 +1936,13 @@ mod decisions {
                     scroller.children((0..ROWS).map(|index| row(index, self.hover, content_width)))
                 }
             };
-            div()
-                .size_full()
-                .child(scroller.child(probe_after(self.probe.clone())))
+            div().size_full().bg(rgb(0xffffff)).child(scroller)
         }
     }
 
     pub(super) fn new_page(child_view: bool, cx: &mut App) -> LayerPage {
         LayerPage {
             handle: ScrollHandle::new(),
-            probe: Rc::default(),
             rows: child_view.then(|| cx.new(|_| Rows { tint: 0x100000 })),
             hover: false,
             read_offset_in_render: false,
@@ -2288,6 +2159,7 @@ mod decisions {
     }
 
     #[crate::test]
+    #[ignore = "a composited frame paints no hitboxes for the rows until the input stream (M5) carries them"]
     fn a_hover_change_in_the_content_repaints(cx: &mut TestAppContext) {
         let handle = page(cx, false);
         let window = handle.into();

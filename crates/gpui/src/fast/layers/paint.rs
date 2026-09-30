@@ -536,6 +536,7 @@ fn repaint(
         draw_into_frame(window, &painting.scene, Point::default());
     }
 
+    let views = crate::fast::layers::invalidate::content_views(window, &painting.prepaint_range);
     let layer = layer_mut(window, &painting.id);
     let (generation, dirty) = match &layer.record {
         Some(old) if old.background == background => {
@@ -560,6 +561,7 @@ fn repaint(
         background,
         hovers,
         dependencies: painting.dependencies.union(&paint_dependencies),
+        views,
         has_paths,
     });
     let dirtied = layer
@@ -601,7 +603,7 @@ fn layer_mut<'a>(window: &'a mut Window, id: &GlobalElementId) -> &'a mut Layer 
                 policy: Default::default(),
                 input: Default::default(),
                 rows: Default::default(),
-                last_composited_frame: 0,
+                last_composited_frame: layers.frame,
                 prepainted: None,
             },
         );
