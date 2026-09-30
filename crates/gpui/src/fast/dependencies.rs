@@ -246,6 +246,15 @@ impl AmbientInput {
 }
 
 impl App {
+    /// Whether any entity `dependencies` name was written while the window
+    /// drew since they were recorded, other than by the subtree they are
+    /// of as it was built.
+    pub(crate) fn written_since_recorded(&self, dependencies: &RenderDependencies) -> bool {
+        self.entities
+            .access_log
+            .written_since(&dependencies.entities, &dependencies.writes)
+    }
+
     /// A handle for a window to record reads of its own state with.
     pub(crate) fn ambient_reads(&self) -> AmbientReads {
         AmbientReads {
@@ -784,6 +793,22 @@ impl Writes {
                 .own
                 .iter()
                 .any(|(began, finished)| written_at > *began && written_at <= *finished)
+    }
+
+    /// These writes, with those a subtree made as it is built again this
+    /// frame counted as its own: `laid_out`'s, made as it was laid out, and
+    /// those made since `prepainting`, where its prepaint began, up to `now`.
+    pub(crate) fn with_rebuild(&self, laid_out: &Self, prepainting: u64, now: u64) -> Self {
+        let mut own = self.own.clone();
+        own.extend_from_slice(&laid_out.own);
+        if now > prepainting {
+            own.push((prepainting, now));
+        }
+        Writes {
+            from: self.from,
+            to: self.to,
+            own,
+        }
     }
 
     fn union(&self, other: &Self) -> Self {

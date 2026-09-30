@@ -14,7 +14,10 @@
 //! - `scroll-same-view`: a scrolling `div` whose content is plain elements of
 //!   the view that owns the `div`;
 //! - `scroll-uniform-list`: a `uniform_list`;
-//! - `scroll-list`: a `list` of rows of varying height.
+//! - `scroll-list`: a `list` of rows of varying height;
+//! - `scroll-list-beside-input`: that `list` below a filter input that
+//!   writes its state each time it is rendered and prepainted, as GPUI Kit's
+//!   `Input` does, in the view the wheel notifies.
 
 use std::borrow::Cow;
 
@@ -301,6 +304,47 @@ enum Content {
     UniformList(usize, UniformListScrollHandle),
     /// A `list`.
     List(ListState),
+    /// A `list` below a filter input.
+    ListBesideInput(ListState, Entity<FilterState>),
+}
+
+/// What a filter input keeps of how it is set up.
+pub struct FilterState {
+    placeholder: SharedString,
+    width: f32,
+}
+
+/// A filter input that writes how it is set up into its state each time it
+/// is rendered, and again as it is prepainted, as GPUI Kit's `Input` does.
+#[derive(IntoElement)]
+struct FilterInput(Entity<FilterState>);
+
+impl RenderOnce for FilterInput {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        self.0
+            .update(cx, |state, _| state.placeholder = "Filter".into());
+        let placeholder = self.0.read(cx).placeholder.clone();
+        let state = self.0;
+        div()
+            .h(px(32.))
+            .px_3()
+            .flex()
+            .items_center()
+            .border_b_1()
+            .border_color(border())
+            .text_sm()
+            .text_color(muted())
+            .child(placeholder)
+            .child(
+                gpui::canvas(
+                    move |bounds, _, cx| {
+                        state.update(cx, |state, _| state.width = bounds.size.width.into());
+                    },
+                    |_, _, _, _| {},
+                )
+                .size_full(),
+            )
+    }
 }
 
 /// The gallery: a sidebar view and the scrolled content, on an opaque
@@ -401,6 +445,17 @@ impl Render for Gallery {
             Content::List(state) => list(state.clone(), |ix, _, _| row(ix, true))
                 .size_full()
                 .into_any_element(),
+            Content::ListBesideInput(state, filter) => div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .child(FilterInput(filter.clone()))
+                .child(
+                    list(state.clone(), |ix, _, _| row(ix, true))
+                        .flex_1()
+                        .w_full(),
+                )
+                .into_any_element(),
         };
         div()
             .flex()
@@ -459,6 +514,19 @@ pub fn scenarios() -> Vec<Box<dyn Scenario>> {
             name: "scroll-list",
             description: "A 2,000-row list of rows of varying height scrolled by the wheel",
             content: |_| Content::List(ListState::new(2_000, ListAlignment::Top, px(200.))),
+        }),
+        Box::new(WheelScroll {
+            name: "scroll-list-beside-input",
+            description: "scroll-list below a filter input that writes its state as it is rendered and prepainted",
+            content: |cx| {
+                Content::ListBesideInput(
+                    ListState::new(2_000, ListAlignment::Top, px(200.)),
+                    cx.new(|_| FilterState {
+                        placeholder: SharedString::default(),
+                        width: 0.,
+                    }),
+                )
+            },
         }),
     ]
 }

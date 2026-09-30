@@ -75,6 +75,10 @@ pub(crate) struct ScrollLog {
     /// Where anchored elements were prepainted this frame, by the id of the
     /// element around them. See [`note_anchored`].
     pub(crate) anchored: Vec<GlobalElementId>,
+    /// The views holding a layer's container, built again this frame, that
+    /// read something of their own written from outside them before they
+    /// began to be built. See [`note_rebuild`].
+    written_owners: FxHashSet<EntityId>,
 }
 
 /// What [`ScrollLog`] keeps of a scroll container it saw painted.
@@ -149,6 +153,7 @@ impl ScrollLog {
         self.scroll_notifies.clear();
         self.animation_frames_before = std::mem::take(self.animation_frames.get_mut());
         self.anchored.clear();
+        self.written_owners.clear();
         self.containers
             .retain(|id, container| container.frame + FORGET_AFTER_FRAMES > frame || keep(id));
     }
@@ -778,6 +783,12 @@ fn owner_scrolled_only(
     // holding it) is judged by how often it was notified, above.
     let own = without_entity(&owner.own_dependencies, owner_view(window));
     let own = own.as_ref().unwrap_or(&owner.own_dependencies);
+    // The view is built again this frame, as its container's scroll
+    // notified it: what it writes as it is built, as an input component
+    // writes its state each time it renders, is its own, as for any
+    // retained subtree (see `note_update`).
+    let rebuilt = with_own_rebuild(window, cx, own);
+    let own = rebuilt.as_ref().unwrap_or(own);
     // Of the offsets the view read, only those its render read can shape the
     // content (spec §6.2). What its elements read while prepainted or
     // painted lies outside the content, which a composited frame neither
@@ -797,6 +808,58 @@ fn owner_scrolled_only(
     !content_view_dirty
         && !source.is_some_and(|source| render_read_offset(own, source))
         && !changed(window, cx, own, source)
+}
+
+/// Notes, as the view `view` begins to be built again at `id`, whether what
+/// it read of itself last frame was written from outside it since, while
+/// its own writes as it is built cannot yet hide that: an entity keeps only
+/// when it was last written. Only a view holding a layer's container asks,
+/// for [`with_own_rebuild`].
+pub(crate) fn note_rebuild(window: &mut Window, cx: &App, id: &GlobalElementId, view: EntityId) {
+    if !COMPILED
+        || !window
+            .fast_layers
+            .layers
+            .values()
+            .any(|layer| layer.policy.held_by(view))
+    {
+        return;
+    }
+    let retained = &window.rendered_frame.retained;
+    let written = retained
+        .find(id)
+        .is_some_and(|index| cx.written_since_recorded(&retained.records[index].own_dependencies));
+    if written {
+        window.fast_layers.scrolls.written_owners.insert(view);
+    }
+}
+
+/// `own`, what the view holding the container being prepainted read of
+/// itself last frame, with what it wrote as it is built again this frame
+/// counted as its own writes, if it is.
+fn with_own_rebuild(
+    window: &Window,
+    cx: &App,
+    own: &RenderDependencies,
+) -> Option<RenderDependencies> {
+    if owner_view(window)
+        .is_some_and(|view| window.fast_layers.scrolls.written_owners.contains(&view))
+    {
+        return None;
+    }
+    let state = &window.retained_state;
+    let rebuilding = state
+        .rebuilding
+        .last()
+        .filter(|rebuilding| rebuilding.depth == state.subtree_stack.len())?;
+    Some(RenderDependencies {
+        writes: own.writes.with_rebuild(
+            &rebuilding.laid_out,
+            rebuilding.prepainting,
+            cx.entities.write_generation(),
+        ),
+        ..own.clone()
+    })
 }
 
 /// Whether any view drawn inside the scroll container `id` last frame, as a

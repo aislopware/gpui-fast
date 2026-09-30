@@ -1610,3 +1610,180 @@ mod debug_bounds {
         scroll_and_check(cx, window);
     }
 }
+
+/// A list held by a view that also renders an input, whose component writes
+/// the input's settings each time it renders and prepaints, as GPUI Kit's
+/// `Input` and `Textarea` do.
+mod beside_an_input {
+    use super::{Decision, VIEWPORT_HEIGHT, VIEWPORT_WIDTH, decision, draw, row_color, wheel};
+    use crate::{
+        AnyWindowHandle, App, AppContext as _, Context, Entity, IntoElement, ListAlignment,
+        ListState, ParentElement as _, Render, RenderOnce, Styled as _, TestAppContext, Window,
+        canvas, div, px, rgb,
+    };
+
+    /// What an input keeps of how it is set up, and the shade its holder
+    /// gives the list's rows.
+    struct Settings {
+        width: f32,
+        shade: usize,
+    }
+
+    /// An input that writes how it is set up into its settings as it is
+    /// rendered and as it is prepainted.
+    #[derive(IntoElement)]
+    struct Input(Entity<Settings>);
+
+    impl RenderOnce for Input {
+        fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+            self.0.update(cx, |settings, _| settings.width = 80.);
+            let settings = self.0;
+            canvas(
+                move |_, _, cx| settings.update(cx, |settings, _| settings.width = 80.),
+                |_, _, _, _| {},
+            )
+            .w(px(80.))
+            .h(px(10.))
+        }
+    }
+
+    /// A list of 1000 rows 20 px tall, shaded by the settings, with the
+    /// input below it.
+    struct Holder {
+        state: ListState,
+        settings: Entity<Settings>,
+    }
+
+    impl Render for Holder {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let shade = self.settings.read(cx).shade;
+            div()
+                .size_full()
+                .bg(rgb(0xffffff))
+                .child(
+                    crate::list(self.state.clone(), move |row, _, _| {
+                        div()
+                            .w(px(VIEWPORT_WIDTH))
+                            .h(px(20.))
+                            .bg(row_color(row + shade))
+                            .into_any_element()
+                    })
+                    .w(px(VIEWPORT_WIDTH))
+                    .h(px(VIEWPORT_HEIGHT)),
+                )
+                .child(Input(self.settings.clone()))
+        }
+    }
+
+    /// A view that writes a shade, once it has one, into the holder's
+    /// settings as it renders: a write from outside the holder.
+    struct Shader {
+        settings: Entity<Settings>,
+        shade: usize,
+    }
+
+    impl Render for Shader {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let shade = self.shade;
+            if shade > 0 {
+                self.settings
+                    .update(cx, |settings, _| settings.shade = shade);
+            }
+            div().size(px(0.))
+        }
+    }
+
+    struct Page {
+        shader: Entity<Shader>,
+        holder: Entity<Holder>,
+    }
+
+    impl Render for Page {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(self.shader.clone())
+                .child(self.holder.clone())
+        }
+    }
+
+    fn page(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Shader>) {
+        let handle = cx.add_window(|_, cx| {
+            let settings = cx.new(|_| Settings {
+                width: 0.,
+                shade: 0,
+            });
+            Page {
+                shader: cx.new(|_| Shader {
+                    settings: settings.clone(),
+                    shade: 0,
+                }),
+                holder: cx.new(|_| Holder {
+                    state: ListState::new(1000, ListAlignment::Top, px(0.)).measure_all(),
+                    settings,
+                }),
+            }
+        });
+        let window = handle.into();
+        draw(cx, window);
+        draw(cx, window);
+        let shader = handle.read_with(cx, |page, _| page.shader.clone()).unwrap();
+        (window, shader)
+    }
+
+    fn demoted(cx: &mut TestAppContext, window: AnyWindowHandle) -> u64 {
+        cx.update_window(window, |_, window, _| window.layout_stats().layers_demoted)
+            .unwrap()
+    }
+
+    /// The holder is rendered again on every scroll, and its input writes
+    /// its settings as it is: that is part of building the holder, not a
+    /// change the list's content could depend on.
+    #[crate::test]
+    fn a_list_beside_an_input_composites_its_layer(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let (window, _) = page(cx);
+        wheel(cx, window, -20.);
+        wheel(cx, window, -20.);
+        assert_eq!(decision(cx, window), Some(Decision::Repaint));
+        for step in 0..30 {
+            wheel(cx, window, -15.);
+            assert_eq!(
+                decision(cx, window),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+        }
+        assert_eq!(demoted(cx, window), 0);
+    }
+
+    /// A write to what the holder read, from outside it, while the window
+    /// draws, is a change: the layer is painted again, and demoted once
+    /// that keeps happening.
+    #[crate::test]
+    fn a_write_from_outside_the_holder_repaints_and_demotes_its_layer(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let (window, shader) = page(cx);
+        wheel(cx, window, -20.);
+        wheel(cx, window, -20.);
+        wheel(cx, window, -20.);
+        assert_eq!(decision(cx, window), Some(Decision::Composite));
+        for step in 1..=4 {
+            shader.update(cx, |shader, cx| {
+                shader.shade = step;
+                cx.notify();
+            });
+            wheel(cx, window, -15.);
+            assert_ne!(
+                decision(cx, window),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+        }
+        assert_eq!(demoted(cx, window), 1);
+    }
+}

@@ -165,6 +165,19 @@ pub(crate) struct RetainedRecording {
     element_records: u32,
 }
 
+/// What a retained subtree being built this frame wrote so far as it was:
+/// while it lays out, and from where its prepaint began. A scroll container
+/// it holds asks, as it is prepainted, whether the subtree changed since
+/// last frame, and what it wrote as it was built is no change (see
+/// [`crate::fast::layers::invalidate`]).
+pub(crate) struct Rebuilding {
+    /// The length of [`RetainedState::subtree_stack`] with the subtree on
+    /// top, telling it from a subtree pushed there without being built.
+    pub(crate) depth: usize,
+    pub(crate) laid_out: crate::fast::dependencies::Writes,
+    pub(crate) prepainting: u64,
+}
+
 /// A retained subtree being painted. See [`Window::begin_retained_paint`].
 pub(crate) struct RetainedPaintRecording {
     index: Option<usize>,
@@ -186,6 +199,9 @@ pub(crate) struct RetainedState {
     /// interaction inside one, a hover or a scroll, marks all of them to be
     /// built again.
     pub(crate) subtree_stack: Vec<GlobalElementId>,
+    /// The retained subtrees whose prepaint is under way, innermost last.
+    /// See [`Rebuilding`].
+    pub(crate) rebuilding: Vec<Rebuilding>,
     /// Reusable subtrees that an interaction inside them changed since they
     /// were drawn.
     pub(crate) dirty_subtrees: FxHashSet<GlobalElementId>,
@@ -249,6 +265,7 @@ impl RetainedState {
             ambient_reads: cx.ambient_reads(),
             focus_reads: crate::fast::focus::FocusReads::default(),
             subtree_stack: Vec::new(),
+            rebuilding: Vec::new(),
             dirty_subtrees: FxHashSet::default(),
             subtrees_dirty_next_frame: FxHashSet::default(),
             hover_dependencies: Vec::new(),
@@ -865,9 +882,12 @@ impl Window {
     /// Starts recording the prepaint of the retained subtree `id`, which is
     /// being built. Interactions inside it mark it to be built again, and
     /// whatever it lays out, reads and inherits is recorded.
+    /// `laid_out` is what it wrote as it was laid out this frame, if it was
+    /// laid out apart from its prepaint.
     pub(crate) fn begin_retained(
         &mut self,
         id: &GlobalElementId,
+        laid_out: Option<&RecordedDependencies>,
         cx: &mut App,
     ) -> RetainedRecording {
         self.layout_engine
@@ -906,6 +926,13 @@ impl Window {
             index
         });
         self.retained_state.subtree_stack.push(id.clone());
+        self.retained_state.rebuilding.push(Rebuilding {
+            depth: self.retained_state.subtree_stack.len(),
+            laid_out: laid_out
+                .map(|laid_out| laid_out.all.writes.clone())
+                .unwrap_or_default(),
+            prepainting: cx.entities.write_generation(),
+        });
         RetainedRecording {
             index,
             dependencies: cx.begin_recording_dependencies(),
@@ -931,6 +958,7 @@ impl Window {
         let layout_keys = self.finish_recording_claimed_layout_keys(recording.layout_keys);
         let mut dependencies = cx.finish_recording_dependencies(recording.dependencies);
         let id = self.retained_state.subtree_stack.pop();
+        self.retained_state.rebuilding.pop();
         let Some(index) = recording.index else {
             // Inside a layer's content: the layer keeps how it was laid out.
             if let (Some(id), Some(layout), Some(layout_dependencies)) =
@@ -1461,6 +1489,9 @@ impl<V: View> ViewElement<V> {
                         {
                             return (root, ViewLayout::Spliced(splice));
                         }
+                        crate::fast::layers::invalidate::note_rebuild(
+                            window, cx, global_id, entity_id,
+                        );
                         let recording = window.begin_retained_layout(cx);
                         let mut element = self
                             .view
@@ -1568,7 +1599,7 @@ impl<V: View> ViewElement<V> {
                         None,
                         layout.as_ref().and_then(|layout| layout.parent_layout_key),
                     );
-                    let recording = window.begin_retained(global_id, cx);
+                    let recording = window.begin_retained(global_id, Some(&dependencies), cx);
                     element.prepaint(window, cx);
                     let record = window.finish_retained_prepaint(
                         recording,
@@ -1630,7 +1661,8 @@ impl<V: View> ViewElement<V> {
                             window.reuse_retained_prepaint(previous, false, cx),
                         );
                     }
-                    let recording = window.begin_retained(global_id, cx);
+                    crate::fast::layers::invalidate::note_rebuild(window, cx, global_id, entity_id);
+                    let recording = window.begin_retained(global_id, None, cx);
                     let mut element = self
                         .view
                         .take()
@@ -1699,6 +1731,9 @@ impl<V: View> ViewElement<V> {
         window: &mut Window,
         cx: &mut App,
     ) -> ViewPrepaint {
+        if let Some(entity_id) = self.entity_id {
+            crate::fast::layers::invalidate::note_rebuild(window, cx, global_id, entity_id);
+        }
         let layout_recording = window.begin_retained_layout(cx);
         let changes_before = window.layout_changes();
         let remeasures_before = window.layout_remeasures();
@@ -1712,7 +1747,7 @@ impl<V: View> ViewElement<V> {
         let remeasured = window.layout_remeasures() != remeasures_before;
         let (layout, dependencies) = window.finish_retained_layout(layout_recording, layout_id, cx);
 
-        let recording = window.begin_retained(global_id, cx);
+        let recording = window.begin_retained(global_id, Some(&dependencies), cx);
         if Some(layout_id) == root {
             // Measurements taken again are laid out again within the view,
             // which is held at its size. Only a layout that changed can

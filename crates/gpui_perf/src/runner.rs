@@ -1076,11 +1076,12 @@ mod tests {
     /// view, and what it paints moves.
     #[test]
     fn scroll_scenarios_scroll_with_the_wheel() {
-        const NAMES: [&str; 4] = [
+        const NAMES: [&str; 5] = [
             "scroll-child-view",
             "scroll-same-view",
             "scroll-uniform-list",
             "scroll-list",
+            "scroll-list-beside-input",
         ];
         let options = Options::default();
         for name in NAMES {
