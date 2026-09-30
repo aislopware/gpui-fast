@@ -5,17 +5,23 @@
 //! renderer would, built by the renderer's own constructors, and records
 //! through `fast::frame` as the renderer does, into a texture it reads back.
 
+use std::borrow::Cow;
 use std::num::NonZeroU64;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::Result;
 use gpui::{
-    Bounds, ContentMask, DevicePixels, Hsla, Quad, Rgba, ScaledPixels, Scene, Size, point, rgba,
-    size,
+    AtlasKey, AtlasTile, Bounds, ContentMask, Corners, DevicePixels, Edges, FontId, GlyphId, Hsla,
+    ImageId, LayerFrame, LayerKey, MonochromeSprite, Path, PlatformAtlas, PolychromeSprite, Quad,
+    RenderGlyphParams, RenderImageParams, Rgba, ScaledPixels, Scene, SceneLayers, Shadow, Size,
+    SubpixelSprite, TileCoord, TransformationMatrix, Underline, linear_color_stop, linear_gradient,
+    point, px, rgba, size,
 };
 
 use crate::WgpuAtlas;
 use crate::fast::frame::{FrameHost, FrameState, FrameTarget};
+use crate::fast::layers::TileCache;
 use crate::wgpu_renderer::{
     GammaParams, GlobalParams, RenderingParameters, WgpuBindGroupLayouts, WgpuPipelines,
     WgpuRenderer,
@@ -33,6 +39,334 @@ fn harness_renders_a_quad_at_the_right_pixels() {
     let pixels = harness.render(&scene, device_size(32, 32), rgba(0xffffffff));
     assert_eq!(pixel(&pixels, 32, 8, 8), [255, 0, 0, 255]);
     assert_eq!(pixel(&pixels, 32, 1, 1), [255, 255, 255, 255]);
+}
+
+const TILE: u32 = 512;
+
+#[test]
+fn a_rasterized_tile_equals_the_same_content_drawn_directly() {
+    let Some(mut harness) = Harness::new() else {
+        eprintln!("skipped: no wgpu adapter");
+        return;
+    };
+    let direct = harness.render(
+        &content(&harness, 0.),
+        device_size(1024, 1024),
+        background(),
+    );
+    let tiles = [(0, 0), (1, 0), (0, 1), (1, 1)];
+    let content = content(&harness, 0.);
+    let assembled = rasterize_and_assemble(&mut harness, content, &tiles);
+    assert_same_pixels(&assembled, &direct, 1024);
+}
+
+#[test]
+fn tiles_of_negative_coordinates_rasterize_like_positive_ones() {
+    let Some(mut harness) = Harness::new() else {
+        eprintln!("skipped: no wgpu adapter");
+        return;
+    };
+    let direct = harness.render(
+        &content(&harness, 0.),
+        device_size(1024, 1024),
+        background(),
+    );
+    let tiles = [(-1, -1), (0, -1), (-1, 0), (0, 0)];
+    let shifted = content(&harness, -(TILE as f32));
+    let assembled = rasterize_and_assemble(&mut harness, shifted, &tiles);
+    assert_same_pixels(&assembled, &direct, 1024);
+}
+
+#[test]
+fn a_changed_generation_rerasterizes_only_dirty_tiles() {
+    let mut cache = TileCache::default();
+    let key = LayerKey(3);
+    let all = [coord(0, 0), coord(1, 0), coord(0, 1), coord(1, 1)];
+    let mut rasterized = 0;
+    let mut frame =
+        |cache: &mut TileCache, generation, dirty: &[TileCoord], shown: &[TileCoord]| {
+            let layers = scene_layers(key, generation, dirty);
+            let planned = cache.begin_frame(&layers, shown.iter().map(|tile| (key, *tile)));
+            rasterized += planned.len();
+            planned
+                .into_iter()
+                .map(|(_, tile)| tile)
+                .collect::<Vec<_>>()
+        };
+
+    // A new layer: every dirty tile, shown or not.
+    let mut sorted = all.to_vec();
+    sorted.sort();
+    assert_eq!(frame(&mut cache, 1, &all, &all[..2]), sorted);
+    // The same generation again: nothing.
+    assert_eq!(frame(&mut cache, 1, &all, &all[..2]), vec![]);
+    // The next generation: only its dirty tile, although others are shown.
+    assert_eq!(
+        frame(&mut cache, 2, &[coord(1, 0)], &all),
+        vec![coord(1, 0)]
+    );
+    assert_eq!(frame(&mut cache, 2, &[coord(1, 0)], &all), vec![]);
+    // A skipped generation may have dirtied any tile: shown tiles again.
+    assert_eq!(frame(&mut cache, 4, &[], &all[..1]), vec![coord(0, 0)]);
+    // A shown tile the cache never had.
+    assert_eq!(frame(&mut cache, 4, &[], &[coord(2, 0)]), vec![coord(2, 0)]);
+    assert_eq!(rasterized, 7);
+}
+
+// --- layer helpers --- //
+
+fn coord(x: i32, y: i32) -> TileCoord {
+    TileCoord { x, y }
+}
+
+fn background() -> Rgba {
+    rgba(0x336699ff)
+}
+
+fn layer_frame(key: LayerKey, generation: u64, content: Scene, dirty: &[TileCoord]) -> LayerFrame {
+    LayerFrame {
+        key,
+        generation,
+        background: background(),
+        tile_size: TILE,
+        content: Rc::new(content),
+        dirty_tiles: dirty.to_vec(),
+    }
+}
+
+fn scene_layers(key: LayerKey, generation: u64, dirty: &[TileCoord]) -> SceneLayers {
+    SceneLayers {
+        frames: vec![layer_frame(key, generation, Scene::default(), dirty)],
+    }
+}
+
+/// Draws a frame that rasterizes `tiles` of `content` and puts the tiles
+/// together into one image, `tiles[0]` at its top left.
+fn rasterize_and_assemble(harness: &mut Harness, content: Scene, tiles: &[(i32, i32)]) -> Vec<u8> {
+    let key = LayerKey(1);
+    let coords: Vec<TileCoord> = tiles.iter().map(|&(x, y)| coord(x, y)).collect();
+    let mut frame = Scene::default();
+    frame
+        .layers
+        .frames
+        .push(layer_frame(key, 1, content, &coords));
+    frame.finish();
+    harness.render(&frame, device_size(16, 16), background());
+
+    let (min_x, min_y) = (tiles[0].0, tiles[0].1);
+    let side = TILE as usize;
+    let width = 2 * side;
+    let mut image = vec![0; width * width * 4];
+    for tile in coords {
+        let texture = harness
+            .state()
+            .layers
+            .tile_texture(key, tile)
+            .expect("tile rasterized")
+            .clone();
+        let pixels = read_back(
+            harness.device(),
+            harness.queue(),
+            &texture,
+            harness.format(),
+        );
+        let x0 = (tile.x - min_x) as usize * side;
+        let y0 = (tile.y - min_y) as usize * side;
+        for y in 0..side {
+            let from = y * side * 4;
+            let to = ((y0 + y) * width + x0) * 4;
+            image[to..to + side * 4].copy_from_slice(&pixels[from..from + side * 4]);
+        }
+    }
+    image
+}
+
+fn assert_same_pixels(actual: &[u8], expected: &[u8], width: usize) {
+    assert_eq!(actual.len(), expected.len());
+    let differing: Vec<(usize, usize)> = (0..actual.len() / 4)
+        .filter(|i| actual[i * 4..i * 4 + 4] != expected[i * 4..i * 4 + 4])
+        .map(|i| (i % width, i / width))
+        .collect();
+    if differing.is_empty() {
+        return;
+    }
+    let (min_x, max_x) = differing
+        .iter()
+        .fold((usize::MAX, 0), |(lo, hi), (x, _)| (lo.min(*x), hi.max(*x)));
+    let (min_y, max_y) = differing
+        .iter()
+        .fold((usize::MAX, 0), |(lo, hi), (_, y)| (lo.min(*y), hi.max(*y)));
+    panic!(
+        "{} pixels differ, within x {min_x}..={max_x}, y {min_y}..={max_y}; first at {:?}: {:?} instead of {:?}",
+        differing.len(),
+        differing[0],
+        pixel(actual, width, differing[0].0, differing[0].1),
+        pixel(expected, width, differing[0].0, differing[0].1),
+    );
+}
+
+/// Content of every primitive kind, spread over the four tiles of
+/// (0, 0)..(1024, 1024) and across their edges, moved by `offset` on both axes.
+fn content(harness: &Harness, offset: f32) -> Scene {
+    let o = offset;
+    let at = |x: f32, y: f32, w: f32, h: f32| sp(x + o, y + o, w, h);
+    let mask = |bounds: Bounds<ScaledPixels>| ContentMask { bounds };
+    let mut scene = Scene::default();
+
+    scene.insert_primitive(quad(
+        at(100., 100., 200., 150.),
+        Hsla::from(rgba(0xcc3322ff)),
+    ));
+    scene.insert_primitive(Quad {
+        bounds: at(450.5, 60., 150., 120.),
+        content_mask: mask(at(0., 0., 1024., 1024.)),
+        background: Hsla::from(rgba(0xeeeeeeff)).into(),
+        border_color: Hsla::from(rgba(0x222222ff)),
+        corner_radii: Corners::all(ScaledPixels(12.)),
+        border_widths: Edges::all(ScaledPixels(3.)),
+        ..Default::default()
+    });
+    // The shadow's tail crosses the tile edge its bounds stop short of.
+    scene.insert_primitive(Shadow {
+        order: 0,
+        blur_radius: ScaledPixels(8.),
+        bounds: at(380., 420., 120., 70.),
+        corner_radii: Corners::all(ScaledPixels(6.)),
+        content_mask: no_mask(),
+        color: Hsla::from(rgba(0x00000080)),
+        element_bounds: at(380., 420., 120., 70.),
+        element_corner_radii: Corners::all(ScaledPixels(6.)),
+        inset: 0,
+        pad: 0,
+    });
+    scene.insert_primitive(Quad {
+        bounds: at(600., 600., 300., 200.),
+        content_mask: no_mask(),
+        background: linear_gradient(
+            45.,
+            linear_color_stop(rgba(0xff0000ff), 0.),
+            linear_color_stop(rgba(0x0000ffff), 1.),
+        ),
+        corner_radii: Corners::all(ScaledPixels(20.)),
+        ..Default::default()
+    });
+    scene.insert_primitive(Underline {
+        order: 0,
+        pad: 0,
+        bounds: at(50., 505., 900., 8.),
+        content_mask: no_mask(),
+        color: Hsla::from(rgba(0xffcc00ff)),
+        thickness: ScaledPixels(2.),
+        wavy: true.into(),
+    });
+    // A clipped quad whose mask crosses a tile edge.
+    scene.insert_primitive(Quad {
+        bounds: at(700., 200., 200., 200.),
+        content_mask: mask(at(490., 250., 300., 100.)),
+        background: Hsla::from(rgba(0x44aa44ff)).into(),
+        ..Default::default()
+    });
+
+    let mut path = Path::new(point(px(480. + o), px(300. + o)));
+    path.line_to(point(px(560.5 + o), px(330. + o)));
+    path.curve_to(
+        point(px(500. + o), px(560. + o)),
+        point(px(600. + o), px(450. + o)),
+    );
+    path.line_to(point(px(480. + o), px(300. + o)));
+    path.content_mask = ContentMask {
+        bounds: sp(-10_000., -10_000., 20_000., 20_000.).map(|c| px(c.0)),
+    };
+    path.color = Hsla::from(rgba(0x8800ffcc)).into();
+    scene.insert_primitive(path.scale(1.));
+
+    let mono = glyph_tile(harness, 1, false);
+    scene.insert_primitive(MonochromeSprite {
+        order: 0,
+        pad: 0,
+        bounds: at(505., 700., 16., 16.),
+        content_mask: no_mask(),
+        color: Hsla::from(rgba(0xffffffff)),
+        tile: mono,
+        transformation: TransformationMatrix::unit(),
+    });
+    if !harness.dual_source_blending {
+        eprintln!("no dual-source blending: subpixel sprites left out");
+    } else {
+        let subpixel = glyph_tile(harness, 2, true);
+        scene.insert_primitive(SubpixelSprite {
+            order: 0,
+            pad: 0,
+            bounds: at(520., 505., 16., 16.),
+            content_mask: no_mask(),
+            color: Hsla::from(rgba(0x000000ff)),
+            tile: subpixel,
+            transformation: TransformationMatrix::unit(),
+        });
+    }
+    scene.insert_primitive(PolychromeSprite {
+        order: 0,
+        pad: 0,
+        grayscale: false.into(),
+        opacity: 1.,
+        bounds: at(300., 500., 20., 20.),
+        content_mask: no_mask(),
+        corner_radii: Corners::all(ScaledPixels(4.)),
+        tile: image_tile(harness),
+    });
+    scene.finish();
+    scene
+}
+
+/// A 16×16 glyph of a made-up font, uploaded to the harness's atlas: a
+/// monochrome one, or a subpixel one.
+fn glyph_tile(harness: &Harness, glyph: u32, subpixel: bool) -> AtlasTile {
+    let key = AtlasKey::Glyph(RenderGlyphParams {
+        font_id: FontId(9_999),
+        glyph_id: GlyphId(glyph),
+        font_size: px(12.),
+        subpixel_variant: point(0, 0),
+        scale_factor: 1.,
+        is_emoji: false,
+        subpixel_rendering: subpixel,
+        dilation: 0,
+    });
+    let bytes_per_pixel = if subpixel { 4 } else { 1 };
+    let bytes: Vec<u8> = (0..16 * 16 * bytes_per_pixel)
+        .map(|i| ((i * 37) % 256) as u8)
+        .collect();
+    harness
+        .atlas
+        .get_or_insert_with(&key, &mut || {
+            Ok(Some((device_size(16, 16), Cow::Owned(bytes.clone()))))
+        })
+        .expect("glyph uploaded")
+        .expect("glyph tile")
+}
+
+/// A 20×20 image uploaded to the harness's atlas.
+fn image_tile(harness: &Harness) -> AtlasTile {
+    let key = AtlasKey::Image(RenderImageParams {
+        image_id: ImageId(9_999),
+        frame_index: 0,
+    });
+    let bytes: Vec<u8> = (0..20 * 20)
+        .flat_map(|i: u32| {
+            [
+                (i * 7 % 256) as u8,
+                (i * 13 % 256) as u8,
+                (i * 3 % 256) as u8,
+                255,
+            ]
+        })
+        .collect();
+    harness
+        .atlas
+        .get_or_insert_with(&key, &mut || {
+            Ok(Some((device_size(20, 20), Cow::Owned(bytes.clone()))))
+        })
+        .expect("image uploaded")
+        .expect("image tile")
 }
 
 // --- helpers --- //
@@ -93,6 +427,7 @@ pub(super) struct Harness {
     instance_alignment: u64,
     path_targets: Option<PathTargets>,
     state: FrameState,
+    dual_source_blending: bool,
 }
 
 /// The path intermediate texture, and its multisampled twin, of one size.
@@ -219,7 +554,24 @@ impl Harness {
             instance_alignment,
             path_targets: None,
             state: FrameState::default(),
+            dual_source_blending,
         })
+    }
+
+    pub(super) fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    pub(super) fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    pub(super) fn format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    pub(super) fn state(&mut self) -> &mut FrameState {
+        &mut self.state
     }
 
     /// Draws `scene` into a `size` texture cleared to `clear`, as the
@@ -347,6 +699,12 @@ impl FrameHost for Harness {
             path_intermediate_view: path_targets.map(|targets| &targets.intermediate_view),
             path_msaa_view: path_targets.and_then(|targets| targets.msaa_view.as_ref()),
             instance_buffer: &self.instance_buffer,
+            globals_buffer: &self.globals_buffer,
+            gamma_offset: self.gamma_offset,
+            gamma_size: size_of::<GammaParams>() as u64,
+            format: self.format,
+            path_sample_count: self.rendering_params.path_sample_count,
+            premultiplied_alpha: false,
         })
     }
 }

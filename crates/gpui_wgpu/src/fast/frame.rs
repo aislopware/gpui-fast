@@ -40,6 +40,7 @@ use gpui::{AtlasTextureId, Bounds, PrimitiveBatch, ScaledPixels, Scene};
 use crate::WgpuAtlas;
 use crate::fast::bind_groups::BindGroupCache;
 use crate::fast::globals::UploadedGlobals;
+use crate::fast::layers::{TileCache, composite, raster};
 use crate::fast::pass_state::PassState;
 use crate::wgpu_renderer::{
     InstanceData, PathRasterizationVertex, PathSprite, WgpuBindGroupLayouts, WgpuPipelines,
@@ -60,6 +61,7 @@ const MAX_GROUP_PATH_BATCHES: usize = 64;
 pub(crate) struct FrameState {
     pub(crate) bind_groups: BindGroupCache,
     pub(crate) globals: UploadedGlobals,
+    pub(crate) layers: TileCache,
     vertices: Vec<PathRasterizationVertex>,
     sprites: Vec<PathSprite>,
     path_batches: Vec<PathBatch>,
@@ -79,6 +81,15 @@ pub(crate) struct FrameTarget<'a> {
     pub(crate) path_intermediate_view: Option<&'a wgpu::TextureView>,
     pub(crate) path_msaa_view: Option<&'a wgpu::TextureView>,
     pub(crate) instance_buffer: &'a wgpu::Buffer,
+    /// The buffer behind the globals bind groups, and where in it the gamma
+    /// parameters are, for tile globals to share them.
+    pub(crate) globals_buffer: &'a wgpu::Buffer,
+    pub(crate) gamma_offset: u64,
+    pub(crate) gamma_size: u64,
+    /// The format of the frame's texture, which tiles share.
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) path_sample_count: u32,
+    pub(crate) premultiplied_alpha: bool,
 }
 
 /// The owner of the GPU objects a frame is recorded with.
@@ -124,13 +135,20 @@ impl FrameHost for crate::WgpuRenderer {
             path_intermediate_view: resources.path_intermediate_view.as_ref(),
             path_msaa_view: resources.path_msaa_view.as_ref(),
             instance_buffer,
+            globals_buffer: &resources.globals_buffer,
+            gamma_offset: self.gamma_offset,
+            gamma_size: size_of::<crate::wgpu_renderer::GammaParams>() as u64,
+            format: self.surface_config.format,
+            path_sample_count: self.rendering_params.path_sample_count,
+            premultiplied_alpha: self.surface_config.alpha_mode
+                == wgpu::CompositeAlphaMode::PreMultiplied,
         })
     }
 }
 
 /// A non-empty `PrimitiveBatch::Paths`: its vertices and sprites in the
 /// frame's path uploads, and the bounds everything it draws stays within.
-struct PathBatch {
+pub(crate) struct PathBatch {
     vertices: Range<u32>,
     sprites: Range<u32>,
     bounds: Bounds<ScaledPixels>,
@@ -139,16 +157,27 @@ struct PathBatch {
     group: Option<Range<u32>>,
 }
 
-/// Where the frame's instance data landed in the instance buffer.
-struct Upload {
+/// Where one scene's primitives landed in the instance buffer.
+pub(crate) struct SceneUpload {
     quads: wgpu::BindGroup,
     shadows: wgpu::BindGroup,
     underlines: wgpu::BindGroup,
     monochrome_sprites: wgpu::BindGroup,
     subpixel_sprites: wgpu::BindGroup,
     polychrome_sprites: wgpu::BindGroup,
-    path_vertices: wgpu::BindGroup,
-    path_sprites: wgpu::BindGroup,
+}
+
+/// Where the frame's path vertices and sprites, those of every scene it
+/// draws, landed in the instance buffer.
+pub(crate) struct PathUpload {
+    vertices: wgpu::BindGroup,
+    sprites: wgpu::BindGroup,
+}
+
+/// A scene the frame draws, with its paths planned.
+struct PlannedScene<'a> {
+    scene: &'a Scene,
+    path_batches: Vec<PathBatch>,
 }
 
 /// Forwarded to by `WgpuRenderer::record_frame`. Records and submits the
@@ -189,15 +218,39 @@ fn record_with(
 ) -> Result<()> {
     state.bind_groups.begin_frame();
 
+    // The layer tiles to rasterize before the frame draws them.
+    let planned = state
+        .layers
+        .begin_frame(&scene.layers, composite::composited_tiles(scene));
+    let rasters = raster::plan(&scene.layers, &planned);
+
     let mut vertices = std::mem::take(&mut state.vertices);
     let mut sprites = std::mem::take(&mut state.sprites);
+    let mut scenes = Vec::with_capacity(rasters.len() + 1);
+    for raster in &rasters {
+        let mut path_batches = Vec::new();
+        plan_paths(
+            &raster.scene,
+            &mut vertices,
+            &mut sprites,
+            &mut path_batches,
+        );
+        scenes.push(PlannedScene {
+            scene: &raster.scene,
+            path_batches,
+        });
+    }
     let mut path_batches = std::mem::take(&mut state.path_batches);
     plan_paths(scene, &mut vertices, &mut sprites, &mut path_batches);
+    scenes.push(PlannedScene {
+        scene,
+        path_batches,
+    });
 
-    let result = upload(host, &state.bind_groups, scene, &vertices, &sprites)
+    let result = upload(host, &state.bind_groups, &scenes, &vertices, &sprites)
         .with_context(|| {
             format!(
-                "scene too large: {} paths, {} shadows, {} quads, {} underlines, {} monochrome sprites, {} subpixel sprites, {} polychrome sprites",
+                "scene too large: {} paths, {} shadows, {} quads, {} underlines, {} monochrome sprites, {} subpixel sprites, {} polychrome sprites, {} layer tiles to rasterize",
                 scene.paths.len(),
                 scene.shadows.len(),
                 scene.quads.len(),
@@ -205,14 +258,26 @@ fn record_with(
                 scene.monochrome_sprites.len(),
                 scene.subpixel_sprites.len(),
                 scene.polychrome_sprites.len(),
+                rasters.len(),
             )
         })
-        .and_then(|upload| {
+        .and_then(|(uploads, paths)| {
             let target = host.target()?;
-            record(&target, state, scene, frame_view, clear, &upload, &path_batches);
+            state.layers.prepare(&target, &scene.layers, &planned);
+            record(
+                &target, state, scene, frame_view, clear, &rasters, &scenes, &uploads, &paths,
+            );
             Ok(())
         });
+    if result.is_err() {
+        // The tiles this frame was to rasterize were not.
+        state.layers.clear();
+    }
 
+    let mut path_batches = scenes
+        .pop()
+        .map(|main| main.path_batches)
+        .unwrap_or_default();
     vertices.clear();
     sprites.clear();
     path_batches.clear();
@@ -294,38 +359,44 @@ fn close_group(group: &mut [PathBatch]) {
     }
 }
 
-/// Writes the frame's instance data through one staging buffer, laid out as
-/// upstream's `write_instance_binding` lays out each array.
+/// Writes the frame's instance data, that of every scene it draws, through
+/// one staging buffer, laid out as upstream's `write_instance_binding` lays
+/// out each array.
 fn upload(
     host: &mut impl FrameHost,
     bind_groups: &BindGroupCache,
-    scene: &Scene,
+    scenes: &[PlannedScene],
     vertices: &[PathRasterizationVertex],
     sprites: &[PathSprite],
-) -> Result<Upload> {
+) -> Result<(Vec<SceneUpload>, PathUpload)> {
+    const SCENE_ARRAYS: usize = 6;
+    let mut arrays: Vec<&[u8]> = Vec::with_capacity(scenes.len() * SCENE_ARRAYS + 2);
     // SAFETY: the primitives and path records are `#[repr(C)]` plain data, as
     // upstream's `write_instance_binding` relies on too.
-    let arrays: [&[u8]; 8] = unsafe {
-        [
-            bytes_of(&scene.quads),
-            bytes_of(&scene.shadows),
-            bytes_of(&scene.underlines),
-            bytes_of(&scene.monochrome_sprites),
-            bytes_of(&scene.subpixel_sprites),
-            bytes_of(&scene.polychrome_sprites),
-            bytes_of(vertices),
-            bytes_of(sprites),
-        ]
-    };
+    unsafe {
+        for planned in scenes {
+            let scene = planned.scene;
+            arrays.extend([
+                bytes_of(&scene.quads),
+                bytes_of(&scene.shadows),
+                bytes_of(&scene.underlines),
+                bytes_of(&scene.monochrome_sprites),
+                bytes_of(&scene.subpixel_sprites),
+                bytes_of(&scene.polychrome_sprites),
+            ]);
+        }
+        arrays.extend([bytes_of(vertices), bytes_of(sprites)]);
+    }
 
     let alignment = host.instance_data_alignment();
-    let mut offsets = [0u64; 8];
+    let mut offsets = Vec::with_capacity(arrays.len());
     let mut end = 0u64;
-    for (offset, data) in offsets.iter_mut().zip(arrays) {
-        *offset = end.next_multiple_of(alignment);
+    for data in &arrays {
+        let offset = end.next_multiple_of(alignment);
+        offsets.push(offset);
         // wgpu rejects zero-sized bindings, so empty arrays still reserve the
         // 16-byte minimum.
-        end = *offset + binding_size(data);
+        end = offset + binding_size(data);
     }
     let end = end.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT);
     host.reserve_instance_data(end)?;
@@ -338,7 +409,7 @@ fn upload(
             .queue
             .write_buffer_with(buffer, 0, size)
             .context("instance upload rejected")?;
-        for (&offset, data) in offsets.iter().zip(arrays) {
+        for (&offset, data) in offsets.iter().zip(&arrays) {
             if !data.is_empty() {
                 let offset = offset as usize;
                 view.slice(offset..offset + data.len())
@@ -357,16 +428,25 @@ fn upload(
             binding_size(arrays[index]),
         )
     };
-    Ok(Upload {
-        quads: bind(0, "quads_bind_group"),
-        shadows: bind(1, "shadows_bind_group"),
-        underlines: bind(2, "underlines_bind_group"),
-        monochrome_sprites: bind(3, "monochrome_sprites_bind_group"),
-        subpixel_sprites: bind(4, "subpixel_sprites_bind_group"),
-        polychrome_sprites: bind(5, "polychrome_sprites_bind_group"),
-        path_vertices: bind(6, "path_rasterization_bind_group"),
-        path_sprites: bind(7, "path_sprites_bind_group"),
-    })
+    let uploads = (0..scenes.len())
+        .map(|scene| {
+            let first = scene * SCENE_ARRAYS;
+            SceneUpload {
+                quads: bind(first, "quads_bind_group"),
+                shadows: bind(first + 1, "shadows_bind_group"),
+                underlines: bind(first + 2, "underlines_bind_group"),
+                monochrome_sprites: bind(first + 3, "monochrome_sprites_bind_group"),
+                subpixel_sprites: bind(first + 4, "subpixel_sprites_bind_group"),
+                polychrome_sprites: bind(first + 5, "polychrome_sprites_bind_group"),
+            }
+        })
+        .collect();
+    let paths = scenes.len() * SCENE_ARRAYS;
+    let paths = PathUpload {
+        vertices: bind(paths, "path_rasterization_bind_group"),
+        sprites: bind(paths + 1, "path_sprites_bind_group"),
+    };
+    Ok((uploads, paths))
 }
 
 fn binding_size(data: &[u8]) -> u64 {
@@ -382,33 +462,51 @@ unsafe fn bytes_of<T>(instances: &[T]) -> &[u8] {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record(
     target: &FrameTarget,
     state: &FrameState,
     scene: &Scene,
     frame_view: &wgpu::TextureView,
     clear: wgpu::Color,
-    upload: &Upload,
-    path_batches: &[PathBatch],
+    rasters: &[raster::TileRaster],
+    scenes: &[PlannedScene],
+    uploads: &[SceneUpload],
+    paths: &PathUpload,
 ) {
     let mut encoder = target
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("main_encoder"),
         });
+    // Scenes are planned and uploaded tiles first, the frame's own last.
+    for (index, tile) in rasters.iter().enumerate() {
+        raster::rasterize(
+            target,
+            state,
+            &mut encoder,
+            &scene.layers,
+            tile,
+            &uploads[index],
+            paths,
+            &scenes[index].path_batches,
+        );
+    }
+    let main = scenes.len() - 1;
     draw_scene(
         target,
         state,
         &mut encoder,
         &SceneDraw {
             scene,
-            upload,
-            path_batches,
+            upload: &uploads[main],
+            paths,
+            path_batches: &scenes[main].path_batches,
             view: frame_view,
             clear,
             label: "main_pass",
             globals: target.globals_bind_group,
-            paths: PathTargets {
+            path_targets: PathTargets {
                 globals: target.path_globals_bind_group,
                 intermediate: target.path_intermediate_view,
                 msaa: target.path_msaa_view,
@@ -419,29 +517,30 @@ fn record(
 }
 
 /// A scene to draw, where, and with what.
-struct SceneDraw<'a> {
-    scene: &'a Scene,
-    upload: &'a Upload,
-    path_batches: &'a [PathBatch],
-    view: &'a wgpu::TextureView,
-    clear: wgpu::Color,
-    label: &'a str,
+pub(crate) struct SceneDraw<'a> {
+    pub(crate) scene: &'a Scene,
+    pub(crate) upload: &'a SceneUpload,
+    pub(crate) paths: &'a PathUpload,
+    pub(crate) path_batches: &'a [PathBatch],
+    pub(crate) view: &'a wgpu::TextureView,
+    pub(crate) clear: wgpu::Color,
+    pub(crate) label: &'a str,
     /// The globals the scene's primitives are drawn with.
-    globals: &'a wgpu::BindGroup,
-    paths: PathTargets<'a>,
+    pub(crate) globals: &'a wgpu::BindGroup,
+    pub(crate) path_targets: PathTargets<'a>,
 }
 
 /// What a scene's paths are rasterized with: the globals and the
 /// intermediate texture, both sized like the texture the scene is drawn into.
 #[derive(Clone, Copy)]
-struct PathTargets<'a> {
-    globals: &'a wgpu::BindGroup,
-    intermediate: Option<&'a wgpu::TextureView>,
-    msaa: Option<&'a wgpu::TextureView>,
+pub(crate) struct PathTargets<'a> {
+    pub(crate) globals: &'a wgpu::BindGroup,
+    pub(crate) intermediate: Option<&'a wgpu::TextureView>,
+    pub(crate) msaa: Option<&'a wgpu::TextureView>,
 }
 
 /// Records the passes that draw `draw.scene` into `draw.view`.
-fn draw_scene(
+pub(crate) fn draw_scene(
     target: &FrameTarget,
     state: &FrameState,
     encoder: &mut wgpu::CommandEncoder,
@@ -459,14 +558,20 @@ fn draw_scene(
         )
     };
     let intermediate = draw
-        .paths
+        .path_targets
         .intermediate
         .map(|view| texture_bind_group("path_intermediate_texture_bind_group", view));
 
     // The first group is rasterized before the main pass, which saves ending
     // the main pass for it.
     let mut rasterized = draw.path_batches.first().is_some_and(|first| {
-        rasterize_group(target, encoder, draw.paths, upload, first.group.clone())
+        rasterize_group(
+            target,
+            encoder,
+            draw.path_targets,
+            draw.paths,
+            first.group.clone(),
+        )
     });
 
     let mut pass = begin_main_pass(encoder, draw.view, draw.label, Some(draw.clear));
@@ -502,8 +607,13 @@ fn draw_scene(
                 };
                 if index > 0 && batch.group.is_some() {
                     drop(pass);
-                    rasterized =
-                        rasterize_group(target, encoder, draw.paths, upload, batch.group.clone());
+                    rasterized = rasterize_group(
+                        target,
+                        encoder,
+                        draw.path_targets,
+                        draw.paths,
+                        batch.group.clone(),
+                    );
                     pass = begin_main_pass(encoder, draw.view, "main_pass_continued", None);
                     bound.forget();
                 }
@@ -515,7 +625,7 @@ fn draw_scene(
                 };
                 bound.set_pipeline(&mut pass, &pipelines.paths);
                 bound.set_bind_group(&mut pass, 0, draw.globals);
-                bound.set_bind_group(&mut pass, 1, &upload.path_sprites);
+                bound.set_bind_group(&mut pass, 1, &draw.paths.sprites);
                 bound.set_bind_group(&mut pass, 2, intermediate);
                 pass.draw(0..4, batch.sprites.clone());
             }
@@ -641,17 +751,17 @@ fn draw_batch(
 fn rasterize_group(
     target: &FrameTarget,
     encoder: &mut wgpu::CommandEncoder,
-    paths: PathTargets,
-    upload: &Upload,
+    targets: PathTargets,
+    paths: &PathUpload,
     vertices: Option<Range<u32>>,
 ) -> bool {
     let Some(vertices) = vertices.filter(|vertices| !vertices.is_empty()) else {
         return false;
     };
-    let Some(path_intermediate_view) = paths.intermediate else {
+    let Some(path_intermediate_view) = targets.intermediate else {
         return false;
     };
-    let (target_view, resolve_target) = match paths.msaa {
+    let (target_view, resolve_target) = match targets.msaa {
         Some(msaa_view) => (msaa_view, Some(path_intermediate_view)),
         None => (path_intermediate_view, None),
     };
@@ -670,8 +780,8 @@ fn rasterize_group(
         ..Default::default()
     });
     pass.set_pipeline(&target.pipelines.path_rasterization);
-    pass.set_bind_group(0, paths.globals, &[]);
-    pass.set_bind_group(1, &upload.path_vertices, &[]);
+    pass.set_bind_group(0, targets.globals, &[]);
+    pass.set_bind_group(1, &paths.vertices, &[]);
     pass.draw(vertices, 0..1);
     true
 }
