@@ -2,9 +2,8 @@
 //! what it leaves behind once it is gone.
 
 use crate::{
-    AppContext as _, Context, Entity, EventEmitter, Global, IntoElement, ParentElement as _, Render,
-    Subscription,
-    SubscriptionCounts, TestAppContext, Window, div,
+    AppContext as _, Context, Entity, EventEmitter, Global, IntoElement, ParentElement as _,
+    Render, Subscription, SubscriptionCounts, TestAppContext, Window, div,
 };
 
 struct Model;

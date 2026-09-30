@@ -728,7 +728,10 @@ where
         let right = left.clone() + bounds.size.width.clone();
         let bottom = top.clone() + bounds.size.height.clone();
         let edges = [left, top, right, bottom];
-        if edges.iter().any(|edge| Into::<f64>::into(edge.clone()).is_nan()) {
+        if edges
+            .iter()
+            .any(|edge| Into::<f64>::into(edge.clone()).is_nan())
+        {
             continue;
         }
         extent = Some(match extent {
@@ -1015,7 +1018,10 @@ mod tests {
         let mut tree = BoundsTree::default();
         fill(&mut tree, &moved(0.));
         fill(&mut tree, &moved(3.));
-        assert!(tree.replay_ran_out, "moving every bounds runs the replay out");
+        assert!(
+            tree.replay_ran_out,
+            "moving every bounds runs the replay out"
+        );
         fill(&mut tree, &moved(6.));
         assert!(tree.replay_ran_out);
         fill(&mut tree, &moved(6.));

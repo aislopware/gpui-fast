@@ -609,7 +609,11 @@ struct Clipped {
 
 impl Render for Clipped {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        let root = div().relative().w(px(100.)).h(px(100.)).bg(hsla(0.3, 0.3, 0.6, 1.));
+        let root = div()
+            .relative()
+            .w(px(100.))
+            .h(px(100.))
+            .bg(hsla(0.3, 0.3, 0.6, 1.));
         let root = if self.clipped {
             root.overflow_hidden()
         } else {

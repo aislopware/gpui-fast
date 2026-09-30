@@ -68,7 +68,9 @@ impl Render for Status {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.builds.set(self.builds.get() + 1);
         let focused = window.focused(cx).is_some();
-        div().h(px(20.)).child(if focused { "focused" } else { "idle" })
+        div()
+            .h(px(20.))
+            .child(if focused { "focused" } else { "idle" })
     }
 }
 
@@ -223,7 +225,10 @@ fn focus_moving_from_one_view_to_another_keeps_a_third_retained() {
     let (windows, builds) = setup(&mut cx);
     focus(&mut cx, windows, &builds, Some(0));
     //                                                  tiles   panel status
-    assert_eq!(focus(&mut cx, windows, &builds, Some(1)), ([1, 1, 0, 1], true));
+    assert_eq!(
+        focus(&mut cx, windows, &builds, Some(1)),
+        ([1, 1, 0, 1], true)
+    );
 }
 
 /// The panel asks whether it contains the focus, and is built again when
@@ -234,9 +239,15 @@ fn a_view_asking_whether_it_contains_the_focus_is_built_when_that_changes() {
     let mut cx = TestAppContext::single();
     let (windows, builds) = setup(&mut cx);
     focus(&mut cx, windows, &builds, Some(1));
-    assert_eq!(focus(&mut cx, windows, &builds, Some(2)), ([0, 1, 1, 1], true));
+    assert_eq!(
+        focus(&mut cx, windows, &builds, Some(2)),
+        ([0, 1, 1, 1], true)
+    );
     assert_eq!(focus(&mut cx, windows, &builds, None), ([0, 0, 1, 0], true));
-    assert_eq!(focus(&mut cx, windows, &builds, Some(0)), ([1, 0, 0, 1], true));
+    assert_eq!(
+        focus(&mut cx, windows, &builds, Some(0)),
+        ([1, 0, 0, 1], true)
+    );
 }
 
 /// Focusing what already has the focus builds nothing.
