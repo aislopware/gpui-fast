@@ -5,7 +5,12 @@
 //! It gets a layer once it has scrolled on two frames in a row (a container
 //! that never scrolls never pays for one); from then on the layer is
 //! composited on frames that only scrolled it and painted again on the
-//! others.
+//! others. A layer is demoted — dropped, the container kept on today's path
+//! until its content has been stable for a while — when its content keeps
+//! changing, when the content holds what a layer cannot composite (spec
+//! §6.5), or when its visible tiles alone exceed the budget. Layers are
+//! dropped when the window is resized or rescaled, and when they have not
+//! been composited for long.
 
 #![allow(
     dead_code,
@@ -31,6 +36,18 @@ pub(crate) enum Decision {
 
 /// How many frames in a row a container must scroll on to get a layer.
 const PROMOTE_AFTER_SCROLLED_FRAMES: u8 = 2;
+/// A layer whose content changed on more of the last 16 frames than this
+/// is demoted.
+const MAX_CHANGED_FRAMES: u32 = 8;
+/// How many frames a demoted container's content must be stable for before
+/// it may get a layer again.
+const REPROMOTE_AFTER_STABLE_FRAMES: u64 = 60;
+/// A layer not composited for this many frames is dropped.
+const DROP_AFTER_FRAMES: u64 = 120;
+/// The tile textures a window's layers may use, in bytes.
+const TILE_BUDGET_BYTES: u64 = 64 << 20;
+/// The side of a tile, in device pixels (spec §3).
+const TILE_SIZE: u64 = 512;
 /// Layer keys stay below this, as tile texture ids require.
 const LAYER_KEY_LIMIT: u32 = 0x0100_0000;
 
@@ -40,6 +57,13 @@ pub(crate) struct LayerPolicy {
     /// How many frames in a row, up to the last one looked at, the container
     /// scrolled on.
     pub(crate) scrolled_streak: u8,
+    /// Whether the content changed, one bit per frame, the last frame looked
+    /// at in the lowest bit.
+    pub(crate) change_history: u16,
+    /// The last frame the content was seen to change on, while demoted.
+    pub(crate) stable_since: u64,
+    /// While demoted, the first frame the container may get a layer again.
+    pub(crate) demoted_until: Option<u64>,
     /// The last frame the container scrolled on.
     last_scrolled_frame: Option<u64>,
     /// The last frame the container was looked at.
@@ -91,6 +115,7 @@ pub(crate) fn decide(
     content_size: Size<Pixels>,
     scroll_offset: Point<Pixels>,
 ) -> Decision {
+    drop_layers_on_resize(window);
     // A scroll container inside a layer is painted into it (spec §6.6).
     if !super::active(window, cx) || window.fast_layers.painting.is_some() {
         return Decision::Bypass;
@@ -122,19 +147,55 @@ pub(crate) fn decide(
     } else {
         1
     };
+    let mut demoted_until = policy.demoted_until;
+    let changed_while_demoted =
+        demoted_until.is_some() && invalidate::changed_without_layer(window, cx, id);
+    if changed_while_demoted {
+        demoted_until = demoted_until.map(|until| until.max(frame + REPROMOTE_AFTER_STABLE_FRAMES));
+    }
+    if demoted_until.is_some_and(|until| frame >= until) {
+        demoted_until = None;
+    }
 
+    // Whether the content changed this frame, and whether the layer is
+    // demoted for it.
+    let mut changed = false;
+    let mut demote = false;
     let decision = match &layer.record {
+        _ if demoted_until.is_some() => Decision::Bypass,
+        Some(record) if !eligible(window, record) => {
+            demote = true;
+            Decision::Bypass
+        }
         Some(record)
             if policy.painted_in.as_ref() == Some(&context)
-                && invalidate::scroll_only(window, cx, id, record)
-                && covers(record, bounds, content_size, scroll_offset) =>
+                && invalidate::scroll_only(window, cx, id, record) =>
         {
-            Decision::Composite
+            // Only scrolled; painted again if the scroll exposes what was
+            // not painted, which is not a change of the content.
+            if covers(record, bounds, content_size, scroll_offset) {
+                Decision::Composite
+            } else {
+                Decision::Repaint
+            }
         }
-        Some(_) => Decision::Repaint,
+        Some(_) => {
+            changed = true;
+            Decision::Repaint
+        }
         None if streak >= PROMOTE_AFTER_SCROLLED_FRAMES => Decision::Repaint,
         None => Decision::Bypass,
     };
+    let elapsed = frame.saturating_sub(policy.last_seen_frame).min(16) as u32;
+    let mut history = policy
+        .change_history
+        .checked_shl(elapsed)
+        .unwrap_or_default();
+    if changed {
+        history |= 1;
+        demote |= history.count_ones() > MAX_CHANGED_FRAMES;
+    }
+    let decision = if demote { Decision::Bypass } else { decision };
 
     let layer = window.fast_layers.layers.get_mut(id).unwrap();
     let policy = &mut layer.policy;
@@ -144,6 +205,23 @@ pub(crate) fn decide(
     }
     policy.last_seen_frame = frame;
     policy.last_decision = Some(decision);
+    policy.change_history = history;
+    policy.demoted_until = demoted_until;
+    if demote {
+        layer.record = None;
+        policy.painted_in = None;
+        policy.change_history = 0;
+        policy.scrolled_streak = 0;
+        policy.stable_since = frame;
+        policy.demoted_until = Some(frame + REPROMOTE_AFTER_STABLE_FRAMES);
+        if let Some(engine) = window.layout_engine.as_mut() {
+            engine.retention.stats.layers_demoted += 1;
+        }
+        return decision;
+    }
+    if changed_while_demoted {
+        policy.stable_since = frame;
+    }
     match decision {
         Decision::Repaint => {
             policy.painted_in = Some(context);
@@ -153,6 +231,45 @@ pub(crate) fn decide(
         Decision::Bypass => {}
     }
     decision
+}
+
+/// Whether the content `record` holds can be composited from a layer
+/// (spec §5.6, §6.5): it deferred no draws (anchored popovers), handles no
+/// text input (a focused input is inside), painted no path, and the tiles
+/// covering its viewport fit the budget.
+fn eligible(window: &Window, record: &LayerRecord) -> bool {
+    let prepaint = &record.prepaint_range;
+    let paint = &record.paint_range;
+    let scale_factor = window.scale_factor();
+    // A viewport straddles one more tile than it spans on each axis.
+    let tiles = |extent: Pixels| (extent.0 * scale_factor / TILE_SIZE as f32).ceil() as u64 + 1;
+    let viewport = record.viewport.size;
+    let tile_bytes = TILE_SIZE * TILE_SIZE * 4;
+    prepaint.start.deferred_draws_index == prepaint.end.deferred_draws_index
+        && paint.start.input_handlers_index == paint.end.input_handlers_index
+        && !record.has_paths
+        && tiles(viewport.width) * tiles(viewport.height) * tile_bytes <= TILE_BUDGET_BYTES
+}
+
+/// Drops every layer when the window's size or scale factor changed since
+/// they were painted: their tiles no longer fit it.
+pub(crate) fn drop_layers_on_resize(window: &mut Window) {
+    let size = (window.viewport_size(), window.scale_factor());
+    let layers = &mut window.fast_layers;
+    if layers.window_size != Some(size) {
+        layers.layers.clear();
+        layers.window_size = Some(size);
+    }
+}
+
+/// Whether the layer is kept at the end of `frame`: it was composited
+/// lately, or it is demoted and remembers until when.
+pub(crate) fn keep(layer: &Layer, frame: u64) -> bool {
+    frame < layer.last_composited_frame + DROP_AFTER_FRAMES
+        || layer
+            .policy
+            .demoted_until
+            .is_some_and(|until| frame < until)
 }
 
 /// Whether the part of the content `record` painted still covers the

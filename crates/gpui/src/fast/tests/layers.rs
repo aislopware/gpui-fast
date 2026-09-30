@@ -891,7 +891,7 @@ mod decisions {
 
     /// A page with a 100 px tall scroll container of forty 20 px rows at the
     /// top left of the window: in the page's own view (pattern B), or in a
-    /// child view (pattern A), followed by `extra`, if any.
+    /// child view (pattern A), after `extra`, if any.
     pub(super) struct LayerPage {
         pub(super) handle: ScrollHandle,
         pub(super) probe: Rc<RefCell<Probe>>,
@@ -914,13 +914,13 @@ mod decisions {
                 .w(viewport().size.width)
                 .h(viewport().size.height)
                 .child(probe_before(self.probe.clone(), content_height));
+            if let Some(extra) = &self.extra {
+                scroller = scroller.child(extra());
+            }
             scroller = match &self.rows {
                 Some(rows) => scroller.child(rows.clone()),
                 None => scroller.children((0..ROWS).map(|index| row(index, self.hover))),
             };
-            if let Some(extra) = &self.extra {
-                scroller = scroller.child(extra());
-            }
             div()
                 .size_full()
                 .child(scroller.child(probe_after(self.probe.clone())))
@@ -1176,5 +1176,224 @@ mod decisions {
             "re-centred on the viewport"
         );
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+    }
+}
+
+/// Tests of which scroll containers get a layer and for how long (M4).
+mod policies {
+    use super::decisions::{
+        LayerPage, decision, frame_after, page, promote, scroll, scroll_and, scroller_id,
+    };
+    use super::invalidation::{draw, with_window};
+    use crate::fast::layers::policy::Decision;
+    use crate::{
+        AnyElement, AnyWindowHandle, GlobalElementId, InteractiveElement as _, IntoElement,
+        ParentElement as _, Path, Styled as _, TestAppContext, WindowHandle, anchored, canvas,
+        deferred, div, point, px, size,
+    };
+    use std::rc::Rc;
+
+    /// Puts `extra` at the top of the page's scroll container.
+    fn with_extra(
+        cx: &mut TestAppContext,
+        handle: WindowHandle<LayerPage>,
+        extra: impl Fn() -> AnyElement + 'static,
+    ) {
+        handle
+            .update(cx, |page, _, cx| {
+                page.extra = Some(Rc::new(extra));
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx, handle.into());
+    }
+
+    fn has_layer(cx: &mut TestAppContext, window: AnyWindowHandle, id: &GlobalElementId) -> bool {
+        with_window(cx, window, |window, _| {
+            window.fast_layers.layers.contains_key(id)
+        })
+    }
+
+    fn has_record(cx: &mut TestAppContext, window: AnyWindowHandle) -> bool {
+        let id = scroller_id(cx, window);
+        with_window(cx, window, |window, _| {
+            window
+                .fast_layers
+                .layers
+                .get(&id)
+                .is_some_and(|layer| layer.record.is_some())
+        })
+    }
+
+    fn layers_demoted(cx: &mut TestAppContext, window: AnyWindowHandle) -> u64 {
+        with_window(cx, window, |window, _| window.layout_stats().layers_demoted)
+    }
+
+    #[crate::test]
+    fn a_container_is_promoted_after_two_scrolled_frames(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert!(!has_record(cx, window));
+        // A frame drawn in between for something else breaks the streak.
+        frame_after(cx, window, |cx| {
+            handle.update(cx, |_, _, cx| cx.notify()).unwrap();
+        });
+        assert_eq!(decision(cx, window), Some(Decision::Bypass));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert!(!has_record(cx, window));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
+        assert!(has_record(cx, window));
+    }
+
+    #[crate::test]
+    fn deferred_draws_inside_make_it_ineligible(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        with_extra(cx, handle, || {
+            div()
+                .h(px(10.))
+                .child(deferred(
+                    anchored().child(div().w(px(50.)).h(px(50.)).bg(crate::red())),
+                ))
+                .into_any_element()
+        });
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert!(!has_record(cx, window));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+    }
+
+    #[crate::test]
+    fn a_focused_input_inside_makes_it_ineligible(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        let focus = with_window(cx, window, |_, cx| cx.focus_handle());
+        let input_focus = focus.clone();
+        with_extra(cx, handle, move || {
+            div()
+                .h(px(10.))
+                .track_focus(&input_focus)
+                .child(super::super::retained::text_input(
+                    input_focus.clone(),
+                    "inside",
+                ))
+                .into_any_element()
+        });
+        with_window(cx, window, |window, cx| window.focus(&focus, cx));
+        draw(cx, window);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert!(!has_record(cx, window));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+    }
+
+    #[crate::test]
+    fn content_with_paths_is_demoted(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        with_extra(cx, handle, || {
+            canvas(
+                |_, _, _| {},
+                |bounds, _, window, _| {
+                    // Where it shows once scrolled by the 40 px promotion
+                    // takes; out of view it is culled.
+                    let origin = bounds.origin + point(px(0.), px(60.));
+                    let mut path = Path::new(origin);
+                    path.line_to(origin + point(px(10.), px(0.)));
+                    path.line_to(origin + point(px(10.), px(10.)));
+                    path.line_to(origin);
+                    window.paint_path(path, crate::red());
+                },
+            )
+            .w(px(10.))
+            .h(px(100.))
+            .into_any_element()
+        });
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert_eq!(layers_demoted(cx, window), 1);
+        assert!(!has_record(cx, window));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+    }
+
+    #[crate::test]
+    fn churning_content_is_demoted_and_repromoted_after_60_stable_frames(cx: &mut TestAppContext) {
+        let handle = page(cx, true);
+        let window = handle.into();
+        let rows = handle
+            .read_with(cx, |page, _| page.rows.clone().unwrap())
+            .unwrap();
+        let change = |tint: u32| {
+            let rows = rows.clone();
+            move |cx: &mut crate::App| {
+                rows.update(cx, |rows, cx| {
+                    rows.tint = tint;
+                    cx.notify();
+                })
+            }
+        };
+        promote(cx, window);
+        // Changed on eight frames of the last sixteen, the layer is kept;
+        // on the ninth, it is dropped.
+        for tint in 1..=8 {
+            assert_eq!(
+                scroll_and(cx, window, -10., change(0x100000 + tint)),
+                Some(Decision::Repaint)
+            );
+        }
+        assert_eq!(layers_demoted(cx, window), 0);
+        assert_eq!(
+            scroll_and(cx, window, -10., change(0x200000)),
+            Some(Decision::Bypass)
+        );
+        assert_eq!(layers_demoted(cx, window), 1);
+        assert!(!has_record(cx, window));
+        assert_eq!(scroll(cx, window, -10.), Some(Decision::Bypass));
+        assert_eq!(scroll(cx, window, -10.), Some(Decision::Bypass));
+        // A change while it is demoted starts the wait again.
+        assert_eq!(
+            scroll_and(cx, window, -10., change(0x300000)),
+            Some(Decision::Bypass)
+        );
+        for _ in 0..59 {
+            draw(cx, window);
+        }
+        assert_eq!(scroll(cx, window, -10.), Some(Decision::Bypass));
+        assert_eq!(scroll(cx, window, -10.), Some(Decision::Repaint));
+        assert_eq!(scroll(cx, window, -10.), Some(Decision::Composite));
+    }
+
+    #[crate::test]
+    fn a_layer_not_composited_for_120_frames_is_dropped(cx: &mut TestAppContext) {
+        let window = page(cx, false).into();
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        let id = scroller_id(cx, window);
+        for _ in 0..119 {
+            draw(cx, window);
+        }
+        assert!(has_layer(cx, window, &id));
+        draw(cx, window);
+        assert!(!has_layer(cx, window, &id));
+    }
+
+    #[crate::test]
+    fn resize_drops_layers(cx: &mut TestAppContext) {
+        let window = page(cx, false).into();
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        let id = scroller_id(cx, window);
+        cx.simulate_window_resize(window, size(px(800.), px(500.)));
+        draw(cx, window);
+        assert!(!has_layer(cx, window, &id));
+
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        cx.simulate_window_scale_factor_change(window, 1.5);
+        draw(cx, window);
+        assert!(!has_layer(cx, window, &id));
     }
 }

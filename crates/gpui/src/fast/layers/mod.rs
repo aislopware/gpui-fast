@@ -41,6 +41,8 @@ pub(crate) struct WindowLayers {
     pub(crate) painting: Option<paint::Painting>,
     /// Counts the frames drawn, for layers to tell how long ago something was.
     pub(crate) frame: u64,
+    /// The window's size and scale factor the layers were painted at.
+    pub(crate) window_size: Option<(crate::Size<crate::Pixels>, f32)>,
 }
 
 impl Default for WindowLayers {
@@ -53,6 +55,7 @@ impl Default for WindowLayers {
             scrolls: invalidate::ScrollLog::default(),
             painting: None,
             frame: 0,
+            window_size: None,
         }
     }
 }
@@ -90,10 +93,13 @@ pub(crate) fn active(window: &Window, cx: &App) -> bool {
 }
 
 /// Ends the frame being drawn: the scrolls before it are taken in, and the
-/// layers not composited for long are dropped.
+/// layers not composited for long, or painted for another window size or
+/// scale factor, are dropped.
 pub(crate) fn finish_frame(window: &mut Window) {
+    policy::drop_layers_on_resize(window);
     let layers = &mut window.fast_layers;
     let frame = layers.frame;
+    layers.layers.retain(|_, layer| policy::keep(layer, frame));
     let live = &layers.layers;
     layers
         .scrolls

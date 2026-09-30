@@ -417,10 +417,21 @@ pub(crate) fn scroll_only(
     record: &LayerRecord,
 ) -> bool {
     let source = window.fast_layers.scrolls.source(id);
-    if changed(window, cx, &record.dependencies, source.as_ref())
-        || !window.hovers_unchanged(&record.hovers)
-        || owner_notified_otherwise(window, id)
-    {
+    !changed(window, cx, &record.dependencies, source.as_ref())
+        && window.hovers_unchanged(&record.hovers)
+        && owner_scrolled_only(window, cx, id, source.as_ref())
+}
+
+/// Whether the view holding the scroll container `id`, whose offset lives
+/// at `source`, and the views drawn inside the container are unchanged
+/// since the last frame, but for scrolls of `id` its render did not read.
+fn owner_scrolled_only(
+    window: &Window,
+    cx: &App,
+    id: &GlobalElementId,
+    source: Option<&ScrollSource>,
+) -> bool {
+    if owner_notified_otherwise(window, id) {
         return false;
     }
     let Some(owner) = owner(window) else {
@@ -445,8 +456,15 @@ pub(crate) fn scroll_only(
                     .is_some_and(|view| window.dirty_views.contains(&view))
         });
     !content_view_dirty
-        && !source
-            .as_ref()
-            .is_some_and(|source| render_read_offset(&owner.own_dependencies, source))
-        && !changed(window, cx, &owner.own_dependencies, source.as_ref())
+        && !source.is_some_and(|source| render_read_offset(&owner.own_dependencies, source))
+        && !changed(window, cx, &owner.own_dependencies, source)
+}
+
+/// Whether what the content of the scroll container `id` is built from
+/// changed since the last frame, as far as it can be told without a layer
+/// recording the content: the container is on today's path, and a frame
+/// that did not only scroll it keeps a demoted layer waiting.
+pub(crate) fn changed_without_layer(window: &Window, cx: &App, id: &GlobalElementId) -> bool {
+    let source = window.fast_layers.scrolls.source(id);
+    !owner_scrolled_only(window, cx, id, source.as_ref())
 }
