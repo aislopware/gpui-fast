@@ -374,6 +374,16 @@ Added in this fork:
   instructions per frame: unchanged −88%, a blinking cursor −86%, one row changing
   −77%, a line of output a frame −58%, every cell changing +0.2%
 
+- feat(gpui): trackpad gestures besides the pinch, as `PlatformInput::Gesture`:
+  `RotateEvent` (degrees counterclockwise since the last event, phase), `SmartMagnifyEvent`
+  and `SwipeEvent` (AppKit's ±1 deltas), with `on_rotate`, `on_smart_magnify` and
+  `on_swipe` on every interactive element (`InteractiveGestures`); on iOS a rotation from
+  `UIRotationGestureRecognizer`, recognized alongside the pinch. A swipe no listener
+  stops still becomes the back or forward mouse button, as upstream makes it
+- perf(gpui): outside motion, painting neither begins nor ends noting, and culled
+  primitives work nothing out for it (layout-colors +0.79% to +0.11% against the fork
+  before `fbbb9f5`)
+
 ### Candidates for longbridge
 
 Generic to gpui-fast, not to Slopty, and worth a pull request to longbridge/gpui-fast:

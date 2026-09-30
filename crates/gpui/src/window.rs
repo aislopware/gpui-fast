@@ -5683,6 +5683,11 @@ impl Window {
                 self.modifiers = pinch.modifiers;
                 PlatformInput::Pinch(pinch)
             }
+            PlatformInput::Gesture(gesture) => {
+                self.mouse_position = gesture.position();
+                self.modifiers = gesture.modifiers();
+                PlatformInput::Gesture(gesture)
+            }
             // Translate dragging and dropping of external files from the operating system
             // to internal drag and drop events.
             PlatformInput::FileDrop(file_drop) => match file_drop {
@@ -5784,6 +5789,9 @@ impl Window {
         }
         #[cfg(feature = "profiler")]
         self.window_profiler.end_input(caused_invalidation);
+        if let Some(result) = crate::fast::gesture::navigate_unstopped_swipe(self, &event, cx) {
+            return result;
+        }
 
         DispatchEventResult {
             propagate: cx.propagate_event,

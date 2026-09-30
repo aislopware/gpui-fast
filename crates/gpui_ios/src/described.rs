@@ -1,6 +1,7 @@
 //! Input at the UIKit boundary, as data.
 //!
-//! UIKit hands the metal view `UIPress`es, `UITouch`es, a `UIPinchGestureRecognizer` and the
+//! UIKit hands the metal view `UIPress`es, `UITouch`es, a `UIPinchGestureRecognizer`, a
+//! `UIRotationGestureRecognizer` and the
 //! text system's `insertText:` / `deleteBackward`. None of those objects can be made from
 //! outside UIKit (`UIPress`, `UITouch` and `UIKey` have no public initialiser), so a test
 //! that wants to prove the UIKit delivery cannot post them. What it can do is *describe* one:
@@ -147,6 +148,33 @@ pub struct DescribedPinch {
     pub y: f32,
 }
 
+/// One report of the view's `UIRotationGestureRecognizer`, as the window reads it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DescribedRotation {
+    /// `recognizer.state`.
+    pub state: GestureState,
+    /// `recognizer.rotation` since the previous report, in radians, clockwise on the screen
+    /// positive (the window resets it to 0 after each).
+    pub rotation: f32,
+    /// `locationInView:` the metal view, x in points.
+    pub x: f32,
+    /// `locationInView:` the metal view, y in points.
+    pub y: f32,
+}
+
+impl DescribedRotation {
+    /// The GPUI event: the rotation in degrees counterclockwise, as AppKit reports a
+    /// trackpad's, so one listener reads both.
+    pub fn event(self) -> gpui::RotateEvent {
+        gpui::RotateEvent {
+            position: gpui::point(gpui::px(self.x), gpui::px(self.y)),
+            rotation: -self.rotation.to_degrees(),
+            modifiers: gpui::Modifiers::default(),
+            phase: self.state.phase(),
+        }
+    }
+}
+
 /// Something UIKit could deliver to the window, described rather than posted.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DescribedInput {
@@ -156,6 +184,8 @@ pub enum DescribedInput {
     Touches(Vec<DescribedTouch>),
     /// The pinch recognizer firing.
     Pinch(DescribedPinch),
+    /// The rotation recognizer firing.
+    Rotation(DescribedRotation),
     /// The text system's `insertText:` on the text input view.
     InsertText(String),
     /// The text system's `deleteBackward` on the text input view.
@@ -287,6 +317,34 @@ mod tests {
             TouchPhase::from(UiTouchPhase::from_raw(-1)),
             TouchPhase::Cancelled
         );
+    }
+
+    #[test]
+    fn a_rotation_is_delivered_in_appkits_degrees_counterclockwise() {
+        let event = DescribedRotation {
+            state: GestureState::Changed,
+            rotation: std::f32::consts::FRAC_PI_2,
+            x: 10.,
+            y: 20.,
+        }
+        .event();
+        assert_eq!(event.position, gpui::point(gpui::px(10.), gpui::px(20.)));
+        assert!((event.rotation + 90.).abs() < 1e-4, "{}", event.rotation);
+        assert_eq!(event.phase, TouchPhase::Moved);
+        for (state, phase) in [
+            (GestureState::Began, TouchPhase::Started),
+            (GestureState::Ended, TouchPhase::Ended),
+            (GestureState::Cancelled, TouchPhase::Cancelled),
+        ] {
+            let event = DescribedRotation {
+                state,
+                rotation: 0.,
+                x: 0.,
+                y: 0.,
+            }
+            .event();
+            assert_eq!(event.phase, phase);
+        }
     }
 
     #[test]

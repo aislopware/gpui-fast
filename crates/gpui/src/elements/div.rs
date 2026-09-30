@@ -2166,6 +2166,8 @@ pub struct Interactivity {
     pub(crate) file_drop_exit_listeners: crate::fast::interactivity::LazyVec<FileDropExitListener>,
     pub(crate) scroll_wheel_listeners: crate::fast::interactivity::LazyVec<ScrollWheelListener>,
     pub(crate) pinch_listeners: crate::fast::interactivity::LazyVec<PinchListener>,
+    pub(crate) fast_gesture_listeners:
+        crate::fast::interactivity::LazyVec<crate::fast::gesture::GestureListener>,
     pub(crate) key_down_listeners: crate::fast::interactivity::LazyVec<KeyDownListener>,
     pub(crate) key_up_listeners: crate::fast::interactivity::LazyVec<KeyUpListener>,
     pub(crate) modifiers_changed_listeners:
@@ -2428,6 +2430,7 @@ impl Interactivity {
             || !self.aux_click_listeners.is_empty()
             || !self.scroll_wheel_listeners.is_empty()
             || self.has_pinch_listeners()
+            || crate::fast::gesture::any_listener(&self.fast_gesture_listeners)
             || self.drag_listener.is_some()
             || !self.drop_listeners.is_empty()
             || !self.drag_over_styles.is_empty()
@@ -2849,6 +2852,7 @@ impl Interactivity {
                 listener(event, phase, &hitbox, window, cx);
             })
         }
+        crate::fast::gesture::paint_listeners(&mut self.fast_gesture_listeners, &hitbox, window);
 
         if self.hover_style.is_some()
             || self.base_style.mouse_cursor.is_some()

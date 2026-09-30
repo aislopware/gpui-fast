@@ -106,6 +106,9 @@ pub(crate) unsafe fn platform_input_from_native(
     window_height: Option<Pixels>,
 ) -> Option<PlatformInput> {
     unsafe {
+        if let Some(gesture) = crate::fast::gesture::from_native(native_event, window_height) {
+            return Some(gesture);
+        }
         let event_type = native_event.eventType();
 
         // Filter out event types that aren't in the NSEventType enum.

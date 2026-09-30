@@ -13,7 +13,7 @@ use super::IosDisplay;
 use super::events::*;
 #[cfg(feature = "test-support")]
 use crate::described::DescribedInput;
-use crate::described::{DescribedPinch, GestureState, PressPhase, UiTouchPhase};
+use crate::described::{DescribedPinch, DescribedRotation, GestureState, PressPhase, UiTouchPhase};
 use crate::frame_pacing::{FramePacer, FrameSource, Wake};
 use crate::hardware_keyboard::{self, UiKey};
 use gpui::{
@@ -232,6 +232,35 @@ fn register_metal_view_class() -> &'static AnyClass {
             handle_pinch_gesture(this, recognizer);
         }
 
+        /// Target of the view's `UIRotationGestureRecognizer`.
+        extern "C" fn handle_rotation(
+            this: *mut AnyObject,
+            _sel: Sel,
+            recognizer: *mut AnyObject,
+        ) {
+            handle_rotation_gesture(this, recognizer);
+        }
+
+        /// `gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:`, as the
+        /// delegate of the pinch and rotation recognizers: two fingers pinch and rotate at
+        /// once, as they do on a Mac trackpad.
+        extern "C" fn recognize_simultaneously(
+            _this: *mut AnyObject,
+            _sel: Sel,
+            first: *mut AnyObject,
+            second: *mut AnyObject,
+        ) -> Bool {
+            // SAFETY: UIKit passes two live gesture recognizers; `isKindOfClass:` is NSObject's.
+            let transform = |recognizer: *mut AnyObject| unsafe {
+                let pinch: Bool =
+                    msg_send![recognizer, isKindOfClass: class!(UIPinchGestureRecognizer)];
+                let rotation: Bool =
+                    msg_send![recognizer, isKindOfClass: class!(UIRotationGestureRecognizer)];
+                pinch.as_bool() || rotation.as_bool()
+            };
+            Bool::new(transform(first) && transform(second))
+        }
+
         /// Target of the view's `UIHoverGestureRecognizer` (trackpad / mouse pointer).
         extern "C" fn handle_hover(this: *mut AnyObject, _sel: Sel, recognizer: *mut AnyObject) {
             handle_hover_gesture(this, recognizer);
@@ -331,6 +360,15 @@ fn register_metal_view_class() -> &'static AnyClass {
             decl.add_method(
                 sel!(handlePinch:),
                 handle_pinch as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
+            );
+            decl.add_method(
+                sel!(handleRotation:),
+                handle_rotation as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
+            );
+            decl.add_method(
+                sel!(gestureRecognizer:shouldRecognizeSimultaneouslyWithGestureRecognizer:),
+                recognize_simultaneously
+                    as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject) -> Bool,
             );
             decl.add_method(
                 sel!(handleHover:),
@@ -744,6 +782,36 @@ fn handle_pinch_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
     }
 }
 
+/// Handle a rotation from the GPUIMetalView's `UIRotationGestureRecognizer`: two fingers on
+/// the screen, or on a trackpad, which UIKit drives the recognizer with as a transform event.
+/// Its rotation is reset to 0 after every report, so each event carries the change since the
+/// previous one, as AppKit's do. What is read off the recognizer is a [`DescribedRotation`],
+/// delivered by [`IosWindow::deliver_rotation`].
+fn handle_rotation_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
+    unsafe {
+        #[allow(deprecated)]
+        let window_ptr: *mut std::ffi::c_void = *(*view).get_ivar(GPUI_WINDOW_IVAR);
+        if window_ptr.is_null() {
+            return;
+        }
+        let window = &*(window_ptr as *const IosWindow);
+
+        let state: i64 = msg_send![recognizer, state];
+        let Some(state) = GestureState::from_raw(state) else {
+            return;
+        };
+        let rotation: core_graphics::base::CGFloat = msg_send![recognizer, rotation];
+        let _: () = msg_send![recognizer, setRotation: 0.0 as core_graphics::base::CGFloat];
+        let location: super::cg_types::ObjcCGPoint = msg_send![recognizer, locationInView: view];
+        window.deliver_rotation(DescribedRotation {
+            state,
+            rotation: rotation as f32,
+            x: location.x as f32,
+            y: location.y as f32,
+        });
+    }
+}
+
 /// `UIScrollTypeMaskAll`: discrete wheel ticks and continuous trackpad scrolls.
 const UI_SCROLL_TYPE_MASK_ALL: usize = 3;
 
@@ -942,7 +1010,16 @@ impl IosWindow {
             let pinch: *mut AnyObject = msg_send![class!(UIPinchGestureRecognizer), alloc];
             let pinch: *mut AnyObject =
                 msg_send![pinch, initWithTarget: view, action: sel!(handlePinch:)];
+            let _: () = msg_send![pinch, setDelegate: view];
             let _: () = msg_send![view, addGestureRecognizer: pinch];
+
+            // Two fingers rotating, on the screen or a trackpad, delivered as `RotateEvent`s
+            // (see `handle_rotation_gesture`), alongside the pinch.
+            let rotation: *mut AnyObject = msg_send![class!(UIRotationGestureRecognizer), alloc];
+            let rotation: *mut AnyObject =
+                msg_send![rotation, initWithTarget: view, action: sel!(handleRotation:)];
+            let _: () = msg_send![rotation, setDelegate: view];
+            let _: () = msg_send![view, addGestureRecognizer: rotation];
 
             // A trackpad or mouse on an iPad: hover moves the pointer (`MouseMove`), and a
             // pan recognizer that accepts scroll events with no touches at all (so direct
@@ -1175,6 +1252,13 @@ impl IosWindow {
         }));
     }
 
+    /// Delivers one report of the rotation recognizer as a GPUI rotate event.
+    pub(crate) fn deliver_rotation(&self, rotation: DescribedRotation) {
+        let event = rotation.event();
+        self.mouse_position.set(event.position);
+        self.dispatch_input(PlatformInput::Gesture(gpui::PlatformGesture::Rotate(event)));
+    }
+
     /// Runs a described input through the same delivery the UIKit callbacks use once they
     /// have unpacked their objects (see `crate::described`). Test builds only: the self-test
     /// socket of an app proves the phone's input path with it.
@@ -1205,6 +1289,7 @@ impl IosWindow {
                 }
             }
             DescribedInput::Pinch(pinch) => self.deliver_pinch(pinch),
+            DescribedInput::Rotation(rotation) => self.deliver_rotation(rotation),
             DescribedInput::InsertText(text) => self.insert_text(&text),
             DescribedInput::DeleteBackward => self.handle_delete_backward(),
         }

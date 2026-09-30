@@ -113,6 +113,9 @@ pub use element::*;
 pub use elements::*;
 pub use executor::*;
 pub use fast::composition;
+pub use fast::gesture::{
+    InteractiveGestures, PlatformGesture, RotateEvent, SmartMagnifyEvent, SwipeEvent,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::stats::LayoutStats;
 #[cfg(any(test, feature = "test-support"))]

@@ -194,6 +194,14 @@ unsafe fn build_classes() {
                 handle_view_event as extern "C" fn(&Object, Sel, id),
             );
             decl.add_method(
+                sel!(rotateWithEvent:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
+                sel!(smartMagnifyWithEvent:),
+                handle_view_event as extern "C" fn(&Object, Sel, id),
+            );
+            decl.add_method(
                 sel!(mouseDragged:),
                 handle_view_event as extern "C" fn(&Object, Sel, id),
             );
