@@ -43,6 +43,10 @@ pub(crate) struct WindowLayers {
     /// cannot wait for the policy to decide it.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) forced_decision: Option<policy::Decision>,
+    /// Counts the frames drawn, for layers to tell how long ago something was.
+    pub(crate) frame: u64,
+    /// The window's size and scale factor the layers were painted at.
+    pub(crate) window_size: Option<(crate::Size<crate::Pixels>, f32)>,
 }
 
 impl Default for WindowLayers {
@@ -56,6 +60,8 @@ impl Default for WindowLayers {
             painting: None,
             #[cfg(any(test, feature = "test-support"))]
             forced_decision: None,
+            frame: 0,
+            window_size: None,
         }
     }
 }
@@ -93,6 +99,22 @@ pub(crate) fn active(window: &Window, cx: &App) -> bool {
         && !cx.has_active_drag()
         && !window.a11y.is_active()
         && !window.is_inspector_picking(cx)
+}
+
+/// Ends the frame being drawn: the scrolls before it are taken in, and the
+/// layers not composited for long, or painted for another window size or
+/// scale factor, are dropped.
+pub(crate) fn finish_frame(window: &mut Window) {
+    policy::drop_layers_on_resize(window);
+    let layers = &mut window.fast_layers;
+    let frame = layers.frame;
+    policy::finish_frame(layers);
+    layers.layers.retain(|_, layer| policy::keep(layer, frame));
+    let live = &layers.layers;
+    layers
+        .scrolls
+        .finish_frame(frame, |id| live.contains_key(id));
+    layers.frame += 1;
 }
 
 impl Window {

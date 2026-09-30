@@ -2618,6 +2618,7 @@ impl Window {
     /// and skip the frame request when it is set.
     pub fn request_animation_frame(&self) {
         let entity = self.current_view();
+        crate::fast::layers::invalidate::note_animation_frame(self, entity);
         self.on_next_frame(move |_, cx| cx.notify(entity));
     }
 

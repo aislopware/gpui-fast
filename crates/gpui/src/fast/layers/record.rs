@@ -13,6 +13,7 @@ use std::{ops::Range, rc::Rc};
     dead_code,
     reason = "the invalidation and input streams read the ranges, hovers and dependencies"
 )]
+#[derive(Default)]
 pub(crate) struct LayerRecord {
     /// The painted content in content space (window space less
     /// `translation`), finished.

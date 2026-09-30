@@ -3373,6 +3373,7 @@ impl Interactivity {
             let hitbox = hitbox.clone();
             let current_view = window.current_view();
             let subtrees = crate::fast::retained::enclosing_retained_subtrees(window);
+            let fast_container = crate::fast::layers::invalidate::painted_container(window, self);
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                     let mut scroll_offset = scroll_offset.borrow_mut();
@@ -3417,6 +3418,7 @@ impl Interactivity {
                     scroll_offset.x += delta_x;
                     if *scroll_offset != old_scroll_offset {
                         crate::fast::retained::invalidate_retained_subtrees(window, &subtrees);
+                        crate::fast::layers::invalidate::note_scrolled(window, &fast_container);
                         cx.notify(current_view);
                     }
                 }
@@ -4301,17 +4303,20 @@ impl ScrollHandle {
 
     /// Get the current scroll offset.
     pub fn offset(&self) -> Point<Pixels> {
+        crate::fast::layers::invalidate::note_offset_read(&self.0.borrow().version);
         *self.0.borrow().offset.borrow()
     }
 
     /// Get the maximum scroll offset.
     pub fn max_offset(&self) -> Point<Pixels> {
+        crate::fast::layers::invalidate::note_offset_read(&self.0.borrow().version);
         self.0.borrow().max_offset
     }
 
     /// Get the top child that's scrolled into view.
     pub fn top_item(&self) -> usize {
         let state = self.0.borrow();
+        crate::fast::layers::invalidate::note_offset_read(&state.version);
         let top = state.bounds.top() - state.offset.borrow().y;
 
         match state.child_bounds.binary_search_by(|bounds| {
@@ -4331,6 +4336,7 @@ impl ScrollHandle {
     /// Get the bottom child that's scrolled into view.
     pub fn bottom_item(&self) -> usize {
         let state = self.0.borrow();
+        crate::fast::layers::invalidate::note_offset_read(&state.version);
         let bottom = state.bounds.bottom() - state.offset.borrow().y;
 
         match state.child_bounds.binary_search_by(|bounds| {
@@ -4354,6 +4360,7 @@ impl ScrollHandle {
 
     /// Get the bounds for a specific child.
     pub fn bounds_for_item(&self, ix: usize) -> Option<Bounds<Pixels>> {
+        crate::fast::layers::invalidate::note_offset_read(&self.0.borrow().version);
         self.0.borrow().child_bounds.get(ix).cloned()
     }
 
