@@ -26,7 +26,7 @@ pub(crate) struct AppDependencies {
     global_read_log: Rc<RefCell<Vec<TypeId>>>,
     /// Every [`StateVersion`] read while a recording is open, with the
     /// version it was at.
-    state_read_log: RefCell<Vec<(StateVersion, u64)>>,
+    state_read_log: Rc<RefCell<Vec<(StateVersion, u64)>>>,
     /// For each open recording, innermost last, the stretches of the logs that
     /// recordings nested in it, or dependencies replayed into it, took up:
     /// what it read through a nested subtree rather than itself.
@@ -35,12 +35,12 @@ pub(crate) struct AppDependencies {
     /// one recording to the next.
     scratch_entities: Vec<EntityId>,
     scratch_globals: Vec<TypeId>,
+    scratch_states: Vec<(StateVersion, u64)>,
     /// The lists of entities and globals retained subtrees read. See
     /// [`Interned`].
     interned_entities: Interned<EntityId>,
     interned_globals: Interned<TypeId>,
-    /// The list of no versioned state, which most subtrees read.
-    no_states: Option<Rc<[(StateVersion, u64)]>>,
+    interned_states: Interned<(StateVersion, u64)>,
 }
 
 /// Lists of what retained subtrees read, each kept once and shared by every
@@ -67,7 +67,7 @@ impl<T> Default for Interned<T> {
     }
 }
 
-impl<T: Eq + std::hash::Hash + Copy> Interned<T> {
+impl<T: Eq + std::hash::Hash + Clone> Interned<T> {
     /// The shared list holding `items`, which are sorted without repeats.
     fn get(&mut self, items: &[T]) -> Rc<[T]> {
         if items.is_empty() {
@@ -156,6 +156,8 @@ pub(crate) mod ambient {
     /// The modifier keys and caps lock: [`crate::Window::modifiers`] and
     /// [`crate::Window::capslock`].
     pub(crate) struct Keys;
+    /// Which element has the focus: [`crate::Window::focused`].
+    pub(crate) struct Focus;
 }
 
 /// A window's handle on the app's dependency recording, so that reading the
@@ -164,10 +166,28 @@ pub(crate) mod ambient {
 #[derive(Clone)]
 pub(crate) struct AmbientReads {
     globals: Rc<RefCell<Vec<TypeId>>>,
+    states: Rc<RefCell<Vec<(StateVersion, u64)>>>,
     recordings: Rc<Cell<usize>>,
 }
 
 impl AmbientReads {
+    /// Whether a recording is open.
+    #[inline]
+    pub(crate) fn recording(&self) -> bool {
+        self.recordings.get() > 0
+    }
+
+    /// Records, for any recording that is open, that the state `version`
+    /// belongs to was read as it is now.
+    #[inline]
+    pub(crate) fn note_state(&self, version: &StateVersion) {
+        if self.recording() {
+            self.states
+                .borrow_mut()
+                .push((version.clone(), version.get()));
+        }
+    }
+
     /// Records, for any recording that is open, that the ambient state `T`
     /// was read.
     #[inline]
@@ -229,6 +249,7 @@ impl App {
     pub(crate) fn ambient_reads(&self) -> AmbientReads {
         AmbientReads {
             globals: self.dependencies.global_read_log.clone(),
+            states: self.dependencies.state_read_log.clone(),
             recordings: self.entities.access_log.recordings.clone(),
         }
     }
@@ -247,7 +268,7 @@ impl App {
         DependencyRecording {
             entities: self.entities.begin_recording(),
             globals: self.dependencies.global_read_log.borrow_mut().len(),
-            states: self.dependencies.state_read_log.get_mut().len(),
+            states: self.dependencies.state_read_log.borrow_mut().len(),
             generation: self.dependencies.global_generation,
             updates: self.entities.access_log.update_generation,
             writes: self.entities.access_log.write_generation,
@@ -265,7 +286,7 @@ impl App {
         let ranges = LogRanges {
             entities: recording.entities..self.entities.access_log.len(),
             globals: recording.globals..log.global_read_log.borrow().len(),
-            states: recording.states..log.state_read_log.get_mut().len(),
+            states: recording.states..log.state_read_log.borrow_mut().len(),
         };
         let (entities, own_entities) = {
             let access_log = self.entities.access_log.access_log.borrow();
@@ -301,23 +322,24 @@ impl App {
             sort_unique(scratch);
             (globals, log.interned_globals.get(scratch))
         };
-        let no_states = log
-            .no_states
-            .get_or_insert_with(|| Rc::from(Vec::new()))
-            .clone();
-        let states_log = log.state_read_log.get_mut();
-        let states = dedup_states(&states_log[ranges.states.clone()], &no_states);
-        let own_states = if ranges.states.is_empty() {
-            no_states
-        } else {
-            let mut own = Vec::new();
+        let (states, own_states) = {
+            let states_log = log.state_read_log.borrow();
+            let scratch = &mut log.scratch_states;
+            scratch.clear();
+            scratch.extend_from_slice(&states_log[ranges.states.clone()]);
+            unique_states(scratch);
+            let states = log.interned_states.get(scratch);
+            scratch.clear();
             outside(
-                states_log,
+                &states_log,
                 &ranges.states,
                 nested.iter().map(|n| &n.states),
-                &mut own,
+                scratch,
             );
-            dedup_states(&own, &no_states)
+            unique_states(scratch);
+            let own_states = log.interned_states.get(scratch);
+            scratch.clear();
+            (states, own_states)
         };
         self.entities.close_recording(recording.entities);
         if let Some(parent) = self.dependencies.nested.last_mut() {
@@ -325,7 +347,7 @@ impl App {
         }
         if !self.entities.is_recording() {
             self.dependencies.global_read_log.borrow_mut().clear();
-            self.dependencies.state_read_log.get_mut().clear();
+            self.dependencies.state_read_log.borrow_mut().clear();
         }
         let writes = writes_while_open(&recording, &self.entities.access_log);
         RecordedDependencies {
@@ -356,7 +378,7 @@ impl App {
         let start = LogRanges {
             entities: self.entities.access_log.len()..0,
             globals: self.dependencies.global_read_log.borrow_mut().len()..0,
-            states: self.dependencies.state_read_log.get_mut().len()..0,
+            states: self.dependencies.state_read_log.borrow_mut().len()..0,
         };
         self.entities.mark_access_boundary();
         self.entities.extend_accessed(dependencies.entities.iter());
@@ -368,14 +390,14 @@ impl App {
                 .extend(dependencies.globals.iter().copied());
             self.dependencies
                 .state_read_log
-                .get_mut()
+                .borrow_mut()
                 .extend(dependencies.states.iter().cloned());
             // Read through the subtree being reused, not by the recording
             // it is reused in.
             let ranges = LogRanges {
                 entities: start.entities.start..self.entities.access_log.len(),
                 globals: start.globals.start..self.dependencies.global_read_log.borrow_mut().len(),
-                states: start.states.start..self.dependencies.state_read_log.get_mut().len(),
+                states: start.states.start..self.dependencies.state_read_log.borrow_mut().len(),
             };
             if let Some(open) = self.dependencies.nested.last_mut() {
                 open.push(ranges);
@@ -836,8 +858,29 @@ impl StateVersion {
         }
     }
 
+    /// Whether anything besides this holds the state's version.
+    pub(crate) fn is_shared(&self) -> bool {
+        Rc::strong_count(&self.0) > 1
+    }
+
     fn ptr(&self) -> *const Cell<u64> {
         Rc::as_ptr(&self.0)
+    }
+}
+
+/// Versions are the same when they count the same state's changes, so that
+/// lists of them can be interned.
+impl PartialEq for StateVersion {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for StateVersion {}
+
+impl std::hash::Hash for StateVersion {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.ptr().hash(state);
     }
 }
 
@@ -960,33 +1003,36 @@ pub(crate) fn merge_sorted<T: Ord + Copy>(a: &Rc<[T]>, b: &Rc<[T]>) -> Rc<[T]> {
     merged.into()
 }
 
-/// `states` once each, at the earliest version read, so that a change in
-/// between still counts.
-///
-/// A subtree reads a handful at most, so repeats are found by looking back
-/// rather than hashing; one that reads none shares `none`.
-fn dedup_states(
-    states: &[(StateVersion, u64)],
-    none: &Rc<[(StateVersion, u64)]>,
+/// Both lists of states read, each sorted as [`unique_states`] leaves it,
+/// sharing either when it already says all the other does.
+fn merge_states(
+    a: &Rc<[(StateVersion, u64)]>,
+    b: &Rc<[(StateVersion, u64)]>,
 ) -> Rc<[(StateVersion, u64)]> {
-    if states.is_empty() {
-        return none.clone();
+    /// Whether `all` reads every state `some` does, as early.
+    fn covers(all: &[(StateVersion, u64)], some: &[(StateVersion, u64)]) -> bool {
+        some.iter().all(|(version, read_at)| {
+            all.binary_search_by_key(&version.ptr(), |(read, _)| read.ptr())
+                .is_ok_and(|index| all[index].1 <= *read_at)
+        })
     }
-    unique_states(states)
+    if b.is_empty() || Rc::ptr_eq(a, b) || covers(a, b) {
+        return a.clone();
+    }
+    if a.is_empty() || covers(b, a) {
+        return b.clone();
+    }
+    let mut states = a.to_vec();
+    states.extend_from_slice(b);
+    unique_states(&mut states);
+    states.into()
 }
 
-/// `states` once each, at the earliest version read.
-fn unique_states(states: &[(StateVersion, u64)]) -> Rc<[(StateVersion, u64)]> {
-    let mut unique: Vec<(StateVersion, u64)> = Vec::with_capacity(states.len());
-    for state in states {
-        if !unique
-            .iter()
-            .any(|(version, _)| version.ptr() == state.0.ptr())
-        {
-            unique.push(state.clone());
-        }
-    }
-    unique.into()
+/// Sorts `states` by the state read, keeping each once, at the earliest
+/// version read, so that a change in any of them since is seen.
+fn unique_states(states: &mut Vec<(StateVersion, u64)>) {
+    states.sort_unstable_by_key(|(version, read_at)| (version.ptr(), *read_at));
+    states.dedup_by(|later, earlier| later.0.ptr() == earlier.0.ptr());
 }
 
 impl RenderDependencies {
@@ -1061,13 +1107,7 @@ impl RenderDependencies {
         if other.entities.is_empty() && other.globals.is_empty() && other.states.is_empty() {
             return self.clone();
         }
-        let states = if other.states.is_empty() {
-            self.states.clone()
-        } else {
-            let mut states = self.states.to_vec();
-            states.extend_from_slice(&other.states);
-            unique_states(&states)
-        };
+        let states = merge_states(&self.states, &other.states);
         Self {
             entities: merge_sorted(&self.entities, &other.entities),
             globals: merge_sorted(&self.globals, &other.globals),

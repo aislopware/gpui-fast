@@ -496,22 +496,19 @@ pub(crate) struct FocusRef {
 impl FocusId {
     /// Obtains whether the element associated with this handle is currently focused.
     pub fn is_focused(&self, window: &Window) -> bool {
-        window.focus == Some(*self)
+        crate::fast::focus::is_focused(*self, window)
     }
 
     /// Obtains whether the element associated with this handle contains the focused
     /// element or is itself focused.
     pub fn contains_focused(&self, window: &Window, cx: &App) -> bool {
-        window
-            .focused(cx)
-            .is_some_and(|focused| self.contains(focused.id, window))
+        crate::fast::focus::contains_focused(*self, window, cx)
     }
 
     /// Obtains whether the element associated with this handle is contained within the
     /// focused element or is itself focused.
     pub fn within_focused(&self, window: &Window, cx: &App) -> bool {
-        let focused = window.focused(cx);
-        focused.is_some_and(|focused| focused.id.contains(*self, window))
+        crate::fast::focus::within_focused(*self, window, cx)
     }
 
     /// Obtains whether this handle contains the given handle in the most recently rendered frame.
@@ -2367,6 +2364,7 @@ impl Window {
 
     /// Obtain the currently focused [`FocusHandle`]. If no elements are focused, returns `None`.
     pub fn focused(&self, cx: &App) -> Option<FocusHandle> {
+        crate::fast::focus::read_focused(self);
         self.focus
             .and_then(|id| FocusHandle::for_id(id, &cx.focus_handles))
     }
@@ -2392,7 +2390,7 @@ impl Window {
         self.focus_generation = self.focus_generation.wrapping_add(1);
         self.clear_pending_keystrokes(cx);
 
-        self.refresh();
+        crate::fast::focus::focus_changed(self, cx);
     }
 
     /// Remove focus from all elements within this context's window.
@@ -2407,7 +2405,7 @@ impl Window {
             self.focus_generation = self.focus_generation.wrapping_add(1);
         }
         self.focus = None;
-        self.refresh();
+        crate::fast::focus::focus_changed(self, cx);
     }
 
     /// Blur the window and don't allow anything in it to be focused again.
@@ -3495,7 +3493,7 @@ impl Window {
         // schedule another frame here to render the new focus state and dispatch the
         // resulting focus events.
         if self.focus != focus_before_listeners {
-            self.refresh();
+            crate::fast::focus::focus_changed(self, cx);
         }
         self.needs_present.set(true);
 

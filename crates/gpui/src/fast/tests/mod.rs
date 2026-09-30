@@ -6,6 +6,7 @@ mod dispatch;
 mod element;
 mod element_bench;
 mod element_oracle;
+mod focus;
 mod focus_notify;
 mod global_id;
 mod keypad;
