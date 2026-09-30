@@ -1478,7 +1478,8 @@ mod policies {
         });
         promote(cx, window);
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
-        assert_eq!(layers_demoted(cx, window), 1);
+        // On today's path while it holds one, but not demoted (spec §6.5).
+        assert_eq!(layers_demoted(cx, window), 0);
         assert!(!has_record(cx, window));
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
     }
@@ -1524,6 +1525,43 @@ mod policies {
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
         assert!(!has_record(cx, window));
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+    }
+
+    #[crate::test]
+    fn a_layer_whose_input_loses_focus_is_composited_again_soon(cx: &mut TestAppContext) {
+        // A focused input keeps the container on today's path only while
+        // it is focused: it is not demoted, which would keep the container
+        // waiting for 60 stable frames (spec §6.5).
+        let handle = page(cx, false);
+        let window = handle.into();
+        let focus = with_window(cx, window, |_, cx| cx.focus_handle());
+        let input_focus = focus.clone();
+        with_extra(cx, handle, move || {
+            div()
+                .h(px(10.))
+                .track_focus(&input_focus)
+                .child(super::super::retained::text_input(
+                    input_focus.clone(),
+                    "inside",
+                ))
+                .into_any_element()
+        });
+        with_window(cx, window, |window, cx| window.focus(&focus, cx));
+        draw(cx, window);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        frame_after(cx, window, |cx| {
+            with_window(cx, window, |window, cx| window.blur(cx));
+        });
+        let mut decisions = Vec::new();
+        for _ in 0..12 {
+            decisions.push(scroll(cx, window, 10.).unwrap());
+        }
+        assert!(
+            decisions.contains(&Decision::Composite),
+            "composited again within 12 frames: {decisions:?}"
+        );
+        assert_eq!(layers_demoted(cx, window), 0);
     }
 
     #[crate::test]
