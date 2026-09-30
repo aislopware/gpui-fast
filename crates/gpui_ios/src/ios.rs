@@ -25,3 +25,9 @@ pub(crate) use window::*;
 pub fn current_platform(_headless: bool) -> std::rc::Rc<dyn gpui::Platform> {
     std::rc::Rc::new(IosPlatform::new())
 }
+
+/// The iOS text system on its own, without the platform around it: Core Text
+/// may be used from any thread, where the platform is made on the main one.
+pub fn text_system() -> std::sync::Arc<dyn gpui::PlatformTextSystem> {
+    std::sync::Arc::new(IosTextSystem::new())
+}

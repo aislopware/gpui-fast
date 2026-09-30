@@ -13,7 +13,7 @@ mod frame_pacing;
 pub mod hardware_keyboard;
 
 #[cfg(target_os = "ios")]
-pub use ios::{IosPlatform, current_platform};
+pub use ios::{IosPlatform, current_platform, text_system};
 
 /// Why a described input could not be delivered.
 #[cfg(all(target_os = "ios", feature = "test-support"))]
