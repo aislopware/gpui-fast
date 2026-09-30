@@ -99,8 +99,9 @@ impl GlobalIdCache {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ElementId, GlobalElementId, GlobalIdCache};
     use std::hash::{BuildHasher, BuildHasherDefault};
+    use std::sync::Arc;
 
     /// An id's hash is worked out from its path when it is made, so ids made
     /// apart from the same path have to agree, and ids of different paths

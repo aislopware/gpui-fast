@@ -23,9 +23,13 @@ Two upstreams feed it:
   (`zed: import bd747337`).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
-  longbridge commit merged is `ab4c33f` (#10, "keep views retained in a real GPUI Kit
-  application", squashed), in the commit "Merge longbridge/gpui-fast ab4c33f (#10 squash)
-  into Slopty's fork"; before it `49c1cfa` (#14, "allocate less per frame for carried
+  longbridge commit merged is `10d0051` (#19, "keep upstream hooks to the letter of the
+  upstream-sync rules"), in the commit "Merge longbridge/gpui-fast 10d0051 (#19) into
+  Slopty's fork". Its inspector helpers in `fast/global_id.rs` were left out: zed's
+  #64309, which this fork imports, already gates the inspector in `window.rs`, so
+  `div.rs` and `window.rs` stay zed's. Before it `ab4c33f` (#10, "keep views retained in
+  a real GPUI Kit application", squashed), in the commit "Merge longbridge/gpui-fast
+  ab4c33f (#10 squash) into Slopty's fork"; before it `49c1cfa` (#14, "allocate less per frame for carried
   text measurements and retained records"), in `8a52ff0`; `f6e82b4` (#13, "keep carried
   lines in the line cache, and measure text in fast/"), in `4c13f16`; and `ac1c226`
   (#12), in `751acaf`.

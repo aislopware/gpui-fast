@@ -618,7 +618,7 @@ impl PlatformWindow for TestWindow {
     }
 
     fn update_ime_position(&self, bounds: Bounds<Pixels>) {
-        self.0.lock().fast_ime_positions.push(bounds);
+        crate::fast::test_window::note_ime_position(self, bounds);
     }
 
     fn gpu_specs(&self) -> Option<GpuSpecs> {

@@ -13,3 +13,9 @@ impl TestAppContext {
         self.test_window(window).0.lock().fast_ime_positions.clone()
     }
 }
+
+/// Records that the platform was asked to put the input method's candidate
+/// window at `bounds`, for [`TestAppContext::ime_positions`].
+pub(crate) fn note_ime_position(window: &crate::platform::TestWindow, bounds: Bounds<Pixels>) {
+    window.0.lock().fast_ime_positions.push(bounds);
+}
