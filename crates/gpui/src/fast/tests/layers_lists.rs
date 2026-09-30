@@ -214,8 +214,8 @@ fn open_at(cx: &mut TestAppContext, window: AnyWindowHandle, scale_factor: f32) 
 mod uniform {
     use super::{
         Decision, ROW_HEIGHT, VIEWPORT_HEIGHT, VIEWPORT_WIDTH, compare_with_layers_off, composites,
-        decision, draw, expanded_quads, extended_frames, fractional_deltas, held_rows, open_at, row_color, wheel,
-        wheel_deltas, with_window,
+        decision, draw, expanded_quads, extended_frames, fractional_deltas, held_rows, open_at,
+        row_color, wheel, wheel_deltas, with_window,
     };
     use crate::{
         AnyWindowHandle, Context, IntoElement, ParentElement as _, Render, Styled as _,
@@ -486,8 +486,8 @@ mod uniform {
 mod list {
     use super::{
         Decision, VIEWPORT_HEIGHT, VIEWPORT_WIDTH, compare_with_layers_off, composites, decision,
-        draw, expanded_quads, extended_frames, fractional_deltas, held_rows, open_at, row_color, wheel,
-        wheel_deltas, with_window,
+        draw, expanded_quads, extended_frames, fractional_deltas, held_rows, open_at, row_color,
+        wheel, wheel_deltas, with_window,
     };
     use crate::{
         AnyWindowHandle, AppContext as _, Context, Entity, IntoElement, ListAlignment, ListState,
@@ -890,6 +890,8 @@ mod rows {
         Scrolling,
         /// A path, drawn over the row's colour.
         Path,
+        /// A hover style, as a list's rows mostly have: a hitbox.
+        Hover,
     }
 
     /// A row of `kind`, 40 px tall.
@@ -922,6 +924,10 @@ mod rows {
                     .h(px(40.))
                     .w_full(),
                 )
+                .into_any_element(),
+            RowKind::Hover => base
+                .id(("row", ix))
+                .hover(move |style| style.bg(row_color(ix + 1)))
                 .into_any_element(),
         }
     }
@@ -1058,6 +1064,32 @@ mod rows {
         }
     }
 
+    /// A list whose rows take input is kept on today's path, whose frames a
+    /// layer that does not carry its rows' hitboxes cannot composite: its
+    /// rows are never painted into a layer only to find that out, however
+    /// long it scrolls.
+    #[crate::test]
+    fn a_list_whose_rows_take_input_is_never_painted_into_a_layer(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        for uniform in [false, true] {
+            let with_layers = page(cx, RowKind::Hover, uniform);
+            let without_layers = page(cx, RowKind::Hover, uniform);
+            with_window(cx, with_layers, |window, _| window.reset_layout_stats());
+            for sweep in 0..3 {
+                let dy = if sweep % 2 == 0 { -5. } else { 5. };
+                compare_with_layers_off(cx, with_layers, without_layers, &[dy; 80], "scroll");
+            }
+            let stats = with_window(cx, with_layers, |window, _| window.layout_stats());
+            assert_eq!(
+                (stats.layer_frames_repainted, stats.layers_demoted),
+                (0, 0),
+                "uniform {uniform}"
+            );
+        }
+    }
+
     /// A row in a view of its own, of `color`.
     struct ColorRow {
         color: usize,
@@ -1131,7 +1163,9 @@ mod rows {
     fn view_rows_page(cx: &mut TestAppContext, anchored: bool) -> AnyWindowHandle {
         let handle = cx.add_window(move |_, cx| ViewRowsPage {
             state: ListState::new(300, ListAlignment::Top, px(0.)).measure_all(),
-            views: (0..300).map(|color| cx.new(|_| ColorRow { color })).collect(),
+            views: (0..300)
+                .map(|color| cx.new(|_| ColorRow { color }))
+                .collect(),
             anchored,
         });
         let window: AnyWindowHandle = handle.into();

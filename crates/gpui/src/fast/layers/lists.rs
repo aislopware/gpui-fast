@@ -78,6 +78,15 @@ pub(crate) struct LayerRows {
     /// list's rows are painted over many frames at as many translations), so
     /// such a layer is demoted; see [`holds_input`].
     holds_input: bool,
+    /// Whether the rows the list showed on the last frame it kept them off
+    /// its layer handed the frame hitboxes or other records a composited
+    /// frame would lose, as they would in the layer: such a list is not
+    /// promoted to a layer only to be demoted again (see
+    /// [`took_input_off_layer`]).
+    took_input_off_layer: bool,
+    /// Where the rows of a list kept off its layer this frame began to
+    /// prepaint, and for a `list` its state's id, until they are prepainted.
+    bypass: Option<(Option<usize>, PrepaintStateIndex)>,
     /// How many rows frames that kept the rows the layer held added to it
     /// since its rows were last painted afresh. What the rows read, their
     /// hovers and their views are kept for the whole layer, not by row, so
@@ -97,6 +106,7 @@ impl LayerRows {
     /// Ends the frame being drawn.
     pub(crate) fn finish_frame(&mut self) {
         self.frame = None;
+        self.bypass = None;
     }
 
     fn clear(&mut self) {
@@ -124,6 +134,50 @@ const REPAINT_AFTER_ADDED: usize = 4;
 /// layer is demoted, the list kept on today's path.
 pub(crate) fn holds_input(layer: &crate::fast::layers::Layer) -> bool {
     layer.rows.list && layer.rows.holds_input
+}
+
+/// Whether the list of `layer`, kept off its layer, showed rows that took
+/// input on the last frame, which rows painted into the layer would do as
+/// well: the layer would be demoted for it as soon as it was painted (see
+/// [`holds_input`]), so the list is not promoted.
+pub(crate) fn took_input_off_layer(layer: &crate::fast::layers::Layer) -> bool {
+    layer.rows.took_input_off_layer
+}
+
+/// Notes where the rows of the list `id`, of the `list` whose state has id
+/// `list` if it is one, begin to prepaint on a frame that keeps them off the
+/// list's layer, to tell once they are whether they took input.
+fn begin_bypass(window: &mut Window, id: &GlobalElementId, list: Option<usize>) -> bool {
+    let start = window.prepaint_index();
+    match window.fast_layers.layers.get_mut(id) {
+        Some(layer) => {
+            layer.rows.bypass = Some((list, start));
+            true
+        }
+        None => false,
+    }
+}
+
+/// Ends what [`begin_bypass`] began for the list `id`, once its rows are
+/// prepainted.
+fn finish_bypass(window: &mut Window, id: &GlobalElementId) {
+    let Some((_, start)) = window
+        .fast_layers
+        .layers
+        .get_mut(id)
+        .and_then(|layer| layer.rows.bypass.take())
+    else {
+        return;
+    };
+    let paint = window.paint_index();
+    let took_input = adds_input(
+        window,
+        &(start..window.prepaint_index()),
+        &(paint.clone()..paint),
+    );
+    if let Some(layer) = window.fast_layers.layers.get_mut(id) {
+        layer.rows.took_input_off_layer = took_input;
+    }
 }
 
 /// Whether prepainting and painting a list's rows, over `prepaint` and
@@ -272,7 +326,9 @@ struct PaintState {
 
 /// What a `uniform_list` does with its rows this frame: nothing new, or
 /// render the plan's rows into its layer.
-pub(crate) struct Rows(Option<RowPlan>);
+/// On a frame that keeps the list off its layer, the list's id, if it has
+/// a layer.
+pub(crate) struct Rows(Option<RowPlan>, Option<GlobalElementId>);
 
 /// The rows to render into the layer of the list `id` showing the rows
 /// `visible` of its `item_count`, with `overscan` rows around them, when
@@ -400,19 +456,20 @@ pub(crate) fn begin_uniform_list(
     y_flipped: bool,
 ) -> Rows {
     if !COMPILED || y_flipped || item_height <= Pixels::ZERO {
-        return Rows(None);
+        return Rows(None, None);
     }
     let Some(id) = id else {
-        return Rows(None);
+        return Rows(None, None);
     };
     if paint::inside_layer(window) || !active(window, cx) {
-        return Rows(None);
+        return Rows(None, None);
     }
     let viewport = window.content_mask().bounds;
     let content_size = size(padded_bounds.size.width, item_height * item_count);
     let decision = policy::decide(window, cx, id, padded_bounds, content_size, scroll_offset);
     if decision == Decision::Bypass {
-        return Rows(None);
+        let bypassed = begin_bypass(window, id, None).then(|| id.clone());
+        return Rows(None, bypassed);
     }
     let overscan = (viewport.size.height / item_height).ceil().max(1.) as usize;
     let needed = needed_rows(visible, overscan, item_count);
@@ -481,7 +538,7 @@ pub(crate) fn begin_uniform_list(
     if mode == Mode::Extend {
         keep_reads(window, cx, id);
     }
-    Rows(Some(plan))
+    Rows(Some(plan), None)
 }
 
 /// Tells the window that what the rows held by the layer of the list `id`
@@ -571,6 +628,9 @@ impl Iterator for RowIndices {
 /// Ends what [`begin_uniform_list`] began, once the rows are prepainted.
 pub(crate) fn end_rows(window: &mut Window, cx: &mut App, rows: Rows) {
     if rows.0.is_none() {
+        if let Some(id) = rows.1 {
+            finish_bypass(window, &id);
+        }
         return;
     }
     let Some(painting) = window.fast_layers.painting.take() else {
@@ -686,6 +746,7 @@ pub(crate) fn begin_list(
     // Remembered as painted, for its scrolls to be told apart.
     invalidate::painted_list(window, &id, &version);
     if decision == Decision::Bypass {
+        begin_bypass(window, &id, Some(version.id()));
         return;
     }
     let layer = paint::layer_mut(window, &id);
@@ -853,6 +914,13 @@ pub(crate) fn end_list(
     render_item: &mut crate::RenderItemFn,
     bounds: Bounds<Pixels>,
 ) {
+    let bypassed = window.fast_layers.layers.iter().find_map(|(id, layer)| {
+        let (list, _) = layer.rows.bypass.as_ref()?;
+        (*list == Some(state.version.id())).then(|| id.clone())
+    });
+    if let Some(id) = bypassed {
+        finish_bypass(window, &id);
+    }
     let Some(id) = window.fast_layers.painting.as_ref().map(|p| p.id.clone()) else {
         return;
     };

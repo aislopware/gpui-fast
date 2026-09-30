@@ -222,7 +222,8 @@ pub(crate) fn decide(
             Decision::Repaint
         }
         None if streak >= PROMOTE_AFTER_SCROLLED_FRAMES
-            && policy.retry_at.is_none_or(|at| frame >= at) =>
+            && policy.retry_at.is_none_or(|at| frame >= at)
+            && !lists::took_input_off_layer(layer) =>
         {
             Decision::Repaint
         }
