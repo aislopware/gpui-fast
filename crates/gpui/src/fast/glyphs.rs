@@ -3,7 +3,7 @@
 use crate::{
     App, AtlasTile, Bounds, ContentMask, DecorationRun, DevicePixels, FontId, GlyphId, Hsla,
     IsZero, MonochromeSprite, Pixels, Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ScaledPixels, SubpixelSprite, TransformationMatrix, Window, point, size,
+    SUBPIXEL_VARIANTS_Y, ScaledPixels, SubpixelSprite, TransformationMatrix, Window, point,
     util::round_half_toward_zero,
 };
 use anyhow::Result;
@@ -54,10 +54,13 @@ pub(crate) fn quantize_emoji_origin(origin: Point<ScaledPixels>) -> Point<Scaled
 /// baseline, where a tall line puts it well below the top; upstream's
 /// `line_glyph.intersects(mask)` then skips glyphs that reach into the mask.
 ///
-/// This test is only conservative: it takes a box the font's bounding box
-/// larger on every side of the glyph's baseline origin, plus a margin for
-/// glyph dilation and subpixel positioning, and leaves the exact test to the
-/// scene, which drops a sprite outside its content mask. Where a glyph is
+/// This test is only conservative, leaving the exact test to the scene,
+/// which drops a sprite outside its content mask: vertically it takes the
+/// bounding box's height above and below the baseline; horizontally, as
+/// upstream does, the bounding box's width from the glyph's origin on, and
+/// its height before it, for glyphs reaching left of their origin; each plus
+/// a margin for glyph dilation and subpixel positioning. Nothing reaches
+/// into an empty mask. Where a glyph is
 /// drawn therefore depends on its sprite alone, so a line painted in a scroll
 /// layer's overscan and scrolled into view shows the same glyphs as the line
 /// painted in place.
@@ -67,18 +70,17 @@ pub(crate) fn may_reach(
     mask: &Bounds<Pixels>,
 ) -> bool {
     const MARGIN: Pixels = Pixels(2.);
-    let reach = line_glyph.size;
-    let origin = point(line_glyph.origin.x, line_glyph.origin.y + baseline);
-    Bounds {
-        origin: point(
-            origin.x - reach.width - MARGIN,
-            origin.y - reach.height - MARGIN,
-        ),
-        size: size(
-            reach.width * 2. + MARGIN * 2.,
-            reach.height * 2. + MARGIN * 2.,
-        ),
+    // `intersects` takes an empty mask a box straddles for one it overlaps.
+    if mask.is_empty() {
+        return false;
     }
+    let reach = line_glyph.size;
+    let x = line_glyph.origin.x;
+    let y = line_glyph.origin.y + baseline;
+    Bounds::from_corners(
+        point(x - reach.height - MARGIN, y - reach.height - MARGIN),
+        point(x + reach.width + MARGIN, y + reach.height + MARGIN),
+    )
     .intersects(mask)
 }
 

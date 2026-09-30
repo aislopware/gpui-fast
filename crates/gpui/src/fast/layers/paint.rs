@@ -531,7 +531,18 @@ pub(crate) fn snap_path(mut path: crate::Path<ScaledPixels>) -> crate::Path<Scal
     if !COMPILED {
         return path;
     }
-    let snap = |value: ScaledPixels| ScaledPixels((value.0 * PATH_GRID + 0.5).floor() / PATH_GRID);
+    // Adding and taking away 1.5 × 2^23 rounds an `f32` below 2^22 in
+    // magnitude to a whole number, ties to even, which a shift by whole
+    // pixels (a multiple of 256 steps) keeps; `floor` would call into libm.
+    const ROUNDER: f32 = 12_582_912.;
+    let snap = |value: ScaledPixels| {
+        let steps = value.0 * PATH_GRID;
+        if steps.abs() < 4_194_304. {
+            ScaledPixels(((steps + ROUNDER) - ROUNDER) / PATH_GRID)
+        } else {
+            value
+        }
+    };
     let snap_point = |point: Point<ScaledPixels>| Point {
         x: snap(point.x),
         y: snap(point.y),

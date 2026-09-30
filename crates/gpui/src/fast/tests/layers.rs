@@ -3747,6 +3747,18 @@ mod integration {
         assert_eq!(decision(cx, window), Some(Decision::Composite));
     }
 
+    /// A line's glyphs never reach into an empty content mask, however near
+    /// it they lie: a box straddling the mask's edge does not overlap it.
+    #[test]
+    fn no_glyph_reaches_into_an_empty_mask() {
+        use crate::{Bounds, point, size};
+        let glyph = Bounds::new(point(px(10.), px(10.)), size(px(8.), px(10.)));
+        let empty = Bounds::new(point(px(0.), px(15.)), size(px(100.), px(0.)));
+        let thin = Bounds::new(point(px(0.), px(15.)), size(px(100.), px(1.)));
+        assert!(!crate::fast::glyphs::may_reach(glyph, px(8.), &empty));
+        assert!(crate::fast::glyphs::may_reach(glyph, px(8.), &thin));
+    }
+
     /// A glyph sits on its line's baseline, below the top of a tall line: it
     /// is drawn wherever it reaches into the content mask, even when the top
     /// of its line, where upstream looks for it, is outside the mask. A
