@@ -1,0 +1,464 @@
+//! Scrolling with a real wheel: a gallery shaped like GPUI Kit's, a sidebar
+//! beside a scrolled page, scrolled the way a user scrolls it, by
+//! `ScrollWheelEvent`s dispatched with the pointer over the content.
+//!
+//! Unlike scenarios that set a scroll offset and notify a view, the wheel
+//! goes through dispatch: hit testing, the scroll container's own wheel
+//! listener, which moves the offset and notifies the view that painted it,
+//! and hover, since the content moves under a still pointer.
+//!
+//! Each scenario scrolls one kind of content, one scroll-layer pattern each:
+//!
+//! - `scroll-child-view`: a scrolling `div` whose content is a child view, as
+//!   GPUI Kit's gallery shows a story;
+//! - `scroll-same-view`: a scrolling `div` whose content is plain elements of
+//!   the view that owns the `div`;
+//! - `scroll-uniform-list`: a `uniform_list`;
+//! - `scroll-list`: a `list` of rows of varying height.
+
+use std::borrow::Cow;
+
+use gpui::{
+    AnyElement, AnyView, App, AssetSource, Context, Entity, FontWeight, Hsla, ListAlignment,
+    ListState, Modifiers, PlatformInput, Render, Result, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, TouchPhase, UniformListScrollHandle, Window, div, hsla, list,
+    point, prelude::*, px, svg, uniform_list,
+};
+
+use crate::Scenario;
+
+/// Sections of the gallery page.
+pub const SECTIONS: usize = 24;
+/// Buttons in a section.
+const BUTTONS: usize = 8;
+/// Width of the sidebar, in logical pixels.
+const SIDEBAR_WIDTH: f32 = 240.;
+/// How far one wheel event scrolls, in logical pixels.
+const WHEEL_STEP: f32 = 40.;
+/// Frames scrolled in one direction before turning back.
+const FRAMES_PER_SWEEP: usize = 50;
+
+const ICONS: [&str; 6] = [
+    "icons/check.svg",
+    "icons/star.svg",
+    "icons/plus.svg",
+    "icons/arrow.svg",
+    "icons/circle.svg",
+    "icons/square.svg",
+];
+
+const LABELS: [&str; 8] = [
+    "Primary",
+    "Secondary",
+    "Danger",
+    "Ghost",
+    "Outline",
+    "Link",
+    "Small",
+    "With icon",
+];
+
+/// The icons the gallery shows, served to the headless app so that `svg()`
+/// elements rasterize something.
+pub struct ScenarioAssets;
+
+impl AssetSource for ScenarioAssets {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        let shape = match path {
+            "icons/check.svg" => {
+                r#"<path d="M3 8l3 3 7-7" stroke="black" stroke-width="2" fill="none"/>"#
+            }
+            "icons/star.svg" => {
+                r#"<path d="M8 1l2 5h5l-4 3 2 6-5-4-5 4 2-6-4-3h5z" fill="black"/>"#
+            }
+            "icons/plus.svg" => r#"<path d="M7 2h2v5h5v2H9v5H7V9H2V7h5z" fill="black"/>"#,
+            "icons/arrow.svg" => r#"<path d="M2 7h9l-3-3 1-1 5 5-5 5-1-1 3-3H2z" fill="black"/>"#,
+            "icons/circle.svg" => r#"<circle cx="8" cy="8" r="6" fill="black"/>"#,
+            "icons/square.svg" => {
+                r#"<rect x="2" y="2" width="12" height="12" rx="2" fill="black"/>"#
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(Cow::Owned(
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">{shape}</svg>"#
+            )
+            .into_bytes(),
+        )))
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        Ok(ICONS
+            .iter()
+            .filter(|icon| icon.starts_with(path))
+            .map(|icon| SharedString::from(*icon))
+            .collect())
+    }
+}
+
+fn color(hue: f32, saturation: f32, lightness: f32) -> Hsla {
+    hsla(hue / 360., saturation, lightness, 1.)
+}
+
+fn background() -> Hsla {
+    color(0., 0., 1.)
+}
+
+fn sidebar_background() -> Hsla {
+    color(220., 0.15, 0.97)
+}
+
+fn border() -> Hsla {
+    color(220., 0.13, 0.88)
+}
+
+fn text() -> Hsla {
+    color(220., 0.2, 0.15)
+}
+
+fn muted() -> Hsla {
+    color(220., 0.1, 0.45)
+}
+
+fn accent() -> Hsla {
+    color(215., 0.8, 0.52)
+}
+
+/// Where the wheel is turned: over the page, clear of the sidebar, in the
+/// runner's 1440 × 900 window.
+fn pointer() -> gpui::Point<gpui::Pixels> {
+    point(px(SIDEBAR_WIDTH + 600.), px(450.))
+}
+
+/// The wheel event of frame `frame`: `FRAMES_PER_SWEEP` frames down, as many
+/// back up, and again.
+fn wheel(frame: usize) -> PlatformInput {
+    let down = (frame / FRAMES_PER_SWEEP).is_multiple_of(2);
+    let delta = if down { -WHEEL_STEP } else { WHEEL_STEP };
+    PlatformInput::ScrollWheel(ScrollWheelEvent {
+        position: pointer(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+        modifiers: Modifiers::default(),
+        touch_phase: TouchPhase::Moved,
+        momentum_phase: None,
+    })
+}
+
+/// A button as a component library draws one: a bordered, rounded box with
+/// a hover style, an optional icon and a label.
+fn button(section: usize, ix: usize) -> AnyElement {
+    let primary = ix == 0;
+    let danger = ix == 2;
+    let (bg, fg, hover) = if primary {
+        (accent(), color(0., 0., 1.), color(215., 0.8, 0.45))
+    } else if danger {
+        (
+            color(0., 0.75, 0.55),
+            color(0., 0., 1.),
+            color(0., 0.75, 0.48),
+        )
+    } else {
+        (color(0., 0., 1.), text(), color(220., 0.2, 0.95))
+    };
+    div()
+        .id(("button", section * BUTTONS + ix))
+        .flex()
+        .items_center()
+        .gap_1()
+        .h(px(if ix == 6 { 24. } else { 32. }))
+        .px_3()
+        .rounded_md()
+        .border_1()
+        .border_color(border())
+        .bg(bg)
+        .text_color(fg)
+        .text_sm()
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .when(ix == 7 || ix == 0, |this| {
+            this.child(
+                svg()
+                    .path(ICONS[(section + ix) % ICONS.len()])
+                    .size(px(14.))
+                    .text_color(fg),
+            )
+        })
+        .child(LABELS[ix])
+        .into_any_element()
+}
+
+/// One section of the gallery page: a title, a paragraph and a row of
+/// buttons in a bordered card.
+fn section(ix: usize) -> AnyElement {
+    div()
+        .id(("section", ix))
+        .flex()
+        .flex_col()
+        .gap_2()
+        .p_4()
+        .mb_4()
+        .rounded_lg()
+        .border_1()
+        .border_color(border())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    svg()
+                        .path(ICONS[ix % ICONS.len()])
+                        .size(px(16.))
+                        .text_color(accent()),
+                )
+                .child(
+                    div()
+                        .text_color(text())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(SharedString::from(format!("Section {}", ix + 1))),
+                ),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(muted())
+                .child(SharedString::from(format!(
+                    "Buttons trigger an action. Section {} shows every variant, each with a \
+             hover style, some with an icon, laid out the way a component gallery shows them.",
+                    ix + 1
+                ))),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap_2()
+                .children((0..BUTTONS).map(|button_ix| button(ix, button_ix))),
+        )
+        .into_any_element()
+}
+
+/// The gallery's sidebar: a view of its own, one item per section.
+pub struct Sidebar;
+
+impl Render for Sidebar {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(SIDEBAR_WIDTH))
+            .h_full()
+            .p_2()
+            .gap_0p5()
+            .bg(sidebar_background())
+            .border_r_1()
+            .border_color(border())
+            .children((0..SECTIONS).map(|ix| {
+                div()
+                    .id(("nav", ix))
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .h(px(28.))
+                    .rounded_md()
+                    .text_sm()
+                    .text_color(text())
+                    .hover(|style| style.bg(border()))
+                    .when(ix == 0, |this| this.bg(border()))
+                    .child(
+                        svg()
+                            .path(ICONS[ix % ICONS.len()])
+                            .size(px(14.))
+                            .text_color(muted()),
+                    )
+                    .child(SharedString::from(format!("Section {}", ix + 1)))
+            }))
+    }
+}
+
+/// The page a gallery shows, as a view of its own (pattern A).
+pub struct Page;
+
+impl Render for Page {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .p_6()
+            .children((0..SECTIONS).map(section))
+    }
+}
+
+/// What the gallery scrolls.
+enum Content {
+    /// A child view (pattern A).
+    ChildView(Entity<Page>),
+    /// Plain elements of the gallery's own view (pattern B).
+    SameView,
+    /// A `uniform_list` of this many rows.
+    UniformList(usize, UniformListScrollHandle),
+    /// A `list`.
+    List(ListState),
+}
+
+/// The gallery: a sidebar view and the scrolled content, on an opaque
+/// background.
+pub struct Gallery {
+    sidebar: Entity<Sidebar>,
+    scroll: ScrollHandle,
+    content: Content,
+}
+
+impl Gallery {
+    fn new(content: Content, cx: &mut Context<Self>) -> Self {
+        Self {
+            sidebar: cx.new(|_| Sidebar),
+            scroll: ScrollHandle::new(),
+            content,
+        }
+    }
+}
+
+/// A row of the lists: an icon, a title, a line of detail and a button.
+/// Rows of the variable list wrap a paragraph whose length varies.
+fn row(ix: usize, variable: bool) -> AnyElement {
+    div()
+        .id(("row", ix))
+        .flex()
+        .items_center()
+        .gap_3()
+        .px_4()
+        .when(!variable, |this| this.h(px(48.)))
+        .when(variable, |this| this.py_2())
+        .border_b_1()
+        .border_color(border())
+        .hover(|style| style.bg(color(220., 0.2, 0.97)))
+        .child(
+            svg()
+                .path(ICONS[ix % ICONS.len()])
+                .size(px(16.))
+                .text_color(accent()),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(text())
+                        .child(SharedString::from(format!("Item {ix}"))),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted())
+                        .when(!variable, |this| this.truncate())
+                        .child(SharedString::from(
+                            "Details of the item, long enough to fill the row and, where rows \
+                             wrap, to wrap onto a second or a third line. "
+                                .repeat(if variable { 1 + ix % 4 } else { 1 }),
+                        )),
+                ),
+        )
+        .child(button(ix % SECTIONS, ix % BUTTONS))
+        .into_any_element()
+}
+
+impl Render for Gallery {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let content = match &self.content {
+            Content::ChildView(page) => div()
+                .id("page")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .child(page.clone())
+                .into_any_element(),
+            Content::SameView => div()
+                .id("page")
+                .size_full()
+                .overflow_y_scroll()
+                .track_scroll(&self.scroll)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .p_6()
+                        .children((0..SECTIONS).map(section)),
+                )
+                .into_any_element(),
+            Content::UniformList(rows, handle) => uniform_list("rows", *rows, |range, _, _| {
+                range.map(|ix| row(ix, false)).collect()
+            })
+            .track_scroll(handle)
+            .size_full()
+            .into_any_element(),
+            Content::List(state) => list(state.clone(), |ix, _, _| row(ix, true))
+                .size_full()
+                .into_any_element(),
+        };
+        div()
+            .flex()
+            .size_full()
+            .bg(background())
+            .text_color(text())
+            .child(self.sidebar.clone())
+            .child(div().flex_1().h_full().min_w_0().child(content))
+    }
+}
+
+/// A scenario scrolling one kind of content with the wheel.
+struct WheelScroll {
+    name: &'static str,
+    description: &'static str,
+    content: fn(&mut App) -> Content,
+}
+
+impl Scenario for WheelScroll {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn description(&self) -> &'static str {
+        self.description
+    }
+
+    fn build(&self, _: &mut Window, cx: &mut App) -> AnyView {
+        let content = (self.content)(cx);
+        cx.new(|cx| Gallery::new(content, cx)).into()
+    }
+
+    fn step(&self, _: &AnyView, frame: usize, window: &mut Window, cx: &mut App) {
+        window.dispatch_event(wheel(frame), cx);
+    }
+}
+
+pub fn scenarios() -> Vec<Box<dyn Scenario>> {
+    vec![
+        Box::new(WheelScroll {
+            name: "scroll-child-view",
+            description: "A gallery page, a child view of 24 sections of buttons, scrolled by the wheel",
+            content: |cx| Content::ChildView(cx.new(|_| Page)),
+        }),
+        Box::new(WheelScroll {
+            name: "scroll-same-view",
+            description: "A gallery page of 24 sections drawn by the scrolling view itself, scrolled by the wheel",
+            content: |_| Content::SameView,
+        }),
+        Box::new(WheelScroll {
+            name: "scroll-uniform-list",
+            description: "A 10,000-row uniform_list scrolled by the wheel",
+            content: |_| Content::UniformList(10_000, UniformListScrollHandle::new()),
+        }),
+        Box::new(WheelScroll {
+            name: "scroll-list",
+            description: "A 2,000-row list of rows of varying height scrolled by the wheel",
+            content: |_| Content::List(ListState::new(2_000, ListAlignment::Top, px(200.))),
+        }),
+    ]
+}

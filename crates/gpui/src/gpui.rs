@@ -116,6 +116,10 @@ pub use fast::composition;
 pub use fast::gesture::{
     InteractiveGestures, PlatformGesture, RotateEvent, SmartMagnifyEvent, SwipeEvent,
 };
+pub use fast::layers::scene::{
+    LAYER_TILE_TEXTURE_BASE, LayerFrame, LayerKey, SceneLayers, TileCoord, decode_layer_tile,
+    layer_tile_id, layer_tile_texture_id,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::stats::LayoutStats;
 #[cfg(any(test, feature = "test-support"))]

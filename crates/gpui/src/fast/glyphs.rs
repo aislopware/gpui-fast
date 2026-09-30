@@ -3,11 +3,86 @@
 use crate::{
     App, AtlasTile, Bounds, ContentMask, DecorationRun, DevicePixels, FontId, GlyphId, Hsla,
     IsZero, MonochromeSprite, Pixels, Point, RenderGlyphParams, SUBPIXEL_VARIANTS_X,
-    SUBPIXEL_VARIANTS_Y, ScaledPixels, SubpixelSprite, TransformationMatrix, Window,
+    SUBPIXEL_VARIANTS_Y, ScaledPixels, SubpixelSprite, TransformationMatrix, Window, point,
     util::round_half_toward_zero,
 };
 use anyhow::Result;
 use std::borrow::Cow;
+
+/// A glyph's whole-pixel origin and subpixel variant: upstream's rounding
+/// for non-negative coordinates, extended so that a whole-pixel shift moves
+/// the result by exactly that shift everywhere, negative coordinates included.
+///
+/// Upstream rounds `origin * variants` half toward zero, then takes `trunc`
+/// and `fract`, which mirror around zero; a glyph painted above or left of
+/// the window (a scroll layer's overscan) would then land on a different
+/// pixel or variant than the same glyph painted once scrolled into view.
+pub(crate) fn quantize_origin(origin: Point<ScaledPixels>) -> (Point<ScaledPixels>, Point<u8>) {
+    let (x, variant_x) = quantize_axis(origin.x.0, SUBPIXEL_VARIANTS_X);
+    let (y, variant_y) = quantize_axis(origin.y.0, SUBPIXEL_VARIANTS_Y);
+    (
+        Point::new(ScaledPixels(x), ScaledPixels(y)),
+        Point::new(variant_x, variant_y),
+    )
+}
+
+/// The whole pixel at or below `value` plus the nearest of `variants` steps
+/// within it, ties toward the pixel; the last step carries into the next pixel.
+/// On non-negative values `floor` is `trunc` and the steps round like
+/// upstream's `round_half_toward_zero(value * variants)`.
+fn quantize_axis(value: f32, variants: u8) -> (f32, u8) {
+    let whole = value.floor();
+    let steps = round_half_toward_zero((value - whole) * variants as f32) as i32;
+    let carry = steps / variants as i32;
+    (whole + carry as f32, (steps % variants as i32) as u8)
+}
+
+/// An emoji's whole-pixel origin: the nearest whole pixel, ties toward the
+/// pixel below, which is upstream's `round_half_toward_zero` on non-negative
+/// values and shifts with whole-pixel moves on negative ones.
+pub(crate) fn quantize_emoji_origin(origin: Point<ScaledPixels>) -> Point<ScaledPixels> {
+    origin.map(|c| {
+        let whole = c.0.floor();
+        ScaledPixels(whole + round_half_toward_zero(c.0 - whole))
+    })
+}
+
+/// Whether a glyph may draw inside `mask`, for a line to skip the glyphs it
+/// need not paint. `line_glyph` is the line's glyph box as upstream builds it:
+/// the glyph's origin on the top of its line, sized by the font's bounding
+/// box. The glyph itself is drawn `baseline` further down, on the line's
+/// baseline, where a tall line puts it well below the top; upstream's
+/// `line_glyph.intersects(mask)` then skips glyphs that reach into the mask.
+///
+/// This test is only conservative, leaving the exact test to the scene,
+/// which drops a sprite outside its content mask: vertically it takes the
+/// bounding box's height above and below the baseline; horizontally, as
+/// upstream does, the bounding box's width from the glyph's origin on, and
+/// its height before it, for glyphs reaching left of their origin; each plus
+/// a margin for glyph dilation and subpixel positioning. Nothing reaches
+/// into an empty mask. Where a glyph is
+/// drawn therefore depends on its sprite alone, so a line painted in a scroll
+/// layer's overscan and scrolled into view shows the same glyphs as the line
+/// painted in place.
+pub(crate) fn may_reach(
+    line_glyph: Bounds<Pixels>,
+    baseline: Pixels,
+    mask: &Bounds<Pixels>,
+) -> bool {
+    const MARGIN: Pixels = Pixels(2.);
+    // `intersects` takes an empty mask a box straddles for one it overlaps.
+    if mask.is_empty() {
+        return false;
+    }
+    let reach = line_glyph.size;
+    let x = line_glyph.origin.x;
+    let y = line_glyph.origin.y + baseline;
+    Bounds::from_corners(
+        point(x - reach.height - MARGIN, y - reach.height - MARGIN),
+        point(x + reach.width + MARGIN, y + reach.height + MARGIN),
+    )
+    .intersects(mask)
+}
 
 /// How the glyphs of a run are rendered: what painting a glyph needs that
 /// depends on its run, not on the glyph. See [`Window::glyph_run_rendering`].
@@ -54,17 +129,7 @@ impl Window {
         let glyph_origin = origin.scale(scale_factor);
         crate::fast::scene::glyph_at(&mut self.next_frame.scene, glyph_origin);
 
-        let quantized_origin = Point::new(
-            round_half_toward_zero(glyph_origin.x.0 * SUBPIXEL_VARIANTS_X as f32)
-                / SUBPIXEL_VARIANTS_X as f32,
-            round_half_toward_zero(glyph_origin.y.0 * SUBPIXEL_VARIANTS_Y as f32)
-                / SUBPIXEL_VARIANTS_Y as f32,
-        );
-        let subpixel_variant = Point::new(
-            (quantized_origin.x.fract() * SUBPIXEL_VARIANTS_X as f32) as u8,
-            (quantized_origin.y.fract() * SUBPIXEL_VARIANTS_Y as f32) as u8,
-        );
-        let integer_origin = quantized_origin.map(|c| ScaledPixels(c.trunc()));
+        let (integer_origin, subpixel_variant) = quantize_origin(glyph_origin);
         let GlyphRunRendering {
             subpixel_rendering,
             dilation,
@@ -153,11 +218,12 @@ impl LineGlyphPainter {
         }
     }
 
-    /// Whether a glyph that lies within `bounds` can meet the content mask,
-    /// and is worth painting.
+    /// Whether a glyph whose line box is `bounds`, drawn `baseline` below
+    /// its top, can meet the content mask and is worth painting. See
+    /// [`may_reach`].
     #[inline]
-    pub(crate) fn meets_mask(&self, bounds: &Bounds<Pixels>) -> bool {
-        bounds.intersects(&self.content_mask)
+    pub(crate) fn meets_mask(&self, bounds: &Bounds<Pixels>, baseline: Pixels) -> bool {
+        may_reach(*bounds, baseline, &self.content_mask)
     }
 
     /// [`Window::paint_glyph`], for the next glyph of the line.

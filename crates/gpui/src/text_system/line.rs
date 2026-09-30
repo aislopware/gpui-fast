@@ -741,6 +741,7 @@ fn paint_line(
                 if crate::fast::glyphs::LineGlyphPainter::meets_mask(
                     &glyph_painter,
                     &max_glyph_bounds,
+                    baseline_offset.y + glyph.position.y,
                 ) {
                     let vertical_offset = point(px(0.0), glyph.position.y);
                     if glyph.is_emoji {

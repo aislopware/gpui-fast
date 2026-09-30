@@ -91,6 +91,21 @@ pub struct LayoutStats {
     pub paints_replayed: u64,
     /// Of the stretches drawn again under their key, those drawn moved.
     pub paints_moved: u64,
+    /// Scroll container frames drawn by compositing a scroll layer's cached
+    /// tiles at the new offset, without prepainting or painting its content.
+    pub layer_frames_composited: u64,
+    /// Scroll container frames whose content was painted into its scroll
+    /// layer again, because it changed or scrolled past the painted region.
+    pub layer_frames_repainted: u64,
+    /// Scroll layer tiles those repaints changed, which the renderer
+    /// rasterizes again.
+    pub tiles_dirtied: u64,
+    /// Scroll layers painted again before an input event, so its listeners
+    /// see current positions.
+    pub layer_rebuilds_for_input: u64,
+    /// Scroll layers dropped because their content kept changing or their
+    /// tiles did not fit the budget.
+    pub layers_demoted: u64,
 }
 
 /// How long each phase of the frame took, waiting to be folded into the

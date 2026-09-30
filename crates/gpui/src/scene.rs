@@ -53,6 +53,7 @@ pub struct Scene {
     pub(crate) sort_scratch: crate::fast::scene::SortScratch,
     pub(crate) composition: crate::fast::composition::SceneComposition,
     pub(crate) fast_painted: crate::fast::scene::Painted,
+    pub layers: crate::fast::layers::scene::SceneLayers,
 }
 
 #[expect(missing_docs)]
@@ -71,6 +72,7 @@ impl Scene {
         self.surfaces.clear();
         crate::fast::composition::scene::clear(self);
         crate::fast::scene::clear(self);
+        crate::fast::layers::scene::SceneLayers::clear(&mut self.layers);
     }
 
     pub fn len(&self) -> usize {
