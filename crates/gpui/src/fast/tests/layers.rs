@@ -360,3 +360,67 @@ fn a_tile_scene_keeps_overlapping_primitives_in_drawing_order() {
     assert!(t00.quads[0].order < t00.quads[1].order);
     assert_eq!(t00.quads[1].bounds, sp(20., 20., 20., 20.));
 }
+
+/// Upstream's glyph quantization, as `Window::paint_glyph` had it.
+fn old_quantize(x: f32, y: f32) -> (f32, f32, u8) {
+    use crate::{SUBPIXEL_VARIANTS_X as VX, SUBPIXEL_VARIANTS_Y as VY};
+    let qx = crate::util::round_half_toward_zero(x * VX as f32) / VX as f32;
+    let qy = crate::util::round_half_toward_zero(y * VY as f32) / VY as f32;
+    (qx.trunc(), qy.trunc(), (qx.fract() * VX as f32) as u8)
+}
+
+#[test]
+fn glyph_quantization_is_unchanged_on_screen() {
+    for i in 0..20_000 {
+        let x = i as f32 * 0.0137;
+        let y = i as f32 * 0.0291;
+        let (origin, variant) =
+            crate::fast::glyphs::quantize_origin(point(ScaledPixels(x), ScaledPixels(y)));
+        let (ox, oy, v) = old_quantize(x, y);
+        assert_eq!(
+            (origin.x.0, origin.y.0, variant.x, variant.y),
+            (ox, oy, v, 0),
+            "at ({x}, {y})"
+        );
+        let emoji =
+            crate::fast::glyphs::quantize_emoji_origin(point(ScaledPixels(x), ScaledPixels(y)));
+        assert_eq!(
+            (emoji.x.0, emoji.y.0),
+            (
+                crate::util::round_half_toward_zero(x),
+                crate::util::round_half_toward_zero(y)
+            ),
+            "emoji at ({x}, {y})"
+        );
+    }
+}
+
+#[test]
+fn glyph_quantization_moves_with_whole_pixel_shifts() {
+    for i in 0..5_000 {
+        let x = -300. + i as f32 * 0.0731;
+        let y = -300. + i as f32 * 0.0519;
+        let (a, va) = crate::fast::glyphs::quantize_origin(point(ScaledPixels(x), ScaledPixels(y)));
+        let (b, vb) = crate::fast::glyphs::quantize_origin(point(
+            ScaledPixels(x + 1024.),
+            ScaledPixels(y + 1024.),
+        ));
+        assert_eq!(va, vb, "variant at ({x}, {y})");
+        assert_eq!(
+            (b.x.0 - a.x.0, b.y.0 - a.y.0),
+            (1024., 1024.),
+            "origin at ({x}, {y})"
+        );
+        let ea =
+            crate::fast::glyphs::quantize_emoji_origin(point(ScaledPixels(x), ScaledPixels(y)));
+        let eb = crate::fast::glyphs::quantize_emoji_origin(point(
+            ScaledPixels(x + 1024.),
+            ScaledPixels(y + 1024.),
+        ));
+        assert_eq!(
+            (eb.x.0 - ea.x.0, eb.y.0 - ea.y.0),
+            (1024., 1024.),
+            "emoji at ({x}, {y})"
+        );
+    }
+}
