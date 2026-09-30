@@ -493,3 +493,229 @@ fn layout_stats_count_scroll_layer_work() {
         (0, 0, 0, 0, 0)
     );
 }
+
+/// Tests of telling scrolls apart from other changes and of deciding what a
+/// scroll container's layer does each frame (M4).
+mod invalidation {
+    use crate::fast::layers::invalidate::{ScrollSource, render_read_offset, scrolled};
+    use crate::{
+        AnyWindowHandle, App, AppContext as _, Context, Entity, GlobalElementId,
+        InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollDelta,
+        ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _,
+        TestAppContext, TouchPhase, Window, div, point, px, rgb,
+    };
+    use std::{cell::Cell, rc::Rc};
+
+    /// A page scrolled by a wheel: a 100 px tall scroll container of forty
+    /// 20 px rows at the top left of the window.
+    struct Page {
+        handle: ScrollHandle,
+        read_offset_in_render: bool,
+        reader: Option<Entity<Reader>>,
+    }
+
+    impl Render for Page {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            if self.read_offset_in_render {
+                let _ = self.handle.offset();
+            }
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .id("scroller")
+                        .overflow_y_scroll()
+                        .track_scroll(&self.handle)
+                        .w(px(200.))
+                        .h(px(100.))
+                        .children(
+                            (0..40).map(|row| div().h(px(20.)).bg(rgb(0x100000 + row * 0x10))),
+                        ),
+                )
+                .children(self.reader.clone())
+        }
+    }
+
+    /// A view outside the scroll container that shows where it is scrolled.
+    struct Reader {
+        handle: ScrollHandle,
+        renders: Rc<Cell<usize>>,
+    }
+
+    impl Render for Reader {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            let offset = self.handle.offset();
+            div().w(px(10.)).h(px(10.) - offset.y / 100.)
+        }
+    }
+
+    fn page(handle: ScrollHandle, read_offset_in_render: bool) -> Page {
+        Page {
+            handle,
+            read_offset_in_render,
+            reader: None,
+        }
+    }
+
+    fn with_window<R>(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        f: impl FnOnce(&mut Window, &mut App) -> R,
+    ) -> R {
+        cx.update_window(window, |_, window, cx| f(window, cx))
+            .unwrap()
+    }
+
+    fn draw(cx: &mut TestAppContext, window: AnyWindowHandle) {
+        with_window(cx, window, |window, cx| window.draw(cx).clear(cx));
+    }
+
+    /// Scrolls the page by `dy` with the wheel, returning the scroll
+    /// containers noted as scrolled before the frame that follows is drawn.
+    fn wheel(cx: &mut TestAppContext, window: AnyWindowHandle, dy: f32) -> Vec<GlobalElementId> {
+        with_window(cx, window, |window, cx| {
+            window.dispatch_event(
+                crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    position: point(px(20.), px(20.)),
+                    delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+                    modifiers: Default::default(),
+                    touch_phase: TouchPhase::Moved,
+                }),
+                cx,
+            );
+            window
+                .fast_layers
+                .scrolls
+                .scrolled
+                .iter()
+                .cloned()
+                .collect()
+        })
+    }
+
+    /// The page's scroll container, as last painted.
+    fn scroller(cx: &mut TestAppContext, window: AnyWindowHandle) -> GlobalElementId {
+        with_window(cx, window, |window, _| {
+            window
+                .fast_layers
+                .scrolls
+                .containers()
+                .find(|id| id.last() == Some(&"scroller".into()))
+                .cloned()
+                .expect("the scroll container was painted")
+        })
+    }
+
+    fn is_scrolled(cx: &mut TestAppContext, window: AnyWindowHandle, id: &GlobalElementId) -> bool {
+        with_window(cx, window, |window, _| scrolled(window, id))
+    }
+
+    #[crate::test]
+    fn a_wheel_scroll_is_noted_for_its_container(cx: &mut TestAppContext) {
+        let window: AnyWindowHandle = cx
+            .add_window(|_, _| page(ScrollHandle::new(), false))
+            .into();
+        draw(cx, window);
+        let scroller = scroller(cx, window);
+        assert!(!is_scrolled(cx, window, &scroller));
+
+        assert_eq!(wheel(cx, window, -30.), vec![scroller.clone()]);
+        draw(cx, window);
+        assert!(
+            !is_scrolled(cx, window, &scroller),
+            "a frame takes in the scrolls before it"
+        );
+    }
+
+    #[crate::test]
+    fn programmatic_scrolls_are_noted(cx: &mut TestAppContext) {
+        let handle = ScrollHandle::new();
+        let window: AnyWindowHandle = cx
+            .add_window({
+                let handle = handle.clone();
+                move |_, _| page(handle, false)
+            })
+            .into();
+        draw(cx, window);
+        let scroller = scroller(cx, window);
+        assert!(!is_scrolled(cx, window, &scroller));
+        handle.set_offset(point(px(0.), px(-40.)));
+        assert!(is_scrolled(cx, window, &scroller));
+        draw(cx, window);
+        assert!(!is_scrolled(cx, window, &scroller));
+        handle.scroll_to_item(30);
+        assert!(is_scrolled(cx, window, &scroller));
+        draw(cx, window);
+        assert!(!is_scrolled(cx, window, &scroller));
+        handle.scroll_to_bottom();
+        assert!(is_scrolled(cx, window, &scroller));
+    }
+
+    /// Whether the root view's own reading, last frame, included the offset
+    /// of its scroll container.
+    fn root_view_read_offset(cx: &mut TestAppContext, window: AnyWindowHandle) -> bool {
+        let scroller = scroller(cx, window);
+        with_window(cx, window, |window, _| {
+            let source = window
+                .fast_layers
+                .scrolls
+                .source(&scroller)
+                .expect("the scroll container was painted");
+            assert!(matches!(source, ScrollSource::Handle(_)));
+            let record = window
+                .rendered_frame
+                .retained
+                .records
+                .first()
+                .expect("the root view is retained");
+            render_read_offset(&record.own_dependencies, &source)
+        })
+    }
+
+    #[crate::test]
+    fn a_render_that_reads_the_offset_depends_on_it(cx: &mut TestAppContext) {
+        let window: AnyWindowHandle = cx.add_window(|_, _| page(ScrollHandle::new(), true)).into();
+        draw(cx, window);
+        assert!(root_view_read_offset(cx, window));
+    }
+
+    #[crate::test]
+    fn one_that_does_not_does_not(cx: &mut TestAppContext) {
+        let window: AnyWindowHandle = cx
+            .add_window(|_, _| page(ScrollHandle::new(), false))
+            .into();
+        draw(cx, window);
+        assert!(!root_view_read_offset(cx, window));
+    }
+
+    #[crate::test]
+    fn a_view_that_read_the_offset_is_built_again_when_it_scrolls(cx: &mut TestAppContext) {
+        let renders = Rc::new(Cell::new(0));
+        let window: AnyWindowHandle = cx
+            .add_window({
+                let renders = renders.clone();
+                move |_, cx| {
+                    let handle = ScrollHandle::new();
+                    let reader = cx.new(|_| Reader {
+                        handle: handle.clone(),
+                        renders,
+                    });
+                    Page {
+                        handle,
+                        read_offset_in_render: false,
+                        reader: Some(reader),
+                    }
+                }
+            })
+            .into();
+        draw(cx, window);
+        draw(cx, window);
+        let before = renders.get();
+        wheel(cx, window, -30.);
+        draw(cx, window);
+        assert_eq!(renders.get(), before + 1, "the reader shows the new offset");
+        draw(cx, window);
+        assert_eq!(renders.get(), before + 1, "and is reused once it has");
+    }
+}

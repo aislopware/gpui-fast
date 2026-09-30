@@ -564,6 +564,7 @@ impl ListState {
 
     /// Get the current scroll offset, in terms of the list's items.
     pub fn logical_scroll_top(&self) -> ListOffset {
+        crate::fast::layers::invalidate::note_offset_read(&self.0.borrow().version);
         self.0.borrow().logical_scroll_top()
     }
 
@@ -728,6 +729,7 @@ impl ListState {
     /// been rendered.
     pub fn bounds_for_item(&self, ix: usize) -> Option<Bounds<Pixels>> {
         let state = &*self.0.borrow();
+        crate::fast::layers::invalidate::note_offset_read(&state.version);
 
         let bounds = state.last_layout_bounds.unwrap_or_default();
         let scroll_top = state.logical_scroll_top();
@@ -801,6 +803,7 @@ impl ListState {
     /// how far the content has scrolled.
     pub fn scroll_px_offset_for_scrollbar(&self) -> Point<Pixels> {
         let state = &self.0.borrow();
+        crate::fast::layers::invalidate::note_offset_read(&state.version);
 
         if state.logical_scroll_top.is_none() && state.alignment == ListAlignment::Bottom {
             return Point::new(px(0.), -state.max_scroll_offset());
@@ -977,6 +980,7 @@ impl StateInner {
             );
         }
 
+        crate::fast::layers::invalidate::note_list_scrolled(window, &self.version);
         cx.notify(current_view);
     }
 

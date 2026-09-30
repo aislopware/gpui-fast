@@ -503,6 +503,7 @@ impl Window {
         let index = self.rendered_frame.retained.find(id)?;
         let record = &self.rendered_frame.retained.records[index];
         if cx.dependencies_changed(&record.dependencies, self.inside_notified_view())
+            || crate::fast::layers::invalidate::offset_read_changed(self, &record.dependencies)
             || !self.hovers_unchanged(&record.hover_dependencies)
         {
             return None;
@@ -972,7 +973,12 @@ impl Window {
                     .dispatch_tree
                     .view_path_reversed(entity)
                     .any(|view| notified.contains(&view));
-            if cx.dependencies_changed(&record.own_dependencies, inside_notified) {
+            if cx.dependencies_changed(&record.own_dependencies, inside_notified)
+                || crate::fast::layers::invalidate::offset_read_changed(
+                    self,
+                    &record.own_dependencies,
+                )
+            {
                 changed.push(entity);
             }
         }
@@ -1176,6 +1182,7 @@ pub(crate) fn finish_retained_frame(window: &mut Window) {
     window.retained_state.hover_dependencies.clear();
     window.retained_state.hover_reads.get_mut().clear();
     window.next_frame.retained.finish_frame();
+    crate::fast::layers::finish_frame(window);
     #[cfg(any(test, feature = "test-support"))]
     if window.next_frame.retained.reused_any() {
         // Reused subtrees do not paint, and the bounds they would have

@@ -39,6 +39,8 @@ pub(crate) struct WindowLayers {
     pub(crate) scrolls: invalidate::ScrollLog,
     /// The layer being painted, if any.
     pub(crate) painting: Option<paint::Painting>,
+    /// Counts the frames drawn, for layers to tell how long ago something was.
+    pub(crate) frame: u64,
 }
 
 impl Default for WindowLayers {
@@ -50,6 +52,7 @@ impl Default for WindowLayers {
                 && std::env::var("GPUI_SCROLL_LAYERS").map_or(true, |value| value != "0"),
             scrolls: invalidate::ScrollLog::default(),
             painting: None,
+            frame: 0,
         }
     }
 }
@@ -84,6 +87,18 @@ pub(crate) fn active(window: &Window, cx: &App) -> bool {
         && !cx.has_active_drag()
         && !window.a11y.is_active()
         && !window.is_inspector_picking(cx)
+}
+
+/// Ends the frame being drawn: the scrolls before it are taken in, and the
+/// layers not composited for long are dropped.
+pub(crate) fn finish_frame(window: &mut Window) {
+    let layers = &mut window.fast_layers;
+    let frame = layers.frame;
+    let live = &layers.layers;
+    layers
+        .scrolls
+        .finish_frame(frame, |id| live.contains_key(id));
+    layers.frame += 1;
 }
 
 impl Window {
