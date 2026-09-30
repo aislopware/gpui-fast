@@ -69,11 +69,9 @@ gpui-fast.
   container: a content-space scene, its tiles, and the records needed to
   composite it and route input into it. Keyed by the scroll container's
   `GlobalElementId`.
-- **Content space**: the layer's own coordinate system, in device pixels,
-  with the origin at the content's top-left at scroll offset zero, shifted so
-  that everything the layer paints has non-negative coordinates (subpixel
-  glyph variants are wrong at negative coordinates, see §5.3). Content space
-  does not move when the container scrolls.
+- **Content space**: the layer's own coordinate system, in device pixels:
+  window space at the moment the content was last painted. It does not move
+  when the container scrolls.
 - **Viewport**: the scroll container's clip rect in window space (its
   `overflow_mask`).
 - **Painted region**: the part of content space the layer has painted:
@@ -81,8 +79,9 @@ gpui-fast.
   the scroll axes, clamped to the content). Content outside it was culled.
 - **Tile**: a square of content space, 512 × 512 device pixels, rasterized
   into its own texture.
-- **Translation**: `window = content + (viewport.origin − scroll_offset −
-  content_shift)`, snapped to whole device pixels.
+- **Translation** `T`: how far the content has moved since it was painted,
+  `T_now − T_paint`, a whole number of device pixels (scroll offsets are
+  snapped, §5.3). Window position = content position + `T`.
 - **Scroll-only frame** for a layer: nothing the layer's content depends on
   changed except the container's scroll offset (§6.2).
 
@@ -104,7 +103,7 @@ gpui-fast.
 
 1. **Decide** (policy): is there a live layer, is it eligible (§6.5), is this
    a scroll-only frame for it?
-2. **Scroll-only frame:** skip the content. Emit a `LayerComposite` into the
+2. **Scroll-only frame:** skip the content. Insert the tile quads into the
    main scene at the current translation. Translate the layer's input records
    (§7). If the painted region no longer covers viewport + a margin, paint the
    missing strip into the layer (§5.4).
@@ -122,53 +121,65 @@ draws each composite as textured quads in the main pass.
 
 ### 5.1 The core ↔ renderer contract
 
-`Scene` gains one field (an exception to "no new public API", see §11):
+Two things cross from the core to the renderer, both through `Scene`.
+
+**Tile quads are ordinary primitives.** Each visible tile of a layer is
+inserted into the main scene as a `PolychromeSprite` whose
+`tile.texture_id` lies in a reserved range that no atlas allocates (one id
+per layer) and whose `tile.tile_id` packs the tile coordinate:
+
+```rust
+// fast/layers/scene.rs, exported from gpui.rs
+pub const LAYER_TILE_TEXTURE_BASE: u32 = 0xF000_0000;
+pub fn layer_tile_texture_id(layer: LayerKey) -> AtlasTextureId; // kind Polychrome, one per layer
+pub fn layer_tile_id(tile: TileCoord) -> TileId;                  // the tile, packed
+pub fn decode_layer_tile(texture: AtlasTextureId, tile: TileId) -> Option<(LayerKey, TileCoord)>;
+```
+
+The sprite's `bounds` is the tile's window rectangle (whole device
+pixels, the tile's full size), its `content_mask` the viewport, opacity 1,
+no corner radii, and `tile.bounds` is `(0, 0, tile_size, tile_size)`. Draw
+order, clipping, sorting and batching are therefore the scene's own. A
+renderer that sees a polychrome batch whose texture id decodes to a layer
+tile binds that tile's texture instead of an atlas texture.
+
+**Layer content rides along.** `Scene` gains one field (an exception to "no
+new public API", see §11):
 
 ```rust
 pub struct Scene {
     // ...existing fields...
-    pub layers: SceneLayers,          // defined in fast/layers/scene.rs
+    pub layers: SceneLayers,           // fast/layers/scene.rs
 }
 
 pub struct SceneLayers {
-    pub layers: Vec<LayerFrame>,       // one per live layer drawn this frame
+    pub frames: Vec<LayerFrame>,       // one per layer composited this frame
 }
 
 pub struct LayerFrame {
-    pub id: LayerId,                   // stable across frames (u64)
-    pub generation: u64,               // bumps when content space is rebuilt
-    pub background: Hsla,              // baked clear colour (opaque)
+    pub key: LayerKey,                 // stable while the layer lives
+    pub generation: u64,               // bumps when the content scene is replaced
+    pub background: Rgba,              // baked clear colour, opaque
     pub tile_size: u32,                // device px, 512
-    pub dirty_tiles: Vec<TileCoord>,   // tiles to (re)rasterize this frame
-    pub content: Scene,                // content-space primitives for dirty tiles
-                                       // (only primitives intersecting them)
-    pub composite: Vec<TileQuad>,      // tiles to draw this frame
+    pub content: Rc<Scene>,            // content space, the whole painted region
+    pub dirty_tiles: Vec<TileCoord>,   // tiles whose content changed this generation
 }
 
-pub struct TileQuad {
-    pub tile: TileCoord,
-    pub order: DrawOrder,              // one order slot per layer in the main scene
-    pub bounds: Bounds<ScaledPixels>,  // window-space, whole device px
-    pub content_mask: ContentMask<ScaledPixels>, // the viewport
+impl LayerFrame {
+    /// The primitives of `content` that intersect `tile`, translated into the
+    /// tile's space (origin at the tile's top-left), sorted and batchable.
+    pub fn tile_scene(&self, tile: TileCoord) -> Scene;
 }
 ```
 
-- `LayerFrame::content` is a normal `Scene`, sorted and batched as today, in
-  content space. It holds only what the dirty tiles need, so a scroll-only
-  frame with no dirty tiles carries an empty scene.
-- The composite occupies **one draw order** in the main scene, inserted with
-  the viewport bounds like `push_layer` does, so anything painted after the
-  container (scrollbars, overlays) draws above it.
+- `content` is shared (`Rc`) and only replaced when the layer repaints, so a
+  scroll-only frame costs nothing to hand over.
+- The renderer rasterizes, before the main pass, every tile in
+  `dirty_tiles` plus every tile the main scene composites that it does not
+  hold (evicted, device lost, new window), from `tile_scene`. No state flows
+  back from the renderer to the core.
 - A renderer that does not support layers never receives any: the core
   enables layers only under `cfg(target_os = "linux")` in v1.
-- The renderer owns textures; the core owns everything else. A renderer that
-  lost its tiles (device loss, eviction, resize) reports nothing back: the
-  core keeps the full content-space scene for the painted region, and every
-  frame adds to `dirty_tiles` each composited tile the renderer does not hold,
-  with its primitives in `content`. The renderer publishes which tiles it
-  holds through a per-window `fast::layers::TileResidency` shared with the
-  core (an `Arc` handed over at window creation through the existing
-  gpui_wgpu hook points).
 
 ### 5.2 Background baking
 
@@ -186,22 +197,29 @@ today's path. A background colour change (theme switch) repaints the layer.
 
 ### 5.3 Content space and snapping
 
-- Scroll offsets that drive a layer are snapped to whole device pixels when
-  the layer is composited, and the content is painted at the same snapped
-  offset whenever it is painted normally, so both paths place glyphs on the
-  same grid. Snapping happens in `fast::layers` at the two sites that apply
-  the offset (div prepaint `with_element_offset(scroll_offset)`, list/uniform
-  list item origins). Offsets that are already whole device pixels are
-  unchanged.
-- Content space is shifted so the painted region starts at non-negative
-  device coordinates: `glyph quantization` (`round_half_toward_zero`,
-  `fract`, `trunc` in `paint_glyph` / `fast::glyphs`) is only translation-
-  invariant for non-negative coordinates. The shift is a whole number of
-  device pixels, so translation back to window space is exact.
-- The renderer draws tile `content` with globals whose `viewport_size` is the
-  tile size, and primitives translated into tile space on the CPU (the
-  shaders have no offset uniform; all position-dependent shading is relative
-  to `bounds.origin`, so translation is exact).
+- The content is painted as today, in window space, at the current scroll
+  offset. Its primitives go into the layer's own `Scene` (the window's scene
+  is swapped for the layer's while the container paints its children) and
+  are stored translated by `−T_paint`, the layer's translation when it was
+  painted, so content space is fixed while the container scrolls. Composite
+  places tile `(x, y)` at `(x·tile, y·tile) + T_now`.
+- Scroll offsets are snapped to whole device pixels at the sites that apply
+  them (div prepaint `with_element_offset(scroll_offset)`, list and uniform
+  list item origins), **whenever layers are enabled** (the Linux gate), with
+  or without a layer, so the layer path and today's path place content on
+  the same grid. Offsets that are already whole device pixels are unchanged.
+- Glyph origin quantization (`paint_glyph`, `paint_emoji`,
+  `fast::glyphs`) is made translation-invariant: today `round_half_toward_
+  zero`, `fract` and `trunc` misplace glyphs at negative device coordinates.
+  The replacement, `fast::glyphs::quantize_origin`, returns exactly today's
+  result for non-negative coordinates (everything visible on screen) and
+  shifts consistently for negative ones (overscan above or left of the
+  window), so a glyph painted in overscan lands where a direct repaint would
+  put it once scrolled into view.
+- The renderer draws `tile_scene`s with globals whose `viewport_size` is the
+  tile size. Primitives are translated on the CPU (the shaders have no
+  offset uniform; all position-dependent shading is relative to
+  `bounds.origin`, so whole-pixel translation is exact).
 
 ### 5.4 Culling: the painted region
 
@@ -236,7 +254,7 @@ re-rasterizes one or two tiles, not the layer.
 ### 5.6 Renderer: tiles on wgpu
 
 - `gpui_wgpu/src/fast/layers/`: `TileCache` (per window) maps
-  `(LayerId, TileCoord)` to a texture of `surface_format`, usage
+  `(LayerKey, TileCoord)` to a texture of `surface_format`, usage
   `RENDER_ATTACHMENT | TEXTURE_BINDING | COPY_SRC`, from a pool.
 - Raster passes run in `fast::frame::record` before the main pass, in the
   same encoder: per dirty tile, clear to `background`, bind tile globals
@@ -246,8 +264,10 @@ re-rasterizes one or two tiles, not the layer.
   single staging upload.
 - Paths in tiles use a **tile-sized** path intermediate (plus MSAA), since
   the existing one is viewport-sized and sampled by `viewport_size`.
-- Composite: each `TileQuad` is drawn with the existing polychrome-sprite
-  pipeline and the tile texture bound through `BindGroupCache::texture`.
+- Composite: a polychrome batch whose texture id decodes to a layer tile
+  (§5.1) is drawn with the existing polychrome-sprite pipeline, the tile's
+  texture bound through `BindGroupCache::texture` in place of the atlas
+  texture.
   Whole-pixel bounds equal to the tile size sample texel centres, so the copy
   is exact.
 - Budget: 64 MB of tile textures per window by default; least recently
@@ -262,7 +282,7 @@ re-rasterizes one or two tiles, not the layer.
 A layer records, for its content, everything a retained view records today
 (fast/retained.rs): entity and global dependencies, state versions, hovers,
 layout keys, element states touched, rem size, text style, opacity, content
-mask, plus the painted region, the content shift, the snapped scroll offset,
+mask, plus the painted region, the translation it was painted at, the snapped scroll offset,
 and the background.
 
 ### 6.2 Scroll-only detection
@@ -288,26 +308,37 @@ looks like any other change. The design adds a distinct signal:
   own dependency changed, no hover changed), and nothing inside the content
   changed (child views clean, no dependency of the content changed).
 
-### 6.3 Pattern A (content is a child view)
+### 6.3 Patterns A and B share one path
 
-The owning view (thin: the scroll div and maybe a scrollbar) is rebuilt as
-today. When it reaches the content child view on a scroll-only frame, the
-child is not built: the layer composite stands in for its prepaint and paint,
-and its layout is kept (`reuse_retained_layout`, as today). The scrollbar and
-anything else in the owner paint normally and read the new offset.
+The layer sits at the scroll `div`, where it prepaints and paints its
+children. Whatever the children are — a child view (A) or plain elements
+(B) — on a scroll-only frame the div does not prepaint or paint them; it
+carries last frame's non-scene records for them (§7) and inserts the tile
+quads.
 
-### 6.4 Pattern B (content is in the same view)
+- **A:** the owning view is thin (scroll div, scrollbar) and is rebuilt as
+  today; the child view element requests its layout through retained layout
+  reuse (it is clean), and is never prepainted or painted.
+- **B:** the owning view is rendered and laid out as today (the wheel
+  notified it); only the prepaint and paint of the content are skipped. The
+  owner's render cost remains in v1 (see §12).
+- **Inside a layer, nested retained views record nothing and reuse nothing**:
+  the layer is their retention. When the layer repaints (content changed),
+  everything inside it is built. Views outside the layer are unaffected.
 
-The owning view is re-rendered on a scroll-only frame only if its render read
-the offset (§6.2); otherwise it is reused from its retained record except for
-the elements that read the offset during prepaint or paint (a scrollbar). For
-v1 that exception means: **if anything outside the content read the offset
-during prepaint or paint, the owner is rendered and prepainted as today, and
-the scroll container's content subtree is not prepainted or painted — the
-layer stands in for it.** Render cost of the owner remains in that case
-(element construction); layout, prepaint and paint of the content are
-skipped. The content's layout nodes are kept through the existing layout-key
-retention.
+### 6.4 When the content counts as unchanged
+
+For the layer at scroll container `c`, a frame is scroll-only when:
+
+- every view whose element is inside the content is clean and its recorded
+  dependencies are unchanged (`reusable_retained` would accept it), and
+- the owning view of `c` is either clean, or dirty only through
+  `note_scrolled(c)` with no own dependency changed and its render did not
+  read `c`'s offset, and
+- no hover recorded by the content changed (hit-tested with the translated
+  hitboxes), and
+- the scroll div's own style, bounds size, content mask, opacity, text style
+  and background are unchanged.
 
 ### 6.5 Eligibility, promotion and demotion
 
@@ -401,7 +432,7 @@ last painted (`delta`). The rules:
   `COPY_SRC`, read back, compare bytes. Cases: quads, borders, shadows,
   gradients, paths (tile-sized intermediate), mono/subpixel/poly sprites,
   underlines, content masks crossing tile edges, primitives spanning tiles,
-  non-zero content shift. Skipped when the adapter lacks
+  negative content coordinates. Skipped when the adapter lacks
   `DUAL_SOURCE_BLENDING` for the subpixel cases.
 - **Scene oracle** (gpui, test platform): extend `fast/tests/oracle.rs` with a
   layer oracle — two windows through the same random history (wheel scrolls,
@@ -427,11 +458,11 @@ work splits into streams that touch disjoint files:
 
 | Milestone | Stream | Content | Depends on |
 |---|---|---|---|
-| M1 | core-contract | `fast/layers/scene.rs` types, `Scene.layers` hook, `LayerId`, `TileCoord`, Linux cfg gate, `TileResidency`, stats fields | — |
+| M1 | core-contract | `fast/layers/scene.rs` types and tile-texture ids, `Scene.layers` hook, `LayerFrame::tile_scene`, translation-invariant glyph quantization, Linux gate, per-window `WindowLayers` skeleton, stats fields | — |
 | M2 | renderer | gpui_wgpu `fast/layers/`: tile cache, raster passes, tile globals, tile path intermediate, composite, budget, surfaceless pixel test harness + pixel tests | M1 |
-| M3 | paint | core `fast/layers/paint.rs`: content-space painting, cull/clip split hooks, snapping, content shift, background baking, tile diffing | M1 |
+| M3 | paint | core `fast/layers/paint.rs`, `record.rs`, `background.rs`, `tiles.rs`: scene swap and content-space recording, cull/clip split hooks, scroll-offset snapping, background baking, tile diffing, composite insertion | M1 |
 | M4 | invalidation | `fast/layers/invalidate.rs` + `policy.rs`: `note_scrolled`, offset-read hooks, scroll-only detection, patterns A and B, promotion/demotion | M1 |
-| M5 | input | `fast/layers/input.rs`: hitbox translation, rebuild-before-input, tooltips, getter translation | M1, M3 |
+| M5 | input | `fast/layers/input.rs`, `reuse.rs`: carrying non-scene records on scroll-only frames, hitbox translation and viewport clipping, rebuild-before-input, tooltips, getter translation | M1, M3 |
 | M6 | lists | `fast/layers/lists.rs`: uniform_list and list partial row rendering | M3, M4 |
 | M7 | verification | layer oracle, `gpui_perf` real-wheel scenarios + GPUI-Kit-like page, `--verify` coverage | M1 (grows with each stream) |
 | M8 | integration | end-to-end on the Button story, tuning (tile size, overscan, budget), docs (`docs/scroll-layers.md`, architecture) | all |
