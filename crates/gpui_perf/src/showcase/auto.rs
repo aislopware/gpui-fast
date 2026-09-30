@@ -306,7 +306,7 @@ impl AutoRun {
             return;
         }
         println!(
-            "\n{:<16} {:>9} {:>6} {:>9} {:>9} {:>9} {:>7} {:>7} {:>8} {:>8} {:>9} {:>8} {:>8} {:>6} {:>6}",
+            "\n{:<16} {:>9} {:>6} {:>9} {:>9} {:>9} {:>7} {:>7} {:>8} {:>8} {:>9} {:>8} {:>8} {:>6} {:>6} {:>6} {:>6} {:>8}",
             "scenario",
             "retention",
             "fps",
@@ -321,15 +321,19 @@ impl AutoRun {
             "layout",
             "paint",
             "built",
-            "reused"
+            "reused",
+            "layers",
+            "tiles",
+            "rebuilds"
         );
         let ms = |value: Option<f64>| value.map_or("-".to_string(), |v| format!("{v:.2}ms"));
         let count = |value: Option<f64>| value.map_or("-".to_string(), |v| format!("{v:.1}"));
+        let count2 = |value: Option<f64>| value.map_or("-".to_string(), |v| format!("{v:.2}"));
         for result in &self.results {
             let cost = &result.cost;
             let phases = cost.phases;
             println!(
-                "{:<16} {:>9} {:>6.0} {:>7.2}ms {:>7.2}ms {:>9} {:>6.0}% {:>7} {:>8} {:>8} {:>9} {:>8} {:>8} {:>6} {:>6}",
+                "{:<16} {:>9} {:>6.0} {:>7.2}ms {:>7.2}ms {:>9} {:>6.0}% {:>7} {:>8} {:>8} {:>9} {:>8} {:>8} {:>6} {:>6} {:>6} {:>6} {:>8}",
                 format!("{:?}", result.scenario),
                 match result.retention {
                     Some(true) => "on",
@@ -353,6 +357,9 @@ impl AutoRun {
                 ms(phases.map(|p| p.paint_ms)),
                 count(phases.map(|p| p.views_built)),
                 count(phases.map(|p| p.views_reused)),
+                count2(phases.map(|p| p.layer_frames_composited)),
+                count2(phases.map(|p| p.tiles_dirtied)),
+                count2(phases.map(|p| p.layer_rebuilds_for_input)),
             );
         }
         println!(
@@ -360,7 +367,9 @@ impl AutoRun {
              frame, which unlike CPU time do not depend on the core or the clock the thread got. \
              proc: the whole process, render threads included. p-cores: the share of the \
              process's CPU time on performance cores. memory: the process's memory at the end, resident on Linux, its footprint on macOS. build, prepaint, paint: per frame; layout is Taffy's share of prepaint. \
-             built, reused: views per frame. \"-\": not counted by upstream GPUI."
+             built, reused: views per frame. layers: scroll containers drawn from a scroll \
+             layer's cached tiles, tiles: scroll layer tiles repainted, rebuilds: scroll layers \
+             painted again before an input event, per frame. \"-\": not counted by upstream GPUI."
         );
         if clock_held {
             println!(

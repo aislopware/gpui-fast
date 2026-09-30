@@ -15,6 +15,8 @@ pub(crate) mod record;
 pub(crate) mod reuse;
 pub mod scene;
 pub(crate) mod tiles;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod verify;
 
 use crate::{App, GlobalElementId, Window};
 use collections::FxHashMap;
