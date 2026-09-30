@@ -129,11 +129,18 @@ fn expanded_quads(scene: &Scene) -> Vec<String> {
     quads
 }
 
-/// Whether the window's last frame composited a layer.
+/// Whether the window's last frame drew a layer's tiles, its rows painted
+/// afresh or kept.
 fn composites(cx: &mut TestAppContext, window: AnyWindowHandle) -> bool {
     with_window(cx, window, |window, _| {
         !window.rendered_frame.scene.layers.frames.is_empty()
     })
+}
+
+/// How many frames on this thread composited a list's layer keeping the
+/// rows it held, rendering at most those a scroll uncovered.
+fn extended_frames() -> usize {
+    crate::fast::layers::lists::extended_frames()
 }
 
 /// A pseudo-random sequence of wheel deltas, whole pixels in -60..=60.
@@ -207,7 +214,7 @@ fn open_at(cx: &mut TestAppContext, window: AnyWindowHandle, scale_factor: f32) 
 mod uniform {
     use super::{
         Decision, ROW_HEIGHT, VIEWPORT_HEIGHT, VIEWPORT_WIDTH, compare_with_layers_off, composites,
-        decision, draw, expanded_quads, fractional_deltas, held_rows, open_at, row_color, wheel,
+        decision, draw, expanded_quads, extended_frames, fractional_deltas, held_rows, open_at, row_color, wheel,
         wheel_deltas, with_window,
     };
     use crate::{
@@ -356,6 +363,7 @@ mod uniform {
         draw(cx, without_layers);
 
         let mut composited = 0;
+        let extended = extended_frames();
         for (frame, dy) in wheel_deltas(50).into_iter().enumerate() {
             wheel(cx, with_layers, dy);
             wheel(cx, without_layers, dy);
@@ -372,6 +380,8 @@ mod uniform {
             assert_eq!(actual, expected, "frame {frame}, scrolled by {dy}");
         }
         assert!(composited > 40, "the layer was composited ({composited})");
+        let extended = extended_frames() - extended;
+        assert!(extended > 35, "frames kept the rows held ({extended})");
     }
 
     /// Scrolls a uniform list of rows `row_height` px tall at a scale of
@@ -406,8 +416,11 @@ mod uniform {
             return;
         }
         // 20 px rows are 25 device pixels.
+        let extended = extended_frames();
         let composited = uniform_list_matches_layers_off_at_a_fractional_scale(cx, ROW_HEIGHT);
         assert!(composited > 300, "the layer was composited ({composited})");
+        let extended = extended_frames() - extended;
+        assert!(extended > 550, "frames kept the rows held ({extended})");
     }
 
     #[crate::test]
@@ -418,7 +431,11 @@ mod uniform {
             return;
         }
         // 30 px rows are 37.5 device pixels.
-        uniform_list_matches_layers_off_at_a_fractional_scale(cx, 30.);
+        let extended = extended_frames();
+        let composited = uniform_list_matches_layers_off_at_a_fractional_scale(cx, 30.);
+        let extended = extended_frames() - extended;
+        assert!(composited > 550, "the layer was composited ({composited})");
+        assert!(extended > 550, "frames kept the rows held ({extended})");
     }
 
     #[crate::test]
@@ -469,7 +486,7 @@ mod uniform {
 mod list {
     use super::{
         Decision, VIEWPORT_HEIGHT, VIEWPORT_WIDTH, compare_with_layers_off, composites, decision,
-        draw, expanded_quads, fractional_deltas, held_rows, open_at, row_color, wheel,
+        draw, expanded_quads, extended_frames, fractional_deltas, held_rows, open_at, row_color, wheel,
         wheel_deltas, with_window,
     };
     use crate::{
@@ -607,6 +624,7 @@ mod list {
         draw(cx, without_layers);
 
         let mut composited = 0;
+        let extended = extended_frames();
         let mut deltas = wheel_deltas(50);
         // And back up past where it started, through rows measured on the way.
         deltas.extend([60., 60., 60., 45., 60., 60., 60., 60., 33., 60.]);
@@ -626,6 +644,8 @@ mod list {
             assert_eq!(actual, expected, "frame {frame}, scrolled by {dy}");
         }
         assert!(composited > 40, "the layer was composited ({composited})");
+        let extended = extended_frames() - extended;
+        assert!(extended > 40, "frames kept the rows held ({extended})");
     }
 
     /// Scrolls a list aligned by `alignment` with rows of 20, 30 and 40 px
@@ -657,8 +677,11 @@ mod list {
         if !crate::fast::layers::COMPILED {
             return;
         }
+        let extended = extended_frames();
         let composited = list_matches_layers_off_at_a_fractional_scale(cx, ListAlignment::Top);
         assert!(composited > 480, "the layer was composited ({composited})");
+        let extended = extended_frames() - extended;
+        assert!(extended > 600, "frames kept the rows held ({extended})");
     }
 
     #[crate::test]
@@ -666,8 +689,11 @@ mod list {
         if !crate::fast::layers::COMPILED {
             return;
         }
+        let extended = extended_frames();
         let composited = list_matches_layers_off_at_a_fractional_scale(cx, ListAlignment::Bottom);
         assert!(composited > 480, "the layer was composited ({composited})");
+        let extended = extended_frames() - extended;
+        assert!(extended > 600, "frames kept the rows held ({extended})");
     }
 
     #[crate::test]
@@ -841,5 +867,361 @@ mod list {
             wheel(cx, window, -2.);
             assert_eq!(decision(cx, window), Some(Decision::Bypass), "step {step}");
         }
+    }
+}
+
+/// Lists whose rows hand the frame more than what they draw: hitboxes,
+/// element states, paths; and rows in views of their own.
+mod rows {
+    use super::{
+        Decision, VIEWPORT_HEIGHT, VIEWPORT_WIDTH, compare_with_layers_off, decision, draw,
+        expanded_quads, open_at, row_color, wheel, with_window,
+    };
+    use crate::{
+        AnyWindowHandle, AppContext as _, Bounds, Context, Entity, IntoElement, ListAlignment,
+        ListState, ParentElement as _, Pixels, Render, StatefulInteractiveElement as _,
+        Styled as _, TestAppContext, Window, div, px, rgb,
+    };
+
+    /// What each row of a [`RowsPage`] holds besides its colour.
+    #[derive(Clone, Copy)]
+    enum RowKind {
+        /// A scroll container of its own, taller inside than it shows.
+        Scrolling,
+        /// A path, drawn over the row's colour.
+        Path,
+    }
+
+    /// A row of `kind`, 40 px tall.
+    fn row(kind: RowKind, ix: usize) -> crate::AnyElement {
+        use crate::InteractiveElement as _;
+        let base = div().w(px(VIEWPORT_WIDTH)).h(px(40.)).bg(row_color(ix));
+        match kind {
+            RowKind::Scrolling => base
+                .child(
+                    div()
+                        .id(("inner", ix))
+                        .overflow_y_scroll()
+                        .h(px(40.))
+                        .child(div().h(px(40.)).bg(row_color(ix + 7)))
+                        .child(div().h(px(40.)).bg(row_color(ix + 13))),
+                )
+                .into_any_element(),
+            RowKind::Path => base
+                .child(
+                    crate::canvas(
+                        |_, _, _| {},
+                        |bounds, _, window, _| {
+                            let origin = bounds.origin;
+                            let mut path = crate::Path::new(origin);
+                            path.line_to(origin + crate::point(px(30.), px(0.)));
+                            path.line_to(origin + crate::point(px(0.), px(30.)));
+                            window.paint_path(path, crate::black());
+                        },
+                    )
+                    .h(px(40.))
+                    .w_full(),
+                )
+                .into_any_element(),
+        }
+    }
+
+    /// A white panel holding a list, or a uniform list when `uniform`, of
+    /// 300 rows of `kind`, 100 px tall, at the top left of the window.
+    struct RowsPage {
+        kind: RowKind,
+        uniform: bool,
+        state: ListState,
+    }
+
+    impl Render for RowsPage {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let kind = self.kind;
+            let page = div().size_full().bg(rgb(0xffffff));
+            if self.uniform {
+                page.child(
+                    crate::uniform_list(
+                        "list",
+                        300,
+                        cx.processor(move |_, range: std::ops::Range<usize>, _, _| {
+                            range.map(|ix| row(kind, ix)).collect::<Vec<_>>()
+                        }),
+                    )
+                    .w(px(VIEWPORT_WIDTH))
+                    .h(px(VIEWPORT_HEIGHT)),
+                )
+            } else {
+                page.child(
+                    crate::list(self.state.clone(), move |ix, _, _| row(kind, ix))
+                        .w(px(VIEWPORT_WIDTH))
+                        .h(px(VIEWPORT_HEIGHT)),
+                )
+            }
+        }
+    }
+
+    fn page(cx: &mut TestAppContext, kind: RowKind, uniform: bool) -> AnyWindowHandle {
+        let window = cx.add_window(move |_, _| RowsPage {
+            kind,
+            uniform,
+            state: ListState::new(300, ListAlignment::Top, px(0.)).measure_all(),
+        });
+        open_at(cx, window.into(), 1.);
+        window.into()
+    }
+
+    /// The part of each hitbox of the window's last frame that can be hit,
+    /// sorted.
+    fn hittable(cx: &mut TestAppContext, window: AnyWindowHandle) -> Vec<Bounds<Pixels>> {
+        with_window(cx, window, |window, _| {
+            let mut hittable: Vec<_> = window
+                .rendered_frame
+                .hitboxes
+                .iter()
+                .map(|hitbox| hitbox.bounds.intersect(&hitbox.content_mask.bounds))
+                .filter(|bounds| !bounds.is_empty())
+                .collect();
+            hittable.sort_by_key(|bounds| format!("{bounds:?}"));
+            hittable
+        })
+    }
+
+    /// Scrolls a list whose rows are scroll containers themselves, and checks
+    /// that it can be hit, and draws, as it does without layers: a wheel over
+    /// a row the layer holds scrolls that row.
+    fn rows_that_can_be_hit_stay_hittable(cx: &mut TestAppContext, uniform: bool) {
+        let with_layers = page(cx, RowKind::Scrolling, uniform);
+        let without_layers = page(cx, RowKind::Scrolling, uniform);
+        with_window(cx, without_layers, |window, _| {
+            window.set_scroll_layers(false)
+        });
+        draw(cx, without_layers);
+        // Each wheel scrolls the row under the pointer as far as it goes, then
+        // the list.
+        for (frame, dy) in [-40., -40., -40., -40., -10., -40., 25., -40., -40., -40.]
+            .into_iter()
+            .enumerate()
+        {
+            wheel(cx, with_layers, dy);
+            wheel(cx, without_layers, dy);
+            assert_eq!(
+                hittable(cx, with_layers),
+                hittable(cx, without_layers),
+                "frame {frame}: the rows can be hit as without layers"
+            );
+            let expected = with_window(cx, without_layers, |window, _| {
+                expanded_quads(&window.rendered_frame.scene)
+            });
+            let actual = with_window(cx, with_layers, |window, _| {
+                expanded_quads(&window.rendered_frame.scene)
+            });
+            assert_eq!(actual, expected, "frame {frame}, scrolled by {dy}");
+        }
+    }
+
+    #[crate::test]
+    fn a_list_whose_rows_can_be_hit_stays_hittable(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        rows_that_can_be_hit_stay_hittable(cx, false);
+    }
+
+    #[crate::test]
+    fn a_uniform_list_whose_rows_can_be_hit_stays_hittable(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        rows_that_can_be_hit_stay_hittable(cx, true);
+    }
+
+    #[crate::test]
+    fn a_list_whose_rows_paint_paths_is_kept_off_its_layer(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        for uniform in [false, true] {
+            let with_layers = page(cx, RowKind::Path, uniform);
+            let without_layers = page(cx, RowKind::Path, uniform);
+            // Promoted and painted once into the layer, then demoted: paths
+            // composited from tiles would not land as drawn afresh.
+            compare_with_layers_off(cx, with_layers, without_layers, &[-20., -20.], "promote");
+            assert_eq!(decision(cx, with_layers), Some(Decision::Repaint));
+            for step in 0..5 {
+                compare_with_layers_off(cx, with_layers, without_layers, &[-15.], "demoted");
+                assert_eq!(
+                    decision(cx, with_layers),
+                    Some(Decision::Bypass),
+                    "uniform {uniform}, step {step}"
+                );
+            }
+        }
+    }
+
+    /// A row in a view of its own, of `color`.
+    struct ColorRow {
+        color: usize,
+    }
+
+    impl Render for ColorRow {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .w(px(VIEWPORT_WIDTH))
+                .h(px(20.))
+                .bg(row_color(self.color))
+        }
+    }
+
+    /// A list of 20 px rows whose row 2 is a [`ColorRow`].
+    struct ViewRowPage {
+        state: ListState,
+        view: Entity<ColorRow>,
+    }
+
+    impl Render for ViewRowPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let view = self.view.clone();
+            div().size_full().bg(rgb(0xffffff)).child(
+                crate::list(self.state.clone(), move |ix, _, _| {
+                    if ix == 2 {
+                        return view.clone().into_any_element();
+                    }
+                    div()
+                        .w(px(VIEWPORT_WIDTH))
+                        .h(px(20.))
+                        .bg(row_color(ix))
+                        .into_any_element()
+                })
+                .w(px(VIEWPORT_WIDTH))
+                .h(px(VIEWPORT_HEIGHT)),
+            )
+        }
+    }
+
+    /// A list of 300 rows, each a [`ColorRow`] of its own, beside an anchored
+    /// element when `anchored`.
+    struct ViewRowsPage {
+        state: ListState,
+        views: Vec<Entity<ColorRow>>,
+        anchored: bool,
+    }
+
+    impl Render for ViewRowsPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use crate::prelude::FluentBuilder as _;
+            let views = self.views.clone();
+            div()
+                .size_full()
+                .bg(rgb(0xffffff))
+                .child(
+                    crate::list(self.state.clone(), move |ix, _, _| {
+                        views[ix].clone().into_any_element()
+                    })
+                    .w(px(VIEWPORT_WIDTH))
+                    .h(px(VIEWPORT_HEIGHT)),
+                )
+                .when(self.anchored, |page| {
+                    page.child(
+                        crate::anchored().child(div().w(px(50.)).h(px(50.)).bg(crate::red())),
+                    )
+                })
+        }
+    }
+
+    fn view_rows_page(cx: &mut TestAppContext, anchored: bool) -> AnyWindowHandle {
+        let handle = cx.add_window(move |_, cx| ViewRowsPage {
+            state: ListState::new(300, ListAlignment::Top, px(0.)).measure_all(),
+            views: (0..300).map(|color| cx.new(|_| ColorRow { color })).collect(),
+            anchored,
+        });
+        let window: AnyWindowHandle = handle.into();
+        open_at(cx, window, 1.);
+        window
+    }
+
+    #[crate::test]
+    fn an_anchored_element_beside_a_list_leaves_it_on_its_layer(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = view_rows_page(cx, true);
+        let extended = crate::fast::layers::lists::extended_frames();
+        for _ in 0..2 {
+            wheel(cx, window, -10.);
+        }
+        assert_eq!(decision(cx, window), Some(Decision::Repaint));
+        for step in 0..4 {
+            wheel(cx, window, -10.);
+            assert_eq!(
+                decision(cx, window),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+        }
+        assert_eq!(crate::fast::layers::lists::extended_frames(), extended + 4);
+    }
+
+    #[crate::test]
+    fn what_a_list_layer_remembers_of_its_rows_stays_bounded(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = view_rows_page(cx, false);
+        for _ in 0..2 {
+            wheel(cx, window, -10.);
+        }
+        let extended = crate::fast::layers::lists::extended_frames();
+        // Down through most of the 300 rows, 15 px a frame.
+        for step in 0..350 {
+            wheel(cx, window, -15.);
+            assert_eq!(
+                decision(cx, window),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+            with_window(cx, window, |window, _| {
+                let layer = window.fast_layers.layers.values().next().unwrap();
+                let views = layer.record.as_ref().unwrap().views.len();
+                let held = layer.rows.painted.len();
+                assert!(
+                    views <= held * 6,
+                    "step {step}: the layer remembers {views} views for {held} rows"
+                );
+            });
+        }
+        let extended = crate::fast::layers::lists::extended_frames() - extended;
+        assert!(extended > 300, "frames kept the rows held ({extended})");
+    }
+
+    #[crate::test]
+    fn a_row_view_held_by_the_layer_shows_a_change_without_a_scroll(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = cx.add_window(move |_, cx| ViewRowPage {
+            state: ListState::new(300, ListAlignment::Top, px(0.)),
+            view: cx.new(|_| ColorRow { color: 2 }),
+        });
+        let window: AnyWindowHandle = handle.into();
+        open_at(cx, window, 1.);
+        let view = handle.update(cx, |page, _, _| page.view.clone()).unwrap();
+        for _ in 0..4 {
+            wheel(cx, window, -2.);
+        }
+        assert_eq!(decision(cx, window), Some(Decision::Composite));
+
+        view.update(cx, |row, cx| {
+            row.color = 50;
+            cx.notify();
+        });
+        draw(cx, window);
+        let color = format!("{:?}", crate::Background::from(row_color(50)));
+        with_window(cx, window, |window, _| {
+            let quads = expanded_quads(&window.rendered_frame.scene);
+            assert!(
+                quads.iter().any(|quad| quad.ends_with(&color)),
+                "the row view shows its new colour"
+            );
+        });
     }
 }

@@ -539,7 +539,12 @@ pub(crate) fn note_animation_frame(window: &Window, view: EntityId) {
 pub(crate) fn note_anchored(window: &mut Window) {
     if COMPILED && !window.fast_layers.layers.is_empty() {
         let id = crate::fast::global_id::current(window);
-        window.fast_layers.scrolls.anchored.push(id);
+        // A list has no id its rows' ids start with (see
+        // `lists::content_prefix`): the layer being painted is noted too.
+        let painting = window.fast_layers.painting.as_ref().map(|p| p.id.clone());
+        let scrolls = &mut window.fast_layers.scrolls;
+        scrolls.anchored.push(id);
+        scrolls.anchored.extend(painting);
     }
 }
 
@@ -672,7 +677,10 @@ fn content_view_notified(window: &Window, record: &LayerRecord) -> bool {
 /// which the notification count alone does not tell apart from a scroll of
 /// `id`.
 fn nested_container_scrolled(window: &Window, id: &GlobalElementId) -> bool {
-    let nested = |other: &GlobalElementId| other.len() > id.len() && other.starts_with(id);
+    let prefix = crate::fast::layers::lists::content_prefix(id);
+    let nested = |other: &GlobalElementId| {
+        other != id && other.len() > prefix.len() && other.starts_with(prefix)
+    };
     let scrolls = &window.fast_layers.scrolls;
     scrolls.scrolled.iter().any(nested)
         || scrolls

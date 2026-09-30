@@ -10,6 +10,11 @@
 //! dirty; rows that left the overscan are dropped from it (spec §8). Any
 //! other frame paints the rows afresh, as a div's layer is.
 //!
+//! The rows a layer keeps hand a frame that composites it nothing but their
+//! tiles: no hitboxes, listeners, element states or dispatch nodes. A list
+//! whose rows hand the frame any is demoted to today's path (see
+//! [`holds_input`]) until those records are carried row by row.
+//!
 //! The list elements call in here from a few hooks:
 //!
 //! - `uniform_list`: [`measure_item`], [`snap_item_offset`],
@@ -66,6 +71,19 @@ pub(crate) struct LayerRows {
     /// Whether the layer is a list's, which a scroll extends by the rows it
     /// uncovers instead of painting it again.
     pub(crate) list: bool,
+    /// Whether a row the layer holds handed the frame, besides what it drew,
+    /// records a frame that composites the layer would lose: hitboxes,
+    /// mouse listeners, element states, focusable or listening dispatch
+    /// nodes. Such rows are not carried through composited frames yet (a
+    /// list's rows are painted over many frames at as many translations), so
+    /// such a layer is demoted; see [`holds_input`].
+    holds_input: bool,
+    /// How many rows frames that kept the rows the layer held added to it
+    /// since its rows were last painted afresh. What the rows read, their
+    /// hovers and their views are kept for the whole layer, not by row, so
+    /// they only grow on those frames: past [`REPAINT_AFTER_ADDED`] times
+    /// the rows the layer is to hold, the rows are painted afresh.
+    added_since_repaint: usize,
     /// The content of each row the layer holds.
     rows: BTreeMap<usize, Row>,
     /// A uniform list's measured item, as last measured.
@@ -85,7 +103,77 @@ impl LayerRows {
         self.painted.clear();
         self.row_origins.clear();
         self.rows.clear();
+        self.holds_input = false;
+        self.added_since_repaint = 0;
     }
+
+    /// Whether the rows the layer holds, `needed` of them from now on, are
+    /// to be painted afresh for having added too many rows since they last
+    /// were (see [`LayerRows::added_since_repaint`]).
+    fn due_for_repaint(&self, needed: &Range<usize>) -> bool {
+        self.added_since_repaint > needed.len().max(1) * REPAINT_AFTER_ADDED
+    }
+}
+
+/// How many times the rows a list's layer is to hold its frames that keep
+/// rows may add before its rows are painted afresh.
+const REPAINT_AFTER_ADDED: usize = 4;
+
+/// Whether the layer `layer` is a list's whose rows hand the frame records
+/// a composited frame would lose (see [`LayerRows::holds_input`]): such a
+/// layer is demoted, the list kept on today's path.
+pub(crate) fn holds_input(layer: &crate::fast::layers::Layer) -> bool {
+    layer.rows.list && layer.rows.holds_input
+}
+
+/// Whether prepainting and painting a list's rows, over `prepaint` and
+/// `paint`, handed the frame records besides the scene: hitboxes, tooltips,
+/// element states, dispatch nodes that are focusable, have a key context or
+/// listen, mouse listeners, cursor styles, input handlers or tab stops.
+fn adds_input(
+    window: &Window,
+    prepaint: &Range<PrepaintStateIndex>,
+    paint: &Range<PaintIndex>,
+) -> bool {
+    let (p, q) = (&prepaint.start, &prepaint.end);
+    let (a, b) = (&paint.start, &paint.end);
+    let nodes = &window.next_frame.dispatch_tree.nodes;
+    let start = p.dispatch_tree_index.min(nodes.len());
+    let end = q.dispatch_tree_index.clamp(start, nodes.len());
+    p.hitboxes_index != q.hitboxes_index
+        || p.tooltips_index != q.tooltips_index
+        || p.accessed_element_states_index != q.accessed_element_states_index
+        || a.fast_window_control_hitboxes_index != b.fast_window_control_hitboxes_index
+        || a.mouse_listeners_index != b.mouse_listeners_index
+        || a.cursor_styles_index != b.cursor_styles_index
+        || a.input_handlers_index != b.input_handlers_index
+        || a.accessed_element_states_index != b.accessed_element_states_index
+        || a.tab_handle_index != b.tab_handle_index
+        || nodes[start..end].iter().any(|node| {
+            node.focus_id.is_some()
+                || node.context.is_some()
+                || !node.key_listeners.is_empty()
+                || !node.action_listeners.is_empty()
+                || !node.modifiers_changed_listeners.is_empty()
+        })
+}
+
+#[cfg(test)]
+thread_local! {
+    static EXTENDED_FRAMES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many frames on this thread composited a list's layer keeping the
+/// rows it held.
+#[cfg(test)]
+pub(crate) fn extended_frames() -> usize {
+    EXTENDED_FRAMES.with(|frames| frames.get())
+}
+
+/// Counts a frame that composited a list's layer keeping the rows it held.
+fn count_extended_frame() {
+    #[cfg(test)]
+    EXTENDED_FRAMES.with(|frames| frames.set(frames.get() + 1));
 }
 
 /// A row as the layer holds it.
@@ -326,17 +414,18 @@ pub(crate) fn begin_uniform_list(
     if decision == Decision::Bypass {
         return Rows(None);
     }
+    let overscan = (viewport.size.height / item_height).ceil().max(1.) as usize;
+    let needed = needed_rows(visible, overscan, item_count);
     let layer = paint::layer_mut(window, id);
     let extends = decision == Decision::Composite
         && layer.rows.list
+        && !layer.rows.due_for_repaint(&needed)
         && layer
             .record
             .as_ref()
             .is_some_and(|record| record.scroll_offset.x == scroll_offset.x);
     let mode = if extends { Mode::Extend } else { Mode::Repaint };
 
-    let overscan = (viewport.size.height / item_height).ceil().max(1.) as usize;
-    let needed = needed_rows(visible, overscan, item_count);
     let plan = match mode {
         Mode::Extend => rows_to_render(window, id, visible.clone(), overscan, item_count),
         Mode::Repaint => RowPlan {
@@ -866,9 +955,11 @@ pub(crate) fn end_list(
     let needed = row..end;
 
     let layer = &mut window.fast_layers.layers.get_mut(&id).unwrap().rows;
+    let due_for_repaint = layer.due_for_repaint(&needed);
     let frame = layer.frame.as_mut().unwrap();
     if frame.mode == Mode::Extend
-        && !held_rows_land_alike(&layer.rows, &needed, &tops, frame.translation, scale_factor)
+        && (due_for_repaint
+            || !held_rows_land_alike(&layer.rows, &needed, &tops, frame.translation, scale_factor))
     {
         frame.mode = Mode::Repaint;
     }
@@ -1168,7 +1259,10 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
     if frame.slots.is_empty() {
         match frame.mode {
             // Nothing new: the layer's content stands.
-            Mode::Extend => paint::composite_at(window, id, frame.translation),
+            Mode::Extend => {
+                count_extended_frame();
+                paint::composite_at(window, id, frame.translation)
+            }
             // No row to paint: the layer holds nothing.
             Mode::Repaint => {
                 if let Some(layer) = window.fast_layers.layers.get_mut(id) {
@@ -1218,6 +1312,8 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
     );
     let views = invalidate::content_views(window, &frame.prepaint_range);
     let viewport = window.snapped_content_mask().bounds;
+    let paint_range = paint.paint_start..paint_end;
+    let adds_input = adds_input(window, &frame.prepaint_range, &paint_range);
 
     let layer = window.fast_layers.layers.get_mut(id).unwrap();
     let rows = &mut layer.rows;
@@ -1228,8 +1324,11 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
             rows.rows.retain(|row, _| needed.contains(row));
             rows.painted.retain(|row| needed.contains(row));
             rows.row_origins.retain(|row, _| needed.contains(row));
+            rows.added_since_repaint += paint.spans.len();
+            count_extended_frame();
         }
     }
+    rows.holds_input |= adds_input;
     let mut operations: Vec<Option<PaintOperation>> =
         painted.paint_operations.into_iter().map(Some).collect();
     for (row, span) in paint.spans {
@@ -1303,7 +1402,6 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
             paint::all_tiles(&hashes),
         ),
     };
-    let paint_range = paint.paint_start..paint_end;
     let (dependencies, hovers, views) = match (&old, frame.mode) {
         (Some(old), Mode::Extend) => {
             let mut hovers = old.hovers.to_vec();

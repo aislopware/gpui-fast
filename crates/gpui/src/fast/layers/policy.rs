@@ -196,7 +196,7 @@ pub(crate) fn decide(
     let mut ineligible = false;
     let decision = match &layer.record {
         _ if demoted_until.is_some() => Decision::Bypass,
-        Some(record) if !fits(window, record) => {
+        Some(record) if !fits(window, record) || lists::holds_input(layer) => {
             demote = true;
             Decision::Bypass
         }
@@ -336,15 +336,17 @@ pub(crate) fn finish_frame(layers: &mut WindowLayers) {
     let anchored = &layers.scrolls.anchored;
     for (id, layer) in &mut layers.layers {
         let policy = &mut layer.policy;
-        if layer.record.is_some()
-            && policy.last_seen_frame == frame
-            && policy.last_decision == Some(Decision::Repaint)
-        {
+        if layer.record.is_some() && policy.last_seen_frame == frame {
             // An element without an id of its own has the id of the
             // nearest one around it with one: the container's, when it is
             // directly inside it.
-            let prefix = crate::fast::layers::lists::content_prefix(id);
-            policy.content_anchored = anchored.iter().any(|element| element.starts_with(prefix));
+            let found = anchored.iter().any(|element| element.starts_with(id));
+            match policy.last_decision {
+                Some(Decision::Repaint) => policy.content_anchored = found,
+                // A list's layer adds the rows a scroll uncovers.
+                Some(Decision::Composite) => policy.content_anchored |= found,
+                _ => {}
+            }
         }
     }
 }
