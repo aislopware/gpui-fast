@@ -34,12 +34,15 @@
 //! only elements drawn again inside one built this frame copy their records.
 
 use crate::fast::layout_key::{KeyPosition, key_position, pop_layout_key, push_layout_key};
+use crate::fast::shift::{
+    Masks, Noted, Shift, can_shift, clear_of_zero, known_inside, replay_shifted, still_beyond,
+};
 use crate::text_system::LineLayoutIndex;
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Div, Drawable, Element, ElementId,
-    HitboxBehavior, Interactivity, LayoutId, Overflow, Pixels, SharedString, Size, Stateful,
-    StyleRefinement, Svg, Text, TextStyle, Transformation, Window,
+    HitboxBehavior, Interactivity, LayoutId, Overflow, Pixels, ScaledPixels, SharedString, Size,
+    Stateful, StyleRefinement, Svg, Text, TextStyle, Transformation, Window, px,
 };
 use collections::FxHashMap;
 use std::{
@@ -88,6 +91,8 @@ pub(crate) struct ElementRecords {
     /// How many times elements were drawn again inside ones being built,
     /// for a record to tell whether anything nested in it was.
     reused: u32,
+    /// How the elements drawn again moved this frame did, for their paint.
+    shifts: Vec<Shift>,
 }
 
 /// An element nested in no other element with a record, and where its
@@ -198,6 +203,10 @@ struct ElementRecord {
     still: bool,
     /// For a record nested in another; a root's is its [`Root`]'s.
     rest: Rest,
+    /// What painting it noted besides what it painted: where it placed
+    /// glyphs, and what it left out for lying outside a mask, which a move
+    /// could bring inside it.
+    noted: Noted,
     layout_id: LayoutId,
     /// While it is being built, how many layout nodes it claimed.
     claimed: u32,
@@ -615,6 +624,18 @@ impl ElementRecords {
         self.building.clear();
         self.open.clear();
         self.reused = 0;
+        self.shifts.clear();
+    }
+
+    /// Keeps `shift` for an element's paint, returning where.
+    fn push_shift(&mut self, shift: Option<Shift>) -> u32 {
+        match shift {
+            Some(shift) => {
+                self.shifts.push(shift);
+                self.shifts.len() as u32 - 1
+            }
+            None => NO_SHIFT,
+        }
     }
 
     /// The painted subtree of the root `root`, if it can be drawn again from.
@@ -855,11 +876,18 @@ enum Phase {
     Kept(KeptLayout),
     /// Prepainted into the record `index` of the root `root`.
     Recorded { root: u32, index: u32 },
-    /// Drawn from last frame as far as prepaint, as the root at this index.
-    ReusedRoot(u32),
+    /// Drawn from last frame as far as prepaint, as the root at this index,
+    /// moved as the shift at `shift` says, if it moved.
+    ReusedRoot { root: u32, shift: u32 },
     /// Drawn from last frame as far as prepaint, into the records starting
-    /// at `index` of the root `root`, from the root `source` of last frame.
-    ReusedNested { root: u32, index: u32, source: u32 },
+    /// at `index` of the root `root`, from the root `source` of last frame,
+    /// moved as the shift at `shift` says, if it moved.
+    ReusedNested {
+        root: u32,
+        index: u32,
+        source: u32,
+        shift: u32,
+    },
 }
 
 struct BuiltLayout {
@@ -880,6 +908,10 @@ struct KeptLayout {
     layout_id: LayoutId,
     /// Where it was begun, to request its layout after all.
     position: KeyPosition,
+    /// Its rest, should it not be drawn again after all: kept, but not
+    /// drawable again where it moved to, it comes to nothing like an
+    /// element built anew, and rests for it.
+    rest: Rest,
 }
 
 /// An element as an element nested in another sees it, for the one around
@@ -1432,6 +1464,7 @@ fn request_retained_layout<E: Element>(
             key,
             layout_id,
             position,
+            rest: rest.built(compared),
         });
         return layout_id;
     }
@@ -1589,10 +1622,16 @@ fn prepaint_retained<E: Element>(drawable: &mut Drawable<E>, window: &mut Window
                 Some(built) => built,
                 None => {
                     if root {
-                        // Moved: drawn as upstream draws it until it stands
-                        // still again.
+                        // Moved: drawn as upstream draws it until it is
+                        // steady again, and while it rests.
                         let bounds = window.layout_bounds(kept.layout_id);
-                        leave_placement(kept.key, bounds, false, Rest::default(), window);
+                        let still = steady(
+                            previous_bounds(&kept, window),
+                            bounds,
+                            window.scale_factor(),
+                        );
+                        let rest = if still { kept.rest } else { Rest::default() };
+                        leave_placement(kept.key, bounds, still, rest, window);
                     }
                     drawable.fast_retention.phase = Phase::Plain;
                     return drawable.prepaint(window, cx);
@@ -1606,7 +1645,8 @@ fn prepaint_retained<E: Element>(drawable: &mut Drawable<E>, window: &mut Window
             rest,
         } => {
             let bounds = window.layout_bounds(layout_id);
-            let still = previous == Some(bounds);
+            let scale_factor = window.scale_factor();
+            let still = previous.is_some_and(|previous| steady(previous, bounds, scale_factor));
             let rest = if still { rest } else { Rest::default() };
             leave_placement(key, bounds, still, rest, window);
             drawable.fast_retention.phase = Phase::Plain;
@@ -1620,7 +1660,8 @@ fn prepaint_retained<E: Element>(drawable: &mut Drawable<E>, window: &mut Window
             // Standing still unless it is known to have moved, so that the
             // elements nested in it are not skipped for it next frame.
             let bounds = window.layout_bounds(layout_id);
-            let still = previous.is_none_or(|previous| previous == bounds);
+            let scale_factor = window.scale_factor();
+            let still = previous.is_none_or(|previous| steady(previous, bounds, scale_factor));
             leave_placement(key, bounds, still, Rest::default(), window);
             drawable.fast_retention.phase = Phase::Plain;
             return drawable.prepaint(window, cx);
@@ -1672,14 +1713,25 @@ fn build_at_kept_layout<E: Element>(
     }
     // Moved: a root is left without records, one nested in an element
     // being recorded is recorded as moving.
-    (!root).then_some(BuiltLayout {
+    (!root).then(|| BuiltLayout {
         key: kept.key,
         snapshot: Snapshot::Moving,
         layout_id,
         claimed: 0,
-        rest: Rest::default(),
-        previous_bounds: None,
+        rest: kept.rest,
+        previous_bounds: Some(previous_bounds(kept, window)),
     })
+}
+
+/// Where the element whose layout `kept` kept was drawn last frame.
+fn previous_bounds(kept: &KeptLayout, window: &Window) -> Bounds<Pixels> {
+    window
+        .rendered_frame
+        .retained
+        .elements
+        .record(kept.previous)
+        .context
+        .bounds
 }
 
 /// Leaves a root without records for the element under `key`, drawn at
@@ -1703,6 +1755,17 @@ fn leave_placement(key: u64, bounds: Bounds<Pixels>, still: bool, rest: Rest, wi
     });
 }
 
+/// Whether an element drawn at `previous` last frame and at `bounds` now can
+/// be drawn again from last frame: where it was, or moved by a whole number
+/// of device pixels at the same size (see [`crate::fast::shift`]).
+fn steady(previous: Bounds<Pixels>, bounds: Bounds<Pixels>, scale_factor: f32) -> bool {
+    previous == bounds
+        || previous.size == bounds.size && {
+            let offset = (bounds.origin - previous.origin).scale(scale_factor);
+            offset.x.0.fract() == 0. && offset.y.0.fract() == 0.
+        }
+}
+
 fn context(layout_id: LayoutId, window: &mut Window) -> ElementContext {
     ElementContext {
         bounds: window.layout_bounds(layout_id),
@@ -1717,6 +1780,7 @@ fn context(layout_id: LayoutId, window: &mut Window) -> ElementContext {
 /// the root it is in and where it is among its records.
 fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
     let context = context(built.layout_id, window);
+    let scale_factor = window.scale_factor();
     let start = window.prepaint_index();
     window
         .layout_engine
@@ -1745,7 +1809,9 @@ fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
         &elements.roots[elements.building_root as usize].prepaint_start,
         &start,
     );
-    let still = built.previous_bounds == Some(context.bounds);
+    let still = built
+        .previous_bounds
+        .is_some_and(|previous| steady(previous, context.bounds, scale_factor));
     elements.building.push(ElementRecord {
         key: built.key,
         snapshot: built.snapshot,
@@ -1755,6 +1821,7 @@ fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
         paint: Paint::Unpainted,
         still,
         rest: built.rest,
+        noted: Noted::NOTHING,
         layout_id: built.layout_id,
         claimed: built.claimed,
         context,
@@ -1809,19 +1876,28 @@ fn finish_record(index: u32, window: &mut Window) {
 }
 
 /// Draws the element whose layout `kept` kept again from last frame as far
-/// as its prepaint goes, if it is drawn where it was, returning what its
-/// paint takes over from there.
+/// as its prepaint goes, if it is drawn where it was, or moved where it can
+/// be drawn again moved, returning what its paint takes over from there.
 fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
     let context = context(kept.layout_id, window);
     let previous = kept.previous;
-    let (prepaint_range, paint_range) = {
+    let (prepaint_range, paint_range, moved) = {
         let records = &window.rendered_frame.retained.elements;
-        if !records.record(previous).context.matches(&context)
-            || remeasured(records, previous, window)
+        let moved = if records.record(previous).context.matches(&context) {
+            None
+        } else {
+            Some(Box::new(moved_to(records, previous, &context, window)?))
+        };
+        if remeasured(records, previous, window) {
+            return None;
+        }
+        let (prepaint_range, paint_range) = records.ranges(previous);
+        if let Some(moved) = &moved
+            && !can_move(&prepaint_range, &paint_range, &moved.shift, window)
         {
             return None;
         }
-        records.ranges(previous)
+        (prepaint_range, paint_range, moved)
     };
     let start = window.prepaint_index();
     window.reuse_prepaint(prepaint_range.clone());
@@ -1836,20 +1912,23 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
         .expect("a record found is painted");
     let first = previous.index as usize;
     let last = first + subtree.records[first].nested as usize;
-    window
-        .layout_engine
-        .as_mut()
-        .unwrap()
-        .retention
-        .stats
-        .elements_reused += (last - first + 1) as u64;
+    let stats = &mut window.layout_engine.as_mut().unwrap().retention.stats;
+    stats.elements_reused += (last - first + 1) as u64;
+    if moved.is_some() {
+        stats.elements_moved += (last - first + 1) as u64;
+    }
     window.next_frame.retained.reused_any = true;
     let target = &mut window.next_frame.retained.elements;
+    let placed = |record: &ElementRecord| match &moved {
+        Some(moved) => moved.record(record),
+        None => record.clone(),
+    };
 
     if target.open.is_empty() {
         // Drawn again as a root: its subtree is taken over as it is, or,
-        // when it was nested in another last frame, cut out of that one's.
-        let subtree = if first == 0 {
+        // when it was nested in another last frame or moved, cut out of
+        // that one's.
+        let subtree = if first == 0 && moved.is_none() {
             subtree.clone()
         } else {
             let from_prepaint = subtree.records[first].prepaint_range.start;
@@ -1862,7 +1941,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
                             ..record.prepaint_range.end.minus(from_prepaint),
                         paint_range: record.paint_range.start.minus(from_paint)
                             ..record.paint_range.end.minus(from_paint),
-                        ..record.clone()
+                        ..placed(record)
                     })
                     .collect(),
                 by_key: OnceCell::new(),
@@ -1879,7 +1958,10 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
             fresh: false,
             rest: Rest::default(),
         });
-        return Some(Phase::ReusedRoot(root));
+        return Some(Phase::ReusedRoot {
+            root,
+            shift: target.push_shift(moved.map(|moved| moved.shift)),
+        });
     }
 
     // Drawn again inside an element built this frame: its records are copied
@@ -1911,14 +1993,194 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
                     paint => paint,
                 },
                 rest: Rest::default(),
-                ..record.clone()
+                ..placed(record)
             }
         }));
     Some(Phase::ReusedNested {
         root: target.building_root,
         index,
         source: previous.root,
+        shift: target.push_shift(moved.map(|moved| moved.shift)),
     })
+}
+
+/// No shift: drawn again where it was.
+const NO_SHIFT: u32 = u32::MAX;
+
+/// How an element and those nested in it are drawn again moved: how their
+/// primitives move, and where their records place them.
+struct Moved {
+    shift: Shift,
+    /// The content mask they were drawn in, and the one they are drawn in
+    /// now, when it did not move with them.
+    content_masks: Option<(ContentMask<Pixels>, ContentMask<Pixels>)>,
+}
+
+impl Moved {
+    /// `record`, of last frame, where it is drawn now.
+    fn record(&self, record: &ElementRecord) -> ElementRecord {
+        let mut context = record.context.clone();
+        let offset = self.shift.by;
+        context.bounds.origin += offset;
+        let moved = Bounds {
+            origin: context.content_mask.bounds.origin + offset,
+            ..context.content_mask.bounds
+        };
+        context.content_mask = match &self.content_masks {
+            None => ContentMask { bounds: moved },
+            // The mask around it, or one inside it that moves (see
+            // `moved_to`).
+            Some((old, new)) if context.content_mask == *old => *new,
+            Some((_, new)) => ContentMask {
+                bounds: moved.intersect(&new.bounds),
+            },
+        };
+        ElementRecord {
+            context,
+            noted: record.noted.moved(&self.shift),
+            ..record.clone()
+        }
+    }
+}
+
+/// How last frame's record `previous` and those nested in it are drawn again
+/// in `context`, where it moved with nothing else about it changed, if
+/// drawing them afresh would paint what they painted, moved (see
+/// [`crate::fast::shift`]).
+fn moved_to(
+    records: &ElementRecords,
+    previous: PrevRef,
+    context: &ElementContext,
+    window: &Window,
+) -> Option<Moved> {
+    let subtree = records.subtree(previous.root)?;
+    let first = previous.index as usize;
+    let nested = &subtree.records[first..=first + subtree.records[first].nested as usize];
+    let old = &nested[0].context;
+    if old.bounds.size != context.bounds.size
+        || old.opacity != context.opacity
+        || old.rem_size != context.rem_size
+        || !same_text_style(&old.text_style, &context.text_style)
+    {
+        return None;
+    }
+    let scale_factor = window.scale_factor();
+    let offset = context.bounds.origin - old.bounds.origin;
+    let scaled = offset.scale(scale_factor);
+    if scaled.x.0.fract() != 0. || scaled.y.0.fract() != 0. {
+        return None;
+    }
+    // Coordinates rounded half toward zero, or truncated, round alike only
+    // on one side of zero: the elements' own, what their glyphs were placed
+    // at.
+    let clear = nested[0].noted.glyphs_clear_of_zero(scaled)
+        && nested.iter().all(|record| {
+            let origin = record.context.bounds.origin.scale(scale_factor);
+            clear_of_zero(origin.x.0, scaled.x.0) && clear_of_zero(origin.y.0, scaled.y.0)
+        });
+    if !clear {
+        return None;
+    }
+    let old_mask = old.content_mask.bounds;
+    let mask_moved = Bounds {
+        origin: old_mask.origin + offset,
+        ..old_mask
+    } == context.content_mask.bounds;
+    let (masks, content_masks) = if mask_moved {
+        (Masks::Moved, None)
+    } else {
+        // What an element inside clips lies inside the mask, clear of its
+        // edges in device pixels, so that a primitive's mask is the mask
+        // around, which the new one replaces, or a clip inside it, which
+        // moves. What the mask around left out, it may no longer; what a
+        // clip inside left out, it still does.
+        let old_cover = window.cover_bounds(old_mask);
+        let new_cover = window.cover_bounds(context.content_mask.bounds);
+        let inside =
+            |bounds: &Bounds<ScaledPixels>| known_inside(bounds, scaled, &old_cover, &new_cover);
+        let noted = &nested[0].noted;
+        let (sides, gap) = noted.culled_sides();
+        let known = (noted.culled_in().is_none_or(|culled| inside(&culled))
+            || still_beyond(
+                sides,
+                px(gap / scale_factor),
+                offset,
+                &old_mask,
+                &context.content_mask.bounds,
+            ) && still_beyond(sides, ScaledPixels(gap), scaled, &old_cover, &new_cover))
+            && nested.iter().enumerate().all(|(index, record)| {
+                (record.context.content_mask == old.content_mask
+                    || inside(&window.cover_bounds(record.context.content_mask.bounds)))
+                    && (!clips(&record.snapshot)
+                        || nested[index + 1..=index + record.nested as usize]
+                            .iter()
+                            .all(|record| {
+                                inside(&window.cover_bounds(record.context.content_mask.bounds))
+                            }))
+            });
+        if !known {
+            return None;
+        }
+        (
+            Masks::Replaced {
+                old: old_cover,
+                new: new_cover,
+            },
+            Some((old.content_mask, context.content_mask)),
+        )
+    };
+    Some(Moved {
+        shift: Shift {
+            offset: scaled,
+            by: offset,
+            masks,
+        },
+        content_masks,
+    })
+}
+
+/// Whether an element's snapshot clips what is nested in it, or may: a
+/// style not kept is taken to.
+fn clips(snapshot: &Snapshot) -> bool {
+    let style = match snapshot {
+        Snapshot::Div { style, .. } | Snapshot::Svg { style, .. } => style,
+        Snapshot::Text { .. } => return false,
+        Snapshot::Moving | Snapshot::Resting => return true,
+    };
+    style.as_ref().is_none_or(|style| {
+        [style.overflow.x, style.overflow.y]
+            .into_iter()
+            .any(|overflow| overflow.is_some_and(|overflow| overflow != Overflow::Visible))
+    })
+}
+
+/// Whether what `prepaint` and `paint` of last frame hold can be drawn
+/// again moved as `shift` says: nothing placed but primitives, and those
+/// movable.
+fn can_move(
+    prepaint: &Range<PrepaintStateIndex>,
+    paint: &Range<PaintIndex>,
+    shift: &Shift,
+    window: &Window,
+) -> bool {
+    let (from, to) = (&prepaint.start, &prepaint.end);
+    let placed_in_prepaint = from.hitboxes_index != to.hitboxes_index
+        || from.tooltips_index != to.tooltips_index
+        || from.deferred_draws_index != to.deferred_draws_index;
+    let (from, to) = (&paint.start, &paint.end);
+    let placed_in_paint = from.fast_window_control_hitboxes_index
+        != to.fast_window_control_hitboxes_index
+        || from.mouse_listeners_index != to.mouse_listeners_index
+        || from.input_handlers_index != to.input_handlers_index
+        || from.cursor_styles_index != to.cursor_styles_index
+        || from.tab_handle_index != to.tab_handle_index;
+    !placed_in_prepaint
+        && !placed_in_paint
+        && can_shift(
+            &window.rendered_frame.scene,
+            from.scene_index..to.scene_index,
+            shift,
+        )
 }
 
 /// Whether a layout node `previous` or a record nested in it holds was
@@ -1955,7 +2217,9 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
                 window.next_frame.retained.elements.roots[root as usize].paint_start =
                     start.clone();
             }
+            let around = crate::fast::scene::take_noted(&mut window.next_frame.scene);
             drawable.paint(window, cx);
+            let noted = crate::fast::scene::noted_since(&mut window.next_frame.scene, &around);
             let end = window.paint_index();
             let elements = &mut window.next_frame.retained.elements;
             let root_start = &elements.roots[root as usize].paint_start;
@@ -1963,6 +2227,7 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
             let record = &mut elements.pending(root)[index as usize];
             record.paint_range = range;
             record.paint = Paint::Painted;
+            record.noted = noted;
             // Painted, the element needs its style no more, which its record
             // takes over.
             if let Snapshot::Div {
@@ -1981,12 +2246,13 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
                 elements.freeze(root);
             }
         }
-        Phase::ReusedRoot(root) => reuse_root_paint(root, window),
+        Phase::ReusedRoot { root, shift } => reuse_root_paint(root, shift, window),
         Phase::ReusedNested {
             root,
             index,
             source,
-        } => reuse_nested_paint(root, index, source, window),
+            shift,
+        } => reuse_nested_paint(root, index, source, shift, window),
         _ => {
             drawable.paint(window, cx);
         }
@@ -1994,18 +2260,22 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
 }
 
 /// Draws the root whose prepaint [`reuse_prepaint`] drew again as far as its
-/// paint goes.
-fn reuse_root_paint(root: u32, window: &mut Window) {
-    let source = {
+/// paint goes, moved as the shift at `shift` says, if it moved.
+fn reuse_root_paint(root: u32, shift: u32, window: &mut Window) {
+    let (source, noted) = {
         let root = &window.next_frame.retained.elements.roots[root as usize];
         let RootRecords::Frozen(subtree) = &root.records else {
             panic!("a root drawn again has a subtree");
         };
-        let range = &subtree.records[0].paint_range;
-        range.start.at(&root.paint_start)..range.end.at(&root.paint_start)
+        let record = &subtree.records[0];
+        let range = &record.paint_range;
+        (
+            range.start.at(&root.paint_start)..range.end.at(&root.paint_start),
+            record.noted,
+        )
     };
     let start = window.paint_index();
-    window.reuse_paint(source.clone());
+    reuse_paint(source.clone(), noted, shift, window);
     debug_assert!(
         window.paint_index() == source.end.shifted(&source.start, &start),
         "a reused paint range changed length"
@@ -2016,12 +2286,17 @@ fn reuse_root_paint(root: u32, window: &mut Window) {
 }
 
 /// Draws the records starting at `anchor` of the root `root`, whose
-/// prepaint [`reuse_prepaint`] drew again, as far as their paint goes.
-fn reuse_nested_paint(root: u32, anchor: u32, source_root: u32, window: &mut Window) {
+/// prepaint [`reuse_prepaint`] drew again, as far as their paint goes,
+/// moved as the shift at `shift` says, if they moved.
+fn reuse_nested_paint(root: u32, anchor: u32, source_root: u32, shift: u32, window: &mut Window) {
     let anchor = anchor as usize;
-    let (from, nested) = {
+    let (from, nested, noted) = {
         let record = &window.next_frame.retained.elements.pending(root)[anchor];
-        (record.paint_range.clone(), record.nested as usize)
+        (
+            record.paint_range.clone(),
+            record.nested as usize,
+            record.noted,
+        )
     };
     let source = {
         let source_start =
@@ -2029,7 +2304,7 @@ fn reuse_nested_paint(root: u32, anchor: u32, source_root: u32, window: &mut Win
         from.start.at(source_start)..from.end.at(source_start)
     };
     let start = window.paint_index();
-    window.reuse_paint(source.clone());
+    reuse_paint(source.clone(), noted, shift, window);
     debug_assert!(
         window.paint_index() == source.end.shifted(&source.start, &start),
         "a reused paint range changed length"
@@ -2044,4 +2319,43 @@ fn reuse_nested_paint(root: u32, anchor: u32, source_root: u32, window: &mut Win
             record.paint = Paint::Painted;
         }
     }
+}
+
+/// Draws last frame's paint `range` again, moved as the shift at `shift`
+/// says, if it moved, noting what painting it noted, `noted` where it lies
+/// now, for the element being painted around it.
+fn reuse_paint(range: Range<PaintIndex>, noted: Noted, shift: u32, window: &mut Window) {
+    crate::fast::scene::add_noted(&mut window.next_frame.scene, noted);
+    if shift == NO_SHIFT {
+        window.reuse_paint(range);
+        return;
+    }
+    let shift = window.next_frame.retained.elements.shifts[shift as usize];
+    // What [`Window::reuse_paint`] copies besides primitives, `can_move`
+    // found none of, but for the debug bounds of tests.
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        for (selector, bounds) in &window.rendered_frame.debug_bounds_records
+            [range.start.debug_bounds_index..range.end.debug_bounds_index]
+        {
+            window
+                .next_frame
+                .record_debug_bounds(selector.clone(), *bounds + shift.by);
+        }
+    }
+    window.next_frame.accessed_element_states.extend(
+        window.rendered_frame.accessed_element_states
+            [range.start.accessed_element_states_index..range.end.accessed_element_states_index]
+            .iter()
+            .map(|(id, type_id)| (id.clone(), *type_id)),
+    );
+    window
+        .text_system()
+        .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
+    replay_shifted(
+        &mut window.next_frame.scene,
+        range.start.scene_index..range.end.scene_index,
+        &window.rendered_frame.scene,
+        &shift,
+    );
 }

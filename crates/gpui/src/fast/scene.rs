@@ -11,9 +11,10 @@
 //! order, and drawing it again copies it from there, with the ordering the
 //! bounds tree gives the entry it made last frame.
 
+use crate::fast::shift::{Noted, Noting};
 use crate::{
-    MonochromeSprite, PaintOperation, PaintSurface, Path, PathId, PolychromeSprite, Primitive,
-    PrimitiveKind, Quad, ScaledPixels, Scene, Shadow, SubpixelSprite, Underline,
+    Bounds, MonochromeSprite, PaintOperation, PaintSurface, Path, PathId, Point, PolychromeSprite,
+    Primitive, PrimitiveKind, Quad, ScaledPixels, Scene, Shadow, SubpixelSprite, Underline, Window,
 };
 use std::{mem, ops::Range};
 
@@ -43,6 +44,8 @@ pub(crate) struct Painted {
     /// passes between the two scenes with the entries (see
     /// [`take_orderings`]).
     sorts: [Sorted; KINDS],
+    /// What painting noted since [`take_noted`].
+    noted: Noting,
 }
 
 /// The keys a kind's primitives were sorted by, and the order sorting put
@@ -77,6 +80,78 @@ fn kind_index(kind: PrimitiveKind) -> usize {
 pub(crate) fn clear(scene: &mut Scene) {
     scene.fast_painted.entries.clear();
     scene.fast_painted.gathered = [false; KINDS];
+    scene.fast_painted.noted = Noting::NOTHING;
+}
+
+/// Notes that a primitive at `bounds` was left out for lying outside
+/// `mask`, a content mask snapped out to device pixels.
+#[inline]
+pub(crate) fn culled(
+    scene: &mut Scene,
+    bounds: &Bounds<ScaledPixels>,
+    mask: &Bounds<ScaledPixels>,
+) {
+    let edges = |bounds: &Bounds<ScaledPixels>| {
+        [
+            bounds.left().0,
+            bounds.top().0,
+            bounds.right().0,
+            bounds.bottom().0,
+        ]
+    };
+    let sides = crate::fast::shift::beyond(edges(bounds), edges(mask));
+    scene.fast_painted.noted.culled(mask, sides);
+}
+
+/// Notes that a paint layer at `bounds` was left out for lying outside the
+/// window's content mask.
+pub(crate) fn culled_layer(window: &mut Window, bounds: &Bounds<crate::Pixels>) {
+    let mask = window.content_mask().bounds;
+    let edges = |bounds: &Bounds<crate::Pixels>| {
+        [
+            bounds.left().0,
+            bounds.top().0,
+            bounds.right().0,
+            bounds.bottom().0,
+        ]
+    };
+    let (sides, gap) = crate::fast::shift::beyond(edges(bounds), edges(&mask));
+    let gap = gap * window.scale_factor();
+    let mask = window.cover_bounds(mask);
+    window
+        .next_frame
+        .scene
+        .fast_painted
+        .noted
+        .culled(&mask, (sides, gap));
+}
+
+/// Notes that a glyph was placed at `origin`, in device pixels, before it
+/// was rounded to a pixel and a subpixel step.
+#[inline]
+pub(crate) fn glyph_at(scene: &mut Scene, origin: Point<ScaledPixels>) {
+    scene.fast_painted.noted.glyph_at(origin);
+}
+
+/// What painting noted since this was last called, starting over.
+#[inline]
+pub(crate) fn take_noted(scene: &mut Scene) -> Noting {
+    mem::take(&mut scene.fast_painted.noted)
+}
+
+/// What painting noted since [`take_noted`] was last called, with `around`,
+/// what it gave then, noted again.
+#[inline]
+pub(crate) fn noted_since(scene: &mut Scene, around: &Noting) -> Noted {
+    let noting = &mut scene.fast_painted.noted;
+    let noted = noting.noted();
+    noting.add(around);
+    noted
+}
+
+/// Notes what `noted` says, as a record keeps it.
+pub(crate) fn add_noted(scene: &mut Scene, noted: Noted) {
+    scene.fast_painted.noted.add_noted(noted);
 }
 
 /// Records `operation`, which made no entry in the bounds tree.
@@ -130,7 +205,10 @@ pub(crate) fn push_primitive(scene: &mut Scene, primitive: &Primitive) {
 pub(crate) fn take_orderings(next: &mut Scene, rendered: &mut Scene) {
     next.primitive_bounds
         .take_previous(&mut rendered.primitive_bounds);
-    mem::swap(&mut next.fast_painted.sorts, &mut rendered.fast_painted.sorts);
+    mem::swap(
+        &mut next.fast_painted.sorts,
+        &mut rendered.fast_painted.sorts,
+    );
 }
 
 /// What [`Scene::replay`] does: draws the paint operations `range` of
@@ -158,6 +236,31 @@ pub(crate) fn replay(scene: &mut Scene, range: Range<usize>, previous: &Scene) {
                 crate::fast::composition::scene::replay(scene, placement)
             }
         }
+    }
+}
+
+/// The primitive `at` of `previous`, a finished scene, as it was painted.
+pub(crate) fn painted(previous: &Scene, at: PrimitiveAt) -> Primitive {
+    let index = at.index as usize;
+    macro_rules! painted {
+        ($field:ident, $variant:ident) => {{
+            let list = if previous.fast_painted.gathered[kind_index(at.kind)] {
+                &previous.sort_scratch.$field
+            } else {
+                &previous.$field
+            };
+            Primitive::$variant(list[index].clone())
+        }};
+    }
+    match at.kind {
+        PrimitiveKind::Shadow => painted!(shadows, Shadow),
+        PrimitiveKind::Quad => painted!(quads, Quad),
+        PrimitiveKind::Path => painted!(paths, Path),
+        PrimitiveKind::Underline => painted!(underlines, Underline),
+        PrimitiveKind::MonochromeSprite => painted!(monochrome_sprites, MonochromeSprite),
+        PrimitiveKind::SubpixelSprite => painted!(subpixel_sprites, SubpixelSprite),
+        PrimitiveKind::PolychromeSprite => painted!(polychrome_sprites, PolychromeSprite),
+        PrimitiveKind::Surface => painted!(surfaces, Surface),
     }
 }
 

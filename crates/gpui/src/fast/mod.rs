@@ -31,12 +31,13 @@ pub(crate) mod path_cache;
 pub(crate) mod retained;
 pub(crate) mod scene;
 pub(crate) mod scroll;
+pub(crate) mod shift;
 pub(crate) mod splice;
 pub(crate) mod stats;
-pub(crate) mod text;
-pub(crate) mod text_style;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_window;
+pub(crate) mod text;
+pub(crate) mod text_style;
 
 #[cfg(test)]
 mod tests;

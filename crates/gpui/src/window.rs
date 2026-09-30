@@ -996,7 +996,7 @@ pub(crate) struct Frame {
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds: FxHashMap<String, Bounds<Pixels>>,
     #[cfg(any(test, feature = "test-support"))]
-    debug_bounds_records: Vec<(String, Bounds<Pixels>)>,
+    pub(crate) debug_bounds_records: Vec<(String, Bounds<Pixels>)>,
     #[cfg(any(feature = "inspector", debug_assertions))]
     pub(crate) next_inspector_instance_ids: FxHashMap<Rc<crate::InspectorElementPath>, usize>,
     #[cfg(any(feature = "inspector", debug_assertions))]
@@ -3236,7 +3236,7 @@ impl Window {
 
     /// Floors the near edge and ceils the far edge, producing a strict superset of the raw region.
     #[inline]
-    fn cover_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<ScaledPixels> {
+    pub(crate) fn cover_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<ScaledPixels> {
         let scale_factor = self.scale_factor();
         let left = floor_to_device_pixel(bounds.left().0, scale_factor);
         let top = floor_to_device_pixel(bounds.top().0, scale_factor);
@@ -4474,6 +4474,8 @@ impl Window {
             self.next_frame
                 .scene
                 .push_layer(self.cover_bounds(clipped_bounds));
+        } else {
+            crate::fast::scene::culled_layer(self, &bounds);
         }
 
         let result = f(self);
@@ -4680,6 +4682,8 @@ impl Window {
                     },
                     ..quad
                 });
+            } else if !strip.is_empty() {
+                crate::fast::scene::culled(&mut self.next_frame.scene, &strip, &quad.content_mask.bounds);
             }
         }
     }
@@ -4766,6 +4770,7 @@ impl Window {
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
         let glyph_origin = origin.scale(scale_factor);
+        crate::fast::scene::glyph_at(&mut self.next_frame.scene, glyph_origin);
 
         let quantized_origin = Point::new(
             round_half_toward_zero(glyph_origin.x.0 * SUBPIXEL_VARIANTS_X as f32)
@@ -4856,6 +4861,7 @@ impl Window {
         let element_opacity = self.element_opacity();
         let scale_factor = self.scale_factor();
         let glyph_origin = origin.scale(scale_factor);
+        crate::fast::scene::glyph_at(&mut self.next_frame.scene, glyph_origin);
         let scale = if raster_size.0 > 0.0 {
             font_size.0 / raster_size.0
         } else {
@@ -4951,6 +4957,7 @@ impl Window {
 
         let scale_factor = self.scale_factor();
         let glyph_origin = origin.scale(scale_factor);
+        crate::fast::scene::glyph_at(&mut self.next_frame.scene, glyph_origin);
         let integer_origin = glyph_origin.map(|c| ScaledPixels(round_half_toward_zero(c.0)));
         let params = RenderGlyphParams {
             font_id,

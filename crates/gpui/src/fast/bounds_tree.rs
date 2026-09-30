@@ -704,7 +704,10 @@ where
         let right = left.clone() + bounds.size.width.clone();
         let bottom = top.clone() + bounds.size.height.clone();
         let edges = [left, top, right, bottom];
-        if edges.iter().any(|edge| Into::<f64>::into(edge.clone()).is_nan()) {
+        if edges
+            .iter()
+            .any(|edge| Into::<f64>::into(edge.clone()).is_nan())
+        {
             continue;
         }
         extent = Some(match extent {
