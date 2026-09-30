@@ -1641,6 +1641,9 @@ fn ycbcr_to_rgb(matrix: YCbCrMatrix, layout: SurfaceLayout) -> [[f32; 4]; 4] {
     ]
 }
 
+#[path = "fast/binds.rs"]
+pub(crate) mod binds;
+
 #[cfg(test)]
 #[path = "fast/composition_tests.rs"]
 mod composition_tests;

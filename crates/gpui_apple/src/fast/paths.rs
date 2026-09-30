@@ -28,7 +28,9 @@ use gpui::{
 
 use crate::metal_renderer::{
     InstanceBinding, InstanceBindings, InstanceBufferWriter, MetalRenderer,
-    PathRasterizationInputIndex, PathRasterizationVertex, new_command_encoder_for_texture,
+    PathRasterizationInputIndex, PathRasterizationVertex,
+    binds::{self, Binds},
+    new_command_encoder_for_texture,
 };
 
 /// How far apart, in device pixels, path batches must be to share the
@@ -53,8 +55,9 @@ struct PathBatch {
 }
 
 /// Forwarded to by `MetalRenderer::draw_primitives_to_texture`. Encodes the
-/// frame and returns its command buffer, or returns `None` for upstream to
-/// encode a frame without paths, which has no pass to save.
+/// frame and returns its command buffer. Every frame is encoded here, since
+/// the instanced draws bind only what changed (see `binds`); tests may have
+/// upstream encode a frame without paths, by returning `None`.
 pub(crate) fn draw_primitives_to_texture(
     renderer: &mut MetalRenderer,
     scene: &Scene,
@@ -63,10 +66,16 @@ pub(crate) fn draw_primitives_to_texture(
     texture: &metal::TextureRef,
     viewport_size: Size<DevicePixels>,
 ) -> Result<Option<metal::CommandBuffer>> {
-    if scene.paths.is_empty() {
+    if scene.paths.is_empty() && binds::upstream_loop() {
         return Ok(None);
     }
-    let path_batches = plan_paths(scene);
+    // Planning walks every batch, sprites one by one; a frame without paths
+    // has nothing to plan.
+    let path_batches = if scene.paths.is_empty() {
+        Vec::new()
+    } else {
+        plan_paths(scene)
+    };
     let vertices = write_vertices(scene, &path_batches, writer)?;
 
     let command_queue = renderer.command_queue.clone();
@@ -92,23 +101,33 @@ pub(crate) fn draw_primitives_to_texture(
         viewport_size,
         Some(metal::MTLClearColor::new(0., 0., 0., alpha)),
     );
+    let mut binds = Binds::default();
     let mut path_batches = path_batches.iter().enumerate();
 
     for batch in scene.composed_batches() {
         let batch = match batch {
             ComposedBatch::Primitives(batch) => batch,
             ComposedBatch::Holes(range) => {
-                renderer.draw_holes(range, instance_bindings, viewport_size, command_encoder);
+                renderer.draw_holes_bound(
+                    range,
+                    instance_bindings,
+                    viewport_size,
+                    command_encoder,
+                    &mut binds,
+                );
                 continue;
             }
         };
+        if renderer.draw_bound(
+            &batch,
+            instance_bindings,
+            viewport_size,
+            command_encoder,
+            &mut binds,
+        ) {
+            continue;
+        }
         match batch {
-            PrimitiveBatch::Shadows(range) => {
-                renderer.draw_shadows(range, instance_bindings, viewport_size, command_encoder)
-            }
-            PrimitiveBatch::Quads(range) => {
-                renderer.draw_quads(range, instance_bindings, viewport_size, command_encoder)
-            }
             PrimitiveBatch::Paths(range) => {
                 if range.is_empty() {
                     continue;
@@ -131,6 +150,7 @@ pub(crate) fn draw_primitives_to_texture(
                         viewport_size,
                         None,
                     );
+                    binds.forget();
                 }
                 // A batch without vertices left its bounds in the cleared
                 // texture transparent: compositing them draws nothing.
@@ -147,25 +167,6 @@ pub(crate) fn draw_primitives_to_texture(
                     return Err(error);
                 }
             }
-            PrimitiveBatch::Underlines(range) => {
-                renderer.draw_underlines(range, instance_bindings, viewport_size, command_encoder)
-            }
-            PrimitiveBatch::MonochromeSprites { texture_id, range } => renderer
-                .draw_monochrome_sprites(
-                    texture_id,
-                    range,
-                    instance_bindings,
-                    viewport_size,
-                    command_encoder,
-                ),
-            PrimitiveBatch::PolychromeSprites { texture_id, range } => renderer
-                .draw_polychrome_sprites(
-                    texture_id,
-                    range,
-                    instance_bindings,
-                    viewport_size,
-                    command_encoder,
-                ),
             PrimitiveBatch::Surfaces(range) => renderer.draw_surfaces(
                 &scene.surfaces[range.clone()],
                 range.start,
@@ -173,8 +174,15 @@ pub(crate) fn draw_primitives_to_texture(
                 viewport_size,
                 command_encoder,
             ),
-            PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
+            PrimitiveBatch::Shadows(_)
+            | PrimitiveBatch::Quads(_)
+            | PrimitiveBatch::Underlines(_)
+            | PrimitiveBatch::MonochromeSprites { .. }
+            | PrimitiveBatch::PolychromeSprites { .. }
+            | PrimitiveBatch::SubpixelSprites { .. } => unreachable!(),
         }
+        // Paths and surfaces bind through upstream's draws.
+        binds.forget();
     }
 
     command_encoder.end_encoding();
