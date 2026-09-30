@@ -589,3 +589,7 @@ That shape serves two purposes. Upstream changes keep merging in with
 conflicts confined to hook lines. And each mechanism in `fast/` is a
 self-contained piece (retained layout nodes, the bounds grid, text
 measurement carrying, retained views) that can be proposed to GPUI on its own.
+
+Scrolling is the one case retained views cannot cover, because everything in
+a scroll container moves. [`scroll-layers.md`](scroll-layers.md) describes how
+scrolled content is composited from cached tiles instead.

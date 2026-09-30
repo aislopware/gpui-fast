@@ -121,6 +121,11 @@ struct Root {
     paint: Paint,
     /// Whether it is the only root under its key.
     usable: bool,
+    /// Whether it was painted into a scroll layer's scene rather than the
+    /// frame's, whose paint ranges no later frame can be drawn again from: a
+    /// layer is the retention of what it holds (see
+    /// [`crate::fast::layers::paint::inside_layer`]).
+    in_layer: bool,
     /// Whether its records were built this frame, rather than taken over
     /// from an earlier one, so that the rests of those nested in it are
     /// this frame's.
@@ -681,7 +686,9 @@ impl ElementRecords {
     fn subtree(&self, root: u32) -> Option<&Rc<Subtree>> {
         let root = &self.roots[root as usize];
         match &root.records {
-            RootRecords::Frozen(subtree) if root.paint == Paint::Painted && root.usable => {
+            RootRecords::Frozen(subtree)
+                if root.paint == Paint::Painted && root.usable && !root.in_layer =>
+            {
                 Some(subtree)
             }
             _ => None,
@@ -745,7 +752,7 @@ impl ElementRecords {
         };
         let root = &self.roots[root as usize];
         let (bounds, moved) = match (&root.records, root.placement) {
-            _ if !root.usable => return Probation::Skip(None, Rest::default()),
+            _ if !root.usable || root.in_layer => return Probation::Skip(None, Rest::default()),
             (RootRecords::Frozen(subtree), _) if root.paint == Paint::Painted => {
                 (subtree.records[0].context.bounds, false)
             }
@@ -834,7 +841,7 @@ pub(crate) fn carry_records(
     let start = target.len();
     for root in &source.roots[range.start as usize..range.end as usize] {
         let (records, paint) = match (&root.records, root.paint) {
-            (RootRecords::Frozen(subtree), Paint::Painted) => {
+            (RootRecords::Frozen(subtree), Paint::Painted) if !root.in_layer => {
                 (RootRecords::Frozen(subtree.clone()), Paint::Pending)
             }
             _ => (RootRecords::Lost, Paint::Unpainted),
@@ -848,6 +855,7 @@ pub(crate) fn carry_records(
             paint,
             usable: true,
             fresh: false,
+            in_layer: false,
             rest: Rest::default(),
             motion: root.motion.saturating_sub(1),
         });
@@ -1662,7 +1670,13 @@ fn prepaint_retained<E: Element>(drawable: &mut Drawable<E>, window: &mut Window
     let built = match mem::take(&mut drawable.fast_retention.phase) {
         Phase::Built(built) => built,
         Phase::Kept(kept) => {
-            if let Some(phase) = reuse_prepaint(&kept, window) {
+            // A scroll layer being painted is the retention of what it holds:
+            // its content is prepainted under the layer's painted region, not
+            // the mask it was drawn in last frame (see
+            // `crate::fast::layers::paint::inside_layer`).
+            if !crate::fast::layers::paint::inside_layer(window)
+                && let Some(phase) = reuse_prepaint(&kept, window)
+            {
                 drawable.fast_retention.phase = phase;
                 return;
             }
@@ -1819,6 +1833,7 @@ fn leave_placement(
         paint: Paint::Unpainted,
         usable: true,
         fresh: false,
+        in_layer: false,
         rest,
         motion,
     });
@@ -1919,6 +1934,7 @@ fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
             paint: Paint::Unpainted,
             usable: true,
             fresh: true,
+            in_layer: false,
             rest: Rest::default(),
             motion,
         });
@@ -2088,6 +2104,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
             paint: Paint::Pending,
             usable: true,
             fresh: false,
+            in_layer: false,
             rest: Rest::default(),
             motion,
         });
@@ -2355,6 +2372,7 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
             if index == 0 {
                 window.next_frame.retained.elements.roots[root as usize].paint_start =
                     start.clone();
+                mark_in_layer(root, window);
             }
             let in_motion = window.next_frame.retained.elements.roots[root as usize].motion > 0;
             // Painted outside motion, with nothing around it noting, it notes
@@ -2428,9 +2446,18 @@ fn reuse_root_paint(root: u32, shift: u32, window: &mut Window) {
         window.paint_index() == source.end.shifted(&source.start, &start),
         "a reused paint range changed length"
     );
+    mark_in_layer(root, window);
     let root = &mut window.next_frame.retained.elements.roots[root as usize];
     root.paint_start = start;
     root.paint = Paint::Painted;
+}
+
+/// Notes that the root `root` is painted into a scroll layer's scene, if it
+/// is, for no later frame to draw it again from its paint ranges.
+fn mark_in_layer(root: u32, window: &mut Window) {
+    if crate::fast::layers::paint::inside_layer(window) {
+        window.next_frame.retained.elements.roots[root as usize].in_layer = true;
+    }
 }
 
 /// Draws the records starting at `anchor` of the root `root`, whose

@@ -26,6 +26,7 @@ pub(crate) mod headless_atlas;
 pub(crate) mod interactivity;
 pub(crate) mod keyed;
 pub(crate) mod keypad;
+pub(crate) mod layers;
 pub(crate) mod layout;
 pub(crate) mod layout_bounds;
 pub(crate) mod layout_key;

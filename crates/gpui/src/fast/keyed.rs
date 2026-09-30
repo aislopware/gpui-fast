@@ -173,7 +173,12 @@ impl Window {
     ///
     /// This method should only be called as part of the paint phase of
     /// element drawing.
-    pub fn paint_keyed(&mut self, key: u64, origin: Point<Pixels>, paint: impl FnOnce(&mut Window)) {
+    pub fn paint_keyed(
+        &mut self,
+        key: u64,
+        origin: Point<Pixels>,
+        paint: impl FnOnce(&mut Window),
+    ) {
         self.invalidator.debug_assert_paint();
         let context = Context {
             origin,
@@ -184,6 +189,7 @@ impl Window {
         };
         if self.retained_state.view_retention
             && !self.refreshing
+            && !crate::fast::layers::paint::inside_layer(self)
             && let Some(previous) = self.rendered_frame.scene.fast_painted.keyed.find(key)
         {
             if self.draw_keyed_again(&previous, context) {

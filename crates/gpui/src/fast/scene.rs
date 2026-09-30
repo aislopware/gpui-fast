@@ -219,12 +219,16 @@ pub(crate) fn push_primitive(scene: &mut Scene, primitive: &Primitive) {
 pub(crate) fn take_orderings(next: &mut Scene, rendered: &mut Scene) {
     next.primitive_bounds
         .take_previous(&mut rendered.primitive_bounds);
-    mem::swap(&mut next.fast_painted.sorts, &mut rendered.fast_painted.sorts);
+    mem::swap(
+        &mut next.fast_painted.sorts,
+        &mut rendered.fast_painted.sorts,
+    );
 }
 
 /// What [`Scene::replay`] does: draws the paint operations `range` of
 /// `previous`, the scene of the frame before, again.
 pub(crate) fn replay(scene: &mut Scene, range: Range<usize>, previous: &Scene) {
+    crate::fast::layers::paint::replay_layers(scene, range.clone(), previous);
     scene.paint_operations.reserve(range.len());
     scene.fast_painted.entries.reserve(range.len());
     let start = scene.paint_operations.len();
@@ -295,6 +299,54 @@ pub(crate) fn painted(previous: &Scene, at: PrimitiveAt) -> PaintedRef<'_> {
         PrimitiveKind::SubpixelSprite => painted!(subpixel_sprites, SubpixelSprite),
         PrimitiveKind::PolychromeSprite => painted!(polychrome_sprites, PolychromeSprite),
         PrimitiveKind::Path | PrimitiveKind::Surface => PaintedRef::Other,
+    }
+}
+
+/// A paint operation holding what it painted, as upstream's
+/// [`PaintOperation`] does, for code that walks a scene's painting in order.
+pub(crate) enum Operation {
+    Primitive(Primitive),
+    StartLayer(Bounds<ScaledPixels>),
+    EndLayer,
+    Native(crate::fast::composition::NativePlacement),
+}
+
+/// The paint operations of `scene`, finished or not, in painting order,
+/// each with a copy of what it painted.
+pub(crate) fn operations(scene: &Scene) -> impl Iterator<Item = Operation> + '_ {
+    scene
+        .paint_operations
+        .iter()
+        .map(move |operation| match operation {
+            PaintOperation::Primitive(at) => Operation::Primitive(primitive(scene, *at)),
+            PaintOperation::StartLayer(bounds) => Operation::StartLayer(*bounds),
+            PaintOperation::EndLayer => Operation::EndLayer,
+            PaintOperation::Native(placement) => Operation::Native((**placement).clone()),
+        })
+}
+
+/// A copy of the primitive `at` of `scene`, finished or not.
+pub(crate) fn primitive(scene: &Scene, at: PrimitiveAt) -> Primitive {
+    let index = at.index as usize;
+    macro_rules! copy {
+        ($field:ident, $variant:ident) => {{
+            let list = if scene.fast_painted.gathered[kind_index(at.kind)] {
+                &scene.sort_scratch.$field
+            } else {
+                &scene.$field
+            };
+            Primitive::$variant(list[index].clone())
+        }};
+    }
+    match at.kind {
+        PrimitiveKind::Shadow => copy!(shadows, Shadow),
+        PrimitiveKind::Quad => copy!(quads, Quad),
+        PrimitiveKind::Path => copy!(paths, Path),
+        PrimitiveKind::Underline => copy!(underlines, Underline),
+        PrimitiveKind::MonochromeSprite => copy!(monochrome_sprites, MonochromeSprite),
+        PrimitiveKind::SubpixelSprite => copy!(subpixel_sprites, SubpixelSprite),
+        PrimitiveKind::PolychromeSprite => copy!(polychrome_sprites, PolychromeSprite),
+        PrimitiveKind::Surface => copy!(surfaces, Surface),
     }
 }
 
