@@ -676,7 +676,7 @@ pub(crate) struct MacWindowState {
     pub(crate) native_view: NonNull<Object>,
     blurred_view: Option<id>,
     pub(crate) background_appearance: WindowBackgroundAppearance,
-    cursor_style: CursorStyle,
+    pub(crate) cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
     /// A vsync tick passed since the last immediate frame; see `immediate_frame`.
@@ -2498,7 +2498,7 @@ fn get_scale_factor(native_window: id) -> f32 {
 }
 
 /// Returns whether `window` is one of GPUI's managed windows.
-unsafe fn is_gpui_window(window: id) -> bool {
+pub(crate) unsafe fn is_gpui_window(window: id) -> bool {
     unsafe {
         msg_send![window, isKindOfClass: WINDOW_CLASS]
             || msg_send![window, isKindOfClass: PANEL_CLASS]
@@ -2607,6 +2607,7 @@ extern "C" fn reset_cursor_rects(this: &Object, _: Sel) {
             CursorStyle::DragCopy => msg_send![class!(NSCursor), dragCopyCursor],
             CursorStyle::ContextualMenu => msg_send![class!(NSCursor), contextualMenuCursor],
             CursorStyle::None => transparent_cursor(),
+            CursorStyle::Image(image) => crate::fast::cursor::cursor_rect_cursor(image),
         };
 
         let bounds = NSView::bounds(this as *const Object as id);

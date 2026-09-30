@@ -583,6 +583,7 @@ impl Platform for WebPlatform {
             CursorStyle::DragCopy => "copy",
             CursorStyle::ContextualMenu => "context-menu",
             CursorStyle::None => "none",
+            CursorStyle::Image(_fast_cursor) => "default",
         };
 
         self.last_cursor_css.set(css_cursor);

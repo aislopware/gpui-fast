@@ -206,6 +206,14 @@ impl Platform for VisualTestPlatform {
         self.platform.set_cursor_style(style)
     }
 
+    fn set_cursor_image(
+        &self,
+        id: crate::fast::cursor::CursorImageId,
+        image: Option<crate::fast::cursor::CursorImage>,
+    ) {
+        self.platform.set_cursor_image(id, image)
+    }
+
     fn hide_cursor_until_mouse_moves(&self) {
         self.platform.hide_cursor_until_mouse_moves();
     }

@@ -39,5 +39,6 @@ pub(super) fn to_shape(style: CursorStyle) -> Shape {
         CursorStyle::DragCopy => Shape::Copy,
         CursorStyle::ContextualMenu => Shape::ContextMenu,
         CursorStyle::None => Shape::Default,
+        CursorStyle::Image(_fast_cursor) => Shape::Default,
     }
 }

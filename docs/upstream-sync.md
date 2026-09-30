@@ -170,6 +170,13 @@ unchanged, and a new entry needs as good a reason.
   `UIRotationGestureRecognizer`, touch screen or trackpad, is delivered in
   the same units; UIKit has no smart magnify, and iPadOS keeps
   three-finger trackpad swipes for itself.
+- `CursorStyle::Image(CursorImageId)`, `CursorImage`, `CursorImageId`,
+  `CURSOR_IMAGE_MAX_SIDE` and `App::set_cursor_image` are new public API
+  (`fast/cursor.rs`, `gpui_macos/src/fast/cursor.rs`), with a defaulted
+  `Platform::set_cursor_image`. Upstream's cursors are the system's named shapes; a
+  remote desktop shows the far side's pointer, which only a picture can be. Drawn by
+  the view, that pointer trails the hand by a frame on every move; as the system
+  cursor it moves with the hand. Platforms other than macOS keep the arrow for it.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what
