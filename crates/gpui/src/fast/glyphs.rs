@@ -138,6 +138,7 @@ impl Window {
 /// changes, and the rendering of each run, which only changes with the run's
 /// font or color.
 pub(crate) struct LineGlyphPainter {
+    content_mask: Bounds<Pixels>,
     snapped_content_mask: ContentMask<ScaledPixels>,
     run_rendering: Option<(FontId, Hsla, GlyphRunRendering)>,
 }
@@ -145,9 +146,17 @@ pub(crate) struct LineGlyphPainter {
 impl LineGlyphPainter {
     pub(crate) fn new(window: &Window) -> Self {
         Self {
+            content_mask: window.content_mask().bounds,
             snapped_content_mask: window.snapped_content_mask(),
             run_rendering: None,
         }
+    }
+
+    /// Whether a glyph that lies within `bounds` can meet the content mask,
+    /// and is worth painting.
+    #[inline]
+    pub(crate) fn meets_mask(&self, bounds: &Bounds<Pixels>) -> bool {
+        bounds.intersects(&self.content_mask)
     }
 
     /// [`Window::paint_glyph`], for the next glyph of the line.

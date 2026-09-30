@@ -738,8 +738,10 @@ fn paint_line(
                     size: max_glyph_size,
                 };
 
-                let content_mask = window.content_mask();
-                if max_glyph_bounds.intersects(&content_mask.bounds) {
+                if crate::fast::glyphs::LineGlyphPainter::meets_mask(
+                    &glyph_painter,
+                    &max_glyph_bounds,
+                ) {
                     let vertical_offset = point(px(0.0), glyph.position.y);
                     if glyph.is_emoji {
                         window.paint_emoji(
