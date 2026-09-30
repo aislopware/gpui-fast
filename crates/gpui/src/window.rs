@@ -3153,6 +3153,7 @@ impl Window {
 
         let bounds = underline.bounds.intersect(&underline.content_mask.bounds);
         if bounds.is_empty() {
+            crate::fast::scene::culled(&mut self.next_frame.scene, &underline.bounds, &underline.content_mask.bounds);
             return;
         }
 

@@ -161,12 +161,14 @@ impl Noted {
 
     /// What an element painted without noting noted: glyphs as far out of
     /// reach as they go, which no move can tell to stay clear of zero, so
-    /// that it is never drawn again moved.
+    /// that it is never drawn again moved, and anything left out anywhere,
+    /// right at every side of the mask, so that it is not drawn again in
+    /// place under a mask that grew either.
     pub(crate) const UNKNOWN: Noted = Noted {
         glyphs: [i16::MIN; 2],
-        culled: NO_CULLS,
-        sides: 0,
-        gap: i16::MAX,
+        culled: ANY_CULLS,
+        sides: LEFT | TOP | RIGHT | BOTTOM,
+        gap: 0,
     };
 
     /// What painting what this was noted of, moved by `offset`, a whole
