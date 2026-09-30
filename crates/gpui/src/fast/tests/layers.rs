@@ -493,3 +493,139 @@ fn layout_stats_count_scroll_layer_work() {
         (0, 0, 0, 0, 0)
     );
 }
+
+/// The paint stream (M3): painting a scroll container's content into a
+/// layer, tile diffing, snapping, background baking and compositing.
+mod paint {
+    use crate::fast::layers::tiles::{dirty_tiles, tile_hashes};
+    use crate::{Bounds, ContentMask, Hsla, Quad, ScaledPixels, Scene, TileCoord, point, size};
+
+    fn sp(x: f32, y: f32, w: f32, h: f32) -> Bounds<ScaledPixels> {
+        Bounds {
+            origin: point(ScaledPixels(x), ScaledPixels(y)),
+            size: size(ScaledPixels(w), ScaledPixels(h)),
+        }
+    }
+
+    fn quad(bounds: Bounds<ScaledPixels>, color: Hsla) -> Quad {
+        Quad {
+            bounds,
+            content_mask: ContentMask {
+                bounds: sp(-10_000., -10_000., 20_000., 20_000.),
+            },
+            background: color.into(),
+            ..Default::default()
+        }
+    }
+
+    fn scene(quads: &[Quad]) -> Scene {
+        let mut scene = Scene::default();
+        for quad in quads {
+            scene.insert_primitive(*quad);
+        }
+        scene.finish();
+        scene
+    }
+
+    fn region() -> Bounds<ScaledPixels> {
+        sp(0., 0., 1024., 1024.)
+    }
+
+    fn dirty(old: &Scene, new: &Scene) -> Vec<TileCoord> {
+        dirty_tiles(
+            &tile_hashes(old, 512, region()),
+            &tile_hashes(new, 512, region()),
+        )
+    }
+
+    fn tiles(coords: &[(i32, i32)]) -> Vec<TileCoord> {
+        coords.iter().map(|&(x, y)| TileCoord { x, y }).collect()
+    }
+
+    #[test]
+    fn every_tile_of_the_region_gets_a_hash_even_an_empty_one() {
+        let hashes = tile_hashes(
+            &scene(&[quad(sp(10., 10., 5., 5.), Hsla::red())]),
+            512,
+            region(),
+        );
+        let mut keys: Vec<_> = hashes.keys().copied().collect();
+        keys.sort();
+        assert_eq!(keys, tiles(&[(0, 0), (0, 1), (1, 0), (1, 1)]));
+        assert_eq!(
+            hashes[&TileCoord { x: 1, y: 0 }],
+            hashes[&TileCoord { x: 1, y: 1 }]
+        );
+        assert_ne!(
+            hashes[&TileCoord { x: 0, y: 0 }],
+            hashes[&TileCoord { x: 1, y: 1 }]
+        );
+    }
+
+    #[test]
+    fn identical_scenes_dirty_no_tile() {
+        let quads = [
+            quad(sp(10., 10., 20., 20.), Hsla::red()),
+            quad(sp(500., 600., 40., 10.), Hsla::blue()),
+        ];
+        assert_eq!(dirty(&scene(&quads), &scene(&quads)), Vec::new());
+    }
+
+    #[test]
+    fn a_colour_change_dirties_the_tiles_the_quad_covers() {
+        let before = [
+            quad(sp(10., 10., 20., 20.), Hsla::red()),
+            quad(sp(500., 600., 40., 10.), Hsla::blue()),
+        ];
+        let mut after = before;
+        after[1].background = Hsla::green().into();
+        assert_eq!(
+            dirty(&scene(&before), &scene(&after)),
+            tiles(&[(0, 1), (1, 1)])
+        );
+    }
+
+    #[test]
+    fn a_move_within_one_tile_dirties_that_tile() {
+        let before = [
+            quad(sp(10., 10., 20., 20.), Hsla::red()),
+            quad(sp(600., 600., 10., 10.), Hsla::blue()),
+        ];
+        let mut after = before;
+        after[1].bounds = sp(640., 610., 10., 10.);
+        assert_eq!(dirty(&scene(&before), &scene(&after)), tiles(&[(1, 1)]));
+    }
+
+    #[test]
+    fn an_added_primitive_spanning_two_tiles_dirties_both() {
+        let before = [quad(sp(10., 10., 20., 20.), Hsla::red())];
+        let after = [
+            quad(sp(10., 10., 20., 20.), Hsla::red()),
+            quad(sp(100., 500., 10., 40.), Hsla::blue()),
+        ];
+        assert_eq!(
+            dirty(&scene(&before), &scene(&after)),
+            tiles(&[(0, 0), (0, 1)])
+        );
+    }
+
+    #[test]
+    fn tiles_new_to_the_region_are_dirty() {
+        let quads = [quad(sp(10., 10., 20., 20.), Hsla::red())];
+        let old = tile_hashes(&scene(&quads), 512, sp(0., 0., 512., 512.));
+        let new = tile_hashes(&scene(&quads), 512, sp(0., 0., 512., 1024.));
+        assert_eq!(dirty_tiles(&old, &new), tiles(&[(0, 1)]));
+    }
+
+    #[test]
+    fn a_primitive_moved_by_whole_tiles_hashes_like_its_old_tile() {
+        // Its mask moves with it, so it draws the same pixels in its tile.
+        let at = |bounds: Bounds<ScaledPixels>| Quad {
+            content_mask: ContentMask { bounds },
+            ..quad(bounds, Hsla::red())
+        };
+        let a = tile_hashes(&scene(&[at(sp(10., 10., 20., 20.))]), 512, region());
+        let b = tile_hashes(&scene(&[at(sp(522., 522., 20., 20.))]), 512, region());
+        assert_eq!(a[&TileCoord { x: 0, y: 0 }], b[&TileCoord { x: 1, y: 1 }]);
+    }
+}
