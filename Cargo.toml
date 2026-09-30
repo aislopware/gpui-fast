@@ -105,7 +105,7 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8.6"
 core-graphics = "0.24"
 core-text = "21"
-core-video = { version = "0.5.2", features = ["metal"] }
+core-video = { version = "0.6.1", features = ["metal"] }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 ctor = "1.0.12"
 derive_more = { version = "2.1.1", features = [
