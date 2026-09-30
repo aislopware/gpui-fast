@@ -1267,6 +1267,65 @@ mod decisions {
         );
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
     }
+
+    /// Puts a 200 px square container scrolling on x, holding an 800 px wide
+    /// child, at the top of the page's scroll container, painted by the
+    /// page's own view.
+    fn with_inner_scroller(
+        cx: &mut TestAppContext,
+        handle: WindowHandle<LayerPage>,
+    ) -> ScrollHandle {
+        let inner = ScrollHandle::new();
+        let tracked = inner.clone();
+        handle
+            .update(cx, |page, _, cx| {
+                page.extra = Some(Rc::new(move || {
+                    div()
+                        .id("inner")
+                        .overflow_x_scroll()
+                        .track_scroll(&tracked)
+                        .w(px(200.))
+                        .h(px(200.))
+                        .child(div().w(px(800.)).h(px(200.)).bg(rgb(0x123456)))
+                        .into_any_element()
+                }));
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx, handle.into());
+        inner
+    }
+
+    #[crate::test]
+    fn a_wheel_scroll_of_a_container_inside_the_content_repaints(cx: &mut TestAppContext) {
+        // The inner container is painted by the view holding the outer one,
+        // which the inner one's wheel listener notifies: a change of the
+        // outer layer's content, not a scroll of it (spec §6.6).
+        let handle = page(cx, false);
+        let window = handle.into();
+        let inner = with_inner_scroller(cx, handle);
+        promote(cx, window);
+        let before = inner.offset();
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
+        assert_ne!(
+            inner.offset(),
+            before,
+            "the wheel scrolled the inner container"
+        );
+    }
+
+    #[crate::test]
+    fn a_programmatic_scroll_of_a_container_inside_the_content_repaints(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        let inner = with_inner_scroller(cx, handle);
+        promote(cx, window);
+        assert_eq!(
+            scroll_and(cx, window, -20., |_| inner
+                .set_offset(point(px(-100.), px(0.)))),
+            Some(Decision::Repaint)
+        );
+    }
 }
 
 /// Tests of which scroll containers get a layer and for how long (M4).

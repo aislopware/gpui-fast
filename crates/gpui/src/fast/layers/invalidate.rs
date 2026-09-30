@@ -11,7 +11,8 @@
 //! The wheel listener's notification of the view holding the container is
 //! told apart from any other notification of it by counting both: the view
 //! is dirty only through the scroll when it was notified no more often than
-//! the wheel scrolled what it holds ([`OwnerWatch`]).
+//! the wheel scrolled what it holds ([`OwnerWatch`]), and no container
+//! inside the layer's content scrolled, which the count cannot tell apart.
 
 #![allow(
     dead_code,
@@ -584,7 +585,23 @@ pub(crate) fn scroll_only(
     let source = window.fast_layers.scrolls.source(id);
     !changed(window, cx, &record.dependencies, source.as_ref())
         && window.hovers_unchanged(&record.hovers)
+        && !nested_container_scrolled(window, id)
         && owner_scrolled_only(window, cx, id, source.as_ref())
+}
+
+/// Whether a scroll container inside the content of the scroll container
+/// `id` scrolled since the last frame: a change of the content, not a scroll
+/// of it (spec §6.6). Its wheel listener may notify the view holding `id`,
+/// which the notification count alone does not tell apart from a scroll of
+/// `id`.
+fn nested_container_scrolled(window: &Window, id: &GlobalElementId) -> bool {
+    let nested = |other: &GlobalElementId| other.len() > id.len() && other.starts_with(id);
+    let scrolls = &window.fast_layers.scrolls;
+    scrolls.scrolled.iter().any(nested)
+        || scrolls
+            .containers
+            .keys()
+            .any(|other| nested(other) && scrolled(window, other))
 }
 
 /// Whether the view holding the scroll container `id`, whose offset lives
@@ -641,5 +658,5 @@ fn any_content_view(window: &Window, id: &GlobalElementId, f: impl Fn(EntityId) 
 /// that did not only scroll it keeps a demoted layer waiting.
 pub(crate) fn changed_without_layer(window: &Window, cx: &App, id: &GlobalElementId) -> bool {
     let source = window.fast_layers.scrolls.source(id);
-    !owner_scrolled_only(window, cx, id, source.as_ref())
+    nested_container_scrolled(window, id) || !owner_scrolled_only(window, cx, id, source.as_ref())
 }
