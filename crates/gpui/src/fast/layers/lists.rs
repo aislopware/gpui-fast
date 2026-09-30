@@ -385,6 +385,9 @@ pub(crate) fn measure_item(
     id: Option<&GlobalElementId>,
     measure: impl FnOnce(&mut Window, &mut App) -> Size<Pixels>,
 ) -> Size<Pixels> {
+    if !LIST_LAYERS {
+        return measure(window, cx);
+    }
     if !COMPILED || window.fast_layers.layers.is_empty() {
         return measure(window, cx);
     }
@@ -434,6 +437,9 @@ fn kept_item_size(window: &Window, cx: &App, id: &GlobalElementId) -> Option<Siz
 /// into a layer and rows drawn without one land on the same pixels. See
 /// [`paint::snap_scroll_offset`].
 pub(crate) fn snap_item_offset(window: &Window, scroll_offset: Point<Pixels>) -> Point<Pixels> {
+    if !LIST_LAYERS {
+        return scroll_offset;
+    }
     paint::snap_scroll_offset(window, scroll_offset)
 }
 
@@ -443,6 +449,12 @@ pub(crate) fn snap_item_offset(window: &Window, scroll_offset: Point<Pixels>) ->
 /// `padded_bounds`, scrolled by `scroll_offset`; it shows the rows
 /// `visible`. A list flipped vertically keeps today's path.
 #[allow(clippy::too_many_arguments)]
+/// Whether virtual lists get scroll layers. Off: measured on `gpui_perf`'s
+/// list scenarios, list layers composited about 1 % of scrolled frames and
+/// cost more than they saved, so lists draw as they do without layers until
+/// that is fixed.
+pub(crate) const LIST_LAYERS: bool = false;
+
 pub(crate) fn begin_uniform_list(
     window: &mut Window,
     cx: &mut App,
@@ -454,7 +466,7 @@ pub(crate) fn begin_uniform_list(
     visible: &Range<usize>,
     y_flipped: bool,
 ) -> Rows {
-    if !COMPILED || y_flipped || item_height <= Pixels::ZERO {
+    if !COMPILED || !LIST_LAYERS || y_flipped || item_height <= Pixels::ZERO {
         return Rows(None, None);
     }
     let Some(id) = id else {
@@ -731,7 +743,7 @@ pub(crate) fn begin_list(
     state: &crate::StateInner,
     bounds: Bounds<Pixels>,
 ) {
-    if !COMPILED || paint::inside_layer(window) || !active(window, cx) {
+    if !COMPILED || !LIST_LAYERS || paint::inside_layer(window) || !active(window, cx) {
         return;
     }
     let version = state.version.clone();
@@ -793,6 +805,9 @@ pub(crate) fn keeps_row(
     ix: usize,
     measured: bool,
 ) -> bool {
+    if !LIST_LAYERS {
+        return false;
+    }
     if !measured {
         return false;
     }
@@ -819,6 +834,10 @@ pub(crate) fn snap_item_origin(
     scroll_top: &crate::ListOffset,
     origin: &mut Point<Pixels>,
 ) {
+    if !LIST_LAYERS {
+        origin.y -= scroll_top.offset_in_item;
+        return;
+    }
     let offset = state.scroll_top(scroll_top);
     let snapped = paint::snap_scroll_offset(window, point(px(0.), offset)).y;
     origin.y -= scroll_top.offset_in_item + (snapped - offset);
@@ -837,6 +856,9 @@ pub(crate) fn place_list_item(
     ix: usize,
     origin: &mut Point<Pixels>,
 ) {
+    if !LIST_LAYERS {
+        return;
+    }
     let Some(id) = window.fast_layers.painting.as_ref().map(|p| p.id.clone()) else {
         return;
     };
@@ -914,6 +936,9 @@ pub(crate) fn end_list(
     render_item: &mut crate::RenderItemFn,
     bounds: Bounds<Pixels>,
 ) {
+    if !LIST_LAYERS {
+        return;
+    }
     let bypassed = window.fast_layers.layers.iter().find_map(|(id, layer)| {
         let (list, _) = layer.rows.bypass.as_ref()?;
         (*list == Some(state.version.id())).then(|| id.clone())
@@ -1151,6 +1176,9 @@ fn held_rows_land_alike(
 
 /// Starts painting the rows of the `list` of `state`.
 pub(crate) fn begin_paint_list(window: &mut Window, cx: &mut App, state: &crate::ListState) {
+    if !LIST_LAYERS {
+        return;
+    }
     if !COMPILED || window.fast_layers.layers.is_empty() {
         return;
     }
@@ -1162,6 +1190,9 @@ pub(crate) fn begin_paint_list(window: &mut Window, cx: &mut App, state: &crate:
 /// Ends painting the rows of the `list` of `state`: the rows rendered for
 /// its layer alone are painted, and the layer is composited.
 pub(crate) fn end_paint_list(window: &mut Window, cx: &mut App, state: &crate::ListState) {
+    if !LIST_LAYERS {
+        return;
+    }
     if !COMPILED || window.fast_layers.layers.is_empty() {
         return;
     }
@@ -1181,6 +1212,9 @@ pub(crate) fn end_paint_list(window: &mut Window, cx: &mut App, state: &crate::L
 
 /// Starts painting the rows of the list `id` as its prepaint decided.
 pub(crate) fn begin_paint_rows(window: &mut Window, cx: &mut App, id: Option<&GlobalElementId>) {
+    if !LIST_LAYERS {
+        return;
+    }
     let Some(id) = id else {
         return;
     };
@@ -1236,6 +1270,9 @@ pub(crate) fn paint_row(
     ix: Option<usize>,
     f: impl FnOnce(&mut Window, &mut App),
 ) {
+    if !LIST_LAYERS {
+        return f(window, cx);
+    }
     let Some(id) = window.fast_layers.painting.as_ref().map(|p| p.id.clone()) else {
         return f(window, cx);
     };
@@ -1309,6 +1346,9 @@ fn set_current_row(window: &mut Window, id: &GlobalElementId, row: Option<usize>
 /// Ends painting the rows of the list `id`: the rows painted into its layer
 /// are recorded and the layer is composited.
 pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&GlobalElementId>) {
+    if !LIST_LAYERS {
+        return;
+    }
     let Some(id) = id else {
         return;
     };
