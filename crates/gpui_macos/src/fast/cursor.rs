@@ -6,28 +6,30 @@
 //! built are kept by the picture's content, so pointing an id back at a
 //! picture it showed before builds nothing.
 //!
-//! Pointing the id the key window shows at another picture invalidates the
-//! view's cursor rects, so AppKit takes the new cursor for them, and sets the
-//! cursor at once when the pointer is over the view, so the change does not
-//! wait for AppKit to rebuild the rects or for the next frame.
+//! Pointing an id at another picture invalidates the cursor rects of every
+//! GPUI window whose view shows the id, so AppKit takes the new cursor for
+//! them whenever the window is next key, and sets the cursor at once when the
+//! pointer is over the key window's view, so the change does not wait for
+//! AppKit to rebuild the rects or for the next frame.
 
-use crate::window::{get_window_state, is_gpui_window};
-use cocoa::{
-    appkit::NSApplication,
-    base::{id, nil},
-    foundation::{NSInteger, NSPoint, NSRect},
-};
+use std::cell::RefCell;
+
+use cocoa::appkit::NSApplication;
+use cocoa::base::{id, nil};
+use cocoa::foundation::{NSInteger, NSPoint, NSRect, NSUInteger};
 use collections::HashMap;
 use gpui::{CursorImage, CursorImageId, CursorStyle};
 use objc::{class, msg_send, sel, sel_impl};
-use objc2::{AnyThread, rc::Retained};
+use objc2::AnyThread;
+use objc2::rc::Retained;
 use objc2_app_kit::{NSCursor, NSImage};
 use objc2_core_foundation::{CFData, CGSize};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo, kCGColorSpaceSRGB,
 };
-use std::cell::RefCell;
+
+use crate::window::{get_window_state, is_gpui_window};
 
 /// How many built cursors are kept for reuse beyond the ones ids show. Enough
 /// for every shape an application shows in a session (arrow, I-beam, hand,
@@ -36,10 +38,12 @@ pub(crate) const BUILT_KEPT: usize = 64;
 
 #[derive(Default)]
 struct Cursors {
-    /// The cursor each id shows, with its picture's key.
-    shown: HashMap<CursorImageId, (u64, Retained<NSCursor>)>,
-    /// Cursors built, least recently used first.
-    built: Vec<(u64, Retained<NSCursor>)>,
+    /// The cursor each id shows, with its picture.
+    shown: HashMap<CursorImageId, (CursorImage, Retained<NSCursor>)>,
+    /// Cursors built with their pictures, least recently used first. A hit
+    /// compares the whole picture, not only its key, so two pictures whose
+    /// keys collide never share a cursor.
+    built: Vec<(CursorImage, Retained<NSCursor>)>,
     /// How many cursors were built, for tests.
     builds: usize,
 }
@@ -50,8 +54,7 @@ thread_local! {
 
 impl Cursors {
     fn cursor_for(&mut self, image: &CursorImage) -> Option<Retained<NSCursor>> {
-        let key = image.key();
-        if let Some(at) = self.built.iter().position(|(built, _)| *built == key) {
+        if let Some(at) = self.built.iter().position(|(built, _)| same(built, image)) {
             let entry = self.built.remove(at);
             let cursor = entry.1.clone();
             self.built.push(entry);
@@ -62,7 +65,7 @@ impl Cursors {
         if self.built.len() == BUILT_KEPT {
             self.built.remove(0);
         }
-        self.built.push((key, cursor.clone()));
+        self.built.push((image.clone(), cursor.clone()));
         Some(cursor)
     }
 
@@ -71,12 +74,12 @@ impl Cursors {
         let Some(image) = image else {
             return self.shown.remove(&id).is_some();
         };
-        if self.shown.get(&id).is_some_and(|(key, _)| *key == image.key()) {
+        if self.shown.get(&id).is_some_and(|(shown, _)| same(shown, image)) {
             return false;
         }
         match self.cursor_for(image) {
             Some(cursor) => {
-                self.shown.insert(id, (image.key(), cursor));
+                self.shown.insert(id, (image.clone(), cursor));
                 true
             }
             None => {
@@ -85,6 +88,13 @@ impl Cursors {
             }
         }
     }
+}
+
+/// Whether two pictures are the same: the keys first, which differ for almost
+/// every pair, then the pixels, so a collision of keys is never taken for a
+/// match.
+fn same(a: &CursorImage, b: &CursorImage) -> bool {
+    a.key() == b.key() && a == b
 }
 
 /// Builds the cursor for `image`: an `NSImage` sized in points over one
@@ -164,39 +174,52 @@ pub(crate) fn shown(image: CursorImageId) -> Option<Retained<NSCursor>> {
     CURSORS.with_borrow(|cursors| cursors.shown.get(&image).map(|(_, cursor)| cursor.clone()))
 }
 
-/// Invalidates the cursor rects of the GPUI window that takes the pointer's
-/// cursor (the key window, else the main one, as `set_cursor_style` picks)
-/// when it shows `image`'s cursor, and sets the cursor now when the pointer is
-/// over that window's view and the application is active.
+/// Invalidates the cursor rects of every GPUI window whose view shows
+/// `image`'s cursor, and sets the cursor now when the pointer is over the view
+/// of the window that takes the pointer's cursor (the key window, else the
+/// main one, as `set_cursor_style` picks) and the application is active.
+///
+/// A window that is not key keeps the rects it registered, with the cursor
+/// they held then, until they are invalidated; invalidating them here means
+/// the window shows the id's latest picture when it is key again, rather than
+/// the one it showed when it last was.
 ///
 /// # Safety
 ///
 /// Must run on the AppKit main thread.
 unsafe fn show_now(image: CursorImageId) {
-    // SAFETY: the caller guarantees the main thread. `is_gpui_window` checks the
-    // window carries GPUI's state ivar before `get_window_state` reads it.
+    // SAFETY: the caller guarantees the main thread. `is_gpui_window` checks
+    // each window carries GPUI's state ivar before `get_window_state` reads it;
+    // `windows` is an array the application keeps alive for the call.
     unsafe {
         let app = NSApplication::sharedApplication(nil);
         let key_window: id = msg_send![app, keyWindow];
         let main_window: id = msg_send![app, mainWindow];
-        let window = [key_window, main_window]
+        let cursor_window = [key_window, main_window]
             .into_iter()
             .find(|window| !window.is_null() && is_gpui_window(*window));
-        let Some(window) = window else {
-            return;
-        };
-        let state = get_window_state(&*window);
-        let (native_window, native_view, style) = {
-            let state = state.lock();
-            (state.native_window, state.native_view.as_ptr() as id, state.cursor_style)
-        };
-        if style != CursorStyle::Image(image) {
-            return;
-        }
-        let _: () = msg_send![native_window, invalidateCursorRectsForView: native_view];
-        let active: bool = msg_send![app, isActive];
-        if active && pointer_over(native_window, native_view) {
-            if let Some(cursor) = shown(image) {
+        let windows: id = msg_send![app, windows];
+        let count: NSUInteger = msg_send![windows, count];
+        for index in 0..count {
+            let window: id = msg_send![windows, objectAtIndex: index];
+            if !is_gpui_window(window) {
+                continue;
+            }
+            let state = get_window_state(&*window);
+            let (native_window, native_view, style) = {
+                let state = state.lock();
+                (state.native_window, state.native_view.as_ptr() as id, state.cursor_style)
+            };
+            if style != CursorStyle::Image(image) {
+                continue;
+            }
+            let _: () = msg_send![native_window, invalidateCursorRectsForView: native_view];
+            let active: bool = msg_send![app, isActive];
+            if cursor_window == Some(window)
+                && active
+                && pointer_over(native_window, native_view)
+                && let Some(cursor) = shown(image)
+            {
                 cursor.set();
             }
         }
@@ -236,11 +259,13 @@ unsafe fn pointer_over(window: id, view: id) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{BUILT_KEPT, Cursors, build};
+    use std::time::{Duration, Instant};
+
     use gpui::{CursorImage, CursorImageId, DevicePixels, point, size};
     use objc2_app_kit::NSCursor;
     use objc2_core_graphics::{CGDataProvider, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo};
-    use std::time::{Duration, Instant};
+
+    use super::{BUILT_KEPT, Cursors, build};
 
     /// A `side`-pixel square whose every pixel is `bgra`, with the hotspot at
     /// (`hot`, `hot + 1`).
@@ -290,6 +315,59 @@ mod tests {
         let (wide, high, pixels) = pixels_of(&cursor);
         assert_eq!((wide, high), (64, 64), "the picture's own pixels");
         assert_eq!(pixels, image.bgra(), "byte for byte, BGRA as given");
+    }
+
+    /// The cursor's picture drawn by CoreGraphics into an sRGB bitmap of RGBA
+    /// bytes: a byte-for-byte check of the pixels would pass with the channels
+    /// swapped, so this checks what the bitmap info makes of them. Red, green,
+    /// blue and half-covered white, given as premultiplied BGRA.
+    #[test]
+    fn a_cursor_draws_its_pictures_colours_not_its_byte_order() {
+        use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+        use objc2_core_graphics::{
+            CGBitmapContextCreate, CGColorSpace, CGContext, kCGColorSpaceSRGB,
+        };
+
+        let bgra = [[0, 0, 255, 255], [0, 255, 0, 255], [255, 0, 0, 255], [128, 128, 128, 128]];
+        let image = CursorImage::new(
+            bgra.concat(),
+            size(DevicePixels(2), DevicePixels(2)),
+            point(DevicePixels(0), DevicePixels(0)),
+            1.,
+        )
+        .unwrap();
+        let cursor = build(&image).expect("a cursor");
+        let rep = cursor.image().representations().objectAtIndex(0);
+        // SAFETY: as in `pixels_of`.
+        let picture =
+            unsafe { rep.CGImageForProposedRect_context_hints(std::ptr::null_mut(), None, None) }
+                .expect("a CGImage");
+        let mut rgba = [0u8; 16];
+        // SAFETY: `kCGColorSpaceSRGB` is an immutable CFString constant
+        // CoreGraphics exports for the process's lifetime.
+        let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB })).unwrap();
+        // SAFETY: `rgba` holds 2 × 2 pixels of 4 bytes, rows of 8 bytes, and
+        // outlives the context, which is dropped at the end of the test.
+        let context = unsafe {
+            CGBitmapContextCreate(
+                rgba.as_mut_ptr().cast(),
+                2,
+                2,
+                8,
+                8,
+                Some(&space),
+                CGImageAlphaInfo::PremultipliedLast.0 | CGImageByteOrderInfo::Order32Big.0,
+            )
+        }
+        .expect("a bitmap context");
+        let whole = CGRect::new(CGPoint::new(0., 0.), CGSize::new(2., 2.));
+        CGContext::draw_image(Some(&context), whole, Some(&picture));
+        drop(context);
+        assert_eq!(
+            rgba.as_chunks::<4>().0,
+            [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [128, 128, 128, 128]],
+            "red, green, blue, half white: the bytes read as BGRA, alpha premultiplied"
+        );
     }
 
     #[test]

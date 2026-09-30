@@ -426,9 +426,12 @@ Added in this fork:
   app frame, 19 ms, behind the hand). macOS builds an `NSCursor` over a `CGImage` of the
   picture, sized in points with the hotspot in points, registered as the view's cursor
   rect like every other style; the last 64 cursors built are kept by content, so an id
-  flipping between pictures it showed builds nothing. Pointing the id the key window
-  shows at a new picture invalidates the rects and sets the cursor at once when the
-  pointer is over the view, before any frame. Measured (`a_shape_change_is_built_once_
+  flipping between pictures it showed builds nothing (a hit compares the pixels, not
+  only the key). Pointing an id at a new picture invalidates the rects of every window
+  showing it, so a window that was not key shows the latest picture when it is again,
+  and sets the cursor at once when the pointer is over the key window's view, before
+  any frame. The bytes are drawn as BGRA (`a_cursor_draws_its_pictures_colours_not_
+  its_byte_order` draws red, green, blue and half white into an sRGB RGBA bitmap). Measured (`a_shape_change_is_built_once_
   and_set_in_microseconds`, 64 × 64 at 2×): a build 13–40 µs p50, a cached change
   0.7 µs, `-[NSCursor set]` 60 µs, and the cursor set is `NSCursor.currentCursor` as
   `set` returns. Other platforms show the arrow for an image style; iOS has no bitmap
