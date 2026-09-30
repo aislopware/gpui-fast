@@ -57,8 +57,7 @@ impl App {
             release_listeners: self.release_listeners.len(),
             new_entity_observers: self.new_entity_observers.len(),
             global_observers: self.global_observers.len(),
-            keystroke_observers: self.keystroke_observers.len()
-                + self.keystroke_interceptors.len(),
+            keystroke_observers: self.keystroke_observers.len() + self.keystroke_interceptors.len(),
             other_app_observers: self.keyboard_layout_observers.len()
                 + self.thermal_state_observers.len()
                 + self.system_sleep_observers.len()

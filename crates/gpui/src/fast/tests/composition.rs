@@ -693,7 +693,9 @@ fn the_test_platform_places_natives_where_its_own_draws_put_them() {
         .update(&mut cx, |stack, _, _| stack.host.clone())
         .unwrap();
     window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
-    let placement = test_host(&host).placement().expect("placed by the test draw");
+    let placement = test_host(&host)
+        .placement()
+        .expect("placed by the test draw");
     assert_eq!(placement.bounds.origin, point(px(10.), px(10.)));
     assert_eq!(placement.bounds.size, size(px(100.), px(100.)));
     assert!(!test_host(&host).is_hidden());

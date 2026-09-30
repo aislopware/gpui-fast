@@ -133,6 +133,7 @@ struct LogRanges {
     entities: Range<usize>,
     globals: Range<usize>,
     states: Range<usize>,
+    offset_reads: Range<usize>,
 }
 
 impl AppDependencies {
@@ -269,6 +270,7 @@ impl App {
             entities: self.entities.begin_recording(),
             globals: self.dependencies.global_read_log.borrow_mut().len(),
             states: self.dependencies.state_read_log.borrow_mut().len(),
+            offset_reads: crate::fast::layers::invalidate::begin_offset_reads(),
             generation: self.dependencies.global_generation,
             updates: self.entities.access_log.update_generation,
             writes: self.entities.access_log.write_generation,
@@ -287,7 +289,14 @@ impl App {
             entities: recording.entities..self.entities.access_log.len(),
             globals: recording.globals..log.global_read_log.borrow().len(),
             states: recording.states..log.state_read_log.borrow_mut().len(),
+            offset_reads: recording.offset_reads
+                ..crate::fast::layers::invalidate::offset_reads_len(),
         };
+        let (offset_reads, own_offset_reads) = crate::fast::layers::invalidate::offset_reads_in(
+            &ranges.offset_reads,
+            nested.iter().map(|n| &n.offset_reads),
+        );
+        crate::fast::layers::invalidate::end_offset_reads();
         let (entities, own_entities) = {
             let access_log = self.entities.access_log.access_log.borrow();
             let scratch = &mut log.scratch_entities;
@@ -355,6 +364,7 @@ impl App {
                 entities,
                 globals,
                 states,
+                offset_reads,
                 // As of when the recording began, so that a global written
                 // while it was open, after being read, counts as changed.
                 generation: recording.generation,
@@ -365,6 +375,7 @@ impl App {
                 entities: own_entities,
                 globals: own_globals,
                 states: own_states,
+                offset_reads: own_offset_reads,
                 generation: recording.generation,
                 updates: recording.updates,
                 writes,
@@ -379,6 +390,7 @@ impl App {
             entities: self.entities.access_log.len()..0,
             globals: self.dependencies.global_read_log.borrow_mut().len()..0,
             states: self.dependencies.state_read_log.borrow_mut().len()..0,
+            offset_reads: 0..0,
         };
         self.entities.mark_access_boundary();
         self.entities.extend_accessed(dependencies.entities.iter());
@@ -392,12 +404,15 @@ impl App {
                 .state_read_log
                 .borrow_mut()
                 .extend(dependencies.states.iter().cloned());
+            let offset_reads =
+                crate::fast::layers::invalidate::replay_offset_reads(&dependencies.offset_reads);
             // Read through the subtree being reused, not by the recording
             // it is reused in.
             let ranges = LogRanges {
                 entities: start.entities.start..self.entities.access_log.len(),
                 globals: start.globals.start..self.dependencies.global_read_log.borrow_mut().len(),
                 states: start.states.start..self.dependencies.state_read_log.borrow_mut().len(),
+                offset_reads,
             };
             if let Some(open) = self.dependencies.nested.last_mut() {
                 open.push(ranges);
@@ -650,6 +665,7 @@ pub(crate) fn notify_asks_for_a_frame(phase: crate::window::DrawPhase) -> bool {
 /// changes nothing a view could have read.
 #[inline(always)]
 pub(crate) fn note_notify(entities: &mut EntityMap, entity_id: EntityId) {
+    crate::fast::layers::invalidate::note_notify(entity_id);
     let log = &mut entities.access_log;
     if log.updated_unnotified.remove(&entity_id)
         || log.recordings.get() > 0
@@ -729,6 +745,7 @@ pub(crate) struct DependencyRecording {
     entities: usize,
     globals: usize,
     states: usize,
+    offset_reads: usize,
     generation: u64,
     updates: u64,
     writes: u64,
@@ -825,6 +842,9 @@ pub(crate) struct RenderDependencies {
     /// Element state kept outside of entities — scroll handles, list states
     /// — with the version each was read at.
     pub(crate) states: Rc<[(StateVersion, u64)]>,
+    /// The scroll offsets read through the scroll getters. See
+    /// [`crate::fast::layers::invalidate::note_offset_read`].
+    pub(crate) offset_reads: crate::fast::layers::invalidate::OffsetReads,
     pub(crate) generation: u64,
     /// The entity update generation the recording began at. See
     /// [`note_update`].
@@ -865,6 +885,11 @@ impl StateVersion {
 
     fn ptr(&self) -> *const Cell<u64> {
         Rc::as_ptr(&self.0)
+    }
+
+    /// What tells this state apart from any other while it lives.
+    pub(crate) fn id(&self) -> usize {
+        self.ptr() as usize
     }
 }
 
@@ -932,16 +957,11 @@ impl ListScrollStart {
         ListScrollStart(state.follow_state)
     }
 
-    /// See [`crate::StateInner::note_scrolled_to`]; `pending` is whether a
-    /// scroll was waiting to be applied.
+    /// See [`crate::StateInner::note_scrolled_to`], with whether a scroll was
+    /// waiting to be applied read from `state`.
     #[inline(always)]
-    pub(crate) fn note_scrolled(
-        self,
-        state: &crate::StateInner,
-        scroll_top: &ListOffset,
-        pending: bool,
-    ) {
-        state.note_scrolled_to(scroll_top, self.0, pending);
+    pub(crate) fn note_scrolled(self, state: &crate::StateInner, scroll_top: &ListOffset) {
+        state.note_scrolled_to(scroll_top, self.0, state.pending_scroll.is_some());
     }
 }
 
@@ -1104,14 +1124,19 @@ impl RenderDependencies {
     /// Both sets of dependencies at once, as of the earlier generation, so
     /// that a change either would have seen is still seen.
     pub(crate) fn union(&self, other: &Self) -> Self {
+        let offset_reads = self.offset_reads.union(&other.offset_reads);
         if other.entities.is_empty() && other.globals.is_empty() && other.states.is_empty() {
-            return self.clone();
+            return Self {
+                offset_reads,
+                ..self.clone()
+            };
         }
         let states = merge_states(&self.states, &other.states);
         Self {
             entities: merge_sorted(&self.entities, &other.entities),
             globals: merge_sorted(&self.globals, &other.globals),
             states,
+            offset_reads,
             generation: self.generation.min(other.generation),
             updates: self.updates.min(other.updates),
             writes: self.writes.union(&other.writes),

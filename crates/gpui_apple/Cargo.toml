@@ -24,6 +24,7 @@ gpui.workspace = true
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 anyhow.workspace = true
 block2.workspace = true
+collections.workspace = true
 core-graphics.workspace = true
 derive_more.workspace = true
 etagere.workspace = true

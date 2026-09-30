@@ -58,7 +58,8 @@ pub struct Cost {
     pub phases: Option<PhaseCost>,
 }
 
-/// Per frame: the time each phase took, and the views built and reused.
+/// Per frame: the time each phase took, the views built and reused, and what
+/// scroll layers did.
 #[derive(Default, Clone, Copy)]
 pub struct PhaseCost {
     pub build_ms: f64,
@@ -67,6 +68,9 @@ pub struct PhaseCost {
     pub paint_ms: f64,
     pub views_built: f64,
     pub views_reused: f64,
+    pub layer_frames_composited: f64,
+    pub tiles_dirtied: f64,
+    pub layer_rebuilds_for_input: f64,
 }
 
 impl Cost {
@@ -99,6 +103,13 @@ impl Cost {
                 paint_ms: per_frame(to.paint - from.paint),
                 views_built: per_frame_count(to.views_built - from.views_built),
                 views_reused: per_frame_count(to.views_reused - from.views_reused),
+                layer_frames_composited: per_frame_count(
+                    to.layer_frames_composited - from.layer_frames_composited,
+                ),
+                tiles_dirtied: per_frame_count(to.tiles_dirtied - from.tiles_dirtied),
+                layer_rebuilds_for_input: per_frame_count(
+                    to.layer_rebuilds_for_input - from.layer_rebuilds_for_input,
+                ),
             }),
         }
     }

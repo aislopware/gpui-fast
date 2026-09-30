@@ -376,7 +376,11 @@ impl Noting {
         self.glyphs.x = self.glyphs.x.min(f32::from(noted.glyphs[0]));
         self.glyphs.y = self.glyphs.y.min(f32::from(noted.glyphs[1]));
         if noted.culled != NO_CULLS {
-            self.cull(noted.culled.map(f32::from), noted.sides, f32::from(noted.gap));
+            self.cull(
+                noted.culled.map(f32::from),
+                noted.sides,
+                f32::from(noted.gap),
+            );
         }
     }
 
@@ -645,11 +649,16 @@ impl Shift {
     }
 
     /// `primitive`, moved, if it can be.
-    fn primitive(&self, primitive: PaintedRef<'_>, last: &mut LastMask) -> Option<ShiftedOperation> {
+    fn primitive(
+        &self,
+        primitive: PaintedRef<'_>,
+        last: &mut LastMask,
+    ) -> Option<ShiftedOperation> {
         let unit = TransformationMatrix::unit();
         Some(match primitive {
             PaintedRef::Shadow(shadow) if movable(&shadow.element_bounds) => {
-                let (bounds, content_mask) = self.place(&shadow.bounds, &shadow.content_mask, last)?;
+                let (bounds, content_mask) =
+                    self.place(&shadow.bounds, &shadow.content_mask, last)?;
                 ShiftedOperation::Shadow(Shadow {
                     bounds,
                     element_bounds: shadow.element_bounds + self.offset,
@@ -691,6 +700,17 @@ impl Shift {
                     content_mask,
                     ..*sprite
                 })
+            }
+            // A scroll layer's tile: the layer places it from its own record,
+            // which only painting the container keeps current.
+            PaintedRef::PolychromeSprite(sprite)
+                if crate::fast::layers::scene::decode_layer_tile(
+                    sprite.tile.texture_id,
+                    sprite.tile.tile_id,
+                )
+                .is_some() =>
+            {
+                return None;
             }
             PaintedRef::PolychromeSprite(sprite) => {
                 let (bounds, content_mask) =

@@ -656,7 +656,7 @@ impl crate::InputHandler for NamedInput {
     }
 }
 
-fn text_input(focus: crate::FocusHandle, name: &'static str) -> impl IntoElement {
+pub(super) fn text_input(focus: crate::FocusHandle, name: &'static str) -> impl IntoElement {
     crate::canvas(
         |_, _, _| {},
         move |_, _, window, cx| window.handle_input(&focus, NamedInput(name), cx),

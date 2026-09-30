@@ -154,7 +154,7 @@ fn destination_alpha_blend_factor() -> metal::MTLBlendFactor {
 }
 
 /// The pixel format of the drawables the renderer draws into.
-fn drawable_pixel_format() -> MTLPixelFormat {
+pub(crate) fn drawable_pixel_format() -> MTLPixelFormat {
     #[cfg(test)]
     if let Some(format) = composition_tests::DRAWABLE_PIXEL_FORMAT.get() {
         return format;
@@ -166,10 +166,10 @@ fn drawable_pixel_format() -> MTLPixelFormat {
 const DEFAULT_REFRESH: Duration = Duration::from_micros(8_333);
 
 pub struct MetalRenderer {
-    device: metal::Device,
+    pub(crate) device: metal::Device,
     layer: Option<metal::MetalLayer>,
     is_apple_gpu: bool,
-    is_unified_memory: bool,
+    pub(crate) is_unified_memory: bool,
     presents_with_transaction: bool,
     /// Receives each drawn frame once the display has shown it; see [`Self::draw`].
     presented_frame_sink: Option<PresentedFrameSink>,
@@ -193,12 +193,12 @@ pub struct MetalRenderer {
     holes_pipeline_state: metal::RenderPipelineState,
     underlines_pipeline_state: metal::RenderPipelineState,
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
-    polychrome_sprites_pipeline_state: metal::RenderPipelineState,
+    pub(crate) polychrome_sprites_pipeline_state: metal::RenderPipelineState,
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     surfaces_pipeline_state: metal::RenderPipelineState,
-    unit_vertices: metal::Buffer,
+    pub(crate) unit_vertices: metal::Buffer,
     #[allow(clippy::arc_with_non_send_sync)]
-    instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
+    pub(crate) instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     sprite_atlas: Arc<MetalAtlas>,
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     core_video_texture_cache: core_video::metal_texture_cache::CVMetalTextureCache,
@@ -217,6 +217,7 @@ pub struct MetalRenderer {
     /// rendering headlessly without reading pixels back.
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
     headless_render_target: Option<metal::Texture>,
+    pub(crate) fast_layers: crate::fast::layers::TileCache,
 }
 
 /// Records the frame in `drawable` for the pacer, and hands it to `sink`, once the display
@@ -520,6 +521,7 @@ impl MetalRenderer {
             path_sample_count: PATH_SAMPLE_COUNT,
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
             headless_render_target: None,
+            fast_layers: crate::fast::layers::TileCache::default(),
         }
     }
 
@@ -580,6 +582,7 @@ impl MetalRenderer {
             layer.set_drawable_size(CGSize::new(size.width.0 as f64, size.height.0 as f64));
         }
         self.update_path_intermediate_textures(size);
+        crate::fast::layers::TileCache::clear(&mut self.fast_layers);
     }
 
     fn update_path_intermediate_textures(&mut self, size: Size<DevicePixels>) {
@@ -688,12 +691,13 @@ impl MetalRenderer {
         }
     }
 
-    fn render_frame(
+    pub(crate) fn render_frame(
         &mut self,
         scene: &Scene,
         texture: &metal::TextureRef,
         viewport_size: Size<DevicePixels>,
     ) -> Result<metal::CommandBuffer> {
+        crate::fast::layers::raster::rasterize_tiles(self, scene);
         let mut writer = InstanceBufferWriter::new(
             &self.device,
             &self.instance_buffer_pool,
@@ -1355,6 +1359,17 @@ impl MetalRenderer {
         command_encoder: &metal::RenderCommandEncoderRef,
     ) {
         if sprites.is_empty() {
+            return;
+        }
+        if crate::fast::layers::composite::draw_tiles(
+            self,
+            texture_id,
+            &sprites,
+            instance_bindings,
+            viewport_size,
+            command_encoder,
+            &mut binds::Binds::default(),
+        ) {
             return;
         }
 
@@ -2119,17 +2134,20 @@ pub(crate) struct InstanceBinding {
 }
 
 pub(crate) struct InstanceBindings {
-    quads: InstanceBinding,
-    holes: InstanceBinding,
-    shadows: InstanceBinding,
-    underlines: InstanceBinding,
-    monochrome_sprites: InstanceBinding,
-    polychrome_sprites: InstanceBinding,
+    pub(crate) quads: InstanceBinding,
+    pub(crate) holes: InstanceBinding,
+    pub(crate) shadows: InstanceBinding,
+    pub(crate) underlines: InstanceBinding,
+    pub(crate) monochrome_sprites: InstanceBinding,
+    pub(crate) polychrome_sprites: InstanceBinding,
     #[cfg(any(target_os = "macos", target_os = "ios"))]
-    surfaces: InstanceBinding,
+    pub(crate) surfaces: InstanceBinding,
 }
 
-fn write_instances(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<InstanceBindings> {
+pub(crate) fn write_instances(
+    scene: &Scene,
+    writer: &mut InstanceBufferWriter,
+) -> Result<InstanceBindings> {
     Ok(InstanceBindings {
         quads: writer.write(&scene.quads)?,
         holes: writer.write(&scene.natives().holes)?,
@@ -2155,7 +2173,7 @@ pub(crate) struct InstanceBufferWriter {
 }
 
 impl InstanceBufferWriter {
-    fn new(
+    pub(crate) fn new(
         device: &metal::Device,
         pool: &Arc<Mutex<InstanceBufferPool>>,
         unified_memory: bool,
@@ -2193,7 +2211,7 @@ impl InstanceBufferWriter {
         Ok((binding, values))
     }
 
-    fn write<T>(&mut self, values: &[T]) -> Result<InstanceBinding> {
+    pub(crate) fn write<T>(&mut self, values: &[T]) -> Result<InstanceBinding> {
         let (binding, destination) = self.allocate::<T>(values.len())?;
         unsafe {
             ptr::copy_nonoverlapping(
@@ -2243,7 +2261,7 @@ impl InstanceBufferWriter {
         Ok(())
     }
 
-    fn finish(self) -> InstanceBuffer {
+    pub(crate) fn finish(self) -> InstanceBuffer {
         let Self {
             unified_memory,
             filled,
@@ -2299,7 +2317,7 @@ enum UnderlineInputIndex {
 }
 
 #[repr(C)]
-enum SpriteInputIndex {
+pub(crate) enum SpriteInputIndex {
     Vertices = 0,
     Sprites = 1,
     ViewportSize = 2,

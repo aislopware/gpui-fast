@@ -12,10 +12,10 @@ use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 
 use super::element_oracle::GlyphBoxTextSystem;
 use crate::{
-    AppContext as _, Bounds, Context, ContentMask, Corners, GlyphId, HitboxBehavior, IntoElement, LayoutStats,
-    MouseDownEvent, NoopTextSystem, ParentElement as _, Pixels, Point, Render, Styled as _,
-    TestAppContext, UnderlineStyle, Window, WindowHandle, BoxShadow, canvas, div, font, hsla,
-    point, px, size,
+    AppContext as _, Bounds, BoxShadow, ContentMask, Context, Corners, GlyphId, HitboxBehavior,
+    IntoElement, LayoutStats, MouseDownEvent, NoopTextSystem, ParentElement as _, Pixels, Point,
+    Render, Styled as _, TestAppContext, UnderlineStyle, Window, WindowHandle, canvas, div, font,
+    hsla, point, px, size,
 };
 
 /// A stretch: the key that stands for what it paints, and where.
@@ -79,7 +79,12 @@ fn paint_stretch(key: u64, origin: Point<Pixels>, window: &mut Window) {
         let kind = rng.random_range(0..4);
         let place = point(origin.x + at(&mut rng, 60.), origin.y + at(&mut rng, 20.));
         let extent = size(at(&mut rng, 40.) + px(1.), at(&mut rng, 16.) + px(1.));
-        let color = hsla(rng.random_range(0.0..1.0), 0.6, 0.5, rng.random_range(0.3..1.0));
+        let color = hsla(
+            rng.random_range(0.0..1.0),
+            0.6,
+            0.5,
+            rng.random_range(0.3..1.0),
+        );
         let glyph = GlyphId(rng.random_range(1..200));
         plan.push((kind, place, extent, color, glyph));
     }
@@ -93,7 +98,13 @@ fn paint_stretch(key: u64, origin: Point<Pixels>, window: &mut Window) {
             match kind {
                 0 => window.paint_quad(crate::fill(Bounds::new(place, extent), color)),
                 1 => window
-                    .paint_glyph(place + point(px(0.), px(12.)), font_id, glyph, px(13.), color)
+                    .paint_glyph(
+                        place + point(px(0.), px(12.)),
+                        font_id,
+                        glyph,
+                        px(13.),
+                        color,
+                    )
                     .unwrap(),
                 2 => window.paint_underline(
                     place,
@@ -140,7 +151,9 @@ fn windows(cx: &mut TestAppContext, board: impl Fn() -> Board) -> [WindowHandle<
     let incremental = cx.add_window(|_, _| board());
     let from_scratch = cx.add_window(|_, _| board());
     let atlas = cx
-        .update_window(incremental.into(), |_, window, _| window.sprite_atlas.clone())
+        .update_window(incremental.into(), |_, window, _| {
+            window.sprite_atlas.clone()
+        })
         .unwrap();
     cx.update_window(from_scratch.into(), |_, window, _| {
         window.sprite_atlas = atlas;
@@ -347,13 +360,16 @@ impl Render for Overreach {
                                 point(origin.x - px(20.), origin.y - px(10.)),
                                 size(px(300.), px(300.)),
                             );
-                            window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
-                                let quad = Bounds::new(
-                                    point(origin.x, origin.y - px(30.)),
-                                    size(px(50.), px(80.)),
-                                );
-                                window.paint_quad(crate::fill(quad, hsla(0.5, 0.5, 0.5, 1.)));
-                            });
+                            window.with_content_mask(
+                                Some(ContentMask { bounds: clip }),
+                                |window| {
+                                    let quad = Bounds::new(
+                                        point(origin.x, origin.y - px(30.)),
+                                        size(px(50.), px(80.)),
+                                    );
+                                    window.paint_quad(crate::fill(quad, hsla(0.5, 0.5, 0.5, 1.)));
+                                },
+                            );
                         });
                     });
                 },
@@ -425,7 +441,9 @@ fn a_view_drawn_again_whole_keeps_its_stretches() {
             })
         }),
     });
-    let boards = window.update(&mut cx, |pair, _, _| pair.boards.clone()).unwrap();
+    let boards = window
+        .update(&mut cx, |pair, _, _| pair.boards.clone())
+        .unwrap();
     let draw = |cx: &mut TestAppContext, board: usize| {
         boards[board].update(cx, |_, cx| cx.notify());
         cx.update_window(window.into(), |_, window, cx| {

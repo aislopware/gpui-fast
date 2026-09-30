@@ -75,9 +75,16 @@ impl CursorImage {
             "a hotspot at {:?} outside {width}×{height} pixels",
             hotspot
         );
-        ensure!(scale.is_finite() && scale > 0., "a cursor at {scale} pixels a point");
+        ensure!(
+            scale.is_finite() && scale > 0.,
+            "a cursor at {scale} pixels a point"
+        );
         let pixels = width as usize * height as usize;
-        ensure!(bgra.len() == pixels * 4, "{} bytes for {pixels} pixels", bgra.len());
+        ensure!(
+            bgra.len() == pixels * 4,
+            "{} bytes for {pixels} pixels",
+            bgra.len()
+        );
         let mut hasher = collections::FxHasher::default();
         hasher.write_i32(width);
         hasher.write_i32(height);
@@ -86,7 +93,13 @@ impl CursorImage {
         hasher.write_u32(scale.to_bits());
         hasher.write(&bgra);
         let key = hasher.finish();
-        Ok(Self { bgra, size, hotspot, scale, key })
+        Ok(Self {
+            bgra,
+            size,
+            hotspot,
+            scale,
+            key,
+        })
     }
 
     /// The pixels, premultiplied BGRA, rows packed from the top.
@@ -120,7 +133,10 @@ impl CursorImage {
     /// The hotspot in points from the top left; a hotspot on an odd pixel of a
     /// 2× picture lies between two points.
     pub fn hotspot_in_points(&self) -> Point<f32> {
-        Point { x: self.hotspot.x.0 as f32 / self.scale, y: self.hotspot.y.0 as f32 / self.scale }
+        Point {
+            x: self.hotspot.x.0 as f32 / self.scale,
+            y: self.hotspot.y.0 as f32 / self.scale,
+        }
     }
 
     /// A number standing for the whole picture, hotspot and scale included:

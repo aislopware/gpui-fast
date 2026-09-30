@@ -24,7 +24,10 @@ Two upstreams feed it:
   (`zed: import bd747337`).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
-  longbridge commit merged is `1b381ad` (#23, "let GPUI Kit applications patch gpui-fast
+  longbridge commit merged is `b5b39b2` (#26, "scroll layers on Direct3D 11"), with
+  `5b20933` (#24, scroll layers, #25 and #27 in it) before it, in the commit "Merge
+  longbridge/gpui-fast b5b39b2 (#24, #26) into Slopty's fork" (see "Scroll layers"
+  below). Before them `1b381ad` (#23, "let GPUI Kit applications patch gpui-fast
   in for gpui-pre"), in the commit "Merge longbridge/gpui-fast 1b381ad (#23) into Slopty's
   fork". `compat/` holds one crate per `gpui-pre-*` snapshot crate GPUI Kit pins, under
   that name and version (0.3.7), each `pub use`-ing ours, so our gpui-kit fork keeps
@@ -322,6 +325,59 @@ Merged ahead of longbridge, and not yet merged there:
   moves (`layout-text`, `layout-panel`, `table-virtual-scroll`); `3b1c671` takes back
   part of it. When longbridge merges its own version, keep ours where it differs and
   the tests named there pass.
+- Scroll layers: longbridge/gpui-fast#24 ("composite scrolled content from cached
+  tiles", squashed as `5b20933`, with #25's Metal renderer and #27's list rows) and #26
+  (Direct3D 11, `b5b39b2`, with #29's lazy tiles and list demotion). They were first merged
+  from the `scroll-layers` branch (`0526d4b`) on `scroll-layers-metal`, then from
+  longbridge `main`. Their logic is in `fast/layers/`, their tile renderers in each
+  platform crate's `fast/layers/`. `gpui_wgpu`'s is left out, as `e0137e8` was, since our
+  `wgpu_renderer.rs` is zed's.
+  - **Where they run.** `fast::layers::COMPILED` is `cfg!(any(test, target_os =
+    "windows"))`. Layers run in GPUI's own tests and on Windows as upstream ships them,
+    and stay compiled out on macOS and iOS; the numbers below say why.
+    `cargo test -p gpui_apple fast::layers` still checks the Metal composite pixel for
+    pixel.
+  - **Our paint operations.** They name a primitive's place in its kind's list, not the
+    primitive. The layer code walks them through `fast::scene::operations`, and
+    `replay_layers` hangs off `fast::scene::replay`. Content placing a native is drawn
+    into the frame, as content with paths is.
+  - **A layer is the retention of what it holds**, as #24 made it for views. Elements
+    (#17) and keyed stretches are not drawn again inside a layer being painted. An
+    element root painted into a layer's scene is never found again (`Root::in_layer`):
+    its paint ranges are the layer's. Layer tiles are not moved by `fast::shift`.
+  - `LineGlyphPainter::meets_mask` takes #24's cached glyph reach.
+  - **Fixes on top, each a longbridge candidate**
+    (`.research/gpui-fast-upstream-pr-scroll-layers-metal.md` in Slopty):
+    - `64e611c`: tiles drew nothing in any frame without paths. Our bound-draw encoder
+      looked the tile's texture id up in the atlas; `draw_bound` now hands tile batches
+      to `fast::layers::composite::draw_tiles`. Six of the eleven Metal pixel tests failed
+      before it.
+    - `e1f7041`: a composited frame kept its content's debug bounds.
+    - `08a34bc`: a layer's tile scenes are built in one walk, 72M to 3.9M instructions for
+      40 tiles.
+    - Tile textures take the drawable's pixel format.
+    - `fcc4533`: no promotion while the view holding the container asks for animation
+      frames. Such a layer was repainted after every eight-frame retry, for nothing.
+  - **Measured, `gpui_perf --headless --retention on`**, instructions per frame, with
+    layers compiled in against without:
+    - `list-uniform-scroll` 3.4M to 1.55M, `scroll-child-view` 7.55M to 0.78M,
+      `scroll-same-view` −49%, `scroll-uniform-list` −47%, `scroll-list` −42%.
+    - `list-variable-scroll` +3%, `workspace-scroll` +1%, `table-virtual-scroll` ±0.
+    - The terminal strip +2 to 2.8% and `form-hover` +2%, whether compiled in or out.
+  - **Measured, Metal** (`scroll_frame_gpu_cost`, 1600×1000 viewport of a 125-row page):
+    - A composited frame takes 227 µs of GPU time against 274 µs drawn directly.
+    - The first composited frame rasterizes the 8 tiles it shows, 2.5 ms.
+    - Tiles cost at most 64 MB a window.
+  - **Measured, Slopty's `slopty-ui`**, instructions per frame over 600 wheel frames:
+    - The conversation face panning goes from 4.17M to 4.32M (+3.8%), and was +20% before
+      `fcc4533`.
+    - The navigator scrolling goes from 4.06M to 4.08M.
+    - Neither ever composites a frame. The view holding each list read an entity in its
+      render that is written while the window draws every scrolled frame
+      (`written_since` in `owner_scrolled_only`). For the face that is the first entity it
+      creates, most likely its prompt rail. So the layer is repainted until it is demoted.
+    - Until that changes in Slopty, layers there only cost, and they stay compiled out on
+      Apple.
 
 Added in this fork:
 

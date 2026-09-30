@@ -360,7 +360,10 @@ impl Element for UniformList {
             ListHorizontalSizingBehavior::Unconstrained
         );
 
-        let longest_item_size = self.measure_item(None, window, cx);
+        let longest_item_size =
+            crate::fast::layers::lists::measure_item(window, cx, global_id, |window, cx| {
+                self.measure_item(None, window, cx)
+            });
         let content_width = if can_scroll_horizontally {
             padded_bounds.size.width.max(longest_item_size.width)
         } else {
@@ -474,6 +477,8 @@ impl Element for UniformList {
                         scroll_offset = *updated_scroll_offset
                     }
 
+                    let scroll_offset =
+                        crate::fast::layers::lists::snap_item_offset(window, scroll_offset);
                     let first_visible_element_ix =
                         (-(scroll_offset.y + padding.top) / item_height).floor() as usize;
                     let last_visible_element_ix = ((-scroll_offset.y + padded_bounds.size.height)
@@ -482,6 +487,17 @@ impl Element for UniformList {
 
                     let visible_range = first_visible_element_ix
                         ..cmp::min(last_visible_element_ix, self.item_count);
+                    let fast_rows = crate::fast::layers::lists::begin_uniform_list(
+                        window,
+                        cx,
+                        global_id,
+                        padded_bounds,
+                        scroll_offset,
+                        item_height,
+                        self.item_count,
+                        &visible_range,
+                        y_flipped,
+                    );
 
                     let items = if y_flipped {
                         let flipped_range = self.item_count.saturating_sub(visible_range.end)
@@ -490,12 +506,18 @@ impl Element for UniformList {
                         items.reverse();
                         items
                     } else {
-                        (self.render_items)(visible_range.clone(), window, cx)
+                        crate::fast::layers::lists::render_rows(
+                            &fast_rows,
+                            visible_range.clone(),
+                            |range| (self.render_items)(range, window, cx),
+                        )
                     };
 
+                    let fast_indices =
+                        crate::fast::layers::lists::row_indices(&fast_rows, visible_range.clone());
                     let content_mask = ContentMask { bounds };
                     window.with_content_mask(Some(content_mask), |window| {
-                        for (mut item, ix) in items.into_iter().zip(visible_range.clone()) {
+                        for (mut item, ix) in items.into_iter().zip(fast_indices) {
                             let item_origin = padded_bounds.origin
                                 + scroll_offset
                                 + point(Pixels::ZERO, item_height * ix);
@@ -516,9 +538,15 @@ impl Element for UniformList {
                                 window,
                                 cx,
                             );
-                            item.prepaint_at(item_origin, window, cx);
+                            crate::fast::layers::lists::prepaint_row(
+                                window,
+                                cx,
+                                ix,
+                                |window, cx| item.prepaint_at(item_origin, window, cx),
+                            );
                             frame_state.items.push(item);
                         }
+                        crate::fast::layers::lists::end_rows(window, cx, fast_rows);
 
                         let bounds =
                             Bounds::new(padded_bounds.origin + scroll_offset, padded_bounds.size);
@@ -566,9 +594,13 @@ impl Element for UniformList {
             window,
             cx,
             |_, window, cx| {
+                crate::fast::layers::lists::begin_paint_rows(window, cx, global_id);
                 for item in &mut request_layout.items {
-                    item.paint(window, cx);
+                    crate::fast::layers::lists::paint_row(window, cx, None, |window, cx| {
+                        item.paint(window, cx)
+                    });
                 }
+                crate::fast::layers::lists::end_paint_rows(window, cx, global_id);
                 for decoration in &mut request_layout.decorations {
                     decoration.paint(window, cx);
                 }

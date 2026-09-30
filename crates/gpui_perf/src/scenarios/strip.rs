@@ -617,28 +617,28 @@ impl Element for Grid {
                 let origin = bounds.origin + point(px(0.), px(row as f32 * LINE_HEIGHT));
                 let highlighted = row % 4 == 1;
                 let mut paint = |window: &mut Window| {
-                if highlighted {
-                    // A selection, and a highlighted prompt.
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            origin + point(cell * 8., px(0.)),
-                            size(cell * 24., px(LINE_HEIGHT)),
-                        ),
-                        SELECTION,
-                    ));
-                    window.paint_quad(fill(
-                        Bounds::new(origin, size(cell * 6., px(LINE_HEIGHT))),
-                        SURFACE,
-                    ));
-                }
-                let _ = line.paint(
-                    origin,
-                    px(LINE_HEIGHT),
-                    gpui::TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
+                    if highlighted {
+                        // A selection, and a highlighted prompt.
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                origin + point(cell * 8., px(0.)),
+                                size(cell * 24., px(LINE_HEIGHT)),
+                            ),
+                            SELECTION,
+                        ));
+                        window.paint_quad(fill(
+                            Bounds::new(origin, size(cell * 6., px(LINE_HEIGHT))),
+                            SURFACE,
+                        ));
+                    }
+                    let _ = line.paint(
+                        origin,
+                        px(LINE_HEIGHT),
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
                 };
                 if keyed {
                     let key = {

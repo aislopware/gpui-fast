@@ -13,7 +13,11 @@ impl<EmitterKey, Callback> SubscriberSet<EmitterKey, Callback> {
             .borrow()
             .subscribers
             .values()
-            .map(|subscribers| subscribers.as_ref().map_or(0, |subscribers| subscribers.len()))
+            .map(|subscribers| {
+                subscribers
+                    .as_ref()
+                    .map_or(0, |subscribers| subscribers.len())
+            })
             .sum()
     }
 }

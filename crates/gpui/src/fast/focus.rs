@@ -62,10 +62,7 @@ pub(crate) fn within_focused(id: FocusId, window: &Window, cx: &App) -> bool {
 /// read, through [`crate::Window::focused`].
 #[inline]
 pub(crate) fn read_focused(window: &Window) {
-    window
-        .retained_state
-        .ambient_reads
-        .note::<ambient::Focus>();
+    window.retained_state.ambient_reads.note::<ambient::Focus>();
 }
 
 /// What [`crate::Window::focus`] and [`crate::Window::blur`] do where

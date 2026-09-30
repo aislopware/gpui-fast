@@ -18,15 +18,16 @@ pub mod composition;
 pub mod cursor;
 pub(crate) mod dependencies;
 pub(crate) mod dispatch;
+pub(crate) mod element;
 pub(crate) mod focus;
 pub mod gesture;
-pub(crate) mod element;
 pub(crate) mod global_id;
 pub(crate) mod glyphs;
 pub(crate) mod headless_atlas;
 pub(crate) mod interactivity;
 pub(crate) mod keyed;
 pub(crate) mod keypad;
+pub(crate) mod layers;
 pub(crate) mod layout;
 pub(crate) mod layout_bounds;
 pub(crate) mod layout_key;
@@ -41,10 +42,10 @@ pub(crate) mod splice;
 pub(crate) mod stats;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod subscriptions;
-pub(crate) mod text;
-pub(crate) mod text_style;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_window;
+pub(crate) mod text;
+pub(crate) mod text_style;
 
 #[cfg(test)]
 mod tests;

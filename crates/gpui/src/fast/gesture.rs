@@ -16,7 +16,7 @@
 
 use crate::{
     App, DispatchPhase, Hitbox, InputEvent, InteractiveElement, Modifiers, MouseButton,
-    MouseDownEvent, MouseEvent, NavigationDirection, PlatformInput, Pixels, Point, TouchPhase,
+    MouseDownEvent, MouseEvent, NavigationDirection, Pixels, PlatformInput, Point, TouchPhase,
     Window, seal::Sealed,
 };
 use std::ops::Deref;
