@@ -678,3 +678,29 @@ fn a_native_filling_the_window_with_nothing_over_it_covers_the_window() {
         "a HUD over it keeps GPUI shown"
     );
 }
+
+/// A test that lets the test platform draw its windows, as most do, finds
+/// each native placed where its view put it, and hidden once it is gone,
+/// without presenting frames itself.
+#[test]
+fn the_test_platform_places_natives_where_its_own_draws_put_them() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(|window, cx| Stack {
+        host: host(window, cx),
+        popover: false,
+    });
+    let host = window
+        .update(&mut cx, |stack, _, _| stack.host.clone())
+        .unwrap();
+    window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+    let placement = test_host(&host).placement().expect("placed by the test draw");
+    assert_eq!(placement.bounds.origin, point(px(10.), px(10.)));
+    assert_eq!(placement.bounds.size, size(px(100.), px(100.)));
+    assert!(!test_host(&host).is_hidden());
+    let presented = cx
+        .update_window(window.into(), |_, window, _| {
+            window.presented_natives().cloned()
+        })
+        .unwrap();
+    assert_eq!(presented.unwrap().placement(host.id()), Some(&placement));
+}

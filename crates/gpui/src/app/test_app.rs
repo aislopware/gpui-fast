@@ -506,6 +506,7 @@ impl<V: 'static + Render> TestAppWindow<V> {
         let any_handle: AnyWindowHandle = self.handle.into();
         app.update_window(any_handle, |_, window, cx| {
             window.draw(cx).clear(cx);
+            crate::fast::composition::present_natives_in_test(window);
         })
         .unwrap();
     }

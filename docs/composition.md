@@ -112,7 +112,9 @@ The host is `Clone`; the native leaves the window when the last clone is dropped
 of `native_view` are GPUI content drawn over the native. `Window::native_hit_map()` and
 `Window::presented_natives()` expose what the last present did, for tests; the test
 platform records hosts (`TestNativeHost`: placement, hidden, platform calls,
-`simulate_focus`).
+`simulate_focus`). A test platform draw of a window that composes natives presents them
+too, so a test that lets the platform draw finds each native placed without presenting a
+frame itself; `Window::draw_and_present` (test-support) draws and presents on demand.
 
 ```rust
 use gpui_apple::fast::video_layer::{VideoLayer, VideoLayerOptions, VideoPresentedSink};
