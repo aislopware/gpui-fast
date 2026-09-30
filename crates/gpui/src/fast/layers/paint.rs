@@ -566,14 +566,14 @@ fn repaint(
         .record
         .as_ref()
         .map_or(0, |record| record.dirty_tiles.len());
-    window
-        .layout_engine
-        .as_mut()
-        .unwrap()
-        .retention
-        .stats
-        .layer_frames_repainted += 1;
     if !has_paths {
+        window
+            .layout_engine
+            .as_mut()
+            .unwrap()
+            .retention
+            .stats
+            .layer_frames_repainted += 1;
         insert_layer(window, &painting.id, translation, dirtied);
     }
 }

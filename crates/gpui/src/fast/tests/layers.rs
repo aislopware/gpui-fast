@@ -1406,12 +1406,16 @@ mod paint {
             .update(cx, |_, window, cx| {
                 window.fast_layers.forced_decision =
                     Some(crate::fast::layers::policy::Decision::Repaint);
+                window.reset_layout_stats();
                 cx.notify();
             })
             .unwrap();
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         cx.update_window(window.into(), |_, window, _| {
+            let stats = window.layout_stats();
+            assert_eq!(stats.layer_frames_repainted, 0, "no layer frame was made");
+            assert_eq!(stats.layer_frames_composited, 0);
             let layer = window.fast_layers.layers.values().next().expect("a layer");
             assert!(layer.record.as_ref().expect("painted").has_paths);
             let scene = &window.rendered_frame.scene;
