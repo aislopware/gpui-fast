@@ -493,3 +493,1069 @@ fn layout_stats_count_scroll_layer_work() {
         (0, 0, 0, 0, 0)
     );
 }
+
+/// The paint stream (M3): painting a scroll container's content into a
+/// layer, tile diffing, snapping, background baking and compositing.
+mod paint {
+    use crate::AppContext as _;
+    use crate::fast::layers::tiles::{dirty_tiles, tile_hashes};
+    use crate::{Bounds, ContentMask, Hsla, Quad, ScaledPixels, Scene, TileCoord, point, size};
+
+    fn sp(x: f32, y: f32, w: f32, h: f32) -> Bounds<ScaledPixels> {
+        Bounds {
+            origin: point(ScaledPixels(x), ScaledPixels(y)),
+            size: size(ScaledPixels(w), ScaledPixels(h)),
+        }
+    }
+
+    fn quad(bounds: Bounds<ScaledPixels>, color: Hsla) -> Quad {
+        Quad {
+            bounds,
+            content_mask: ContentMask {
+                bounds: sp(-10_000., -10_000., 20_000., 20_000.),
+            },
+            background: color.into(),
+            ..Default::default()
+        }
+    }
+
+    fn scene(quads: &[Quad]) -> Scene {
+        let mut scene = Scene::default();
+        for quad in quads {
+            scene.insert_primitive(*quad);
+        }
+        scene.finish();
+        scene
+    }
+
+    fn region() -> Bounds<ScaledPixels> {
+        sp(0., 0., 1024., 1024.)
+    }
+
+    fn dirty(old: &Scene, new: &Scene) -> Vec<TileCoord> {
+        dirty_tiles(
+            &tile_hashes(old, 512, region()),
+            &tile_hashes(new, 512, region()),
+        )
+    }
+
+    fn tiles(coords: &[(i32, i32)]) -> Vec<TileCoord> {
+        coords.iter().map(|&(x, y)| TileCoord { x, y }).collect()
+    }
+
+    #[test]
+    fn every_tile_of_the_region_gets_a_hash_even_an_empty_one() {
+        let hashes = tile_hashes(
+            &scene(&[quad(sp(10., 10., 5., 5.), Hsla::red())]),
+            512,
+            region(),
+        );
+        let mut keys: Vec<_> = hashes.keys().copied().collect();
+        keys.sort();
+        assert_eq!(keys, tiles(&[(0, 0), (0, 1), (1, 0), (1, 1)]));
+        assert_eq!(
+            hashes[&TileCoord { x: 1, y: 0 }],
+            hashes[&TileCoord { x: 1, y: 1 }]
+        );
+        assert_ne!(
+            hashes[&TileCoord { x: 0, y: 0 }],
+            hashes[&TileCoord { x: 1, y: 1 }]
+        );
+    }
+
+    #[test]
+    fn identical_scenes_dirty_no_tile() {
+        let quads = [
+            quad(sp(10., 10., 20., 20.), Hsla::red()),
+            quad(sp(500., 600., 40., 10.), Hsla::blue()),
+        ];
+        assert_eq!(dirty(&scene(&quads), &scene(&quads)), Vec::new());
+    }
+
+    #[test]
+    fn a_colour_change_dirties_the_tiles_the_quad_covers() {
+        let before = [
+            quad(sp(10., 10., 20., 20.), Hsla::red()),
+            quad(sp(500., 600., 40., 10.), Hsla::blue()),
+        ];
+        let mut after = before;
+        after[1].background = Hsla::green().into();
+        assert_eq!(
+            dirty(&scene(&before), &scene(&after)),
+            tiles(&[(0, 1), (1, 1)])
+        );
+    }
+
+    #[test]
+    fn a_move_within_one_tile_dirties_that_tile() {
+        let before = [
+            quad(sp(10., 10., 20., 20.), Hsla::red()),
+            quad(sp(600., 600., 10., 10.), Hsla::blue()),
+        ];
+        let mut after = before;
+        after[1].bounds = sp(640., 610., 10., 10.);
+        assert_eq!(dirty(&scene(&before), &scene(&after)), tiles(&[(1, 1)]));
+    }
+
+    #[test]
+    fn an_added_primitive_spanning_two_tiles_dirties_both() {
+        let before = [quad(sp(10., 10., 20., 20.), Hsla::red())];
+        let after = [
+            quad(sp(10., 10., 20., 20.), Hsla::red()),
+            quad(sp(100., 500., 10., 40.), Hsla::blue()),
+        ];
+        assert_eq!(
+            dirty(&scene(&before), &scene(&after)),
+            tiles(&[(0, 0), (0, 1)])
+        );
+    }
+
+    #[test]
+    fn tiles_new_to_the_region_are_dirty() {
+        let quads = [quad(sp(10., 10., 20., 20.), Hsla::red())];
+        let old = tile_hashes(&scene(&quads), 512, sp(0., 0., 512., 512.));
+        let new = tile_hashes(&scene(&quads), 512, sp(0., 0., 512., 1024.));
+        assert_eq!(dirty_tiles(&old, &new), tiles(&[(0, 1)]));
+    }
+
+    #[test]
+    fn a_primitive_moved_by_whole_tiles_hashes_like_its_old_tile() {
+        // Its mask moves with it, so it draws the same pixels in its tile.
+        let at = |bounds: Bounds<ScaledPixels>| Quad {
+            content_mask: ContentMask { bounds },
+            ..quad(bounds, Hsla::red())
+        };
+        let a = tile_hashes(&scene(&[at(sp(10., 10., 20., 20.))]), 512, region());
+        let b = tile_hashes(&scene(&[at(sp(522., 522., 20., 20.))]), 512, region());
+        assert_eq!(a[&TileCoord { x: 0, y: 0 }], b[&TileCoord { x: 1, y: 1 }]);
+    }
+
+    #[test]
+    fn a_mask_change_outside_a_tile_leaves_the_tile_clean() {
+        // The painted region, every primitive's mask while a layer paints,
+        // moves with the scroll offset: only the tiles it crosses change.
+        let masked = |mask: Bounds<ScaledPixels>| {
+            [
+                Quad {
+                    content_mask: ContentMask { bounds: mask },
+                    ..quad(sp(10., 10., 20., 900.), Hsla::red())
+                },
+                Quad {
+                    content_mask: ContentMask { bounds: mask },
+                    ..quad(sp(600., 10., 20., 900.), Hsla::blue())
+                },
+            ]
+        };
+        let before = masked(sp(0., -100., 1024., 1000.));
+        let after = masked(sp(0., -90., 1024., 1000.));
+        assert_eq!(
+            dirty(&scene(&before), &scene(&after)),
+            tiles(&[(0, 1), (1, 1)])
+        );
+    }
+
+    fn row_color(row: usize) -> Hsla {
+        crate::hsla(row as f32 / 64., 0.5, 0.5, 1.)
+    }
+
+    /// A panel, white at first, holding a 100 px scroll container of `rows` rows of
+    /// 20 px, each its own colour.
+    struct Rows {
+        rows: usize,
+        panel: Hsla,
+        scroll: crate::ScrollHandle,
+        height: crate::Pixels,
+    }
+
+    impl crate::Render for Rows {
+        fn render(
+            &mut self,
+            _window: &mut crate::Window,
+            _cx: &mut crate::Context<Self>,
+        ) -> impl crate::IntoElement {
+            use crate::{
+                InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+                Styled as _,
+            };
+            crate::div().size_full().bg(self.panel).child(
+                crate::div()
+                    .id("s")
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .h(self.height)
+                    .children(
+                        (0..self.rows).map(|i| crate::div().h(crate::px(20.)).bg(row_color(i))),
+                    ),
+            )
+        }
+    }
+
+    fn rows_window(cx: &mut crate::TestAppContext, rows: usize) -> crate::WindowHandle<Rows> {
+        rows_window_of_height(cx, rows, crate::px(100.))
+    }
+
+    fn rows_window_of_height(
+        cx: &mut crate::TestAppContext,
+        rows: usize,
+        height: crate::Pixels,
+    ) -> crate::WindowHandle<Rows> {
+        let window = cx.add_window(|_, _| Rows {
+            rows,
+            panel: crate::white(),
+            scroll: crate::ScrollHandle::new(),
+            height,
+        });
+        // The first frame redraws everything, which never uses layers.
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        window
+    }
+
+    /// Draws `window` with its view rebuilt and every scroll container made
+    /// to decide `decision`.
+    fn draw_deciding(
+        cx: &mut crate::TestAppContext,
+        window: crate::WindowHandle<Rows>,
+        decision: crate::fast::layers::policy::Decision,
+    ) {
+        window
+            .update(cx, |_, window, cx| {
+                window.fast_layers.forced_decision = Some(decision);
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+
+    fn with_record<R>(
+        cx: &mut crate::TestAppContext,
+        window: crate::WindowHandle<Rows>,
+        f: impl FnOnce(&crate::fast::layers::record::LayerRecord, &crate::Window) -> R,
+    ) -> R {
+        cx.update_window(window.into(), |_, window, _| {
+            assert_eq!(window.fast_layers.layers.len(), 1, "one layer");
+            let layer = window.fast_layers.layers.values().next().unwrap();
+            f(
+                layer.record.as_ref().expect("the layer was painted"),
+                window,
+            )
+        })
+        .unwrap()
+    }
+
+    fn row_quads(scene: &Scene, rows: usize) -> Vec<(usize, Bounds<ScaledPixels>)> {
+        scene
+            .quads
+            .iter()
+            .filter_map(|quad| {
+                (0..rows)
+                    .find(|&row| quad.background == row_color(row).into())
+                    .map(|row| (row, quad.bounds))
+            })
+            .collect()
+    }
+
+    #[crate::test]
+    fn a_repainted_layer_holds_the_content_in_content_space(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+
+        let main_rows = cx
+            .update_window(window.into(), |_, window, _| {
+                row_quads(&window.rendered_frame.scene, 40)
+            })
+            .unwrap();
+        assert_eq!(main_rows, Vec::new(), "the rows are painted into the layer");
+
+        let scale = cx
+            .update_window(window.into(), |_, window, _| window.scale_factor())
+            .unwrap();
+        with_record(cx, window, |record, _| {
+            // The viewport, 100 px, and one viewport of overscan below it;
+            // nothing above, at the top.
+            assert_eq!(record.viewport.size.height, crate::px(100.));
+            assert_eq!(record.painted_region.origin.y, crate::px(0.));
+            assert_eq!(record.painted_region.size.height, crate::px(200.));
+            let rows = row_quads(&record.content, 40);
+            assert_eq!(
+                rows.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
+                (0..10).collect::<Vec<_>>()
+            );
+            for (row, bounds) in rows {
+                assert_eq!(bounds.origin.y, ScaledPixels(row as f32 * 20. * scale));
+                assert_eq!(bounds.size.height, ScaledPixels(20. * scale));
+            }
+            assert_eq!(record.generation, 1);
+            let mut tiles: Vec<_> = record.tile_hashes.keys().copied().collect();
+            tiles.sort();
+            // 200 px at the test window's scale of 2 is 400 device px: one
+            // tile high.
+            assert!(tiles.iter().all(|tile| tile.y == 0), "{tiles:?}");
+            assert_eq!(
+                record.dirty_tiles, tiles,
+                "a first paint dirties every tile"
+            );
+        });
+    }
+
+    #[crate::test]
+    fn scrolled_content_is_stored_where_it_was_before_the_scroll(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        window
+            .update(cx, |view, _, _| {
+                view.scroll
+                    .set_offset(crate::point(crate::px(0.), crate::px(-300.)))
+            })
+            .unwrap();
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+        let scale = cx
+            .update_window(window.into(), |_, window, _| window.scale_factor())
+            .unwrap();
+        with_record(cx, window, |record, _| {
+            // Overscan of one viewport above and below the one at 300..400.
+            assert_eq!(record.painted_region.origin.y, crate::px(-100.));
+            assert_eq!(record.painted_region.size.height, crate::px(300.));
+            let rows = row_quads(&record.content, 40);
+            assert_eq!(
+                rows.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
+                (10..25).collect::<Vec<_>>()
+            );
+            for (row, bounds) in rows {
+                assert_eq!(bounds.origin.y, ScaledPixels(row as f32 * 20. * scale));
+            }
+        });
+    }
+
+    #[crate::test]
+    fn a_repaint_at_a_shifted_offset_dirties_only_the_edge_tiles(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        // Enough viewport for the painted region to span many tiles.
+        let window = rows_window_of_height(cx, 400, crate::px(1000.));
+        let scroll_to = |cx: &mut crate::TestAppContext, y: f32| {
+            window
+                .update(cx, |view, _, _| {
+                    view.scroll
+                        .set_offset(crate::point(crate::px(0.), crate::px(y)))
+                })
+                .unwrap();
+            draw_deciding(cx, window, Decision::Repaint);
+        };
+        scroll_to(cx, -3000.);
+        scroll_to(cx, -3010.);
+        with_record(cx, window, |record, _| {
+            let rows: Vec<i32> = record.tile_hashes.keys().map(|tile| tile.y).collect();
+            let (top, bottom) = (*rows.iter().min().unwrap(), *rows.iter().max().unwrap());
+            assert!(bottom - top >= 4, "the region spans many tile rows");
+            assert!(!record.dirty_tiles.is_empty(), "the region's edges moved");
+            for tile in &record.dirty_tiles {
+                assert!(
+                    tile.y == top || tile.y == bottom,
+                    "tile {tile:?} inside the region ({top}..={bottom}) is dirty"
+                );
+            }
+        });
+        // The same content at the same offset dirties nothing.
+        scroll_to(cx, -3010.);
+        with_record(cx, window, |record, _| {
+            assert_eq!(record.dirty_tiles, Vec::new());
+        });
+    }
+
+    #[crate::test]
+    fn overscan_is_clamped_to_content(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        // 60 px of rows in the 100 px viewport: nothing to scroll to.
+        let window = rows_window(cx, 3);
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+        with_record(cx, window, |record, window| {
+            assert_eq!(
+                record.painted_region, record.viewport,
+                "no overscan past the content"
+            );
+            assert_eq!(row_quads(&record.content, 3).len(), 3);
+            let region = record.painted_region.scale(window.scale_factor());
+            for tile in record.tile_hashes.keys() {
+                let top = tile.y as f32 * 512.;
+                assert!(
+                    top < region.bottom_right().y.0,
+                    "tile {tile:?} below the content"
+                );
+            }
+        });
+    }
+
+    /// A scroll container whose content records the element offset it is
+    /// prepainted at.
+    struct Offsets {
+        scroll: crate::ScrollHandle,
+        seen: std::rc::Rc<std::cell::Cell<crate::Point<crate::Pixels>>>,
+    }
+
+    impl crate::Render for Offsets {
+        fn render(
+            &mut self,
+            _window: &mut crate::Window,
+            _cx: &mut crate::Context<Self>,
+        ) -> impl crate::IntoElement {
+            use crate::{
+                InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+                Styled as _,
+            };
+            let seen = self.seen.clone();
+            crate::div().size_full().child(
+                crate::div()
+                    .id("s")
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .h(crate::px(100.))
+                    .child(
+                        crate::canvas(
+                            move |_, window, _| seen.set(window.element_offset()),
+                            |_, _, _, _| {},
+                        )
+                        .h(crate::px(1000.))
+                        .w_full(),
+                    ),
+            )
+        }
+    }
+
+    #[crate::test]
+    fn scroll_offsets_land_on_device_pixels(cx: &mut crate::TestAppContext) {
+        let seen = std::rc::Rc::new(std::cell::Cell::new(crate::Point::default()));
+        let window = cx.add_window({
+            let seen = seen.clone();
+            |_, _| Offsets {
+                scroll: crate::ScrollHandle::new(),
+                seen,
+            }
+        });
+        cx.test_window(window.into())
+            .simulate_scale_factor_change(1.25);
+        window
+            .update(cx, |view, _, cx| {
+                view.scroll
+                    .set_offset(crate::point(crate::px(0.), crate::px(-10.37)));
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        let offset = seen.get();
+        if crate::fast::layers::COMPILED {
+            // -10.37 px is -12.9625 device px; the content goes to -13.
+            assert_eq!(offset.y * 1.25, crate::px(-13.));
+        } else {
+            assert_eq!(offset.y, crate::px(-10.37));
+        }
+
+        let snap = crate::fast::layers::paint::snap_offset;
+        let fractional = crate::point(crate::px(0.37), crate::px(-10.37));
+        assert_eq!(snap(fractional, 1.25, false), fractional);
+        let snapped = snap(fractional, 1.25, true);
+        assert_eq!(
+            (snapped.x * 1.25, snapped.y * 1.25),
+            (crate::px(0.), crate::px(-13.))
+        );
+        let whole = crate::point(crate::px(-8.), crate::px(-12.8));
+        assert_eq!(snap(whole, 1.25, true), whole, "whole device pixels stay");
+    }
+
+    fn bake(quads: &[Quad], window_opaque: bool) -> Option<crate::Rgba> {
+        crate::fast::layers::background::bake(
+            &scene(quads),
+            sp(100., 100., 200., 300.),
+            window_opaque,
+        )
+    }
+
+    #[test]
+    fn an_opaque_panel_under_the_viewport_is_baked() {
+        let panel = quad(sp(0., 0., 1000., 1000.), Hsla::blue());
+        assert_eq!(bake(&[panel], true), Some(Hsla::blue().into()));
+        // Something painted later away from the viewport changes nothing.
+        let elsewhere = quad(sp(500., 500., 10., 10.), Hsla::red());
+        assert_eq!(bake(&[panel, elsewhere], true), Some(Hsla::blue().into()));
+        // The topmost panel is the one baked.
+        let above = quad(sp(50., 50., 400., 400.), Hsla::green());
+        assert_eq!(bake(&[panel, above], true), Some(Hsla::green().into()));
+    }
+
+    #[test]
+    fn only_a_solid_opaque_panel_covering_the_viewport_is_baked() {
+        let panel = quad(sp(0., 0., 1000., 1000.), Hsla::blue());
+        assert_eq!(bake(&[panel], false), None, "transparent window");
+
+        let gradient = Quad {
+            background: crate::linear_gradient(
+                0.,
+                crate::linear_color_stop(Hsla::red(), 0.),
+                crate::linear_color_stop(Hsla::blue(), 1.),
+            ),
+            ..panel
+        };
+        assert_eq!(bake(&[gradient], true), None, "gradient");
+
+        let translucent = quad(sp(0., 0., 1000., 1000.), Hsla::blue().opacity(0.5));
+        assert_eq!(bake(&[translucent], true), None, "translucent");
+
+        let partly_inside = quad(sp(250., 250., 100., 100.), Hsla::red());
+        assert_eq!(bake(&[panel, partly_inside], true), None, "partly covered");
+
+        let short = quad(sp(0., 0., 1000., 350.), Hsla::blue());
+        assert_eq!(bake(&[short], true), None, "does not cover the viewport");
+
+        let clipped = Quad {
+            content_mask: ContentMask {
+                bounds: sp(0., 0., 1000., 200.),
+            },
+            ..panel
+        };
+        assert_eq!(
+            bake(&[clipped], true),
+            None,
+            "clipped short of the viewport"
+        );
+
+        let rounded_inside = Quad {
+            bounds: sp(90., 90., 500., 500.),
+            corner_radii: crate::Corners::all(ScaledPixels(20.)),
+            ..panel
+        };
+        assert_eq!(bake(&[rounded_inside], true), None, "corner inside");
+        let rounded_outside = Quad {
+            bounds: sp(0., 0., 1000., 1000.),
+            corner_radii: crate::Corners::all(ScaledPixels(20.)),
+            ..panel
+        };
+        assert_eq!(
+            bake(&[rounded_outside], true),
+            Some(Hsla::blue().into()),
+            "corners away from the viewport"
+        );
+
+        let bordered = Quad {
+            bounds: sp(95., 0., 1000., 1000.),
+            border_widths: crate::Edges::all(ScaledPixels(10.)),
+            border_color: Hsla::red(),
+            ..panel
+        };
+        assert_eq!(bake(&[bordered], true), None, "border inside");
+        let transparent_border = Quad {
+            border_color: Hsla::transparent_black(),
+            ..bordered
+        };
+        assert_eq!(
+            bake(&[transparent_border], true),
+            Some(Hsla::blue().into()),
+            "an invisible border"
+        );
+    }
+
+    /// Draws `window` over a panel of colour `panel`, every scroll container
+    /// made to decide `decision`.
+    fn draw_over(
+        cx: &mut crate::TestAppContext,
+        window: crate::WindowHandle<Rows>,
+        panel: Hsla,
+        decision: crate::fast::layers::policy::Decision,
+    ) {
+        window
+            .update(cx, |view, window, cx| {
+                view.panel = panel;
+                window.fast_layers.forced_decision = Some(decision);
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    }
+
+    #[crate::test]
+    fn a_layer_bakes_the_panel_under_it(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+        with_record(cx, window, |record, _| {
+            assert_eq!(record.background, crate::white().into());
+        });
+    }
+
+    #[crate::test]
+    fn background_change_repaints_layer(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, Decision::Repaint);
+        let (generation, tiles) = with_record(cx, window, |record, _| {
+            let mut tiles: Vec<_> = record.tile_hashes.keys().copied().collect();
+            tiles.sort();
+            (record.generation, tiles)
+        });
+
+        // Painted again with nothing changed but the panel: every tile is
+        // cleared with another colour, so every tile is dirty.
+        draw_over(cx, window, Hsla::blue(), Decision::Repaint);
+        let generation = with_record(cx, window, |record, _| {
+            assert_eq!(record.background, Hsla::blue().into());
+            assert_eq!(record.generation, generation + 1);
+            assert_eq!(record.dirty_tiles, tiles);
+            record.generation
+        });
+
+        // Composited over another panel: the content stands, the tiles are
+        // cleared with the new colour.
+        draw_over(cx, window, Hsla::green(), Decision::Composite);
+        with_record(cx, window, |record, _| {
+            assert_eq!(record.background, Hsla::green().into());
+            assert_eq!(record.generation, generation + 1);
+            assert_eq!(record.dirty_tiles, tiles);
+        });
+
+        // Nothing changed: the same tiles, nothing dirty.
+        draw_deciding(cx, window, Decision::Repaint);
+        with_record(cx, window, |record, _| {
+            assert_eq!(record.background, Hsla::green().into());
+            assert_eq!(record.dirty_tiles, Vec::new());
+        });
+    }
+
+    #[crate::test]
+    fn no_layer_is_painted_over_a_background_it_cannot_bake(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        draw_over(
+            cx,
+            window,
+            Hsla::blue().opacity(0.5),
+            crate::fast::layers::policy::Decision::Repaint,
+        );
+        cx.update_window(window.into(), |_, window, _| {
+            assert_eq!(
+                row_quads(&window.rendered_frame.scene, 40).len(),
+                5,
+                "the rows are painted as without layers"
+            );
+            assert!(
+                window
+                    .fast_layers
+                    .layers
+                    .values()
+                    .all(|layer| layer.record.is_none())
+            );
+        })
+        .unwrap();
+    }
+
+    /// The layer tiles `scene` composites, with the layer each belongs to.
+    fn tile_quads(scene: &Scene) -> Vec<(crate::LayerKey, TileCoord, crate::PolychromeSprite)> {
+        scene
+            .polychrome_sprites
+            .iter()
+            .filter_map(|sprite| {
+                crate::decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id)
+                    .map(|(key, coord)| (key, coord, *sprite))
+            })
+            .collect()
+    }
+
+    #[crate::test]
+    fn tile_quads_cover_the_viewport_at_the_current_offset(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, Decision::Repaint);
+        window
+            .update(cx, |view, _, _| {
+                view.scroll
+                    .set_offset(crate::point(crate::px(0.), crate::px(-130.)))
+            })
+            .unwrap();
+        draw_deciding(cx, window, Decision::Composite);
+
+        cx.update_window(window.into(), |_, window, _| {
+            let scale = window.scale_factor();
+            let layer = window.fast_layers.layers.values().next().expect("a layer");
+            let record = layer.record.as_ref().expect("painted");
+            let scene = &window.rendered_frame.scene;
+            assert_eq!(row_quads(scene, 40), Vec::new(), "the rows are not drawn");
+
+            // The viewport, snapped as every content mask is.
+            let viewport = record.viewport;
+            let floor = |v: crate::Pixels| crate::util::floor_to_device_pixel(v.0, scale);
+            let ceil = |v: crate::Pixels| crate::util::ceil_to_device_pixel(v.0, scale);
+            let mask = Bounds::from_corners(
+                point(
+                    ScaledPixels(floor(viewport.left())),
+                    ScaledPixels(floor(viewport.top())),
+                ),
+                point(
+                    ScaledPixels(ceil(viewport.right())),
+                    ScaledPixels(ceil(viewport.bottom())),
+                ),
+            );
+            let translation = point(ScaledPixels(0.), ScaledPixels(-130. * scale));
+
+            assert_eq!(scene.layers.frames.len(), 1);
+            let frame = &scene.layers.frames[0];
+            assert_eq!(frame.key, layer.key);
+            assert!(std::rc::Rc::ptr_eq(&frame.content, &record.content));
+            assert_eq!(frame.generation, record.generation);
+            assert_eq!(frame.background, record.background);
+            assert_eq!(frame.tile_size, 512);
+            assert_eq!(frame.dirty_tiles, record.dirty_tiles);
+
+            let quads = tile_quads(scene);
+            let mut expected = Vec::new();
+            let content_viewport = Bounds {
+                origin: mask.origin - translation,
+                size: mask.size,
+            };
+            for y in -4..4 {
+                for x in -4..8 {
+                    let tile = TileCoord { x, y };
+                    if frame.tile_bounds(tile).intersects(&content_viewport) {
+                        expected.push(tile);
+                    }
+                }
+            }
+            let mut coords: Vec<_> = quads.iter().map(|(_, coord, _)| *coord).collect();
+            coords.sort();
+            assert!(!expected.is_empty());
+            assert_eq!(coords, expected);
+            let order = quads[0].2.order;
+            for (key, coord, sprite) in &quads {
+                assert_eq!(*key, layer.key);
+                let tile = frame.tile_bounds(*coord);
+                assert_eq!(
+                    sprite.bounds,
+                    Bounds {
+                        origin: tile.origin + translation,
+                        size: tile.size,
+                    }
+                );
+                assert_eq!(sprite.content_mask.bounds, mask);
+                assert_eq!(sprite.order, order, "the tiles share one draw order");
+                assert_eq!(sprite.opacity, 1.);
+                assert_eq!(sprite.tile.bounds.size.width.0, 512);
+                assert_eq!(sprite.tile.bounds.size.height.0, 512);
+                assert_eq!(sprite.tile.bounds.origin, crate::Point::default());
+            }
+        })
+        .unwrap();
+    }
+
+    #[crate::test]
+    fn a_repainted_layer_is_composited_where_it_was_painted(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        cx.update_window(window.into(), |_, window, _| window.reset_layout_stats())
+            .unwrap();
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+        cx.update_window(window.into(), |_, window, _| {
+            let scene = &window.rendered_frame.scene;
+            let quads = tile_quads(scene);
+            assert!(!quads.is_empty());
+            for (_, coord, sprite) in &quads {
+                let tile = scene.layers.frames[0].tile_bounds(*coord);
+                assert_eq!(sprite.bounds, tile, "no translation at offset 0");
+            }
+            let stats = window.layout_stats();
+            assert_eq!(stats.layer_frames_repainted, 1);
+            assert_eq!(stats.layer_frames_composited, 1);
+            assert_eq!(
+                stats.tiles_dirtied,
+                scene.layers.frames[0].dirty_tiles.len() as u64
+            );
+        })
+        .unwrap();
+    }
+
+    #[crate::test]
+    fn a_reused_view_keeps_compositing_its_layer(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, crate::fast::layers::policy::Decision::Repaint);
+        let before = cx
+            .update_window(window.into(), |_, window, _| {
+                tile_quads(&window.rendered_frame.scene).len()
+            })
+            .unwrap();
+        // Nothing changed: the view is reused, its scene replayed.
+        cx.update_window(window.into(), |_, window, cx| {
+            window.reset_layout_stats();
+            window.draw(cx).clear(cx)
+        })
+        .unwrap();
+        cx.update_window(window.into(), |_, window, _| {
+            let scene = &window.rendered_frame.scene;
+            assert_eq!(tile_quads(scene).len(), before);
+            assert_eq!(scene.layers.frames.len(), 1, "the layer frame comes along");
+            let stats = window.layout_stats();
+            assert_eq!(stats.layer_frames_repainted, 0, "the view was reused");
+            assert!(stats.views_reused > 0, "the view was reused");
+        })
+        .unwrap();
+    }
+
+    #[crate::test]
+    fn a_composited_layer_over_a_background_it_cannot_bake_is_drawn_into_the_frame(
+        cx: &mut crate::TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        let window = rows_window(cx, 40);
+        let direct = cx
+            .update_window(window.into(), |_, window, _| {
+                row_quads(&window.rendered_frame.scene, 40)
+            })
+            .unwrap();
+        draw_deciding(cx, window, Decision::Repaint);
+        draw_over(cx, window, Hsla::blue().opacity(0.5), Decision::Composite);
+        cx.update_window(window.into(), |_, window, _| {
+            let scene = &window.rendered_frame.scene;
+            assert!(tile_quads(scene).is_empty());
+            assert!(scene.layers.frames.is_empty());
+            assert_eq!(row_quads(scene, 40), direct, "the rows as without a layer");
+            let layer = window.fast_layers.layers.values().next().expect("a layer");
+            assert!(layer.record.is_none(), "painted afresh next time");
+        })
+        .unwrap();
+    }
+
+    /// A scroll container whose content paints a path under a row.
+    struct PathRows;
+
+    impl crate::Render for PathRows {
+        fn render(
+            &mut self,
+            _window: &mut crate::Window,
+            _cx: &mut crate::Context<Self>,
+        ) -> impl crate::IntoElement {
+            use crate::{
+                InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+                Styled as _,
+            };
+            crate::div().size_full().bg(crate::white()).child(
+                crate::div()
+                    .id("s")
+                    .overflow_y_scroll()
+                    .h(crate::px(100.))
+                    .child(
+                        crate::canvas(
+                            |_, _, _| {},
+                            |bounds, _, window, _| {
+                                let origin = bounds.origin;
+                                let mut path = crate::Path::new(origin);
+                                path.line_to(origin + crate::point(crate::px(30.), crate::px(0.)));
+                                path.line_to(origin + crate::point(crate::px(0.), crate::px(30.)));
+                                window.paint_path(path, crate::black());
+                            },
+                        )
+                        .h(crate::px(40.))
+                        .w_full(),
+                    )
+                    .children((0..20).map(|i| crate::div().h(crate::px(20.)).bg(row_color(i)))),
+            )
+        }
+    }
+
+    #[crate::test]
+    fn content_with_paths_is_drawn_into_the_frame_not_composited(cx: &mut crate::TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let window = cx.add_window(|_, _| PathRows);
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        let (direct_paths, direct_rows) = cx
+            .update_window(window.into(), |_, window, _| {
+                let scene = &window.rendered_frame.scene;
+                (scene.paths.len(), row_quads(scene, 20))
+            })
+            .unwrap();
+        assert_eq!(direct_paths, 1);
+
+        window
+            .update(cx, |_, window, cx| {
+                window.fast_layers.forced_decision =
+                    Some(crate::fast::layers::policy::Decision::Repaint);
+                window.reset_layout_stats();
+                cx.notify();
+            })
+            .unwrap();
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        cx.update_window(window.into(), |_, window, _| {
+            let stats = window.layout_stats();
+            assert_eq!(stats.layer_frames_repainted, 0, "no layer frame was made");
+            assert_eq!(stats.layer_frames_composited, 0);
+            let layer = window.fast_layers.layers.values().next().expect("a layer");
+            assert!(layer.record.as_ref().expect("painted").has_paths);
+            let scene = &window.rendered_frame.scene;
+            assert!(
+                scene.polychrome_sprites.iter().all(|sprite| {
+                    crate::decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id).is_none()
+                }),
+                "no tile quads"
+            );
+            assert!(scene.layers.frames.is_empty(), "no layer frames");
+            assert_eq!(scene.paths.len(), 1, "the path is in the frame");
+            assert_eq!(
+                row_quads(scene, 20),
+                direct_rows,
+                "the rows are drawn as without a layer"
+            );
+        })
+        .unwrap();
+    }
+}
+
+/// Primitives that draw outside their bounds: a shadow's blur and a
+/// transformed sprite reach the tiles they draw over, not just the tiles
+/// their bounds cover.
+mod footprints {
+    use super::{atlas_tile, layer, sp, wide_mask};
+    use crate::fast::layers::tiles::{dirty_tiles, tile_hashes};
+    use crate::{
+        Hsla, MonochromeSprite, Radians, Scene, Shadow, TileCoord, TransformationMatrix, point,
+    };
+
+    fn shadow(color: Hsla) -> Shadow {
+        // Its blur reaches x = 500 + 3 * 10 = 530, inside tile (1, 0).
+        Shadow {
+            order: 0,
+            blur_radius: crate::ScaledPixels(10.),
+            bounds: sp(400., 100., 100., 100.),
+            corner_radii: Default::default(),
+            content_mask: wide_mask(),
+            color,
+            element_bounds: sp(400., 100., 100., 100.),
+            element_corner_radii: Default::default(),
+            inset: 0,
+            pad: 0,
+        }
+    }
+
+    fn rotated_sprite(color: Hsla) -> MonochromeSprite {
+        // A 70 px square ending 2 px short of tile (1, 0), turned an eighth
+        // around its centre (475, 135): its corners reach x = 524.5.
+        MonochromeSprite {
+            order: 0,
+            pad: 0,
+            bounds: sp(440., 100., 70., 70.),
+            content_mask: wide_mask(),
+            color,
+            tile: atlas_tile(),
+            transformation: TransformationMatrix::unit()
+                .translate(point(crate::ScaledPixels(475.), crate::ScaledPixels(135.)))
+                .rotate(Radians(std::f32::consts::FRAC_PI_4))
+                .translate(point(
+                    crate::ScaledPixels(-475.),
+                    crate::ScaledPixels(-135.),
+                )),
+        }
+    }
+
+    fn scene_of(primitive: impl Into<crate::scene::Primitive>) -> Scene {
+        let mut scene = Scene::default();
+        scene.insert_primitive(primitive);
+        scene.finish();
+        scene
+    }
+
+    fn dirty(old: &Scene, new: &Scene) -> Vec<TileCoord> {
+        let region = sp(0., 0., 1024., 512.);
+        dirty_tiles(
+            &tile_hashes(old, 512, region),
+            &tile_hashes(new, 512, region),
+        )
+    }
+
+    const BOTH: [TileCoord; 2] = [TileCoord { x: 0, y: 0 }, TileCoord { x: 1, y: 0 }];
+
+    #[test]
+    fn a_shadow_change_dirties_every_tile_its_blur_reaches() {
+        assert_eq!(
+            dirty(
+                &scene_of(shadow(Hsla::red())),
+                &scene_of(shadow(Hsla::blue()))
+            ),
+            BOTH
+        );
+    }
+
+    #[test]
+    fn a_tile_scene_holds_a_shadow_whose_blur_reaches_the_tile() {
+        let frame = layer(scene_of(shadow(Hsla::red())));
+        assert_eq!(frame.tile_scene(TileCoord { x: 1, y: 0 }).shadows.len(), 1);
+        assert!(
+            frame
+                .tile_scene(TileCoord { x: 1, y: 1 })
+                .shadows
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_shadow_masked_off_a_tile_leaves_it_alone() {
+        let masked = |color| Shadow {
+            content_mask: crate::ContentMask {
+                bounds: sp(0., 0., 512., 512.),
+            },
+            ..shadow(color)
+        };
+        assert_eq!(
+            dirty(
+                &scene_of(masked(Hsla::red())),
+                &scene_of(masked(Hsla::blue()))
+            ),
+            [TileCoord { x: 0, y: 0 }]
+        );
+    }
+
+    #[test]
+    fn a_rotated_sprite_change_dirties_every_tile_it_turns_into() {
+        assert_eq!(
+            dirty(
+                &scene_of(rotated_sprite(Hsla::red())),
+                &scene_of(rotated_sprite(Hsla::blue()))
+            ),
+            BOTH
+        );
+        let frame = layer(scene_of(rotated_sprite(Hsla::red())));
+        assert_eq!(
+            frame
+                .tile_scene(TileCoord { x: 1, y: 0 })
+                .monochrome_sprites
+                .len(),
+            1
+        );
+    }
+}

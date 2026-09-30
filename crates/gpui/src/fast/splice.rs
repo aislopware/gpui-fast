@@ -288,6 +288,7 @@ impl Window {
             || self.is_inspector_picking(cx)
             || self.retained_state.dirty_subtrees.contains(id)
             || self.next_frame.retained.by_id.contains_key(id)
+            || crate::fast::layers::paint::inside_layer(self)
         {
             return None;
         }

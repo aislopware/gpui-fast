@@ -497,6 +497,7 @@ impl Window {
             || self.is_inspector_picking(cx)
             || self.retained_state.dirty_subtrees.contains(id)
             || self.next_frame.retained.by_id.contains_key(id)
+            || crate::fast::layers::paint::inside_layer(self)
         {
             return None;
         }
@@ -514,7 +515,8 @@ impl Window {
     /// drawn at `bounds` just as it was.
     pub(crate) fn retained_context_matches(&self, previous: usize, bounds: Bounds<Pixels>) -> bool {
         let context = &self.rendered_frame.retained.records[previous].context;
-        context.bounds == bounds
+        !crate::fast::layers::paint::inside_layer(self)
+            && context.bounds == bounds
             && context.opacity == self.element_opacity
             && context.content_mask == self.content_mask()
             && context.text_style == self.text_style()
@@ -764,8 +766,9 @@ impl Window {
             .stats
             .views_built += 1;
         let start = self.prepaint_index();
+        let inside_layer = crate::fast::layers::paint::inside_layer(self);
         let retained = &mut self.next_frame.retained;
-        let index = (!retained.by_id.contains_key(id)).then(|| {
+        let index = (!retained.by_id.contains_key(id) && !inside_layer).then(|| {
             let index = retained.push(RetainedSubtree {
                 id: id.clone(),
                 prepaint_range: start.clone()..start,
@@ -1176,6 +1179,7 @@ pub(crate) fn finish_retained_frame(window: &mut Window) {
     window.retained_state.hover_dependencies.clear();
     window.retained_state.hover_reads.get_mut().clear();
     window.next_frame.retained.finish_frame();
+    crate::fast::layers::paint::finish_frame(window);
     #[cfg(any(test, feature = "test-support"))]
     if window.next_frame.retained.reused_any() {
         // Reused subtrees do not paint, and the bounds they would have
