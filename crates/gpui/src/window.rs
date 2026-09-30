@@ -1157,7 +1157,7 @@ pub struct Window {
     is_resizable: bool,
     is_minimizable: bool,
     pub(crate) sprite_atlas: Arc<dyn PlatformAtlas>,
-    text_system: Arc<WindowTextSystem>,
+    pub(crate) text_system: Arc<WindowTextSystem>,
     text_rendering_mode: Rc<Cell<TextRenderingMode>>,
     rem_size: Pixels,
     /// The stack of override values for the window's rem size.

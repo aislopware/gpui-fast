@@ -123,7 +123,8 @@ pub(crate) fn begin_children(
         return bypass;
     }
     let viewport = window.content_mask().bounds;
-    let mut decision = policy::decide(window, cx, id, bounds, content_size, scroll_offset);
+    let decision = policy::decide(window, cx, id, bounds, content_size, scroll_offset);
+    let mut decision = crate::fast::layers::input::decide(window, id, decision);
     if decision == Decision::Composite
         && window
             .fast_layers
@@ -140,6 +141,7 @@ pub(crate) fn begin_children(
                 viewport,
                 scroll_offset,
             });
+            crate::fast::layers::reuse::carry_prepaint(window, id, viewport, scroll_offset);
         }
         Decision::Repaint => {
             let content_origin = if child_min.x == Pixels::MAX {
@@ -232,6 +234,7 @@ pub(crate) fn paint_children(
         },
         Some(Prepainted::Composite { scroll_offset, .. }) => {
             if let Some(id) = id {
+                crate::fast::layers::reuse::carry_paint(window, id);
                 composite(window, id, scroll_offset);
             }
         }
@@ -568,6 +571,7 @@ fn repaint(
         .record
         .as_ref()
         .map_or(0, |record| record.dirty_tiles.len());
+    crate::fast::layers::input::painted(window, &painting.id);
     if !has_paths {
         window
             .layout_engine

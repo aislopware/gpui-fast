@@ -2610,3 +2610,184 @@ mod policies {
         assert!(!has_layer(cx, window, &id));
     }
 }
+
+/// Tests of input into scroll layers (M5): the content's hitboxes and
+/// listeners carried through composited frames, the content brought up to
+/// date before it sees input, and hit testing and scroll handle bounds kept
+/// true.
+mod input {
+    use super::decisions::{decision, frame_after};
+    use super::invalidation::{draw, with_window};
+    use crate::fast::layers::policy::Decision;
+    use crate::{
+        AnyWindowHandle, Context, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
+        MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
+        ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _,
+        TestAppContext, TouchPhase, Window, WindowHandle, div, point, px, rgb,
+    };
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+    };
+
+    const ROWS: usize = 40;
+    const ROW_HEIGHT: f32 = 20.;
+
+    /// A 200 × 100 px scroll container of forty 20 px rows, 100 px wide, that
+    /// can be clicked, at the top left of the window. Row 2 can take focus
+    /// and counts the keys it sees. The wheel scrolls it from beside the
+    /// rows, where it hovers none of them.
+    struct InputPage {
+        handle: ScrollHandle,
+        clicks: Rc<RefCell<Vec<usize>>>,
+        keys: Rc<Cell<usize>>,
+        focus: FocusHandle,
+    }
+
+    impl Render for InputPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().bg(rgb(0xffffff)).child(
+                div()
+                    .id("scroller")
+                    .overflow_y_scroll()
+                    .track_scroll(&self.handle)
+                    .w(px(200.))
+                    .h(px(100.))
+                    .children((0..ROWS).map(|index| {
+                        let clicks = self.clicks.clone();
+                        let row = div()
+                            .id(("row", index))
+                            .w(px(100.))
+                            .h(px(ROW_HEIGHT))
+                            .bg(rgb(0x100000 + index as u32 * 0x10))
+                            .on_click(move |_, _, _| clicks.borrow_mut().push(index));
+                        if index == 2 {
+                            let keys = self.keys.clone();
+                            row.track_focus(&self.focus)
+                                .on_key_down(move |_, _, _| keys.set(keys.get() + 1))
+                        } else {
+                            row
+                        }
+                    })),
+            )
+        }
+    }
+
+    fn input_page(cx: &mut TestAppContext) -> WindowHandle<InputPage> {
+        let window = cx.add_window(|_, cx| InputPage {
+            handle: ScrollHandle::new(),
+            clicks: Rc::default(),
+            keys: Rc::default(),
+            focus: cx.focus_handle(),
+        });
+        draw(cx, window.into());
+        draw(cx, window.into());
+        window
+    }
+
+    /// Scrolls by `dy` with the wheel beside the rows, returning what the
+    /// scroll container decided in the frame that followed.
+    fn scroll(cx: &mut TestAppContext, window: AnyWindowHandle, dy: f32) -> Option<Decision> {
+        frame_after(cx, window, |cx| {
+            with_window(cx, window, |window, cx| {
+                window.dispatch_event(
+                    crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                        position: point(px(150.), px(20.)),
+                        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+                        modifiers: Default::default(),
+                        touch_phase: TouchPhase::Moved,
+                    }),
+                    cx,
+                );
+            })
+        });
+        decision(cx, window)
+    }
+
+    fn click(cx: &mut TestAppContext, window: AnyWindowHandle, position: Point<Pixels>) {
+        with_window(cx, window, |window, cx| {
+            window.dispatch_event(
+                crate::PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                crate::PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+        });
+    }
+
+    fn clicks(cx: &mut TestAppContext, window: WindowHandle<InputPage>) -> Vec<usize> {
+        window
+            .update(cx, |page, _, _| page.clicks.borrow().clone())
+            .unwrap()
+    }
+
+    /// Promotes the page's container, painting its layer at -40 px, and
+    /// composites it twice, at -60 and -80 px.
+    fn composite_twice(cx: &mut TestAppContext, window: AnyWindowHandle) {
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+    }
+
+    #[crate::test]
+    fn composited_frames_keep_the_content_interactive(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window = handle.into();
+        composite_twice(cx, window);
+        // Row 6 lies at 120 px in the content, at 40 px once scrolled by -80.
+        let row_6 = with_window(cx, window, |window, _| {
+            window.rendered_frame.hitboxes.iter().any(|hitbox| {
+                hitbox.bounds.origin == point(px(0.), px(40.))
+                    && hitbox.bounds.size.height == px(ROW_HEIGHT)
+            })
+        });
+        assert!(row_6, "the row's hitbox is carried, moved by the scroll");
+        click(cx, window, point(px(20.), px(50.)));
+        assert_eq!(clicks(cx, handle), vec![6]);
+    }
+
+    #[crate::test]
+    fn keyboard_focus_inside_survives_composite_frames(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window: AnyWindowHandle = handle.into();
+        handle
+            .update(cx, |page, window, cx| window.focus(&page.focus, cx))
+            .unwrap();
+        draw(cx, window);
+        composite_twice(cx, window);
+        let focused = handle
+            .update(cx, |page, window, _| {
+                page.focus.is_focused(window)
+                    && window
+                        .rendered_frame
+                        .dispatch_tree
+                        .focusable_node_id(page.focus.id)
+                        .is_some()
+            })
+            .unwrap();
+        assert!(focused, "the focused row's dispatch node is carried");
+        cx.simulate_keystrokes(window, "a");
+        let keys = handle.update(cx, |page, _, _| page.keys.get()).unwrap();
+        assert_eq!(keys, 1);
+    }
+}
