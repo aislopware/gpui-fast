@@ -119,6 +119,22 @@ impl TileCache {
             .map(|texture| &texture.texture)
     }
 
+    #[cfg(test)]
+    pub(crate) fn holds(&self, layer: LayerKey, tile: TileCoord) -> bool {
+        self.tiles
+            .get(&(layer, tile))
+            .is_some_and(|tile| tile.valid)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.tiles.is_empty()
+            && self.layers.is_empty()
+            && self.pool.is_empty()
+            && self.globals.is_empty()
+            && self.paths.is_empty()
+    }
+
     /// Starts a frame that composites the tiles `composited` of the layers in
     /// `layers`. Returns the tiles to rasterize before they are drawn, each
     /// with the index of its layer in `layers.frames`: the dirty tiles of a

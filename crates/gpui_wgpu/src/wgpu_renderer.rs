@@ -1139,6 +1139,7 @@ impl WgpuRenderer {
 
             self.surface_config.width = clamped_width.max(1);
             self.surface_config.height = clamped_height.max(1);
+            crate::fast::layers::TileCache::clear(&mut self.fast_frame.layers);
             let surface_config = self.surface_config.clone();
 
             let Some(resources) = self.resources.as_mut() else {
@@ -1213,6 +1214,7 @@ impl WgpuRenderer {
 
         if new_alpha_mode != self.surface_config.alpha_mode {
             self.surface_config.alpha_mode = new_alpha_mode;
+            crate::fast::layers::TileCache::clear(&mut self.fast_frame.layers);
             let surface_config = self.surface_config.clone();
             let path_sample_count = self.rendering_params.path_sample_count;
             let dual_source_blending = self.dual_source_blending;
@@ -1300,6 +1302,7 @@ impl WgpuRenderer {
                     res.invalidate_intermediate_textures();
                 }
                 self.atlas.clear();
+                crate::fast::layers::TileCache::clear(&mut self.fast_frame.layers);
                 self.needs_redraw = true;
                 self.failed_frame_count = 0;
                 return false;

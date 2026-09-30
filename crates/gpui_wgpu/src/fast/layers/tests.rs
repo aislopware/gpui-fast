@@ -206,6 +206,78 @@ fn a_changed_generation_rerasterizes_only_dirty_tiles() {
     assert_eq!(rasterized, 7);
 }
 
+#[test]
+fn tiles_are_evicted_least_recently_composited_first_within_the_budget() {
+    const SIDE: u32 = 16;
+    let tile_bytes = (SIDE * SIDE * 4) as u64;
+    let key = LayerKey(4);
+    let mut cache = TileCache::default();
+    let layers = SceneLayers {
+        frames: vec![LayerFrame {
+            tile_size: SIDE,
+            ..layer_frame(key, 1, Scene::default(), &[])
+        }],
+    };
+    let frame = |cache: &mut TileCache, shown: &[TileCoord], budget: u64| {
+        cache.begin_frame(&layers, shown.iter().map(|tile| (key, *tile)));
+        cache.evict_to_budget(budget);
+    };
+    let (a, b, c, d, e) = (
+        coord(0, 0),
+        coord(1, 0),
+        coord(2, 0),
+        coord(3, 0),
+        coord(4, 0),
+    );
+
+    frame(&mut cache, &[a, b, c], 3 * tile_bytes);
+    frame(&mut cache, &[b, c, d], 3 * tile_bytes);
+    assert!(
+        !cache.holds(key, a),
+        "the least recently composited tile goes"
+    );
+    assert!(cache.holds(key, b) && cache.holds(key, c) && cache.holds(key, d));
+
+    frame(&mut cache, &[c], 3 * tile_bytes);
+    frame(&mut cache, &[d, e], tile_bytes);
+    assert!(!cache.holds(key, b) && !cache.holds(key, c));
+    assert!(
+        cache.holds(key, d) && cache.holds(key, e),
+        "tiles composited this frame stay, over budget or not"
+    );
+}
+
+#[test]
+fn resize_releases_every_tile() {
+    let Some(mut harness) = Harness::new() else {
+        eprintln!("skipped: no wgpu adapter");
+        return;
+    };
+    let key = LayerKey(1);
+    let tiles = [(0, 0), (1, 0), (0, 1), (1, 1)];
+    let content = content(&harness, (0., 0.), no_mask().bounds, Paths::With);
+    rasterize_and_assemble(&mut harness, content, &tiles);
+    assert!(harness.state().layers.holds(key, coord(0, 0)));
+
+    // What `WgpuRenderer::update_drawable_size` calls.
+    TileCache::clear(&mut harness.state().layers);
+    assert!(harness.state().layers.is_empty());
+
+    // The next frame rasterizes the tiles it composites again.
+    let content = content_again(&harness);
+    let assembled = rasterize_and_assemble(&mut harness, content, &tiles);
+    let direct = harness.render(
+        &content_again(&harness),
+        device_size(1024, 1024),
+        background(),
+    );
+    assert_same_pixels(&assembled, &direct, 1024);
+}
+
+fn content_again(harness: &Harness) -> Scene {
+    content(harness, (0., 0.), no_mask().bounds, Paths::With)
+}
+
 // --- layer helpers --- //
 
 fn coord(x: i32, y: i32) -> TileCoord {
