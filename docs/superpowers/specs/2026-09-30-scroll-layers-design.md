@@ -262,8 +262,13 @@ re-rasterizes one or two tiles, not the layer.
   `premultiplied_alpha` as the frame), draw the tile's batches with the
   existing pipelines. Instance data for tile batches is appended to the frame's
   single staging upload.
-- Paths in tiles use a **tile-sized** path intermediate (plus MSAA), since
-  the existing one is viewport-sized and sampled by `viewport_size`.
+- Paths are never composited from tiles: `fs_path_rasterization` derives its
+  antialiasing from `dpdx`/`dpdy`, which pair pixels in 2×2 quads, so a path
+  rasterized into a tile and moved by an odd number of device pixels differs
+  from a direct draw by one level on some edge pixels. Content that paints a
+  path makes its container ineligible (§6.5); the renderer's tile path
+  support (a tile-sized intermediate) exists only so its pixel tests can pin
+  this down.
 - Composite: a polychrome batch whose texture id decodes to a layer tile
   (§5.1) is drawn with the existing polychrome-sprite pipeline, the tile's
   texture bound through `BindGroupCache::texture` in place of the atlas
@@ -352,7 +357,7 @@ A scroll container gets a layer when all hold:
   pays for a layer);
 - background baking succeeds (§5.2);
 - its content has **no deferred draws, no anchored elements, no input handler
-  (focused text input), no surfaces, no nested layer**, no view that requested
+  (focused text input), no surfaces, no paths, no nested layer**, no view that requested
   an animation frame this frame. Any of these makes the container use today's
   path for the frame.
 
