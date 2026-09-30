@@ -3,6 +3,9 @@
 
 pub use gpui::Platform;
 
+mod fast;
+pub use fast::text_system::text_system;
+
 use std::rc::Rc;
 
 /// Returns a background executor for the current platform.
@@ -96,7 +99,7 @@ pub fn current_platform(headless: bool) -> Rc<dyn Platform> {
 pub fn bench_text_system() -> std::sync::Arc<dyn gpui::PlatformTextSystem> {
     thread_local! {
         static TEXT_SYSTEM: std::sync::Arc<dyn gpui::PlatformTextSystem> =
-            current_platform(true).text_system();
+            crate::fast::text_system::text_system();
     }
     TEXT_SYSTEM.with(|text_system| text_system.clone())
 }
