@@ -515,6 +515,7 @@ fn marker(id: &GlobalElementId, frame: &RowsFrame) -> Painting {
         prepaint_range: frame.prepaint_start.clone()..frame.prepaint_start.clone(),
         recording: None,
         dependencies: RenderDependencies::default(),
+        input: Default::default(),
     }
 }
 
