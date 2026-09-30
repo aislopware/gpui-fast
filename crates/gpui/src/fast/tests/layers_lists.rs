@@ -1435,9 +1435,9 @@ mod rows {
 mod debug_bounds {
     use super::{VIEWPORT_HEIGHT, VIEWPORT_WIDTH, composites, draw, wheel, with_window};
     use crate::{
-        AnyWindowHandle, Bounds, Context, InteractiveElement as _, IntoElement,
-        ParentElement as _, Pixels, Render, ScrollHandle, StatefulInteractiveElement as _,
-        Styled as _, TestAppContext, Window, div, point, px, rgb, size,
+        AnyWindowHandle, Bounds, Context, InteractiveElement as _, IntoElement, ParentElement as _,
+        Pixels, Render, ScrollHandle, StatefulInteractiveElement as _, Styled as _, TestAppContext,
+        Window, div, point, px, rgb, size,
     };
     use std::ops::Range;
 
@@ -1493,7 +1493,11 @@ mod debug_bounds {
         }
     }
 
-    fn row_bounds(cx: &mut TestAppContext, window: AnyWindowHandle, row: usize) -> Option<Bounds<Pixels>> {
+    fn row_bounds(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        row: usize,
+    ) -> Option<Bounds<Pixels>> {
         with_window(cx, window, |window, _| {
             window
                 .rendered_frame
@@ -1514,7 +1518,10 @@ mod debug_bounds {
             let y = 3. * ROW - 5. * frame as f32;
             assert_eq!(
                 row_bounds(cx, window, 3),
-                Some(Bounds::new(point(px(0.), px(y)), size(px(VIEWPORT_WIDTH), px(ROW)))),
+                Some(Bounds::new(
+                    point(px(0.), px(y)),
+                    size(px(VIEWPORT_WIDTH), px(ROW))
+                )),
                 "row 3 after {frame} frames"
             );
         }
@@ -1522,9 +1529,7 @@ mod debug_bounds {
     }
 
     #[crate::test]
-    fn a_composited_layer_keeps_its_contents_debug_bounds_where_they_show(
-        cx: &mut TestAppContext,
-    ) {
+    fn a_composited_layer_keeps_its_contents_debug_bounds_where_they_show(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
             return;
         }

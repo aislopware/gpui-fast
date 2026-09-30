@@ -3,10 +3,11 @@
 //! atlas allocates, and the content those tiles are rasterized from.
 
 use crate::{
-    AtlasTextureId, AtlasTextureKind, Bounds, Point, Rgba, ScaledPixels, Scene, TileId,
+    AtlasTextureId, AtlasTextureKind, Bounds, MonochromeSprite, Point, PolychromeSprite, Quad,
+    Rgba, ScaledPixels, Scene, Shadow, SubpixelSprite, TileId, Underline,
     fast::scene::Operation,
     point,
-    scene::{Primitive, TransformationMatrix},
+    scene::{DrawOrder, PathId, Primitive, TransformationMatrix},
     size,
 };
 use std::rc::Rc;
@@ -133,6 +134,118 @@ impl LayerFrame {
         }
         scene.finish();
         scene
+    }
+
+    /// [`Self::tile_scene`] of each of `tiles`, in order, as the renderer
+    /// draws them, from one walk over the content: each primitive goes to
+    /// the tiles it is visible over, not every tile to every primitive, and
+    /// keeps the draw order its part gave it, offset past the parts before,
+    /// instead of being ordered again. A draw order only has to keep
+    /// overlapping primitives in painting order, which the part's did, and
+    /// no primitive of one part is drawn before one of an earlier part.
+    /// Rasterizing a layer's tiles when it was first painted cost more in
+    /// building their scenes one at a time than in drawing them.
+    pub fn tile_scenes(&self, tiles: &[TileCoord]) -> Vec<Scene> {
+        let side = self.tile_size as f32;
+        let delta = |tile: TileCoord| {
+            point(
+                ScaledPixels(-(tile.x as f32) * side),
+                ScaledPixels(-(tile.y as f32) * side),
+            )
+        };
+        let slots: collections::FxHashMap<TileCoord, usize> = tiles
+            .iter()
+            .enumerate()
+            .map(|(slot, tile)| (*tile, slot))
+            .collect();
+        let mut scenes: Vec<Scene> = tiles.iter().map(|_| Scene::default()).collect();
+        let mut reaches = vec![false; tiles.len()];
+        let mut base: DrawOrder = 0;
+        for part in self.content.parts.iter() {
+            let mut any = false;
+            for (slot, tile) in tiles.iter().enumerate() {
+                reaches[slot] = part
+                    .bounds
+                    .is_none_or(|part| part.intersects(&self.tile_bounds(*tile)));
+                any |= reaches[slot];
+            }
+            let mut last_order: Option<DrawOrder> = None;
+            for operation in crate::fast::scene::operations(&part.scene) {
+                // Layers only raise the draw orders of what follows, which the
+                // primitives carry already; content placing a native is never
+                // composited from tiles.
+                let Operation::Primitive(primitive) = operation else {
+                    continue;
+                };
+                let order = base + primitive_order(&primitive);
+                last_order = Some(last_order.map_or(order, |last| last.max(order)));
+                if !any {
+                    continue;
+                }
+                let visible = visible_bounds(&primitive);
+                for tile in crate::fast::layers::tiles::tiles_over(visible, self.tile_size) {
+                    if let Some(&slot) = slots.get(&tile)
+                        && reaches[slot]
+                    {
+                        push_ordered(
+                            &mut scenes[slot],
+                            translate_primitive(&primitive, delta(tile)),
+                            order,
+                        );
+                    }
+                }
+            }
+            if let Some(last) = last_order {
+                base = last + 1;
+            }
+        }
+        for scene in &mut scenes {
+            scene.finish();
+        }
+        scenes
+    }
+}
+
+/// The draw order `primitive` was given.
+fn primitive_order(primitive: &Primitive) -> DrawOrder {
+    match primitive {
+        Primitive::Shadow(shadow) => shadow.order,
+        Primitive::Quad(quad) => quad.order,
+        Primitive::Path(path) => path.order,
+        Primitive::Underline(underline) => underline.order,
+        Primitive::MonochromeSprite(sprite) => sprite.order,
+        Primitive::SubpixelSprite(sprite) => sprite.order,
+        Primitive::PolychromeSprite(sprite) => sprite.order,
+        Primitive::Surface(surface) => surface.order,
+    }
+}
+
+/// Adds `primitive` to `scene`'s list of its kind at the draw order `order`,
+/// for [`Scene::finish`] to sort, leaving out what [`Scene::insert_primitive`]
+/// does to find an order and to draw the scene again in a later frame.
+fn push_ordered(scene: &mut Scene, primitive: Primitive, order: DrawOrder) {
+    match primitive {
+        Primitive::Shadow(shadow) => scene.shadows.push(Shadow { order, ..shadow }),
+        Primitive::Quad(quad) => scene.quads.push(Quad { order, ..quad }),
+        Primitive::Path(mut path) => {
+            path.order = order;
+            path.id = PathId(scene.paths.len());
+            scene.paths.push(path);
+        }
+        Primitive::Underline(underline) => scene.underlines.push(Underline { order, ..underline }),
+        Primitive::MonochromeSprite(sprite) => scene
+            .monochrome_sprites
+            .push(MonochromeSprite { order, ..sprite }),
+        Primitive::SubpixelSprite(sprite) => scene
+            .subpixel_sprites
+            .push(SubpixelSprite { order, ..sprite }),
+        Primitive::PolychromeSprite(sprite) => scene
+            .polychrome_sprites
+            .push(PolychromeSprite { order, ..sprite }),
+        Primitive::Surface(mut surface) => {
+            surface.order = order;
+            scene.surfaces.push(surface);
+        }
     }
 }
 

@@ -124,8 +124,7 @@ pub(crate) fn carry_paint(window: &mut Window, id: &GlobalElementId) {
     let mut debug_moved = record.debug_moved;
     let delta = layer.input.stale;
     let viewport = layer.input.viewport;
-    let mut carried =
-        carry_paint_records(window, &range, delta, &mut debug_moved, viewport, true);
+    let mut carried = carry_paint_records(window, &range, delta, &mut debug_moved, viewport, true);
     let Some(layer) = window.fast_layers.layers.get_mut(id) else {
         return;
     };

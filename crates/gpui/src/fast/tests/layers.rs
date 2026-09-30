@@ -246,6 +246,20 @@ fn content_in_parts_draws_each_tile_as_one_scene_does() {
             assert_eq!(drawn(&in_parts), drawn(&whole), "tile {tile:?}");
         }
     }
+
+    // Many tiles at once, from one walk, draw what each drawn alone does.
+    let tiles: Vec<TileCoord> = (-1..4)
+        .flat_map(|y| (-1..3).map(move |x| TileCoord { x, y }))
+        .collect();
+    for frame in [&whole, &in_parts] {
+        for (tile, scene) in tiles.iter().zip(frame.tile_scenes(&tiles)) {
+            assert_eq!(
+                crate::fast::layers::verify::drawn(&scene),
+                crate::fast::layers::verify::drawn(&frame.tile_scene(*tile)),
+                "tile {tile:?}"
+            );
+        }
+    }
 }
 
 /// Inserts `operations` into `scene`, in order.
