@@ -1,5 +1,6 @@
 //! Tests of scroll layers.
 
+use crate::AppContext as _;
 use crate::{
     AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, ContentMask, DevicePixels, Hsla,
     LayerFrame, LayerKey, MonochromeSprite, Path, Pixels, Point, PolychromeSprite, Quad,
@@ -187,7 +188,7 @@ fn translation_moves_every_position_a_primitive_carries() {
         blur_radius: ScaledPixels(2.),
         bounds: sp(1., 2., 3., 4.),
         corner_radii: Default::default(),
-        content_mask: mask.clone(),
+        content_mask: mask,
         color: Hsla::red(),
         element_bounds: sp(5., 6., 7., 8.),
         element_corner_radii: Default::default(),
@@ -204,7 +205,7 @@ fn translation_moves_every_position_a_primitive_carries() {
 
     let Primitive::Quad(moved) = translate(
         Quad {
-            content_mask: mask.clone(),
+            content_mask: mask,
             ..quad(sp(1., 2., 3., 4.))
         }
         .into(),
@@ -224,9 +225,9 @@ fn translation_moves_every_position_a_primitive_carries() {
         (point(0., 1.), point(0., 1.), point(0., 1.)),
     );
     let mut path = path.scale(1.);
-    path.content_mask = mask.clone();
+    path.content_mask = mask;
     for vertex in &mut path.vertices {
-        vertex.content_mask = mask.clone();
+        vertex.content_mask = mask;
     }
     let bounds = path.bounds;
     let Primitive::Path(moved) = translate(path.into()) else {
@@ -261,7 +262,7 @@ fn translation_moves_every_position_a_primitive_carries() {
         order: 0,
         pad: 0,
         bounds: sp(1., 2., 3., 4.),
-        content_mask: mask.clone(),
+        content_mask: mask,
         color: Hsla::red(),
         thickness: ScaledPixels(1.),
         wavy: true.into(),
@@ -287,7 +288,7 @@ fn translation_moves_every_position_a_primitive_carries() {
         order: 0,
         pad: 0,
         bounds: sp(1., 2., 3., 4.),
-        content_mask: mask.clone(),
+        content_mask: mask,
         color: Hsla::red(),
         tile: atlas_tile(),
         transformation: rotation,
@@ -318,7 +319,7 @@ fn translation_moves_every_position_a_primitive_carries() {
         order: 0,
         pad: 0,
         bounds: sp(1., 2., 3., 4.),
-        content_mask: mask.clone(),
+        content_mask: mask,
         color: Hsla::red(),
         tile: atlas_tile(),
         transformation: rotation,
@@ -336,7 +337,7 @@ fn translation_moves_every_position_a_primitive_carries() {
         grayscale: false.into(),
         opacity: 1.,
         bounds: sp(1., 2., 3., 4.),
-        content_mask: mask.clone(),
+        content_mask: mask,
         corner_radii: Default::default(),
         tile: atlas_tile(),
     };
@@ -423,4 +424,72 @@ fn glyph_quantization_moves_with_whole_pixel_shifts() {
             "emoji at ({x}, {y})"
         );
     }
+}
+
+struct EmptyView;
+
+impl crate::Render for EmptyView {
+    fn render(
+        &mut self,
+        _window: &mut crate::Window,
+        _cx: &mut crate::Context<Self>,
+    ) -> impl crate::IntoElement {
+        crate::Empty
+    }
+}
+
+#[crate::test]
+fn scroll_layers_are_on_where_compiled_and_can_be_turned_off(cx: &mut crate::TestAppContext) {
+    let window = cx.add_window(|_, _| EmptyView);
+    cx.update_window(window.into(), |_, window, cx| {
+        assert_eq!(
+            window.fast_layers.enabled,
+            crate::fast::layers::COMPILED
+                && std::env::var("GPUI_SCROLL_LAYERS").map_or(true, |value| value != "0")
+        );
+        assert_eq!(
+            crate::fast::layers::active(window, cx),
+            window.fast_layers.enabled
+        );
+        window.set_scroll_layers(false);
+        assert!(!window.fast_layers.enabled);
+        assert!(window.fast_layers.layers.is_empty());
+        assert!(
+            window.refreshing,
+            "the switch redraws the window from scratch"
+        );
+        window.draw(cx).clear(cx);
+        assert!(!crate::fast::layers::active(window, cx));
+
+        window.set_scroll_layers(true);
+        assert!(
+            !crate::fast::layers::active(window, cx),
+            "not while the window is refreshing"
+        );
+        window.draw(cx).clear(cx);
+        assert_eq!(
+            crate::fast::layers::active(window, cx),
+            crate::fast::layers::COMPILED
+        );
+
+        window.set_view_retention(false);
+        window.draw(cx).clear(cx);
+        assert!(!crate::fast::layers::active(window, cx));
+    })
+    .unwrap();
+}
+
+#[test]
+fn layout_stats_count_scroll_layer_work() {
+    let stats = crate::LayoutStats::default();
+    assert_eq!(
+        (
+            stats.layer_frames_composited,
+            stats.layer_frames_repainted,
+            stats.tiles_dirtied,
+            stats.layer_rebuilds_for_input,
+            stats.layers_demoted,
+        ),
+        (0, 0, 0, 0, 0)
+    );
 }
