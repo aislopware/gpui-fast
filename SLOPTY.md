@@ -18,7 +18,9 @@ Two upstreams feed it:
 - `zed-vendor`: the vendor branch. Every commit on it is `zed: import <short hash>` and
   holds nothing but zed's copy of the directories `UPSTREAM` lists. It starts at
   gpui-fast's first import (`11a44c4`, zed `7960b2a7`). The latest vendor commit is
-  `2db56fa` (`zed: import bd747337`, zed `bd747337d7be`).
+  `3c616cd` (`zed: import 0f9c923e`, zed `0f9c923e674e`, which adds GPUI's hang monitor,
+  `App::start_hang_monitor`), after `d7bc13a` (`zed: import 5d596336`) and `2db56fa`
+  (`zed: import bd747337`).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
   longbridge commit merged is `ab4c33f` (#10, "keep views retained in a real GPUI Kit
