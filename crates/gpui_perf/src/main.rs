@@ -42,7 +42,9 @@
 //! - `--retention on|off|both`: which modes to run (default both).
 //! - `--json PATH`: also write every result as JSON.
 //! - `--verify`: also run both modes in lockstep and check they paint the
-//!   same quads, text, icons and images every frame.
+//!   same quads, text, icons and images every frame; scroll scenarios are
+//!   also run with scroll layers on and off, and checked to paint the same
+//!   primitives, composited layers expanded.
 //! - `--list`: print the scenarios and exit.
 
 // The GPUI the showcase runs on, named `gpui` and `gpui_platform` either way:
@@ -178,10 +180,7 @@ fn headless() -> ExitCode {
         eprintln!("wrote {path}");
     }
 
-    if reports
-        .iter()
-        .any(|report| report.verify.as_ref().is_some_and(|verify| !verify.passed))
-    {
+    if reports.iter().any(|report| report.failed_verification()) {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS

@@ -4,6 +4,7 @@
 pub mod form;
 pub mod layout;
 pub mod list;
+pub mod scroll;
 pub mod settings;
 pub mod table;
 pub mod workspace;

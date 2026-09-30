@@ -20,6 +20,12 @@ pub struct FrameTimes {
     pub paint: Duration,
     pub views_built: u64,
     pub views_reused: u64,
+    /// Scroll containers drawn from a scroll layer's cached tiles.
+    pub layer_frames_composited: u64,
+    /// Scroll layer tiles repaints changed.
+    pub tiles_dirtied: u64,
+    /// Scroll layers painted again before an input event.
+    pub layer_rebuilds_for_input: u64,
 }
 
 #[cfg(not(feature = "upstream"))]
@@ -55,6 +61,9 @@ mod imp {
             paint: stats.paint_time,
             views_built: stats.views_built,
             views_reused: stats.views_reused,
+            layer_frames_composited: stats.layer_frames_composited,
+            tiles_dirtied: stats.tiles_dirtied,
+            layer_rebuilds_for_input: stats.layer_rebuilds_for_input,
         })
     }
 
