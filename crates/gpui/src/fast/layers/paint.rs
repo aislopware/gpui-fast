@@ -325,7 +325,7 @@ fn paint_unbaked(
     window.fast_layers.painting = Some(painting);
     f(window, cx);
     window.fast_layers.painting = None;
-    layer_mut(window, &id).record = None;
+    crate::fast::layers::policy::defer_unbaked(window, &id);
 }
 
 /// Carries out a `Composite` decision for the container `id`, scrolled to
@@ -346,9 +346,14 @@ pub(crate) fn composite_at(
 ) {
     let background = bake_background(window);
     let layer = layer_mut(window, id);
-    let Some(record) = layer.record.as_mut() else {
+    let Some(current) = layer.record.as_ref().map(|record| record.background) else {
         return;
     };
+    if background.is_some_and(|background| background != current) {
+        layer.next_generation();
+    }
+    let generation = layer.generation;
+    let record = layer.record.as_mut().expect("checked above");
     let mut dirtied = 0;
     match background {
         Some(background) if background == record.background => {}
@@ -356,7 +361,7 @@ pub(crate) fn composite_at(
             // Every tile is cleared with another colour: a new generation of
             // the same content, all of it dirty.
             record.background = background;
-            record.generation += 1;
+            record.generation = generation;
             record.dirty_tiles = all_tiles(&record.tile_hashes);
             dirtied = record.dirty_tiles.len();
         }
@@ -364,6 +369,7 @@ pub(crate) fn composite_at(
             // The tiles cannot be cleared with what is under them now: the
             // content is drawn into the frame, and painted afresh next time.
             let record = layer.record.take().expect("checked above");
+            crate::fast::layers::policy::defer_unbaked(window, id);
             draw_into_frame(window, &record.content, translation);
             let viewport = window.snapped_content_mask().bounds;
             insert_paths(
@@ -767,14 +773,10 @@ fn repaint(
 
     let views = crate::fast::layers::invalidate::content_views(window, &painting.prepaint_range);
     let layer = layer_mut(window, &painting.id);
-    let (generation, dirty) = match &layer.record {
-        Some(old) if old.background == background => {
-            (old.generation + 1, dirty_tiles(&old.tile_hashes, &hashes))
-        }
-        old => (
-            old.as_ref().map_or(1, |old| old.generation + 1),
-            all_tiles(&hashes),
-        ),
+    let generation = layer.next_generation();
+    let dirty = match &layer.record {
+        Some(old) if old.background == background => dirty_tiles(&old.tile_hashes, &hashes),
+        _ => all_tiles(&hashes),
     };
     layer.record = Some(LayerRecord {
         content: Rc::new(content),
@@ -826,12 +828,13 @@ pub(crate) fn finish_frame(window: &mut Window) {
 pub(crate) fn layer_mut<'a>(window: &'a mut Window, id: &GlobalElementId) -> &'a mut Layer {
     let layers = &mut window.fast_layers;
     if !layers.layers.contains_key(id) {
-        let key = LayerKey(layers.next_key);
-        layers.next_key += 1;
+        let key = LayerKey(layers.next_key % crate::fast::layers::scene::LAYER_KEY_LIMIT);
+        layers.next_key = (layers.next_key + 1) % crate::fast::layers::scene::LAYER_KEY_LIMIT;
         layers.layers.insert(
             id.clone(),
             Layer {
                 key,
+                generation: 0,
                 record: None,
                 policy: Default::default(),
                 input: Default::default(),
@@ -851,6 +854,13 @@ fn scrolls(style: &Style) -> bool {
 
 /// The part of the content a layer paints: the viewport, and one viewport's
 /// extent on each side along the scrolled axes as far as the content goes.
+/// How far past the viewport a layer paints on each scrolled side, in
+/// viewport extents. Measured on `gpui_perf`'s scroll scenarios: 2 cut the
+/// mean frame of scroll-child-view by 44 % and of scroll-same-view by 21 %
+/// against 1, at the cost of repaint frames about 1.7 times as long (one per
+/// two viewports scrolled); 0.5 more than doubled the mean.
+pub(crate) const OVERSCAN_VIEWPORTS: f32 = 2.;
+
 pub(crate) fn painted_region(
     viewport: Bounds<Pixels>,
     content: Bounds<Pixels>,
@@ -863,8 +873,9 @@ pub(crate) fn painted_region(
         content_extent: Pixels,
     ) -> (Pixels, Pixels) {
         let max = min + extent;
-        let low = (min - extent).max(content_min).min(min);
-        let high = (max + extent).min(content_min + content_extent).max(max);
+        let over = extent * OVERSCAN_VIEWPORTS;
+        let low = (min - over).max(content_min).min(min);
+        let high = (max + over).min(content_min + content_extent).max(max);
         (low, high - low)
     }
     let mut region = viewport;

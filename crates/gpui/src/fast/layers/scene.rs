@@ -26,7 +26,7 @@ pub struct TileCoord {
 
 /// The first texture index of layer tiles; atlases allocate indices from 0.
 pub const LAYER_TILE_TEXTURE_BASE: u32 = 0xF000_0000;
-const LAYER_KEY_LIMIT: u32 = 0x0100_0000;
+pub(crate) const LAYER_KEY_LIMIT: u32 = 0x0100_0000;
 const TILE_COORD_BIAS: i32 = 2048;
 
 /// The texture id the tiles of `layer` are composited with.

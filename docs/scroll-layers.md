@@ -15,13 +15,24 @@ drawing as it does without layers, and how to verify and measure layers.
 
 ## Where layers apply
 
-- Linux, on the wgpu renderer. Everywhere else layers are compiled out
-  (`fast::layers::COMPILED`), and nothing changes.
+- Linux, on the wgpu renderer, and macOS, on the Metal renderer. Everywhere
+  else layers are compiled out (`fast::layers::COMPILED`), and nothing
+  changes.
 - Scrolling `div`s (`overflow_x_scroll` / `overflow_y_scroll`), whether their
   content is a child view or plain elements in the same view.
-- Not yet `uniform_list` or `list`: `fast::layers::lists::LIST_LAYERS` is off.
-  List layers composited only about 1 % of scrolled frames in `gpui_perf`, and
-  their tests are `#[ignore]`d until that is fixed.
+- Not yet `uniform_list` or `list`: `fast::layers::lists::LIST_LAYERS` is off,
+  and the list layer tests are `#[ignore]`d. As built, list layers do not pay
+  off, for three reasons, each enough on its own:
+  - Rows that take input (hover, click, cursor) are never given a layer. A
+    list layer cannot carry a row's hitboxes, listeners and dispatch nodes
+    through a composited frame.
+  - Hovers are recorded for the whole layer. Rows moving under a still pointer
+    change the hovered row on most frames, and each change repaints every
+    held row.
+  - A frame that adds rows rebuilds the whole content scene and re-hashes
+    every tile, which costs about three times drawing without a layer.
+  Making list layers pay off needs per-row input records, per-row hover
+  checks, and content that can be assembled row by row.
 - `GPUI_SCROLL_LAYERS=0` turns layers off for a process.
   `Window::set_scroll_layers` does the same for one window in tests.
 
@@ -38,7 +49,7 @@ each frame it then takes one of three paths (`fast::layers::policy::decide`):
   as polychrome sprites with reserved texture ids.
 - **Repaint.** The content changed, or the scroll reached the edge of what was
   painted. The content is painted into the layer's own scene over the viewport
-  plus one viewport of overscan on each scrolled side. Each tile is hashed, and
+  plus two viewports of overscan on each scrolled side (`fast::layers::paint::OVERSCAN_VIEWPORTS`). Each tile is hashed, and
   the renderer rasterizes again only the tiles whose hash changed
   (`fast::layers::tiles`).
 - **Bypass.** The frame is drawn exactly as it would be without layers. This
@@ -62,6 +73,8 @@ frame.
   shift (`fast::glyphs::quantize_origin`). On screen the result is unchanged.
 - Tiles are cleared with the baked background, so subpixel text blends exactly
   as it does on screen.
+- Metal's gradient dither is seeded from the position within the quad, not on
+  screen, so a gradient gets the same noise in a tile as in the window.
 - Before any input other than the wheel reaches a layer that has moved since
   it was painted, the layer is repainted (`fast::layers::input`). Listeners,
   element state and anything handed to application code therefore hold
@@ -77,6 +90,9 @@ frame.
   the positions listeners observe.
 - `cargo test -p gpui_wgpu` compares rasterized and composited tiles with
   direct drawing, byte for byte, on a surfaceless device.
+- `cargo test -p gpui_apple fast::layers` does the same on macOS with a
+  headless Metal renderer (`crates/gpui_apple/src/fast/layers/`), which draws
+  tiles as the wgpu renderer does.
 - `cargo run -p gpui_perf --release -- --headless --verify` also runs the
   scroll scenarios with layers on and off.
 
@@ -87,13 +103,15 @@ pointer over the content. Linux, release build, retained views on, 300 frames:
 
 | Scenario | Layers off | Layers on |
 |---|---|---|
-| `scroll-child-view` | 0.644 ms, 8.84M instructions | 0.107 ms, 1.61M instructions |
-| `scroll-same-view` | 0.615 ms, 8.61M instructions | 0.285 ms, 3.88M instructions |
-| `scroll-uniform-list` | 0.412 ms, 5.36M | 0.393 ms, 5.35M (no list layers) |
-| `scroll-list` | 0.380 ms, 5.10M | 0.404 ms, 5.10M (no list layers) |
+| `scroll-child-view` | 0.618 ms, 8.83M instructions | 0.068 ms, 0.88M instructions |
+| `scroll-same-view` | 0.599 ms, 8.59M instructions | 0.226 ms, 3.19M instructions |
+| `scroll-uniform-list` | 0.393 ms, 5.35M | 0.399 ms, 5.35M (no list layers) |
+| `scroll-list` | 0.377 ms, 5.09M | 0.384 ms, 5.09M (no list layers) |
 
-GPUI Kit's Button story was measured at 145 Hz, with one wheel event per frame,
-over two 12-second runs of each:
+GPUI Kit's Button story, measured before the overscan was raised to two
+viewports, at 145 Hz, with one wheel event per frame, over two 12-second runs
+of each (a later run against `main`, same setup: 27-28 % and 1.53-1.57 ms on
+`main`, 18-19 % and 0.92-0.93 ms with layers):
 
 | | Process CPU | Main-thread draw per frame |
 |---|---|---|

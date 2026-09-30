@@ -152,12 +152,34 @@ pub(crate) fn before_dispatch(window: &mut Window, cx: &mut App, event: &Platfor
     if !COMPILED || window.fast_layers.layers.is_empty() {
         return;
     }
+    // The element a move lands on, as last frame hit tested it.
+    let moved_onto = match event {
+        PlatformInput::MouseMove(event) => window
+            .rendered_frame
+            .hit_test(event.position)
+            .ids
+            .first()
+            .copied(),
+        _ => None,
+    };
     let reaches: &dyn Fn(&Window, &Layer) -> bool = match event {
         PlatformInput::ScrollWheel(_) => return,
         PlatformInput::KeyDown(_)
         | PlatformInput::KeyUp(_)
         | PlatformInput::ModifiersChanged(_) => &focus_inside,
-        _ => &|window, layer| layer.input.viewport.contains(&window.mouse_position()),
+        // A move reaches the content when it lands on one of the content's
+        // elements, whose listeners may compare it with the bounds they
+        // hold. Moves elsewhere — dragging a scrollbar beside or over the
+        // content — are hit tested against the content's translated
+        // hitboxes, which is all its hover handling needs, and must not
+        // rebuild it on every frame of the drag.
+        PlatformInput::MouseMove(_) => &|_, layer| {
+            moved_onto.is_some_and(|id| layer.input.hitboxes.iter().any(|hitbox| hitbox.id == id))
+        },
+        // Presses, releases and drops, wherever they land: a press starts
+        // what later moves continue (a drag, a selection) with the bounds
+        // it sees.
+        _ => &|_, _| true,
     };
     let mut owners = Vec::new();
     let mut unknown_owner = false;

@@ -3182,6 +3182,7 @@ dependencies = [
  "anyhow",
  "block2 0.6.2",
  "cbindgen",
+ "collections",
  "core-foundation 0.10.0",
  "core-graphics 0.24.0",
  "core-video 0.6.1",

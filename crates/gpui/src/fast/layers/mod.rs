@@ -24,13 +24,13 @@ use collections::FxHashMap;
 /// Whether scroll layers are compiled in. Elsewhere every layer entry point
 /// is a no-op and today's path runs.
 ///
-/// Upstream compiles them on Linux, where its wgpu renderer rasterizes and
-/// composites tiles (spec §5.1). Slopty's fork has no renderer that does:
-/// its wgpu renderer is zed's, without gpui-fast's frame recording, and Metal
-/// has no tile pass yet (SLOPTY.md). So layers are compiled only into GPUI's
-/// own tests, whose test platform draws no pixels and whose oracles compare
+/// Upstream compiles them on Linux (wgpu) and macOS (Metal). Slopty's fork
+/// composites tiles with Metal only, on macOS and iOS, which share
+/// `gpui_apple`'s renderer: its wgpu renderer is zed's, without gpui-fast's
+/// frame recording (SLOPTY.md). GPUI's own tests compile them in on every
+/// platform, where the test platform draws no pixels and the oracles compare
 /// layer scenes, composites expanded, with scenes drawn without them.
-pub(crate) const COMPILED: bool = cfg!(test);
+pub(crate) const COMPILED: bool = cfg!(any(test, target_os = "macos", target_os = "ios"));
 
 /// A window's scroll layers, by the scroll container's global id.
 #[allow(
@@ -83,6 +83,11 @@ impl Default for WindowLayers {
 )]
 pub(crate) struct Layer {
     pub(crate) key: scene::LayerKey,
+    /// The generation of the latest content, counted for the layer rather
+    /// than its record: a renderer keeps tiles by key and generation, so a
+    /// record dropped and painted again must not start over at a
+    /// generation the renderer holds tiles of. See [`Layer::next_generation`].
+    pub(crate) generation: u64,
     /// The content as last painted, once it has been.
     pub(crate) record: Option<record::LayerRecord>,
     pub(crate) policy: policy::LayerPolicy,
@@ -93,6 +98,14 @@ pub(crate) struct Layer {
     /// What the frame being drawn prepainted the container for, for its
     /// paint to finish.
     pub(crate) prepainted: Option<paint::Prepainted>,
+}
+
+impl Layer {
+    /// A generation this layer's content has never had.
+    pub(crate) fn next_generation(&mut self) -> u64 {
+        self.generation += 1;
+        self.generation
+    }
 }
 
 /// Whether layers may be used in `window` this frame (spec §6.5, first bullet).

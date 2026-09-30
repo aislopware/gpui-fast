@@ -739,7 +739,7 @@ fn paint_line(
                 };
 
                 if crate::fast::glyphs::LineGlyphPainter::meets_mask(
-                    &glyph_painter,
+                    &mut glyph_painter,
                     &max_glyph_bounds,
                     baseline_offset.y + glyph.position.y,
                 ) {

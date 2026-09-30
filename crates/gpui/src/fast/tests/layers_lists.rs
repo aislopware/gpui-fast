@@ -302,7 +302,6 @@ mod uniform {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn uniform_list_renders_only_new_rows_when_scrolling(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -352,7 +351,6 @@ mod uniform {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn uniform_list_matches_layers_off(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -414,7 +412,6 @@ mod uniform {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn uniform_list_matches_layers_off_at_a_fractional_scale_with_whole_rows(
         cx: &mut TestAppContext,
@@ -431,7 +428,6 @@ mod uniform {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn uniform_list_matches_layers_off_at_a_fractional_scale_with_half_pixel_rows(
         cx: &mut TestAppContext,
@@ -448,7 +444,6 @@ mod uniform {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn measure_item_is_skipped_on_composite_frames(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -572,7 +567,6 @@ mod list {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn list_renders_only_new_rows_when_scrolling(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -623,7 +617,6 @@ mod list {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn list_matches_layers_off_with_varying_heights(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -688,7 +681,6 @@ mod list {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn list_matches_layers_off_at_a_fractional_scale_aligned_top(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -702,7 +694,6 @@ mod list {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn list_matches_layers_off_at_a_fractional_scale_aligned_bottom(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -716,7 +707,6 @@ mod list {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn a_list_splice_repaints_the_layer(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -819,7 +809,6 @@ mod list {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn an_animating_row_view_keeps_the_list_off_its_layer(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -838,7 +827,6 @@ mod list {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn a_row_view_held_by_the_layer_stays_tracked(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -881,7 +869,6 @@ mod list {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn an_anchored_element_in_a_row_keeps_the_list_off_its_layer(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -1053,7 +1040,6 @@ mod rows {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn a_list_whose_rows_can_be_hit_stays_hittable(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -1063,7 +1049,6 @@ mod rows {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn a_uniform_list_whose_rows_can_be_hit_stays_hittable(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -1073,7 +1058,6 @@ mod rows {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn a_list_whose_rows_paint_paths_is_kept_off_its_layer(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -1208,7 +1192,6 @@ mod rows {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn an_anchored_element_beside_a_list_leaves_it_on_its_layer(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -1232,7 +1215,6 @@ mod rows {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn what_a_list_layer_remembers_of_its_rows_stays_bounded(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -1266,7 +1248,6 @@ mod rows {
     }
 
     #[crate::test]
-
     #[ignore = "list layers are off (fast::layers::lists::LIST_LAYERS)"]
     fn a_row_view_held_by_the_layer_shows_a_change_without_a_scroll(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {

@@ -775,15 +775,15 @@ mod paint {
             .update_window(window.into(), |_, window, _| window.scale_factor())
             .unwrap();
         with_record(cx, window, |record, _| {
-            // The viewport, 100 px, and one viewport of overscan below it;
+            // The viewport, 100 px, and two viewports of overscan below it;
             // nothing above, at the top.
             assert_eq!(record.viewport.size.height, crate::px(100.));
             assert_eq!(record.painted_region.origin.y, crate::px(0.));
-            assert_eq!(record.painted_region.size.height, crate::px(200.));
+            assert_eq!(record.painted_region.size.height, crate::px(300.));
             let rows = row_quads(&record.content, 40);
             assert_eq!(
                 rows.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
-                (0..10).collect::<Vec<_>>()
+                (0..15).collect::<Vec<_>>()
             );
             for (row, bounds) in rows {
                 assert_eq!(bounds.origin.y, ScaledPixels(row as f32 * 20. * scale));
@@ -792,9 +792,10 @@ mod paint {
             assert_eq!(record.generation, 1);
             let mut tiles: Vec<_> = record.tile_hashes.keys().copied().collect();
             tiles.sort();
-            // 200 px at the test window's scale of 2 is 400 device px: one
-            // tile high.
-            assert!(tiles.iter().all(|tile| tile.y == 0), "{tiles:?}");
+            // 300 px at the test window's scale of 2 is 600 device px: two
+            // tiles high.
+            assert!(tiles.iter().all(|tile| tile.y <= 1), "{tiles:?}");
+            assert!(tiles.iter().any(|tile| tile.y == 1), "{tiles:?}");
             assert_eq!(
                 record.dirty_tiles, tiles,
                 "a first paint dirties every tile"
@@ -819,18 +820,69 @@ mod paint {
             .update_window(window.into(), |_, window, _| window.scale_factor())
             .unwrap();
         with_record(cx, window, |record, _| {
-            // Overscan of one viewport above and below the one at 300..400.
-            assert_eq!(record.painted_region.origin.y, crate::px(-100.));
-            assert_eq!(record.painted_region.size.height, crate::px(300.));
+            // Overscan of two viewports above and below the one at 300..400.
+            assert_eq!(record.painted_region.origin.y, crate::px(-200.));
+            assert_eq!(record.painted_region.size.height, crate::px(500.));
             let rows = row_quads(&record.content, 40);
             assert_eq!(
                 rows.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
-                (10..25).collect::<Vec<_>>()
+                (5..30).collect::<Vec<_>>()
             );
             for (row, bounds) in rows {
                 assert_eq!(bounds.origin.y, ScaledPixels(row as f32 * 20. * scale));
             }
         });
+    }
+
+    /// A renderer keeps a layer's tiles by key and generation. A record
+    /// dropped (content that could not be composited, a demotion, a
+    /// background that could not be baked) and painted again must not come
+    /// back at a generation the renderer holds tiles of, or those stale
+    /// tiles would be shown.
+    #[crate::test]
+    fn a_layer_painted_again_after_its_record_was_dropped_gets_a_new_generation(
+        cx: &mut crate::TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, Decision::Repaint);
+        let first = with_record(cx, window, |record, _| record.generation);
+        cx.update_window(window.into(), |_, window, _| {
+            for layer in window.fast_layers.layers.values_mut() {
+                layer.record = None;
+            }
+        })
+        .unwrap();
+        draw_deciding(cx, window, Decision::Repaint);
+        let (second, dirty, tiles) = with_record(cx, window, |record, _| {
+            (
+                record.generation,
+                record.dirty_tiles.len(),
+                record.tile_hashes.len(),
+            )
+        });
+        assert!(second > first, "generation {second} after {first}");
+        assert_eq!(dirty, tiles, "every tile is dirty");
+        let framed = cx
+            .update_window(window.into(), |_, window, _| {
+                window
+                    .rendered_frame
+                    .scene
+                    .layers
+                    .frames
+                    .iter()
+                    .map(|frame| frame.generation)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(
+            framed,
+            vec![second],
+            "the frame hands the renderer the new generation"
+        );
     }
 
     #[crate::test]
@@ -1730,6 +1782,9 @@ mod invalidation {
 
     #[crate::test]
     fn a_wheel_scroll_is_noted_for_its_container(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let window: AnyWindowHandle = cx
             .add_window(|_, _| page(ScrollHandle::new(), false))
             .into();
@@ -1747,6 +1802,9 @@ mod invalidation {
 
     #[crate::test]
     fn programmatic_scrolls_are_noted(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = ScrollHandle::new();
         let window: AnyWindowHandle = cx
             .add_window({
@@ -1792,6 +1850,9 @@ mod invalidation {
 
     #[crate::test]
     fn a_render_that_reads_the_offset_depends_on_it(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let window: AnyWindowHandle = cx.add_window(|_, _| page(ScrollHandle::new(), true)).into();
         draw(cx, window);
         assert!(root_view_read_offset(cx, window));
@@ -1799,6 +1860,9 @@ mod invalidation {
 
     #[crate::test]
     fn one_that_does_not_does_not(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let window: AnyWindowHandle = cx
             .add_window(|_, _| page(ScrollHandle::new(), false))
             .into();
@@ -1808,6 +1872,9 @@ mod invalidation {
 
     #[crate::test]
     fn a_view_that_read_the_offset_is_built_again_when_it_scrolls(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let renders = Rc::new(Cell::new(0));
         let window: AnyWindowHandle = cx
             .add_window({
@@ -1864,6 +1931,9 @@ mod invalidation {
     fn a_render_that_asks_whether_a_list_is_scrolled_to_its_end_depends_on_its_offset(
         cx: &mut TestAppContext,
     ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let state = crate::ListState::new(40, crate::ListAlignment::Top, px(100.));
         let window: AnyWindowHandle = cx
             .add_window({
@@ -1960,6 +2030,9 @@ mod decisions {
         /// Whether it draws a scrollbar beside the scroll container, whose
         /// prepaint and paint read the offset, as GPUI Kit's does.
         pub(super) scrollbar: bool,
+        /// Whether the page's background is translucent, which no layer can
+        /// bake into its tiles.
+        pub(super) translucent: bool,
     }
 
     impl Render for LayerPage {
@@ -1986,7 +2059,12 @@ mod decisions {
                     scroller.children((0..ROWS).map(|index| row(index, self.hover, content_width)))
                 }
             };
-            let page = div().size_full().bg(rgb(0xffffff)).child(scroller);
+            let background = if self.translucent {
+                crate::rgba(0xffffff80)
+            } else {
+                rgb(0xffffff)
+            };
+            let page = div().size_full().bg(background).child(scroller);
             if !self.scrollbar {
                 return page;
             }
@@ -2023,6 +2101,7 @@ mod decisions {
             wide: false,
             animate: false,
             scrollbar: false,
+            translucent: false,
         }
     }
 
@@ -2110,16 +2189,74 @@ mod decisions {
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
     }
 
+    /// A background no tile can be cleared with keeps the container on
+    /// today's path for a while, rather than painting a layer every
+    /// scrolled frame that it can never composite.
+    #[crate::test]
+    fn a_background_that_cannot_be_baked_stops_repainting(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = page(cx, false);
+        let window = handle.into();
+        handle
+            .update(cx, |page, _, cx| {
+                page.translucent = true;
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx, window);
+        promote(cx, window);
+        for _ in 0..20 {
+            assert_eq!(scroll(cx, window, -5.), Some(Decision::Bypass));
+        }
+    }
+
     #[crate::test]
     fn a_wheel_scroll_composites(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let window = page(cx, false).into();
         promote(cx, window);
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
         assert_eq!(scroll(cx, window, 20.), Some(Decision::Composite));
     }
 
+    /// A scrollbar being dragged sets the offset itself and notifies the view
+    /// holding the container, as a wheel listener would: that notification
+    /// is the scroll's, and the layer composites.
+    #[crate::test]
+    fn a_scrollbar_drag_composites(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = page(cx, false);
+        let window = handle.into();
+        promote(cx, window);
+        for step in 0..6 {
+            frame_after(cx, window, |cx| {
+                handle
+                    .update(cx, |page, _, cx| {
+                        let offset = page.handle.offset();
+                        page.handle.set_offset(point(offset.x, offset.y - px(10.)));
+                        cx.notify();
+                    })
+                    .unwrap();
+            });
+            assert_eq!(
+                decision(cx, window),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+        }
+    }
+
     #[crate::test]
     fn a_child_view_page_composites(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let window = page(cx, true).into();
         promote(cx, window);
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
@@ -2128,6 +2265,9 @@ mod decisions {
 
     #[crate::test]
     fn a_notified_content_view_repaints(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, true);
         let window = handle.into();
         promote(cx, window);
@@ -2156,6 +2296,9 @@ mod decisions {
 
     #[crate::test]
     fn an_owner_notified_for_another_reason_while_scrolling_repaints(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         // What the owner renders changes through state nothing records a
@@ -2206,6 +2349,9 @@ mod decisions {
 
     #[crate::test]
     fn content_wider_than_a_container_scrolling_on_y_composites(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = cx.add_window(|_, cx| LayerPage {
             wide: true,
             ..new_page(false, cx)
@@ -2223,6 +2369,9 @@ mod decisions {
     /// composited, and the scrollbar drawn afresh around it.
     #[crate::test]
     fn an_owner_that_reads_the_offset_outside_the_content_composites(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         handle
@@ -2239,6 +2388,9 @@ mod decisions {
 
     #[crate::test]
     fn an_owner_that_reads_the_offset_in_render_repaints(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         handle
@@ -2255,6 +2407,9 @@ mod decisions {
 
     #[crate::test]
     fn a_hover_change_in_the_content_repaints(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         handle
@@ -2298,6 +2453,9 @@ mod decisions {
 
     #[crate::test]
     fn a_style_change_of_the_scroll_div_repaints(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         // The scroll div's own style is set by the view that holds it, whose
         // notification repaints the layer anyway; what it inherits changes
         // without it, as the text colour of a view around it does.
@@ -2324,15 +2482,18 @@ mod decisions {
 
     #[crate::test]
     fn exposing_past_the_margin_repaints(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let window = page(cx, false).into();
         promote(cx, window);
-        // Painted at the offset it was promoted at, -40 px, one viewport
-        // (100 px) beyond each edge as far as the content goes. The margin is
-        // a quarter of that: the fourth 20 px scroll leaves less than 25 px
-        // painted below the viewport.
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        // Painted at the offset it was promoted at, -40 px, two viewports
+        // (200 px) beyond each edge as far as the content goes. The margin is
+        // a quarter of a viewport: the ninth 20 px scroll leaves less than
+        // 25 px painted below the viewport.
+        for _ in 0..8 {
+            assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        }
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
         let id = scroller_id(cx, window);
         let painted_at = with_window(cx, window, |window, _| {
@@ -2342,8 +2503,8 @@ mod decisions {
         assert_eq!(
             painted_at,
             (
-                point(px(0.), px(-120.)),
-                Bounds::from_corners(point(px(0.), px(-100.)), point(px(200.), px(200.)))
+                point(px(0.), px(-220.)),
+                Bounds::from_corners(point(px(0.), px(-200.)), point(px(200.), px(300.)))
             ),
             "re-centred on the viewport"
         );
@@ -2380,6 +2541,9 @@ mod decisions {
 
     #[crate::test]
     fn a_wheel_scroll_of_a_container_inside_the_content_repaints(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         // The inner container is painted by the view holding the outer one,
         // which the inner one's wheel listener notifies: a change of the
         // outer layer's content, not a scroll of it (spec §6.6).
@@ -2398,6 +2562,9 @@ mod decisions {
 
     #[crate::test]
     fn a_programmatic_scroll_of_a_container_inside_the_content_repaints(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         let inner = with_inner_scroller(cx, handle);
@@ -2462,6 +2629,9 @@ mod policies {
 
     #[crate::test]
     fn a_container_is_promoted_after_two_scrolled_frames(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
@@ -2479,6 +2649,9 @@ mod policies {
 
     #[crate::test]
     fn deferred_draws_inside_make_it_ineligible(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         with_extra(cx, handle, || {
@@ -2498,6 +2671,9 @@ mod policies {
 
     #[crate::test]
     fn anchored_elements_inside_make_it_ineligible(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         // Positioned against the window's edges when prepainted, which a
@@ -2518,6 +2694,9 @@ mod policies {
 
     #[crate::test]
     fn an_animation_frame_requested_by_the_owner_makes_it_ineligible(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         promote(cx, window);
@@ -2537,6 +2716,9 @@ mod policies {
 
     #[crate::test]
     fn a_focused_input_inside_makes_it_ineligible(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         let focus = with_window(cx, window, |_, cx| cx.focus_handle());
@@ -2561,6 +2743,9 @@ mod policies {
 
     #[crate::test]
     fn a_layer_whose_input_loses_focus_is_composited_again_soon(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         // A focused input keeps the container on today's path only while
         // it is focused: it is not demoted, which would keep the container
         // waiting for 60 stable frames (spec §6.5).
@@ -2628,6 +2813,9 @@ mod policies {
 
     #[crate::test]
     fn content_with_paths_nothing_draws_over_composites(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         with_path(cx, handle, false);
@@ -2639,6 +2827,9 @@ mod policies {
 
     #[crate::test]
     fn content_drawing_over_a_path_is_demoted(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, false);
         let window = handle.into();
         with_path(cx, handle, true);
@@ -2652,6 +2843,9 @@ mod policies {
 
     #[crate::test]
     fn churning_content_is_demoted_and_repromoted_after_60_stable_frames(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let handle = page(cx, true);
         let window = handle.into();
         let rows = handle
@@ -2699,6 +2893,9 @@ mod policies {
 
     #[crate::test]
     fn a_layer_not_composited_for_120_frames_is_dropped(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let window = page(cx, false).into();
         promote(cx, window);
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
@@ -2713,6 +2910,9 @@ mod policies {
 
     #[crate::test]
     fn resize_drops_layers(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
         let window = page(cx, false).into();
         promote(cx, window);
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
@@ -3315,8 +3515,29 @@ mod input {
         })
     }
 
+    /// A move that lands beside the content — on a scrollbar being dragged,
+    /// say — does not rebuild a scrolled layer: only the content's own
+    /// elements compare pointer positions with bounds they hold. A move onto
+    /// the content does.
     #[crate::test]
-    fn rebuilds_for_input_do_not_demote(cx: &mut TestAppContext) {
+    fn only_a_move_onto_the_content_rebuilds_it(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window: AnyWindowHandle = handle.into();
+        scroll_five_times(cx, window);
+        for step in 0..6 {
+            let y = px(50. + step as f32);
+            dispatch(cx, window, [mouse_move(point(px(150.), y), true)]);
+        }
+        assert_eq!(rebuilds(cx, window), 0, "moves beside the rows");
+        dispatch(cx, window, [mouse_move(point(px(20.), px(50.)), false)]);
+        assert_eq!(rebuilds(cx, window), 1, "a move onto a row");
+    }
+
+    #[crate::test]
+    fn moves_beside_the_content_neither_rebuild_nor_demote(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
             return;
         }
@@ -3324,8 +3545,8 @@ mod input {
         let window: AnyWindowHandle = handle.into();
         scroll_five_times(cx, window);
         // Scrolling with the pointer moving in the viewport between scrolls,
-        // beside the rows, where it hovers none: each move rebuilds, none
-        // changes the content.
+        // beside the rows, where it lands on none of the content: no move
+        // rebuilds, and none changes the content.
         for step in 0..12 {
             assert_eq!(
                 scroll(cx, window, 5.),
@@ -3335,9 +3556,9 @@ mod input {
             let y = px(50. + (step % 2) as f32);
             let repainted = repaints(cx, window);
             dispatch(cx, window, [mouse_move(point(px(150.), y), false)]);
-            assert_eq!(repaints(cx, window), repainted + 1, "step {step}");
+            assert_eq!(repaints(cx, window), repainted, "step {step}");
         }
-        assert_eq!(rebuilds(cx, window), 12);
+        assert_eq!(rebuilds(cx, window), 0);
         let id = super::decisions::scroller_id(cx, window);
         let (demoted, changes) = with_window(cx, window, |window, _| {
             let layer = &window.fast_layers.layers[&id];

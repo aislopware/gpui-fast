@@ -80,6 +80,8 @@ pub(crate) struct ScrollLog {
 /// What [`ScrollLog`] keeps of a scroll container it saw painted.
 struct PaintedContainer {
     source: ScrollSource,
+    /// The view that painted it, which a scroll of it notifies.
+    view: EntityId,
     /// Its shared scroll state's version, and the version it was at when it
     /// was painted, if it has shared state.
     version: Option<(StateVersion, u64)>,
@@ -115,10 +117,28 @@ impl ScrollLog {
             container.id.clone(),
             PaintedContainer {
                 source: container.source.clone(),
+                view: container.view,
                 version,
                 frame,
             },
         );
+    }
+
+    /// Takes in the offsets code set since the last time (a scrollbar being
+    /// dragged, a `scroll_to_*`), as a wheel's scroll of the containers
+    /// whose offset they are: the view that painted each may be notified
+    /// for it, as a wheel listener notifies it.
+    pub(crate) fn take_offsets_set(&mut self) {
+        let sources = OFFSETS_SET.with_borrow_mut(std::mem::take);
+        for source in sources {
+            for (id, container) in &self.containers {
+                if container.source == source {
+                    *self.scroll_notifies.entry(container.view).or_default() += 1;
+                    self.scrolled.insert(id.clone());
+                }
+            }
+            self.scrolled_sources.insert(source);
+        }
     }
 
     /// Ends the frame `frame`: the scrolls before it are taken in, and scroll
@@ -263,6 +283,20 @@ struct OffsetReadLog {
 
 thread_local! {
     static OFFSET_READS: RefCell<OffsetReadLog> = RefCell::new(OffsetReadLog::default());
+    /// Where offsets that code set live, since [`ScrollLog::take_offsets_set`]
+    /// last took them in. Offsets are set without a window to note them in.
+    static OFFSETS_SET: RefCell<Vec<ScrollSource>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Sets that the scroll state `version` counts changes of moved when
+/// `moved`, as `StateVersion::bump_if` does, and notes it as a scroll: code
+/// that sets an offset (a scrollbar being dragged) then notifies the view
+/// holding the container, as a wheel listener does.
+pub(crate) fn offset_set(version: &StateVersion, moved: bool) {
+    crate::fast::dependencies::StateVersion::bump_if(version, moved);
+    if COMPILED && moved {
+        OFFSETS_SET.with_borrow_mut(|set| set.push(ScrollSource::of_state(version)));
+    }
 }
 
 /// Records, for any recording that is open, that the offset of the scroll
@@ -550,6 +584,17 @@ pub(crate) fn note_animation_frame(window: &Window, view: EntityId) {
 /// Notes that an anchored element is being prepainted: it is placed against
 /// the window's edges, where a layer composited at another offset would not
 /// keep it.
+/// Notes that the layer being painted, if any, has content that hands its
+/// children's bounds to code outside it while it is prepainted (a
+/// children-prepainted listener): skipping that on composited frames would
+/// leave that code with stale bounds, so the container is kept off its
+/// layer as for an anchored element.
+pub(crate) fn note_uncarried(window: &mut Window) {
+    if COMPILED && let Some(id) = window.fast_layers.painting.as_ref().map(|p| p.id.clone()) {
+        window.fast_layers.scrolls.anchored.push(id);
+    }
+}
+
 pub(crate) fn note_anchored(window: &mut Window) {
     if COMPILED && !window.fast_layers.layers.is_empty() {
         let id = crate::fast::global_id::current(window);

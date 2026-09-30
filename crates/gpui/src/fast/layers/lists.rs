@@ -482,7 +482,9 @@ pub(crate) fn begin_uniform_list(
         let bypassed = begin_bypass(window, id, None).then(|| id.clone());
         return Rows(None, bypassed);
     }
-    let overscan = (viewport.size.height / item_height).ceil().max(1.) as usize;
+    let overscan = (viewport.size.height * paint::OVERSCAN_VIEWPORTS / item_height)
+        .ceil()
+        .max(1.) as usize;
     let needed = needed_rows(visible, overscan, item_count);
     let layer = paint::layer_mut(window, id);
     let extends = decision == Decision::Composite
@@ -1006,7 +1008,7 @@ pub(crate) fn end_list(
     frame.translation = translation.unwrap_or_default();
 
     // The rows shown and a viewport's height of rows on each side.
-    let extent = viewport.size.height;
+    let extent = viewport.size.height * paint::OVERSCAN_VIEWPORTS;
     let (top, bottom) = (viewport.top() - extent, viewport.bottom() + extent);
     let available = crate::size(
         AvailableSpace::Definite(bounds.size.width),
@@ -1508,14 +1510,13 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
     let hashes = tile_hashes(&content, paint::TILE_SIZE, region);
 
     let old = layer.record.take();
-    let (generation, dirty) = match &old {
-        Some(old) if old.background == background => {
-            (old.generation + 1, dirty_tiles(&old.tile_hashes, &hashes))
-        }
-        old => (
-            old.as_ref().map_or(1, |old| old.generation + 1),
-            paint::all_tiles(&hashes),
-        ),
+    // `rows` borrows the layer's rows: its generation is taken field by
+    // field, as `Layer::next_generation` does.
+    layer.generation += 1;
+    let generation = layer.generation;
+    let dirty = match &old {
+        Some(old) if old.background == background => dirty_tiles(&old.tile_hashes, &hashes),
+        _ => paint::all_tiles(&hashes),
     };
     let (dependencies, hovers, views) = match (&old, frame.mode) {
         (Some(old), Mode::Extend) => {
