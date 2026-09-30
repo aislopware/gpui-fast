@@ -1448,9 +1448,16 @@ impl MetalRenderer {
             let ycbcr_to_rgb = ycbcr_to_rgb(surface_matrix(&surface.image_buffer), layout);
             let (luma_format, chroma_format) = layout.depth.plane_formats();
 
+            // SAFETY: a `CVPixelBufferRef` is a `CVImageBufferRef` (CVPixelBuffer.h), and the
+            // surface holds the buffer alive for this call; the get rule retains it once more.
+            let image_buffer = unsafe {
+                core_video::image_buffer::CVImageBuffer::wrap_under_get_rule(
+                    surface.image_buffer.as_concrete_TypeRef(),
+                )
+            };
             let plane = |plane: usize, format: MTLPixelFormat| {
                 self.core_video_texture_cache.create_texture_from_image(
-                    surface.image_buffer.as_concrete_TypeRef(),
+                    &image_buffer,
                     None,
                     format,
                     surface.image_buffer.get_width_of_plane(plane),
