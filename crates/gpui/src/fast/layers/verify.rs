@@ -80,7 +80,7 @@ fn expand_layer(
     composited: &[TileCoord],
 ) -> Vec<Primitive> {
     let mut scratch = Scene::default();
-    for operation in crate::fast::scene::operations(&layer.content) {
+    for operation in layer.content.operations() {
         match operation {
             Operation::Primitive(primitive) => {
                 let mut moved =

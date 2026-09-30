@@ -387,7 +387,7 @@ fn layer_frame(key: LayerKey, generation: u64, content: Scene, dirty: &[TileCoor
         generation,
         background: background(),
         tile_size: TILE,
-        content: Rc::new(content),
+        content: Rc::new(content).into(),
         dirty_tiles: dirty.to_vec(),
     }
 }
@@ -770,4 +770,5 @@ impl Harness {
             .into_raw()
     }
 }
+
 

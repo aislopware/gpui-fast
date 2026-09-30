@@ -26,8 +26,8 @@ use crate::{
             policy::{self, Decision},
             record::LayerRecord,
             scene::{
-                LayerFrame, LayerKey, decode_layer_tile, layer_tile_id, layer_tile_texture_id,
-                translate_native, translate_primitive,
+                LayerContent, LayerFrame, LayerKey, decode_layer_tile, layer_tile_id,
+                layer_tile_texture_id, translate_native, translate_primitive,
             },
             tiles::{dirty_tiles, tile_hashes},
         },
@@ -370,7 +370,7 @@ pub(crate) fn composite_at(
             // content is drawn into the frame, and painted afresh next time.
             let record = layer.record.take().expect("checked above");
             crate::fast::layers::policy::defer_unbaked(window, id);
-            draw_into_frame(window, &record.content, translation);
+            draw_into_frame(window, record.content.operations(), translation);
             let viewport = window.snapped_content_mask().bounds;
             insert_paths(
                 &mut window.next_frame.scene,
@@ -403,7 +403,7 @@ pub(crate) fn insert_layer(
     };
     if record.has_paths {
         let content = record.content.clone();
-        draw_into_frame(window, &content, translation);
+        draw_into_frame(window, content.operations(), translation);
         return;
     }
     insert_tile_quads(&mut window.next_frame.scene, layer, viewport, translation);
@@ -647,14 +647,7 @@ pub(crate) fn replay_layers(scene: &mut Scene, range: Range<usize>, previous: &S
             continue;
         }
         if let Some(frame) = previous.layers.frames.iter().find(|frame| frame.key == key) {
-            scene.layers.frames.push(LayerFrame {
-                key: frame.key,
-                generation: frame.generation,
-                background: frame.background,
-                tile_size: frame.tile_size,
-                content: frame.content.clone(),
-                dirty_tiles: frame.dirty_tiles.clone(),
-            });
+            scene.layers.frames.push(frame.clone());
         }
     }
 }
@@ -662,10 +655,14 @@ pub(crate) fn replay_layers(scene: &mut Scene, range: Range<usize>, previous: &S
 /// Draws the primitives of `content`, moved by `delta` into window space,
 /// straight into the frame, clipped to the viewport, the current content
 /// mask: what painting the content into the frame would have drawn.
-pub(crate) fn draw_into_frame(window: &mut Window, content: &Scene, delta: Point<ScaledPixels>) {
+pub(crate) fn draw_into_frame(
+    window: &mut Window,
+    operations: impl IntoIterator<Item = Operation>,
+    delta: Point<ScaledPixels>,
+) {
     let viewport = window.snapped_content_mask().bounds;
     let scene = &mut window.next_frame.scene;
-    for operation in crate::fast::scene::operations(content) {
+    for operation in operations {
         match operation {
             Operation::Primitive(primitive) => {
                 let mut primitive = translate_primitive(&primitive, delta);
@@ -768,7 +765,11 @@ fn repaint(
     };
     let hashes = tile_hashes(&content, TILE_SIZE, region);
     if has_paths {
-        draw_into_frame(window, &painting.scene, Point::default());
+        draw_into_frame(
+            window,
+            crate::fast::scene::operations(&painting.scene),
+            Point::default(),
+        );
     }
 
     let views = crate::fast::layers::invalidate::content_views(window, &painting.prepaint_range);
@@ -779,7 +780,7 @@ fn repaint(
         _ => all_tiles(&hashes),
     };
     layer.record = Some(LayerRecord {
-        content: Rc::new(content),
+        content: LayerContent::from(content),
         generation,
         painted_region: painting.painted_region,
         viewport: painting.viewport,
