@@ -14,6 +14,7 @@ mod keyed;
 mod keypad;
 mod layout;
 mod line_breaks;
+mod number_shaping;
 mod oracle;
 mod path_cache;
 mod retained;
