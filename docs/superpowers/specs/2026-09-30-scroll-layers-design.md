@@ -3,7 +3,7 @@
 Status: implemented on Linux/wgpu (2026-09-30). The measurements and the state
 of list layers are in [`docs/scroll-layers.md`](../../scroll-layers.md). List
 layers are implemented but off (`fast::layers::lists::LIST_LAYERS`), because they
-composited only about 1 % of scrolled frames. The tile size (512), overscan (one
+do not pay off as built. The reasons are in docs/scroll-layers.md. The tile size (512), overscan (one
 viewport) and margin (a quarter of the overscan) stay at the values below, since
 no tuning run was completed.
 

@@ -19,9 +19,19 @@ drawing as it does without layers, and how to verify and measure layers.
   (`fast::layers::COMPILED`), and nothing changes.
 - Scrolling `div`s (`overflow_x_scroll` / `overflow_y_scroll`), whether their
   content is a child view or plain elements in the same view.
-- Not yet `uniform_list` or `list`: `fast::layers::lists::LIST_LAYERS` is off.
-  List layers composited only about 1 % of scrolled frames in `gpui_perf`, and
-  their tests are `#[ignore]`d until that is fixed.
+- Not yet `uniform_list` or `list`: `fast::layers::lists::LIST_LAYERS` is off,
+  and the list layer tests are `#[ignore]`d. As built, list layers do not pay
+  off, for three reasons, each enough on its own:
+  - Rows that take input (hover, click, cursor) are never given a layer. A
+    list layer cannot carry a row's hitboxes, listeners and dispatch nodes
+    through a composited frame.
+  - Hovers are recorded for the whole layer. Rows moving under a still pointer
+    change the hovered row on most frames, and each change repaints every
+    held row.
+  - A frame that adds rows rebuilds the whole content scene and re-hashes
+    every tile, which costs about three times drawing without a layer.
+  Making list layers pay off needs per-row input records, per-row hover
+  checks, and content that can be assembled row by row.
 - `GPUI_SCROLL_LAYERS=0` turns layers off for a process.
   `Window::set_scroll_layers` does the same for one window in tests.
 
