@@ -457,7 +457,7 @@ fn insert_paths(
 /// §5.6). `Err(content)` when something is drawn over a path.
 pub(crate) fn lift_paths(
     content: Scene,
-) -> Result<(Scene, Rc<[crate::Path<ScaledPixels>]>), Scene> {
+) -> Result<(Scene, Rc<[crate::Path<ScaledPixels>]>), Box<Scene>> {
     if content.paths.is_empty() {
         return Ok((content, Rc::from([])));
     }
@@ -498,7 +498,7 @@ pub(crate) fn lift_paths(
         if *is_path {
             paths_so_far.push(*bounds);
         } else if paths_so_far.iter().any(|path| path.intersects(bounds)) {
-            return Err(content);
+            return Err(Box::new(content));
         }
     }
     let paths: Rc<[crate::Path<ScaledPixels>]> = content.paths.iter().cloned().collect();
@@ -687,7 +687,7 @@ fn repaint(
     };
     let (content, paths, has_paths) = match lift_paths(content) {
         Ok((content, paths)) => (content, paths, false),
-        Err(content) => (content, Rc::from([]), true),
+        Err(content) => (*content, Rc::from([]), true),
     };
     let hashes = tile_hashes(&content, TILE_SIZE, region);
     if has_paths {

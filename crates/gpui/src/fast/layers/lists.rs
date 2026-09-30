@@ -444,6 +444,12 @@ pub(crate) fn snap_item_offset(window: &Window, scroll_offset: Point<Pixels>) ->
 /// `padded_bounds`, scrolled by `scroll_offset`; it shows the rows
 /// `visible`. A list flipped vertically keeps today's path.
 #[allow(clippy::too_many_arguments)]
+/// Whether virtual lists get scroll layers. Off: measured on `gpui_perf`'s
+/// list scenarios, list layers composited about 1 % of scrolled frames and
+/// cost more than they saved, so lists draw as they do without layers until
+/// that is fixed.
+pub(crate) const LIST_LAYERS: bool = false;
+
 pub(crate) fn begin_uniform_list(
     window: &mut Window,
     cx: &mut App,
@@ -455,7 +461,7 @@ pub(crate) fn begin_uniform_list(
     visible: &Range<usize>,
     y_flipped: bool,
 ) -> Rows {
-    if !COMPILED || y_flipped || item_height <= Pixels::ZERO {
+    if !COMPILED || !LIST_LAYERS || y_flipped || item_height <= Pixels::ZERO {
         return Rows(None, None);
     }
     let Some(id) = id else {
@@ -732,7 +738,7 @@ pub(crate) fn begin_list(
     state: &crate::StateInner,
     bounds: Bounds<Pixels>,
 ) {
-    if !COMPILED || paint::inside_layer(window) || !active(window, cx) {
+    if !COMPILED || !LIST_LAYERS || paint::inside_layer(window) || !active(window, cx) {
         return;
     }
     let version = state.version.clone();
