@@ -193,12 +193,16 @@ pub(crate) fn draw_scene(
                 None,
             ),
             PrimitiveBatch::MonochromeSprites { texture_id, range } => {
-                let [view] = target.atlas.get_texture_view(texture_id);
+                let Some([view]) = target.atlas.get_texture_view(texture_id) else {
+                    continue;
+                };
                 let pipeline = &pipelines.mono_sprites;
                 draw.instances(pipeline, range.start, range.len(), Some(&view))
             }
             PrimitiveBatch::SubpixelSprites { texture_id, range } => {
-                let [view] = target.atlas.get_texture_view(texture_id);
+                let Some([view]) = target.atlas.get_texture_view(texture_id) else {
+                    continue;
+                };
                 let pipeline = &pipelines.subpixel_sprites;
                 draw.instances(pipeline, range.start, range.len(), Some(&view))
             }
@@ -220,7 +224,9 @@ pub(crate) fn draw_scene(
                 })
             }
             PrimitiveBatch::PolychromeSprites { texture_id, range } => {
-                let [view] = target.atlas.get_texture_view(texture_id);
+                let Some([view]) = target.atlas.get_texture_view(texture_id) else {
+                    continue;
+                };
                 let pipeline = &pipelines.poly_sprites;
                 draw.instances(pipeline, range.start, range.len(), Some(&view))
             }
