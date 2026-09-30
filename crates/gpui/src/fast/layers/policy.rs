@@ -416,9 +416,24 @@ fn covers(
         && wanted.bottom() <= painted.bottom()
 }
 
+/// Keeps the container `id`, whose background could not be baked into its
+/// tiles, on today's path for a while: a background that cannot be baked
+/// (a translucent window, a gradient) seldom becomes one that can, and
+/// painting a layer every scrolled frame that cannot be composited costs a
+/// repaint for nothing.
+pub(crate) fn defer_unbaked(window: &mut Window, id: &GlobalElementId) {
+    let frame = window.fast_layers.frame;
+    if let Some(layer) = window.fast_layers.layers.get_mut(id) {
+        layer.record = None;
+        layer.policy.painted_in = None;
+        layer.policy.retry_at = Some(frame + REPROMOTE_AFTER_STABLE_FRAMES);
+    }
+}
+
 fn new_layer(key: LayerKey, frame: u64) -> Layer {
     Layer {
         key,
+        generation: 0,
         record: None,
         policy: LayerPolicy {
             last_seen_frame: frame,

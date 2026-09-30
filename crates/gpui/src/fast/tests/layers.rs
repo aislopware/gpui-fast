@@ -833,6 +833,57 @@ mod paint {
         });
     }
 
+    /// A renderer keeps a layer's tiles by key and generation. A record
+    /// dropped (content that could not be composited, a demotion, a
+    /// background that could not be baked) and painted again must not come
+    /// back at a generation the renderer holds tiles of, or those stale
+    /// tiles would be shown.
+    #[crate::test]
+    fn a_layer_painted_again_after_its_record_was_dropped_gets_a_new_generation(
+        cx: &mut crate::TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        use crate::fast::layers::policy::Decision;
+        let window = rows_window(cx, 40);
+        draw_deciding(cx, window, Decision::Repaint);
+        let first = with_record(cx, window, |record, _| record.generation);
+        cx.update_window(window.into(), |_, window, _| {
+            for layer in window.fast_layers.layers.values_mut() {
+                layer.record = None;
+            }
+        })
+        .unwrap();
+        draw_deciding(cx, window, Decision::Repaint);
+        let (second, dirty, tiles) = with_record(cx, window, |record, _| {
+            (
+                record.generation,
+                record.dirty_tiles.len(),
+                record.tile_hashes.len(),
+            )
+        });
+        assert!(second > first, "generation {second} after {first}");
+        assert_eq!(dirty, tiles, "every tile is dirty");
+        let framed = cx
+            .update_window(window.into(), |_, window, _| {
+                window
+                    .rendered_frame
+                    .scene
+                    .layers
+                    .frames
+                    .iter()
+                    .map(|frame| frame.generation)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(
+            framed,
+            vec![second],
+            "the frame hands the renderer the new generation"
+        );
+    }
+
     #[crate::test]
     fn a_repaint_at_a_shifted_offset_dirties_only_the_edge_tiles(cx: &mut crate::TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -1959,6 +2010,9 @@ mod decisions {
         /// Whether it draws a scrollbar beside the scroll container, whose
         /// prepaint and paint read the offset, as GPUI Kit's does.
         pub(super) scrollbar: bool,
+        /// Whether the page's background is translucent, which no layer can
+        /// bake into its tiles.
+        pub(super) translucent: bool,
     }
 
     impl Render for LayerPage {
@@ -1985,7 +2039,12 @@ mod decisions {
                     scroller.children((0..ROWS).map(|index| row(index, self.hover, content_width)))
                 }
             };
-            let page = div().size_full().bg(rgb(0xffffff)).child(scroller);
+            let background = if self.translucent {
+                crate::rgba(0xffffff80)
+            } else {
+                rgb(0xffffff)
+            };
+            let page = div().size_full().bg(background).child(scroller);
             if !self.scrollbar {
                 return page;
             }
@@ -2022,6 +2081,7 @@ mod decisions {
             wide: false,
             animate: false,
             scrollbar: false,
+            translucent: false,
         }
     }
 
@@ -2106,6 +2166,26 @@ mod decisions {
     pub(super) fn promote(cx: &mut TestAppContext, window: AnyWindowHandle) {
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
+    }
+
+    /// A background no tile can be cleared with keeps the container on
+    /// today's path for a while, rather than painting a layer every
+    /// scrolled frame that it can never composite.
+    #[crate::test]
+    fn a_background_that_cannot_be_baked_stops_repainting(cx: &mut TestAppContext) {
+        let handle = page(cx, false);
+        let window = handle.into();
+        handle
+            .update(cx, |page, _, cx| {
+                page.translucent = true;
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx, window);
+        promote(cx, window);
+        for _ in 0..20 {
+            assert_eq!(scroll(cx, window, -5.), Some(Decision::Bypass));
+        }
     }
 
     #[crate::test]

@@ -1503,14 +1503,13 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
     let hashes = tile_hashes(&content, paint::TILE_SIZE, region);
 
     let old = layer.record.take();
-    let (generation, dirty) = match &old {
-        Some(old) if old.background == background => {
-            (old.generation + 1, dirty_tiles(&old.tile_hashes, &hashes))
-        }
-        old => (
-            old.as_ref().map_or(1, |old| old.generation + 1),
-            paint::all_tiles(&hashes),
-        ),
+    // `rows` borrows the layer's rows: its generation is taken field by
+    // field, as `Layer::next_generation` does.
+    layer.generation += 1;
+    let generation = layer.generation;
+    let dirty = match &old {
+        Some(old) if old.background == background => dirty_tiles(&old.tile_hashes, &hashes),
+        _ => paint::all_tiles(&hashes),
     };
     let (dependencies, hovers, views) = match (&old, frame.mode) {
         (Some(old), Mode::Extend) => {

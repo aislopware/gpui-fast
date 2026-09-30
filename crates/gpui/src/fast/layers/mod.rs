@@ -76,6 +76,11 @@ impl Default for WindowLayers {
 )]
 pub(crate) struct Layer {
     pub(crate) key: scene::LayerKey,
+    /// The generation of the latest content, counted for the layer rather
+    /// than its record: a renderer keeps tiles by key and generation, so a
+    /// record dropped and painted again must not start over at a
+    /// generation the renderer holds tiles of. See [`Layer::next_generation`].
+    pub(crate) generation: u64,
     /// The content as last painted, once it has been.
     pub(crate) record: Option<record::LayerRecord>,
     pub(crate) policy: policy::LayerPolicy,
@@ -86,6 +91,14 @@ pub(crate) struct Layer {
     /// What the frame being drawn prepainted the container for, for its
     /// paint to finish.
     pub(crate) prepainted: Option<paint::Prepainted>,
+}
+
+impl Layer {
+    /// A generation this layer's content has never had.
+    pub(crate) fn next_generation(&mut self) -> u64 {
+        self.generation += 1;
+        self.generation
+    }
 }
 
 /// Whether layers may be used in `window` this frame (spec §6.5, first bullet).
