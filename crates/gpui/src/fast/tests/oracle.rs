@@ -765,7 +765,7 @@ impl Render for Badge {
 
 /// The no-op text system, except that every glyph rasterizes to a small box,
 /// so text paints a sprite per glyph and where each glyph went is compared.
-struct GlyphBoxTextSystem(NoopTextSystem);
+pub(super) struct GlyphBoxTextSystem(pub(super) NoopTextSystem);
 
 impl PlatformTextSystem for GlyphBoxTextSystem {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
