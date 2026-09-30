@@ -275,6 +275,53 @@ fn a_changed_generation_rerasterizes_only_dirty_tiles() {
     assert_eq!(rasterized, 7);
 }
 
+/// A layer's first generation dirties the overscan too: a frame rasterizes
+/// the tiles it composites and a few of the others, nearest first, and the
+/// frames after it the rest, a few at a time.
+#[test]
+fn dirty_tiles_not_composited_are_rasterized_a_few_a_frame_nearest_first() {
+    use super::tile_cache::PREFETCH_TILES;
+    let mut cache = TileCache::default();
+    let key = LayerKey(7);
+    // Ten rows of four tiles, the viewport over rows 0 and 1.
+    let all: Vec<TileCoord> = (0..10)
+        .flat_map(|y| (0..4).map(move |x| coord(x, y)))
+        .collect();
+    let shown: Vec<TileCoord> = all.iter().copied().filter(|tile| tile.y < 2).collect();
+    let layers = scene_layers(key, 1, &all);
+    let mut frame = || {
+        cache
+            .begin_frame(&layers, shown.iter().map(|tile| (key, *tile)))
+            .into_iter()
+            .map(|(_, tile)| tile)
+            .collect::<Vec<_>>()
+    };
+
+    let first = frame();
+    assert_eq!(first.len(), shown.len() + PREFETCH_TILES);
+    assert!(shown.iter().all(|tile| first.contains(tile)));
+    assert!(
+        first
+            .iter()
+            .filter(|tile| !shown.contains(tile))
+            .all(|tile| tile.y == 2),
+        "the next row first: {first:?}"
+    );
+    let mut rasterized = first;
+    loop {
+        let next = frame();
+        if next.is_empty() {
+            break;
+        }
+        assert!(next.len() <= PREFETCH_TILES);
+        rasterized.extend(next);
+    }
+    rasterized.sort();
+    let mut all = all;
+    all.sort();
+    assert_eq!(rasterized, all, "every tile once");
+}
+
 #[test]
 fn tiles_are_evicted_least_recently_composited_first_within_the_budget() {
     const SIDE: u32 = 16;
@@ -771,4 +818,258 @@ impl Harness {
     }
 }
 
+/// What scrolling a settings-like page costs the renderer, drawn directly
+/// and through layer tiles: per frame, the CPU time `render_frame` takes to
+/// encode and the GPU time of the frame's command buffer, plus the frame
+/// that rasterizes every tile. The page, at 2x, is 1600 × 5000 device
+/// pixels of 40-pixel rows, each a background, a label of 40 glyphs, a
+/// toggle and a separator; the viewport is 1600 × 1000 and scrolls 12
+/// pixels a frame.
+///
+/// `cargo test -p gpui_apple --release --lib scroll_frame_gpu_cost -- --ignored --nocapture`
+#[test]
+#[ignore = "a measurement, not a check"]
+fn scroll_frame_gpu_cost() {
+    use objc::{msg_send, sel, sel_impl};
+    use std::time::{Duration, Instant};
 
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    const FRAMES: usize = 300;
+    const STEP: f32 = 12.;
+    let window = Window {
+        size: device_size(1800, 1200),
+        viewport: sp(100., 100., 1600., 1000.),
+    };
+    let glyphs: Vec<AtlasTile> = (0..26).map(|glyph| glyph_tile(&harness, glyph)).collect();
+    let page = |scene: &mut Scene, offset: (f32, f32), clip: Bounds<ScaledPixels>| {
+        let mask = ContentMask { bounds: clip };
+        for row in 0..125 {
+            let y = offset.1 + row as f32 * 40.;
+            if y + 40. < clip.origin.y.0 || y > clip.origin.y.0 + clip.size.height.0 {
+                // What a list or a culling paint leaves out.
+                continue;
+            }
+            let x = offset.0;
+            scene.insert_primitive(Quad {
+                content_mask: mask,
+                ..quad(
+                    sp(x, y, 1600., 40.),
+                    Hsla::from(if row % 2 == 0 {
+                        rgba(0x1e1e22ff)
+                    } else {
+                        rgba(0x232328ff)
+                    }),
+                )
+            });
+            for (i, tile) in glyphs.iter().cycle().skip(row).take(40).enumerate() {
+                scene.insert_primitive(MonochromeSprite {
+                    order: 0,
+                    pad: 0,
+                    bounds: sp(x + 24. + i as f32 * 17., y + 12., 16., 16.),
+                    content_mask: mask,
+                    color: Hsla::from(rgba(0xe6e6e6ff)),
+                    tile: *tile,
+                    transformation: TransformationMatrix::unit(),
+                });
+            }
+            scene.insert_primitive(Quad {
+                bounds: sp(x + 1500., y + 8., 48., 24.),
+                content_mask: mask,
+                background: Hsla::from(rgba(0x3fa66bff)).into(),
+                border_color: Hsla::from(rgba(0x2b2b30ff)),
+                corner_radii: Corners::all(ScaledPixels(12.)),
+                border_widths: Edges::all(ScaledPixels(1.)),
+                ..Default::default()
+            });
+            scene.insert_primitive(Underline {
+                order: 0,
+                pad: 0,
+                bounds: sp(x + 16., y + 39., 1568., 1.),
+                content_mask: mask,
+                color: Hsla::from(rgba(0x333338ff)),
+                thickness: ScaledPixels(1.),
+                wavy: false.into(),
+            });
+        }
+    };
+
+    let texture = {
+        let descriptor = metal::TextureDescriptor::new();
+        descriptor.set_width(window.size.width.0 as u64);
+        descriptor.set_height(window.size.height.0 as u64);
+        descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
+        descriptor
+            .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
+        descriptor.set_storage_mode(metal::MTLStorageMode::Private);
+        harness.renderer.device.new_texture(&descriptor)
+    };
+    // Instructions the calling thread has retired: unlike time, steady on a
+    // busy machine.
+    fn instructions() -> u64 {
+        unsafe extern "C" {
+            // libsystem_kernel: the thread's performance counters; kind 1 is
+            // instructions and cycles.
+            fn thread_selfcounts(kind: i32, buffer: *mut u64, size: usize) -> i32;
+        }
+        let mut counts = [0u64; 2];
+        // SAFETY: the buffer holds the two counters kind 1 writes.
+        unsafe { thread_selfcounts(1, counts.as_mut_ptr(), size_of_val(&counts)) };
+        counts[0]
+    }
+    let encoded = std::cell::Cell::new(0u64);
+    // CPU time encoding, GPU time of the frame's command buffer, and wall
+    // time until it completed, from the start of encoding.
+    let draw = |renderer: &mut MetalRenderer, scene: &Scene| -> (Duration, Duration, Duration) {
+        objc2::rc::autoreleasepool(|_| {
+            let start = Instant::now();
+            let before = instructions();
+            let command_buffer = renderer
+                .render_frame(scene, &texture, window.size)
+                .expect("frame encoded");
+            let cpu = start.elapsed();
+            encoded.set(instructions() - before);
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+            let wall = start.elapsed();
+            // SAFETY: `GPUStartTime` and `GPUEndTime` are `MTLCommandBuffer`
+            // properties, read after the buffer completed.
+            let (gpu_start, gpu_end): (f64, f64) = unsafe {
+                (
+                    msg_send![command_buffer.as_ref(), GPUStartTime],
+                    msg_send![command_buffer.as_ref(), GPUEndTime],
+                )
+            };
+            (
+                cpu,
+                Duration::from_secs_f64((gpu_end - gpu_start).max(0.)),
+                wall,
+            )
+        })
+    };
+    let offset_at = |frame: usize| (frame as f32 * STEP) % 3900.;
+    let report = |name: &str, samples: &mut Vec<(Duration, Duration, Duration)>| {
+        let median = |mut values: Vec<Duration>| {
+            values.sort();
+            values[values.len() / 2]
+        };
+        let p95 = |mut values: Vec<Duration>| {
+            values.sort();
+            values[values.len() * 95 / 100]
+        };
+        let cpu: Vec<_> = samples.iter().map(|s| s.0).collect();
+        let gpu: Vec<_> = samples.iter().map(|s| s.1).collect();
+        let wall: Vec<_> = samples.iter().map(|s| s.2).collect();
+        eprintln!(
+            "{name}: encode median {:?} p95 {:?}; gpu median {:?} p95 {:?}; to completion median {:?} p95 {:?}",
+            median(cpu.clone()),
+            p95(cpu),
+            median(gpu.clone()),
+            p95(gpu),
+            median(wall.clone()),
+            p95(wall),
+        );
+    };
+
+    // Directly: the visible rows drawn into the frame at the offset.
+    let mut direct = Vec::with_capacity(FRAMES);
+    let mut direct_instructions = 0;
+    for frame in 0..FRAMES + 30 {
+        let offset = offset_at(frame);
+        let mut scene = Scene::default();
+        scene.insert_primitive(panel(&window));
+        page(&mut scene, (100., 100. - offset), window.viewport);
+        scene.insert_primitive(scrollbar());
+        scene.finish();
+        let sample = draw(&mut harness.renderer, &scene);
+        if frame >= 30 {
+            direct.push(sample);
+            direct_instructions += encoded.get();
+        }
+    }
+    report("direct", &mut direct);
+    eprintln!(
+        "direct: {} instructions encoding a frame",
+        direct_instructions / FRAMES as u64
+    );
+
+    // Through tiles: the whole page painted once into a layer; each frame
+    // composites the tiles over the viewport.
+    let mut content = Scene::default();
+    page(&mut content, (0., 0.), sp(0., 0., 1600., 5000.));
+    content.finish();
+    let all_tiles: Vec<TileCoord> = (0..10)
+        .flat_map(|y| (0..4).map(move |x| coord(x, y)))
+        .collect();
+    let layer = layer_frame(LayerKey(11), 1, content, &all_tiles);
+    let composite = |offset: f32| {
+        let tiles: Vec<TileCoord> = all_tiles
+            .iter()
+            .copied()
+            .filter(|tile| {
+                let bounds = layer.tile_bounds(*tile);
+                bounds.origin.y.0 < offset + 1000. && bounds.origin.y.0 + TILE as f32 > offset
+            })
+            .collect();
+        composited(&window, layer.clone(), &tiles, (100., 100. - offset), false)
+    };
+    let raster = draw(&mut harness.renderer, &composite(0.));
+    eprintln!(
+        "raster all {} tiles ({} MB): to completion {:?}",
+        harness.cache().rasterized,
+        harness.cache().rasterized,
+        raster.2
+    );
+    eprintln!("raster: {} instructions encoding", encoded.get());
+    let mut tiled = Vec::with_capacity(FRAMES);
+    let mut tiled_instructions = 0;
+    for frame in 0..FRAMES + 30 {
+        let sample = draw(&mut harness.renderer, &composite(offset_at(frame)));
+        if frame >= 30 {
+            tiled.push(sample);
+            tiled_instructions += encoded.get();
+        }
+    }
+    report("tiles", &mut tiled);
+    eprintln!(
+        "tiles: {} instructions encoding a frame",
+        tiled_instructions / FRAMES as u64
+    );
+
+    // The same content as a new generation, every tile dirty: rasterized
+    // again into the textures the cache holds.
+    let before = instructions();
+    let scenes = layer.tile_scenes(&all_tiles);
+    eprintln!(
+        "tile_scenes of all {} tiles: {} instructions, {} sprites",
+        all_tiles.len(),
+        instructions() - before,
+        scenes
+            .iter()
+            .map(|scene| scene.monochrome_sprites.len())
+            .sum::<usize>()
+    );
+    let before = instructions();
+    for tile in &all_tiles {
+        std::hint::black_box(layer.tile_scene(*tile));
+    }
+    eprintln!(
+        "tile_scene of each: {} instructions",
+        instructions() - before
+    );
+    let mut layer = layer;
+    for generation in 2..5 {
+        layer.generation = generation;
+        let tiles: Vec<TileCoord> = all_tiles.iter().copied().filter(|t| t.y < 2).collect();
+        let scene = composited(&window, layer.clone(), &tiles, (100., 100.), false);
+        let again = draw(&mut harness.renderer, &scene);
+        eprintln!(
+            "raster all {} tiles again, textures kept: encode {:?} ({} instructions), to completion {:?}",
+            all_tiles.len(),
+            again.0,
+            encoded.get(),
+            again.2
+        );
+    }
+}

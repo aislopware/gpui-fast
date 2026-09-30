@@ -27,9 +27,6 @@ use crate::metal_renderer::{
     write_instances,
 };
 
-/// The pixel format of tiles: the drawable's and every pipeline's.
-const TILE_FORMAT: metal::MTLPixelFormat = metal::MTLPixelFormat::BGRA8Unorm;
-
 /// Forwarded to by `MetalRenderer::render_frame` before it encodes `scene`:
 /// rasterizes the layer tiles `scene` needs that the cache lacks, and notes
 /// the tiles it composites for `composite::draw_tiles`.
@@ -43,7 +40,13 @@ pub(crate) fn rasterize_tiles(renderer: &mut MetalRenderer, scene: &Scene) {
     if planned.is_empty() {
         return;
     }
-    cache.prepare(&renderer.device, TILE_FORMAT, &scene.layers, &planned);
+    // Tiles are drawn with the frame's pipelines, so in the drawable's format.
+    cache.prepare(
+        &renderer.device,
+        crate::metal_renderer::drawable_pixel_format(),
+        &scene.layers,
+        &planned,
+    );
     if let Err(error) = encode(renderer, scene, &planned) {
         log::error!("failed to rasterize scroll layer tiles: {error:#}");
         // The tiles this frame was to rasterize were not.
@@ -89,45 +92,49 @@ fn encode(
     command_buffer.set_label("scroll_layer_tiles");
 
     let mut result = Ok(());
-    for &(index, tile) in planned {
-        let layer = &scene.layers.frames[index];
-        let Some(texture) = renderer
-            .fast_layers
-            .texture(layer.key, tile)
-            .map(|texture| texture.to_owned())
-        else {
-            debug_assert!(false, "a planned tile was not prepared");
-            continue;
-        };
-        let tile_scene = layer.tile_scene(tile);
-        let bindings = match write_instances(&tile_scene, &mut writer) {
-            Ok(bindings) => bindings,
-            Err(error) => {
-                result = Err(error);
-                break;
-            }
-        };
+    // `planned` is sorted by layer: each layer's tile scenes come from one
+    // walk over its content.
+    'layers: for run in planned.chunk_by(|a, b| a.0 == b.0) {
+        let layer = &scene.layers.frames[run[0].0];
+        let tiles: Vec<TileCoord> = run.iter().map(|&(_, tile)| tile).collect();
         let viewport_size = size(
             DevicePixels(layer.tile_size as i32),
             DevicePixels(layer.tile_size as i32),
         );
-        let command_encoder = new_command_encoder_for_texture(
-            command_buffer,
-            &texture,
-            viewport_size,
-            Some(clear_color(layer.background)),
-        );
-        draw_tile_scene(
-            renderer,
-            &tile_scene,
-            &bindings,
-            viewport_size,
-            command_encoder,
-        );
-        command_encoder.end_encoding();
-        #[cfg(test)]
-        {
-            renderer.fast_layers.rasterized += 1;
+        for (tile, tile_scene) in tiles.iter().zip(layer.tile_scenes(&tiles)) {
+            let Some(texture) = renderer
+                .fast_layers
+                .texture(layer.key, *tile)
+                .map(|texture| texture.to_owned())
+            else {
+                debug_assert!(false, "a planned tile was not prepared");
+                continue;
+            };
+            let bindings = match write_instances(&tile_scene, &mut writer) {
+                Ok(bindings) => bindings,
+                Err(error) => {
+                    result = Err(error);
+                    break 'layers;
+                }
+            };
+            let command_encoder = new_command_encoder_for_texture(
+                command_buffer,
+                &texture,
+                viewport_size,
+                Some(clear_color(layer.background)),
+            );
+            draw_tile_scene(
+                renderer,
+                &tile_scene,
+                &bindings,
+                viewport_size,
+                command_encoder,
+            );
+            command_encoder.end_encoding();
+            #[cfg(test)]
+            {
+                renderer.fast_layers.rasterized += 1;
+            }
         }
     }
 
@@ -143,18 +150,20 @@ fn encode(
     let instance_buffer_pool = renderer.instance_buffer_pool.clone();
     let failed = renderer.fast_layers.failure_flag();
     let instance_buffer = Cell::new(Some(instance_buffer));
-    let block = RcBlock::new(move |command_buffer: ptr::NonNull<objc2::runtime::AnyObject>| {
-        // SAFETY: Metal calls a completed handler with the `id<MTLCommandBuffer>` it was
-        // added to, alive for the duration of the call.
-        let command_buffer =
-            unsafe { metal::CommandBufferRef::from_ptr(command_buffer.as_ptr().cast()) };
-        if command_buffer.status() == metal::MTLCommandBufferStatus::Error {
-            failed.store(true, std::sync::atomic::Ordering::Release);
-        }
-        if let Some(instance_buffer) = instance_buffer.take() {
-            instance_buffer_pool.lock().release(instance_buffer);
-        }
-    });
+    let block = RcBlock::new(
+        move |command_buffer: ptr::NonNull<objc2::runtime::AnyObject>| {
+            // SAFETY: Metal calls a completed handler with the `id<MTLCommandBuffer>` it was
+            // added to, alive for the duration of the call.
+            let command_buffer =
+                unsafe { metal::CommandBufferRef::from_ptr(command_buffer.as_ptr().cast()) };
+            if command_buffer.status() == metal::MTLCommandBufferStatus::Error {
+                failed.store(true, std::sync::atomic::Ordering::Release);
+            }
+            if let Some(instance_buffer) = instance_buffer.take() {
+                instance_buffer_pool.lock().release(instance_buffer);
+            }
+        },
+    );
     // SAFETY: Both pointee types are opaque views of the same Objective-C block pointer ABI.
     unsafe {
         command_buffer.add_completed_handler(&*RcBlock::as_ptr(&block).cast());

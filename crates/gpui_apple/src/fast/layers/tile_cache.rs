@@ -28,6 +28,14 @@ const LAYER_KEEP_FRAMES: u64 = 120;
 /// Textures of released tiles kept for new tiles to reuse.
 const POOL_LIMIT: usize = 8;
 
+/// How many tiles a frame rasterizes beyond those it composites: dirty tiles
+/// of the overscan, nearest the composited ones first. A layer's first
+/// generation dirties every tile of the viewport and the two viewports of
+/// overscan around it; rasterized in one frame, they cost that frame several
+/// milliseconds of the GPU's time where the frame drawn without a layer took
+/// a fraction of one, and it was the frame a scroll began on.
+pub(crate) const PREFETCH_TILES: usize = 4;
+
 /// A window's scroll layer tiles.
 pub(crate) struct TileCache {
     tiles: FxHashMap<(LayerKey, TileCoord), Tile>,
@@ -38,6 +46,10 @@ pub(crate) struct TileCache {
     /// The layer tile sprites of the frame being drawn: each one's index in
     /// the scene's polychrome sprites, and its tile, in index order.
     composited: Vec<(usize, TileCoord)>,
+    /// The dirty tiles of each layer's latest generation not rasterized yet:
+    /// rasterized once composited, or ahead of it, [`PREFETCH_TILES`] a
+    /// frame.
+    pending: FxHashMap<LayerKey, Vec<TileCoord>>,
     /// Set by a command buffer that rasterized tiles and failed, as when the
     /// GPU is lost: its tiles' pixels are undefined.
     failed: Arc<AtomicBool>,
@@ -55,6 +67,7 @@ impl Default for TileCache {
             frame: 0,
             budget_bytes: DEFAULT_BUDGET_BYTES,
             composited: Vec::new(),
+            pending: FxHashMap::default(),
             failed: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             rasterized: 0,
@@ -106,7 +119,10 @@ impl TileCache {
 
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.tiles.is_empty() && self.layers.is_empty() && self.pool.is_empty()
+        self.tiles.is_empty()
+            && self.layers.is_empty()
+            && self.pool.is_empty()
+            && self.pending.is_empty()
     }
 
     /// The flag a failed tile command buffer sets.
@@ -171,9 +187,10 @@ impl TileCache {
 
     /// Starts a frame that composites the tiles `composited` of the layers in
     /// `layers`. Returns the tiles to rasterize before they are drawn, each
-    /// with the index of its layer in `layers.frames`: the dirty tiles of a
-    /// generation the cache sees for the first time, and every composited
-    /// tile the cache does not hold. They count as held from here on.
+    /// with the index of its layer in `layers.frames`: every composited tile
+    /// the cache does not hold, and up to [`PREFETCH_TILES`] more of the
+    /// dirty tiles of the generations it has seen, nearest the composited
+    /// ones first. They count as held from here on.
     pub(crate) fn begin_frame(
         &mut self,
         layers: &SceneLayers,
@@ -183,7 +200,7 @@ impl TileCache {
         let frame = self.frame;
         let mut planned = FxHashSet::default();
 
-        for (index, layer) in layers.frames.iter().enumerate() {
+        for layer in &layers.frames {
             let seen = self.layers.entry(layer.key).or_insert(SeenLayer {
                 generation: layer.generation.wrapping_sub(2),
                 last_frame: frame,
@@ -211,19 +228,25 @@ impl TileCache {
                     tile.valid = false;
                 }
             }
-            planned.extend(layer.dirty_tiles.iter().map(|tile| (index, *tile)));
+            // Tiles pending since an older generation are invalid, and are
+            // rasterized when composited.
+            let pending = self.pending.entry(layer.key).or_default();
+            pending.clear();
+            pending.extend(layer.dirty_tiles.iter().copied());
         }
 
         let mut indices = FxHashMap::default();
         for (index, layer) in layers.frames.iter().enumerate() {
             indices.insert(layer.key, index);
         }
+        let mut shown: Vec<(usize, TileCoord)> = Vec::new();
         for (key, coord) in composited {
             // A tile of a layer the frame does not describe cannot be
             // rasterized; it draws nothing.
             let Some(&index) = indices.get(&key) else {
                 continue;
             };
+            shown.push((index, coord));
             let layer = &layers.frames[index];
             match self.tiles.get_mut(&(key, coord)) {
                 Some(tile)
@@ -239,8 +262,14 @@ impl TileCache {
             }
         }
 
+        self.prefetch(layers, &shown, &mut planned);
         let mut planned: Vec<(usize, TileCoord)> = planned.into_iter().collect();
         planned.sort();
+        for &(index, coord) in &planned {
+            if let Some(pending) = self.pending.get_mut(&layers.frames[index].key) {
+                pending.retain(|tile| *tile != coord);
+            }
+        }
         for &(index, coord) in &planned {
             let layer = &layers.frames[index];
             let tile = self.tiles.entry((layer.key, coord)).or_insert(Tile {
@@ -260,6 +289,44 @@ impl TileCache {
         planned
     }
 
+    /// Adds to `planned` up to [`PREFETCH_TILES`] pending tiles of the layers
+    /// in `layers`, each layer's nearest its tiles `shown` (composited this
+    /// frame) first.
+    fn prefetch(
+        &self,
+        layers: &SceneLayers,
+        shown: &[(usize, TileCoord)],
+        planned: &mut FxHashSet<(usize, TileCoord)>,
+    ) {
+        let mut candidates: Vec<(i32, usize, TileCoord)> = Vec::new();
+        for (index, layer) in layers.frames.iter().enumerate() {
+            let Some(pending) = self.pending.get(&layer.key) else {
+                continue;
+            };
+            let distance = |tile: &TileCoord| {
+                shown
+                    .iter()
+                    .filter(|(of, _)| *of == index)
+                    .map(|(_, near)| (near.x - tile.x).abs().max((near.y - tile.y).abs()))
+                    .min()
+                    .unwrap_or(0)
+            };
+            candidates.extend(
+                pending
+                    .iter()
+                    .filter(|tile| !planned.contains(&(index, **tile)))
+                    .map(|tile| (distance(tile), index, *tile)),
+            );
+        }
+        candidates.sort_unstable();
+        planned.extend(
+            candidates
+                .into_iter()
+                .take(PREFETCH_TILES)
+                .map(|(_, index, tile)| (index, tile)),
+        );
+    }
+
     /// Releases the tiles of layers no frame has composited for a while.
     fn drop_unseen_layers(&mut self) {
         let frame = self.frame;
@@ -274,6 +341,7 @@ impl TileCache {
         }
         for key in &gone {
             self.layers.remove(key);
+            self.pending.remove(key);
         }
         let released: Vec<(LayerKey, TileCoord)> = self
             .tiles
@@ -339,6 +407,7 @@ impl TileCache {
         self.layers.clear();
         self.pool.clear();
         self.composited.clear();
+        self.pending.clear();
     }
 
     /// Fits the cache in its budget and gives every tile in `planned` a

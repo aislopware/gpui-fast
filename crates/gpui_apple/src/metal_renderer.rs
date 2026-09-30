@@ -154,7 +154,7 @@ fn destination_alpha_blend_factor() -> metal::MTLBlendFactor {
 }
 
 /// The pixel format of the drawables the renderer draws into.
-fn drawable_pixel_format() -> MTLPixelFormat {
+pub(crate) fn drawable_pixel_format() -> MTLPixelFormat {
     #[cfg(test)]
     if let Some(format) = composition_tests::DRAWABLE_PIXEL_FORMAT.get() {
         return format;
@@ -691,7 +691,7 @@ impl MetalRenderer {
         }
     }
 
-    fn render_frame(
+    pub(crate) fn render_frame(
         &mut self,
         scene: &Scene,
         texture: &metal::TextureRef,
