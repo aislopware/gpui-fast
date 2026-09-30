@@ -240,7 +240,7 @@ fn resize_releases_every_tile() {
 }
 
 #[test]
-fn a_changed_generation_rerasterizes_only_dirty_tiles() {
+fn dirty_tiles_are_rasterized_once_they_are_shown() {
     let mut cache = TileCache::default();
     let key = LayerKey(3);
     let all = [coord(0, 0), coord(1, 0), coord(0, 1), coord(1, 1)];
@@ -256,70 +256,24 @@ fn a_changed_generation_rerasterizes_only_dirty_tiles() {
                 .collect::<Vec<_>>()
         };
 
-    // A new layer: every dirty tile, shown or not.
-    let mut sorted = all.to_vec();
-    sorted.sort();
-    assert_eq!(frame(&mut cache, 1, &all, &all[..2]), sorted);
+    let [a, b, c, _] = all;
+    // A new layer: only the dirty tiles shown. The others wait until they are.
+    let mut shown = vec![a, b];
+    shown.sort();
+    assert_eq!(frame(&mut cache, 1, &all, &[a, b]), shown);
     // The same generation again: nothing.
-    assert_eq!(frame(&mut cache, 1, &all, &all[..2]), vec![]);
-    // The next generation: only its dirty tile, although others are shown.
-    assert_eq!(
-        frame(&mut cache, 2, &[coord(1, 0)], &all),
-        vec![coord(1, 0)]
-    );
-    assert_eq!(frame(&mut cache, 2, &[coord(1, 0)], &all), vec![]);
+    assert_eq!(frame(&mut cache, 1, &all, &[a, b]), vec![]);
+    // The next generation dirties a held tile that is not shown: it waits.
+    assert_eq!(frame(&mut cache, 2, &[b, c], &[a]), vec![]);
+    // Shown again, it is rasterized, and only it.
+    assert_eq!(frame(&mut cache, 2, &[b, c], &[a, b]), vec![b]);
+    // A dirty tile never shown before is rasterized once it is.
+    assert_eq!(frame(&mut cache, 3, &[], &[a, b, c]), vec![c]);
     // A skipped generation may have dirtied any tile: shown tiles again.
-    assert_eq!(frame(&mut cache, 4, &[], &all[..1]), vec![coord(0, 0)]);
+    assert_eq!(frame(&mut cache, 5, &[], &[a]), vec![a]);
     // A shown tile the cache never had.
-    assert_eq!(frame(&mut cache, 4, &[], &[coord(2, 0)]), vec![coord(2, 0)]);
-    assert_eq!(rasterized, 7);
-}
-
-/// A layer's first generation dirties the overscan too: a frame rasterizes
-/// the tiles it composites and a few of the others, nearest first, and the
-/// frames after it the rest, a few at a time.
-#[test]
-fn dirty_tiles_not_composited_are_rasterized_a_few_a_frame_nearest_first() {
-    use super::tile_cache::PREFETCH_TILES;
-    let mut cache = TileCache::default();
-    let key = LayerKey(7);
-    // Ten rows of four tiles, the viewport over rows 0 and 1.
-    let all: Vec<TileCoord> = (0..10)
-        .flat_map(|y| (0..4).map(move |x| coord(x, y)))
-        .collect();
-    let shown: Vec<TileCoord> = all.iter().copied().filter(|tile| tile.y < 2).collect();
-    let layers = scene_layers(key, 1, &all);
-    let mut frame = || {
-        cache
-            .begin_frame(&layers, shown.iter().map(|tile| (key, *tile)))
-            .into_iter()
-            .map(|(_, tile)| tile)
-            .collect::<Vec<_>>()
-    };
-
-    let first = frame();
-    assert_eq!(first.len(), shown.len() + PREFETCH_TILES);
-    assert!(shown.iter().all(|tile| first.contains(tile)));
-    assert!(
-        first
-            .iter()
-            .filter(|tile| !shown.contains(tile))
-            .all(|tile| tile.y == 2),
-        "the next row first: {first:?}"
-    );
-    let mut rasterized = first;
-    loop {
-        let next = frame();
-        if next.is_empty() {
-            break;
-        }
-        assert!(next.len() <= PREFETCH_TILES);
-        rasterized.extend(next);
-    }
-    rasterized.sort();
-    let mut all = all;
-    all.sort();
-    assert_eq!(rasterized, all, "every tile once");
+    assert_eq!(frame(&mut cache, 5, &[], &[coord(2, 0)]), vec![coord(2, 0)]);
+    assert_eq!(rasterized, 6);
 }
 
 #[test]
