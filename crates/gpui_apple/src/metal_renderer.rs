@@ -1368,6 +1368,7 @@ impl MetalRenderer {
             instance_bindings,
             viewport_size,
             command_encoder,
+            &mut binds::Binds::default(),
         ) {
             return;
         }

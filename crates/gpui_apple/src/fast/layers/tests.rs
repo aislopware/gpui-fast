@@ -20,6 +20,7 @@ use gpui::{
 use parking_lot::Mutex;
 
 use crate::fast::layers::TileCache;
+use crate::metal_renderer::binds::UPSTREAM_LOOP;
 use crate::metal_renderer::{InstanceBufferPool, MetalRenderer};
 
 const TILE: u32 = 512;
@@ -88,6 +89,26 @@ fn a_composited_layer_equals_direct_drawing() {
         &tiles,
         false,
     );
+}
+
+/// The same frame encoded by upstream's loop, whose polychrome sprite draw
+/// composites tiles as the fork's bound draws do.
+#[test]
+fn a_composited_layer_equals_direct_drawing_through_upstreams_loop() {
+    let Some(mut harness) = Harness::new() else {
+        return;
+    };
+    let tiles = [coord(0, 0), coord(1, 0), coord(0, 1), coord(1, 1)];
+    UPSTREAM_LOOP.with(|flag| flag.set(true));
+    composite_and_compare(
+        &mut harness,
+        &scrolled_window(),
+        (0., 0.),
+        (37., -91.),
+        &tiles,
+        false,
+    );
+    UPSTREAM_LOOP.with(|flag| flag.set(false));
 }
 
 /// A path the frame draws over a layer, outside it, as the core draws paths

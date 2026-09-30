@@ -142,13 +142,13 @@ impl Binds {
 }
 
 /// One batch of an instanced kind.
-struct Instanced<'a> {
-    pipeline: &'a RenderPipelineStateRef,
-    instances: &'a InstanceBinding,
+pub(crate) struct Instanced<'a> {
+    pub(crate) pipeline: &'a RenderPipelineStateRef,
+    pub(crate) instances: &'a InstanceBinding,
     /// Whether the kind's fragment shader reads its instance.
-    fragment_reads_instances: bool,
-    atlas: Option<&'a TextureRef>,
-    range: Range<usize>,
+    pub(crate) fragment_reads_instances: bool,
+    pub(crate) atlas: Option<&'a TextureRef>,
+    pub(crate) range: Range<usize>,
 }
 
 impl MetalRenderer {
@@ -202,6 +202,17 @@ impl MetalRenderer {
                 );
             }
             PrimitiveBatch::PolychromeSprites { texture_id, range } => {
+                if crate::fast::layers::composite::draw_tiles(
+                    self,
+                    *texture_id,
+                    range,
+                    instance_bindings,
+                    viewport_size,
+                    encoder,
+                    binds,
+                ) {
+                    return true;
+                }
                 let Some(atlas) = self.atlas_texture(*texture_id) else {
                     return true;
                 };
@@ -251,7 +262,7 @@ impl MetalRenderer {
         self.sprite_atlas.metal_texture(texture_id)
     }
 
-    fn draw_instanced(
+    pub(crate) fn draw_instanced(
         &self,
         draw: Instanced<'_>,
         viewport_size: Size<DevicePixels>,
@@ -303,7 +314,7 @@ pub(crate) fn upstream_loop() -> bool {
 
 #[cfg(test)]
 thread_local! {
-    static UPSTREAM_LOOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static UPSTREAM_LOOP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
