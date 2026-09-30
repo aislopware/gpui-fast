@@ -36,6 +36,7 @@ pub(crate) fn carry_prepaint(
     let moved = delta != input.stale;
     input.stale = delta;
     input.viewport = viewport;
+    input.handle_offset.set(delta);
 
     let next = &mut window.next_frame;
     let rendered = &mut window.rendered_frame;

@@ -11,7 +11,13 @@
 use crate::{
     App, Bounds, ContentMask, EntityId, GlobalElementId, Hitbox, Pixels, PlatformInput, Point,
     Window,
+    elements::ScrollHandleState,
     fast::layers::{COMPILED, Layer, invalidate, policy::Decision},
+};
+use collections::FxHashMap;
+use std::{
+    cell::{Cell, RefCell},
+    rc::{Rc, Weak},
 };
 
 /// What a layer keeps to route input into its content.
@@ -32,6 +38,36 @@ pub(crate) struct LayerInput {
     pub(crate) viewport: Bounds<Pixels>,
     /// The view holding the container, last frame.
     pub(crate) owner: Option<EntityId>,
+    /// How far the content shown has scrolled since it was painted, shared
+    /// with the scroll handles tracking elements inside it.
+    pub(crate) handle_offset: Rc<Cell<Point<Pixels>>>,
+}
+
+/// What routing input into a layer's content takes from painting it.
+#[derive(Default)]
+pub(crate) struct PaintingInput {
+    /// The mask of each hitbox the content inserted, in order, before
+    /// [`hitbox_mask`] clipped it to the viewport.
+    hitbox_masks: Vec<ContentMask<Pixels>>,
+    /// Shared with the scroll handles tracking elements inside the content.
+    handle_offset: Rc<Cell<Point<Pixels>>>,
+}
+
+/// A scroll handle's state, as a handle shares it.
+type HandleState = Rc<RefCell<ScrollHandleState>>;
+
+/// A scroll handle whose tracked element was prepainted into a layer, and
+/// how far the layer's scroll has moved it since.
+type MovedHandle = (Weak<RefCell<ScrollHandleState>>, Rc<Cell<Point<Pixels>>>);
+
+thread_local! {
+    /// The scroll handles whose tracked element was last prepainted into a
+    /// layer, by the address of their state, with how far the layer's
+    /// scroll has moved the element since (spec §7, rule 7). The handle's
+    /// getters take no window to find the layer in; windows are drawn on
+    /// this one thread.
+    static MOVED_HANDLES: RefCell<FxHashMap<usize, MovedHandle>> =
+        RefCell::new(FxHashMap::default());
 }
 
 impl LayerInput {
@@ -166,8 +202,9 @@ fn focus_inside(window: &Window, layer: &Layer) -> bool {
 }
 
 /// Notes that the content of the layer of the container `id` was just
-/// painted into the frame being drawn, over its record's prepaint range.
-pub(crate) fn painted(window: &mut Window, id: &GlobalElementId) {
+/// painted into the frame being drawn, over its record's prepaint range,
+/// with what `painting` took from painting it.
+pub(crate) fn painted(window: &mut Window, id: &GlobalElementId, painting: PaintingInput) {
     let frame = window.fast_layers.frame;
     let Some(layer) = window.fast_layers.layers.get_mut(id) else {
         return;
@@ -176,12 +213,79 @@ pub(crate) fn painted(window: &mut Window, id: &GlobalElementId) {
         return;
     };
     let range = &record.prepaint_range;
+    let inserted =
+        &window.next_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index];
     let input = &mut layer.input;
     input.hitboxes.clear();
-    input.hitboxes.extend_from_slice(
-        &window.next_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index],
-    );
+    input.hitboxes.extend_from_slice(inserted);
+    if painting.hitbox_masks.len() == inserted.len() {
+        for (hitbox, mask) in input.hitboxes.iter_mut().zip(painting.hitbox_masks) {
+            hitbox.content_mask = mask;
+        }
+    } else {
+        debug_assert!(false, "a hitbox inserted inside a layer went unnoted");
+    }
     input.ranges_frame = Some(frame);
     input.stale = Point::default();
     input.viewport = record.viewport;
+    input.handle_offset = painting.handle_offset;
+    MOVED_HANDLES.with_borrow_mut(|moved| moved.retain(|_, (state, _)| state.strong_count() > 0));
+}
+
+/// The content mask of a hitbox being inserted: the current one, clipped to
+/// the viewport of the layer being painted, if any. A layer culls its
+/// content against the viewport and its overscan, but only what shows in
+/// the viewport may be hit, as without a layer. The mask before clipping is
+/// kept, for the hitbox to be clipped anew once the content has scrolled.
+pub(crate) fn hitbox_mask(window: &mut Window) -> ContentMask<Pixels> {
+    let mask = window.content_mask();
+    let Some(painting) = window.fast_layers.painting.as_mut() else {
+        return mask;
+    };
+    painting.input.hitbox_masks.push(mask);
+    ContentMask {
+        bounds: mask.bounds.intersect(&painting.viewport),
+    }
+}
+
+/// Notes, as the element the scroll handle whose state is `handle` tracks
+/// is prepainted, whether it is prepainted into a layer, whose scroll then
+/// moves it.
+pub(crate) fn track_handle(window: &Window, handle: &HandleState) {
+    if !COMPILED {
+        return;
+    }
+    let key = Rc::as_ptr(handle) as usize;
+    match window.fast_layers.painting.as_ref() {
+        Some(painting) => MOVED_HANDLES.with_borrow_mut(|moved| {
+            let offset = painting.input.handle_offset.clone();
+            moved.insert(key, (Rc::downgrade(handle), offset));
+        }),
+        None => MOVED_HANDLES.with_borrow_mut(|moved| {
+            if !moved.is_empty() {
+                moved.remove(&key);
+            }
+        }),
+    }
+}
+
+/// `bounds`, of a child of the element the scroll handle whose state is
+/// `handle` tracks as it was prepainted, moved to where the child shows
+/// now: by the scroll of the layer it was prepainted into since.
+pub(crate) fn moved(
+    handle: &HandleState,
+    bounds: Option<Bounds<Pixels>>,
+) -> Option<Bounds<Pixels>> {
+    let bounds = bounds?;
+    let key = Rc::as_ptr(handle) as usize;
+    let delta = MOVED_HANDLES.with_borrow(|moved| {
+        moved
+            .get(&key)
+            .filter(|(state, _)| std::ptr::eq(state.as_ptr(), Rc::as_ptr(handle)))
+            .map_or(Point::default(), |(_, offset)| offset.get())
+    });
+    Some(Bounds {
+        origin: bounds.origin + delta,
+        size: bounds.size,
+    })
 }

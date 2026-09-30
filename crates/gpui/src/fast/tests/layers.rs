@@ -2643,7 +2643,8 @@ mod input {
     /// holds a canvas whose mouse-down listener notes the bounds of the
     /// hitbox it captured when painted. Row 2 can take focus and counts the
     /// keys it sees. The wheel scrolls it from beside the rows, where it
-    /// hovers none of them.
+    /// hovers none of them. With `inner`, the rows are in a 200 px wide div
+    /// that `inner` tracks, with a tooltip if `tooltip` is set.
     struct InputPage {
         handle: ScrollHandle,
         clicks: Rc<RefCell<Vec<usize>>>,
@@ -2651,6 +2652,8 @@ mod input {
         focus: FocusHandle,
         seen: Rc<RefCell<Vec<Seen>>>,
         drags: Rc<RefCell<Vec<Seen>>>,
+        inner: Option<ScrollHandle>,
+        tooltip: bool,
     }
 
     /// What a row of an [`InputPage`] is dragged as.
@@ -2675,49 +2678,73 @@ mod input {
 
     impl Render for InputPage {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().bg(rgb(0xffffff)).child(
-                div()
-                    .id("scroller")
-                    .overflow_y_scroll()
-                    .track_scroll(&self.handle)
-                    .w(px(200.))
-                    .h(px(100.))
-                    .children((0..ROWS).map(|index| {
-                        let clicks = self.clicks.clone();
-                        let drags = self.drags.clone();
-                        let row = div()
-                            .id(("row", index))
-                            .w(px(100.))
-                            .h(px(ROW_HEIGHT))
-                            .bg(rgb(0x100000 + index as u32 * 0x10))
-                            .on_click(move |_, _, _| clicks.borrow_mut().push(index))
-                            .on_drag(DraggedRow, |_, _, _, cx| cx.new(|_| super::EmptyView))
-                            .on_drag_move::<DraggedRow>(move |event, _, _| {
-                                drags
-                                    .borrow_mut()
-                                    .push((index, event.bounds, event.event.position))
-                            })
-                            .child(noting_canvas(index, self.seen.clone()));
-                        if index == 2 {
-                            let keys = self.keys.clone();
-                            row.track_focus(&self.focus)
-                                .on_key_down(move |_, _, _| keys.set(keys.get() + 1))
-                        } else {
-                            row
-                        }
-                    })),
-            )
+            let rows = (0..ROWS).map(|index| {
+                let clicks = self.clicks.clone();
+                let drags = self.drags.clone();
+                let row = div()
+                    .id(("row", index))
+                    .w(px(100.))
+                    .h(px(ROW_HEIGHT))
+                    .bg(rgb(0x100000 + index as u32 * 0x10))
+                    .on_click(move |_, _, _| clicks.borrow_mut().push(index))
+                    .on_drag(DraggedRow, |_, _, _, cx| cx.new(|_| super::EmptyView))
+                    .on_drag_move::<DraggedRow>(move |event, _, _| {
+                        drags
+                            .borrow_mut()
+                            .push((index, event.bounds, event.event.position))
+                    })
+                    .child(noting_canvas(index, self.seen.clone()));
+                if index == 2 {
+                    let keys = self.keys.clone();
+                    row.track_focus(&self.focus)
+                        .on_key_down(move |_, _, _| keys.set(keys.get() + 1))
+                } else {
+                    row
+                }
+            });
+            let scroller = div()
+                .id("scroller")
+                .overflow_y_scroll()
+                .track_scroll(&self.handle)
+                .w(px(200.))
+                .h(px(100.));
+            let scroller = match &self.inner {
+                Some(inner) => {
+                    let inner = div()
+                        .id("inner")
+                        .track_scroll(inner)
+                        .w(px(200.))
+                        .children(rows);
+                    if self.tooltip {
+                        scroller.child(inner.tooltip(|_, cx| cx.new(|_| super::EmptyView).into()))
+                    } else {
+                        scroller.child(inner)
+                    }
+                }
+                None => scroller.children(rows),
+            };
+            div().size_full().bg(rgb(0xffffff)).child(scroller)
         }
     }
 
     fn input_page(cx: &mut TestAppContext) -> WindowHandle<InputPage> {
-        let window = cx.add_window(|_, cx| InputPage {
+        input_page_with(cx, None, false)
+    }
+
+    fn input_page_with(
+        cx: &mut TestAppContext,
+        inner: Option<ScrollHandle>,
+        tooltip: bool,
+    ) -> WindowHandle<InputPage> {
+        let window = cx.add_window(move |_, cx| InputPage {
             handle: ScrollHandle::new(),
             clicks: Rc::default(),
             keys: Rc::default(),
             focus: cx.focus_handle(),
             seen: Rc::default(),
             drags: Rc::default(),
+            inner,
+            tooltip,
         });
         draw(cx, window.into());
         draw(cx, window.into());
@@ -2799,8 +2826,18 @@ mod input {
     fn page_with_and_without_layers(
         cx: &mut TestAppContext,
     ) -> (WindowHandle<InputPage>, WindowHandle<InputPage>) {
-        let with = input_page(cx);
-        let without = input_page(cx);
+        pages_with_and_without_layers(cx, None, None)
+    }
+
+    /// [`page_with_and_without_layers`], the rows of each tracked by the
+    /// handle given for it.
+    fn pages_with_and_without_layers(
+        cx: &mut TestAppContext,
+        with_inner: Option<ScrollHandle>,
+        without_inner: Option<ScrollHandle>,
+    ) -> (WindowHandle<InputPage>, WindowHandle<InputPage>) {
+        let with = input_page_with(cx, with_inner, false);
+        let without = input_page_with(cx, without_inner, false);
         without
             .update(cx, |_, window, _| window.set_scroll_layers(false))
             .unwrap();
@@ -2991,5 +3028,118 @@ mod input {
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
         dispatch(cx, window, [mouse_move(point(px(300.), px(300.)), false)]);
         assert_eq!(rebuilds(cx, window), 1);
+    }
+
+    /// Whether a row's hitbox takes the pointer at `position`.
+    fn row_hit_at(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        position: Point<Pixels>,
+    ) -> bool {
+        with_window(cx, window, |window, _| {
+            window.rendered_frame.hitboxes.iter().any(|hitbox| {
+                hitbox.bounds.size.height == px(ROW_HEIGHT)
+                    && hitbox
+                        .bounds
+                        .intersect(&hitbox.content_mask.bounds)
+                        .contains(&position)
+            })
+        })
+    }
+
+    #[crate::test]
+    fn hitboxes_in_overscan_do_not_hit(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window = handle.into();
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Repaint));
+        // Painted at -40 px, over the viewport and 100 px of overscan below
+        // it: row 9 is painted at 140 px, below the container.
+        assert!(!row_hit_at(cx, window, point(px(20.), px(150.))));
+        assert!(row_hit_at(cx, window, point(px(20.), px(50.))));
+        // Composited at -80 px, row 7, painted in the overscan at 100 px,
+        // shows at 60 px, and takes the pointer there.
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert!(row_hit_at(cx, window, point(px(20.), px(70.))));
+        assert!(!row_hit_at(cx, window, point(px(20.), px(110.))));
+    }
+
+    fn tooltip_requested(cx: &mut TestAppContext, window: AnyWindowHandle) -> bool {
+        with_window(cx, window, |window, _| {
+            window
+                .rendered_frame
+                .tooltip_requests
+                .iter()
+                .any(|request| request.is_some())
+        })
+    }
+
+    #[crate::test]
+    fn tooltips_requested_inside_are_dropped_on_composite(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let page = input_page_with(cx, Some(ScrollHandle::new()), true);
+        let window: AnyWindowHandle = page.into();
+        scroll_five_times(cx, window);
+        // Hover the div around the rows until its tooltip shows.
+        dispatch(cx, window, [mouse_move(point(px(150.), px(30.)), false)]);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        draw(cx, window);
+        draw(cx, window);
+        assert!(tooltip_requested(cx, window));
+        // Scrolled from outside, which keeps the tooltip up on today's path.
+        let handle = page.update(cx, |page, _, _| page.handle.clone()).unwrap();
+        let mut decisions = Vec::new();
+        for offset in [-110., -120.] {
+            handle.set_offset(point(px(0.), px(offset)));
+            draw(cx, window);
+            decisions.push(super::decisions::decision(cx, window));
+        }
+        assert_eq!(decisions.last(), Some(&Some(Decision::Composite)));
+        assert!(!tooltip_requested(cx, window));
+    }
+
+    #[crate::test]
+    fn bounds_for_item_is_current_after_composited_scrolls(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let (with_inner, without_inner) = (ScrollHandle::new(), ScrollHandle::new());
+        let (with, without) = pages_with_and_without_layers(
+            cx,
+            Some(with_inner.clone()),
+            Some(without_inner.clone()),
+        );
+        assert_eq!(
+            scroll_five_times(cx, with.into()),
+            vec![Some(Decision::Composite); 3]
+        );
+        scroll_five_times(cx, without.into());
+        // Row 7 lies at 140 px in the content, at 40 px once scrolled by -100.
+        assert_eq!(
+            with_inner.bounds_for_item(7).map(|bounds| bounds.origin),
+            Some(point(px(0.), px(40.)))
+        );
+        for row in 0..ROWS {
+            assert_eq!(
+                with_inner.bounds_for_item(row),
+                without_inner.bounds_for_item(row)
+            );
+        }
+        // The container's own handle holds its children's bounds before
+        // scrolling, which prepainting the container keeps current.
+        let outer = |cx: &mut TestAppContext, window: WindowHandle<InputPage>| {
+            window
+                .update(cx, |page, _, _| page.handle.bounds_for_item(0))
+                .unwrap()
+        };
+        assert_eq!(outer(cx, with), outer(cx, without));
     }
 }

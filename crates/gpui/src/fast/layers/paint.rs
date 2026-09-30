@@ -63,6 +63,8 @@ pub(crate) struct Painting {
     pub(crate) recording: Option<DependencyRecording>,
     /// What prepainting the content read.
     pub(crate) dependencies: RenderDependencies,
+    /// What routing input into the content takes from painting it.
+    pub(crate) input: crate::fast::layers::input::PaintingInput,
 }
 
 /// What a container's prepaint decided, for its paint to carry out.
@@ -165,6 +167,7 @@ pub(crate) fn begin_children(
                 prepaint_range: start.clone()..start,
                 recording: Some(cx.begin_recording_dependencies()),
                 dependencies: RenderDependencies::default(),
+                input: Default::default(),
             });
             // Culling works in the painted region, not in the viewport and
             // whatever clips it; the composite clips to those.
@@ -571,7 +574,7 @@ fn repaint(
         .record
         .as_ref()
         .map_or(0, |record| record.dirty_tiles.len());
-    crate::fast::layers::input::painted(window, &painting.id);
+    crate::fast::layers::input::painted(window, &painting.id, painting.input);
     if !has_paths {
         window
             .layout_engine
