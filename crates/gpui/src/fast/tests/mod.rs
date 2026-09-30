@@ -20,6 +20,7 @@ mod scene_order;
 mod scroll;
 mod shift;
 mod splice;
+mod subscriptions;
 mod support;
 mod surface;
 mod test_window;

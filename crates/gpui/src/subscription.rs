@@ -6,6 +6,10 @@ use std::{
     rc::Rc,
 };
 
+#[cfg(any(test, feature = "test-support"))]
+#[path = "fast/subscriber_count.rs"]
+mod subscriber_count;
+
 pub(crate) struct SubscriberSet<EmitterKey, Callback>(
     Rc<RefCell<SubscriberSetState<EmitterKey, Callback>>>,
 );

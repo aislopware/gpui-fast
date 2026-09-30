@@ -1204,7 +1204,7 @@ pub struct Window {
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
     pub(crate) next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
-    focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
+    pub(crate) focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
     focus_lost_path: SmallVec<[FocusId; 8]>,
     default_prevented: bool,
@@ -1221,7 +1221,7 @@ pub struct Window {
     visibility: WindowVisibility,
     pub(crate) visibility_observers:
         SubscriberSet<(), Box<dyn FnMut(WindowVisibility, &mut Window, &mut App) -> bool>>,
-    frame_presented_observers:
+    pub(crate) frame_presented_observers:
         SubscriberSet<(), Box<dyn FnMut(PresentedFrame, &mut Window, &mut App) -> bool>>,
     /// Handed to the platform window while anything observes presented frames; installing
     /// it costs a handler per frame, so it is removed once the last observer is gone.

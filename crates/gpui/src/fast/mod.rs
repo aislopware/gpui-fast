@@ -35,6 +35,8 @@ pub(crate) mod scroll;
 pub(crate) mod shift;
 pub(crate) mod splice;
 pub(crate) mod stats;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod subscriptions;
 pub(crate) mod text;
 pub(crate) mod text_style;
 #[cfg(any(test, feature = "test-support"))]
