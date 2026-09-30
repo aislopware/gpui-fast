@@ -722,6 +722,56 @@ mod invalidation {
         draw(cx, window);
         assert_eq!(renders.get(), before + 1, "and is reused once it has");
     }
+
+    /// A list whose view shows whether it is scrolled to its end.
+    struct EndIndicator {
+        state: crate::ListState,
+    }
+
+    impl Render for EndIndicator {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let at_end = self.state.is_scrolled_to_end() == Some(true);
+            div()
+                .size_full()
+                .child(
+                    crate::list(self.state.clone(), |index, _, _| {
+                        div()
+                            .h(px(20.))
+                            .bg(rgb(0x100000 + index as u32))
+                            .into_any_element()
+                    })
+                    .w(px(200.))
+                    .h(px(100.)),
+                )
+                .child(div().w(px(10.)).h(px(if at_end { 20. } else { 10. })))
+        }
+    }
+
+    #[crate::test]
+    fn a_render_that_asks_whether_a_list_is_scrolled_to_its_end_depends_on_its_offset(
+        cx: &mut TestAppContext,
+    ) {
+        let state = crate::ListState::new(40, crate::ListAlignment::Top, px(100.));
+        let window: AnyWindowHandle = cx
+            .add_window({
+                let state = state.clone();
+                move |_, _| EndIndicator { state }
+            })
+            .into();
+        draw(cx, window);
+        draw(cx, window);
+        let read = with_window(cx, window, |window, _| {
+            let record = window
+                .rendered_frame
+                .retained
+                .records
+                .first()
+                .expect("the root view is retained");
+            let source = ScrollSource::of_state(&state.0.borrow().version);
+            render_read_offset(&record.own_dependencies, &source)
+        });
+        assert!(read);
+    }
 }
 
 /// Tests of what a scroll container decides to do with its layer each frame

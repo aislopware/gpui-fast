@@ -884,16 +884,11 @@ impl ListScrollStart {
         ListScrollStart(state.follow_state)
     }
 
-    /// See [`crate::StateInner::note_scrolled_to`]; `pending` is whether a
-    /// scroll was waiting to be applied.
+    /// See [`crate::StateInner::note_scrolled_to`], with whether a scroll was
+    /// waiting to be applied read from `state`.
     #[inline(always)]
-    pub(crate) fn note_scrolled(
-        self,
-        state: &crate::StateInner,
-        scroll_top: &ListOffset,
-        pending: bool,
-    ) {
-        state.note_scrolled_to(scroll_top, self.0, pending);
+    pub(crate) fn note_scrolled(self, state: &crate::StateInner, scroll_top: &ListOffset) {
+        state.note_scrolled_to(scroll_top, self.0, state.pending_scroll.is_some());
     }
 }
 
