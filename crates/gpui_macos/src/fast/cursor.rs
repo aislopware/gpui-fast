@@ -74,7 +74,11 @@ impl Cursors {
         let Some(image) = image else {
             return self.shown.remove(&id).is_some();
         };
-        if self.shown.get(&id).is_some_and(|(shown, _)| same(shown, image)) {
+        if self
+            .shown
+            .get(&id)
+            .is_some_and(|(shown, _)| same(shown, image))
+        {
             return false;
         }
         match self.cursor_for(image) {
@@ -208,7 +212,11 @@ unsafe fn show_now(image: CursorImageId) {
             let state = get_window_state(&*window);
             let (native_window, native_view, style) = {
                 let state = state.lock();
-                (state.native_window, state.native_view.as_ptr() as id, state.cursor_style)
+                (
+                    state.native_window,
+                    state.native_view.as_ptr() as id,
+                    state.cursor_style,
+                )
             };
             if style != CursorStyle::Image(image) {
                 continue;
@@ -295,8 +303,14 @@ mod tests {
         let (wide, high) = (CGImage::width(some), CGImage::height(some));
         assert_eq!(CGImage::bits_per_pixel(some), 32);
         assert_eq!(CGImage::bytes_per_row(some), wide * 4, "rows packed");
-        assert_eq!(CGImage::alpha_info(some), CGImageAlphaInfo::PremultipliedFirst);
-        assert_eq!(CGImage::byte_order_info(some), CGImageByteOrderInfo::Order32Little);
+        assert_eq!(
+            CGImage::alpha_info(some),
+            CGImageAlphaInfo::PremultipliedFirst
+        );
+        assert_eq!(
+            CGImage::byte_order_info(some),
+            CGImageByteOrderInfo::Order32Little
+        );
         let provider = CGImage::data_provider(some).expect("pixels");
         let data = CGDataProvider::data(Some(&provider)).expect("bytes");
         // SAFETY: the data is a copy CoreGraphics made for this call, which
@@ -311,7 +325,11 @@ mod tests {
         let points = cursor.image().size();
         assert_eq!((points.width, points.height), (32., 32.), "64 pixels at 2×");
         let hot = cursor.hotSpot();
-        assert_eq!((hot.x, hot.y), (5.5, 6.), "pixel (11, 12) at 2×, from the top left");
+        assert_eq!(
+            (hot.x, hot.y),
+            (5.5, 6.),
+            "pixel (11, 12) at 2×, from the top left"
+        );
         let (wide, high, pixels) = pixels_of(&cursor);
         assert_eq!((wide, high), (64, 64), "the picture's own pixels");
         assert_eq!(pixels, image.bgra(), "byte for byte, BGRA as given");
@@ -328,7 +346,12 @@ mod tests {
             CGBitmapContextCreate, CGColorSpace, CGContext, kCGColorSpaceSRGB,
         };
 
-        let bgra = [[0, 0, 255, 255], [0, 255, 0, 255], [255, 0, 0, 255], [128, 128, 128, 128]];
+        let bgra = [
+            [0, 0, 255, 255],
+            [0, 255, 0, 255],
+            [255, 0, 0, 255],
+            [128, 128, 128, 128],
+        ];
         let image = CursorImage::new(
             bgra.concat(),
             size(DevicePixels(2), DevicePixels(2)),
@@ -365,7 +388,12 @@ mod tests {
         drop(context);
         assert_eq!(
             rgba.as_chunks::<4>().0,
-            [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [128, 128, 128, 128]],
+            [
+                [255, 0, 0, 255],
+                [0, 255, 0, 255],
+                [0, 0, 255, 255],
+                [128, 128, 128, 128]
+            ],
             "red, green, blue, half white: the bytes read as BGRA, alpha premultiplied"
         );
     }
@@ -374,7 +402,11 @@ mod tests {
     fn a_translucent_picture_keeps_its_premultiplied_colour() {
         let image = square(2, [0, 64, 0, 128], 0, 1.);
         let (_, _, pixels) = pixels_of(&build(&image).expect("a cursor"));
-        assert_eq!(pixels, image.bgra(), "not multiplied by alpha a second time");
+        assert_eq!(
+            pixels,
+            image.bgra(),
+            "not multiplied by alpha a second time"
+        );
     }
 
     #[test]
@@ -384,11 +416,17 @@ mod tests {
         let tile = CursorImageId(7);
         assert!(cursors.set(tile, Some(&arrow)));
         let first = cursors.shown[&tile].1.clone();
-        assert!(!cursors.set(tile, Some(&arrow)), "the same picture changes nothing");
+        assert!(
+            !cursors.set(tile, Some(&arrow)),
+            "the same picture changes nothing"
+        );
         assert!(cursors.set(tile, Some(&beam)));
         assert!(cursors.set(tile, Some(&arrow.clone())));
         assert_eq!(cursors.builds, 2, "the arrow was built once");
-        assert!(std::ptr::eq(&*cursors.shown[&tile].1, &*first), "and the same NSCursor came back");
+        assert!(
+            std::ptr::eq(&*cursors.shown[&tile].1, &*first),
+            "and the same NSCursor came back"
+        );
         assert!(cursors.set(tile, None), "forgotten");
         assert!(!cursors.set(tile, None), "twice changes nothing");
     }
@@ -421,8 +459,9 @@ mod tests {
             samples.sort();
             samples[(samples.len() - 1) * p / 100]
         }
-        let shapes: Vec<CursorImage> =
-            (0..32u8).map(|n| square(64, [n, 255 - n, 0, 255], 8, 2.)).collect();
+        let shapes: Vec<CursorImage> = (0..32u8)
+            .map(|n| square(64, [n, 255 - n, 0, 255], 8, 2.))
+            .collect();
         let mut cursors = Cursors::default();
         let tile = CursorImageId(1);
         let mut cold = Vec::new();

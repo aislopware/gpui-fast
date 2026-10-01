@@ -107,7 +107,8 @@ fn gesture(native: Native, window_height: Pixels) -> Option<PlatformGesture> {
 fn phase(phase: NSEventPhase) -> Option<TouchPhase> {
     if phase.contains(NSEventPhase::NSEventPhaseBegan) {
         Some(TouchPhase::Started)
-    } else if phase.intersects(NSEventPhase::NSEventPhaseChanged | NSEventPhase::NSEventPhaseStationary)
+    } else if phase
+        .intersects(NSEventPhase::NSEventPhaseChanged | NSEventPhase::NSEventPhaseStationary)
     {
         Some(TouchPhase::Moved)
     } else if phase.contains(NSEventPhase::NSEventPhaseEnded) {
@@ -203,9 +204,21 @@ mod tests {
     fn a_swipe_keeps_appkits_deltas_and_arrives_ended() {
         for (delta, native_phase, phase) in [
             ((1., 0.), NSEventPhase::NSEventPhaseNone, TouchPhase::Ended),
-            ((-1., 0.), NSEventPhase::NSEventPhaseEnded, TouchPhase::Ended),
-            ((0., 1.), NSEventPhase::NSEventPhaseBegan, TouchPhase::Started),
-            ((0., -1.), NSEventPhase::NSEventPhaseChanged, TouchPhase::Moved),
+            (
+                (-1., 0.),
+                NSEventPhase::NSEventPhaseEnded,
+                TouchPhase::Ended,
+            ),
+            (
+                (0., 1.),
+                NSEventPhase::NSEventPhaseBegan,
+                TouchPhase::Started,
+            ),
+            (
+                (0., -1.),
+                NSEventPhase::NSEventPhaseChanged,
+                TouchPhase::Moved,
+            ),
         ] {
             let event = gesture(
                 Native {

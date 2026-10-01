@@ -130,7 +130,12 @@ mod tests {
         };
         let mut compared = 0;
         for family in [".SystemUIFont", "Menlo", "Monaco", "Helvetica Neue"] {
-            for weight in [FontWeight::NORMAL, FontWeight::MEDIUM, FontWeight::SEMIBOLD, FontWeight::BOLD] {
+            for weight in [
+                FontWeight::NORMAL,
+                FontWeight::MEDIUM,
+                FontWeight::SEMIBOLD,
+                FontWeight::BOLD,
+            ] {
                 let face = Font {
                     weight,
                     ..font(family)
@@ -164,7 +169,9 @@ mod tests {
                             theirs_glyphs.len(),
                             "{family} {weight:?} {size} {number:?}"
                         );
-                        for ((id, at), (their_id, their_at)) in ours_glyphs.iter().zip(&theirs_glyphs) {
+                        for ((id, at), (their_id, their_at)) in
+                            ours_glyphs.iter().zip(&theirs_glyphs)
+                        {
                             assert_eq!(id, their_id, "{family} {weight:?} {size} {number:?}");
                             assert!(
                                 (at.x - their_at.x).abs() < px(1e-3)
