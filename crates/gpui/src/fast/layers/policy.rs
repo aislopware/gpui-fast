@@ -104,6 +104,13 @@ impl LayerPolicy {
         let watch = self.owner.as_ref().filter(|watch| watch.view() == owner)?;
         Some(watch.notifies().saturating_sub(self.owner_notifies_at))
     }
+
+    /// Whether `view` held the container when it was last looked at.
+    pub(crate) fn held_by(&self, view: EntityId) -> bool {
+        self.owner
+            .as_ref()
+            .is_some_and(|watch| watch.view() == view)
+    }
 }
 
 /// What a container's content is painted with besides what it reads: where

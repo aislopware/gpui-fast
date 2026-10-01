@@ -56,6 +56,12 @@ each frame it then takes one of three paths (`fast::layers::policy::decide`):
   listeners, cursor styles and dispatch subtree are carried over too
   (`fast::layers::reuse`). The tiles that cover the viewport go into the scene
   as polychrome sprites with reserved texture ids.
+  The view holding the container is built again, since the scroll notified
+  it. What it writes as it is built, such as an input component setting up
+  its state on every render, is its own and no change. A write from outside
+  it to anything it read still is one, including a write made before it
+  began to be built that its own writes would otherwise hide
+  (`fast::layers::invalidate::note_rebuild`).
 - **Repaint.** The content changed, or the scroll reached the edge of what was
   painted. The content is painted into the layer's own scene over the viewport
   plus two viewports of overscan on each scrolled side (`fast::layers::paint::OVERSCAN_VIEWPORTS`). Each tile is hashed, and
