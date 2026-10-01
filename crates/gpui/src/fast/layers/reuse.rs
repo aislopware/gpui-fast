@@ -289,11 +289,8 @@ pub(crate) fn follow_paint(window: &mut Window, from: &Range<PaintIndex>, to: &P
             && b.line_layout_index.lines_index <= d.line_layout_index.lines_index
     };
     let shift = |range: &Range<PaintIndex>| {
-        let mut start = range.start.shifted(&from.start, to);
-        let mut end = range.end.shifted(&from.start, to);
-        start.scene_index = range.start.scene_index;
-        end.scene_index = range.end.scene_index;
-        start..end
+        range.start.shifted_outside_scene(&from.start, to)
+            ..range.end.shifted_outside_scene(&from.start, to)
     };
     for layer in window.fast_layers.layers.values_mut() {
         if layer.input.prepaint_followed != Some(frame) {
