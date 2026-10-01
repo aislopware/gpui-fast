@@ -356,11 +356,12 @@ Merged ahead of longbridge, and not yet merged there:
   longbridge `main`. Their logic is in `fast/layers/`, their tile renderers in each
   platform crate's `fast/layers/`. `gpui_wgpu`'s is left out, as `e0137e8` was, since our
   `wgpu_renderer.rs` is zed's.
-  - **Where they run.** `fast::layers::COMPILED` is `cfg!(any(test, target_os =
-    "windows"))`. Layers run in GPUI's own tests and on Windows as upstream ships them,
-    and stay compiled out on macOS and iOS; the numbers below say why.
-    `cargo test -p gpui_apple fast::layers` still checks the Metal composite pixel for
-    pixel.
+  - **Where they run.** `fast::layers::COMPILED` is `cfg!(any(test, target_os = "macos",
+    target_os = "ios", target_os = "windows"))`. Layers run in GPUI's own tests, on macOS
+    and iOS through the shared Metal renderer, and on Windows as upstream ships them. They
+    stay compiled out on Linux, where `gpui_wgpu`'s renderer is left out. Apple turned them
+    on once Slopty's navigator and conversation face composited (the numbers below).
+    `cargo test -p gpui_apple fast::layers` checks the Metal composite pixel for pixel.
   - **Our paint operations.** They name a primitive's place in its kind's list, not the
     primitive. The layer code walks them through `fast::scene::operations`, and
     `replay_layers` hangs off `fast::scene::replay`. Content placing a native is drawn
@@ -392,16 +393,24 @@ Merged ahead of longbridge, and not yet merged there:
     - A composited frame takes 227 µs of GPU time against 274 µs drawn directly.
     - The first composited frame rasterizes the 8 tiles it shows, 2.5 ms.
     - Tiles cost at most 64 MB a window.
-  - **Measured, Slopty's `slopty-ui`**, instructions per frame over 600 wheel frames:
-    - The conversation face panning goes from 4.17M to 4.32M (+3.8%), and was +20% before
-      `fcc4533`.
-    - The navigator scrolling goes from 4.06M to 4.08M.
-    - Neither ever composites a frame. The view holding each list read an entity in its
-      render that is written while the window draws every scrolled frame
-      (`written_since` in `owner_scrolled_only`). For the face that is the first entity it
-      creates, most likely its prompt rail. So the layer is repainted until it is demoted.
-    - Until that changes in Slopty, layers there only cost, and they stay compiled out on
-      Apple.
+  - **Measured, Slopty's `slopty-ui`**, before Apple turned them on: neither the navigator
+    nor the conversation face composited a frame, so layers there only cost (the face
+    panning +3.8% in instructions). Three causes, all fixed outside this fork:
+    - The navigator's render read its list's scroll offset.
+    - Its selection plate was a canvas under the list, so the background under the
+      viewport was not one solid quad and the layer never baked.
+    - A GPUI Kit text view changed its own state twice when it was first built
+      (aislopware/gpui-kit#3), so every row a pan uncovered changed the face's content.
+  - **One fix here**: `e831224` (#8). A list layer's rows count scene indices in the layer's
+    own scene. When the view holding the list was copied from the last frame, the shift
+    subtracted the window's scene index from them, which overflowed in a debug build.
+  - **After those, layers compiled in against out**, median p50 of 8 alternating rounds
+    (Slopty `docs/MEASUREMENTS.md`, "Scroll layers on Apple"):
+    - The navigator scrolling goes from 0.343 ms to 0.234 ms (−32%), with 600 of 600
+      frames composited.
+    - A finished conversation panned at rest goes from 0.5245 ms to 0.4325 ms (−18%),
+      with 393 of 600 composited.
+    - The face while an answer streams, the terminal, and the other frames: within noise.
 
 - Window composition, against longbridge #30 (zed#62379, merged in `c22243e` and left out
   here). This fork composes natives its own way (docs/composition.md): under GPUI's single
