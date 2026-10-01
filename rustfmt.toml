@@ -1,0 +1,2 @@
+# Defaults on purpose. Without this file rustfmt walks up past the repository and
+# takes the style of whatever checkout this one sits in.

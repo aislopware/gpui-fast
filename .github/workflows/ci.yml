@@ -91,7 +91,7 @@ jobs:
         run: script/check-upstream
 
       - name: Rustfmt
-        run: cargo fmt -p gpui -p gpui_perf -- --check
+        run: cargo fmt -p gpui -p gpui_perf -p gpui_apple -p gpui_macos -p gpui_ios -- --check
 
       - name: Clippy
         run: cargo clippy -p gpui -p gpui_perf --all-targets --features gpui/test-support -- -D warnings
