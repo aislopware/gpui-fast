@@ -162,6 +162,7 @@ impl EntityMap {
     #[track_caller]
     pub(super) fn lease_erased(&mut self, pointer: &AnyEntity, entity_type: &str) -> LeaseInner {
         self.assert_valid_context(pointer);
+        crate::fast::dependencies::note_update(self, pointer.entity_id);
         let entity = Some(
             self.lease_inner(pointer.entity_id)
                 .unwrap_or_else(|| double_lease_panic("update", entity_type)),
@@ -217,7 +218,6 @@ impl EntityMap {
     #[inline(never)]
     fn lease_inner(&mut self, entity_id: EntityId) -> Option<Box<dyn Any>> {
         self.accessed_entities.get_mut().insert(entity_id);
-        crate::fast::dependencies::note_update(self, entity_id);
         self.entities.remove(entity_id)
     }
 

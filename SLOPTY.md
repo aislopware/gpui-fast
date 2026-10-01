@@ -15,16 +15,37 @@ Two upstreams feed it:
 
 ## History layout
 
-- `zed-vendor`: the vendor branch. Every commit on it is `zed: import <short hash>` and
-  holds nothing but zed's copy of the directories `UPSTREAM` lists. It starts at
-  gpui-fast's first import (`11a44c4`, zed `7960b2a7`). The latest vendor commit is
-  `446268b` (`zed: import 39b53293`, zed `39b5329322`: Windows' `write_to_clipboard` with
-  an embedded NUL, zed #64911), after `3c616cd` (`zed: import 0f9c923e`, zed
-  `0f9c923e674e`, which adds GPUI's hang monitor, `App::start_hang_monitor`), after `d7bc13a` (`zed: import 5d596336`) and `2db56fa`
-  (`zed: import bd747337`).
+- Vendor commits hold nothing but zed's copy of the directories `UPSTREAM` lists. Since
+  longbridge #33 this fork imports zed on top of longbridge's vendor line, not its own:
+  #33 replays each zed commit (`script/import-upstream`) from gpui-fast's first import
+  (`11a44c4`, zed `7960b2a7`) to `0d78d77` (zed `0bdc70c`), and our imports start from
+  there: the latest is `8e30b2b` (`zed: import f8c2cc84`, zed #64990, "gpui_apple: Share
+  dispatcher and Metal renderer with iOS"; see "Conflicts to expect"). That way a
+  longbridge merge and a zed import no longer bring the same zed changes in through two
+  lines of history. The fork's own line before it (`zed: import <short
+  hash>` commits) ended at `446268b` (`zed: import 39b53293`, zed `39b5329322`: Windows'
+  `write_to_clipboard` with an embedded NUL, zed #64911), after `3c616cd` (`zed: import
+  0f9c923e`, which adds GPUI's hang monitor, `App::start_hang_monitor`), `d7bc13a` (`zed:
+  import 5d596336`) and `2db56fa` (`zed: import bd747337`). In the tracked directories
+  `446268b` and `0d78d77` differ only in `profiler/hang.rs` (zed #64993, #64996).
 - `main`: gpui-fast's history, a merge of each vendor commit (`acfc6db`, "Merge zed
   bd747337 into gpui-fast"), our commits, and merges of longbridge's `main`. The last
-  longbridge commit merged is `c22243e` (#30, "window composition", zed#62379), in the
+  longbridge commit merged is `92a9b0f` (#34, building `fast::interactivity` in release
+  again, on top of #33, "Sync with zed 0bdc70c"), in "Merge longbridge/gpui-fast 92a9b0f
+  (#33, #34) into Slopty's fork". It takes #33's way where #33
+  and this fork adapted the same zed change differently: the splice keeps
+  `kept_element_states` (the element states a view drawn around its gaps used itself;
+  our id-prefix filter goes, and both regression tests pass), and `EntityMap` notes an
+  update in `lease_erased`. It keeps ours where this fork differs on purpose:
+  `gpui_wgpu` stays zed's, as below, so #33's port of `fast/` onto `WgpuRendererCore`
+  is left out (its `fast/composition.rs` needs #30's composition, which this fork does
+  not take); `randomized_element_tree.rs` keeps the root render assertion out, since
+  a root updated without a notify is spliced here; `add_fonts` invalidates the text
+  caches after the fonts are installed; `line_wrapper.rs` and `line.rs` keep zed #64624
+  and #64542.
+  Before it `e4aabe7` (#32, `script/import-upstream`, and #31, bounded scroll layer
+  rebuild costs), in "Merge longbridge/gpui-fast main at e4aabe7526". Before them
+  `c22243e` (#30, "window composition", zed#62379), in the
   commit "Merge longbridge/gpui-fast c22243e (#30) into Slopty's fork". The merge takes none
   of #30: this fork keeps its own composition, and "Window composition, against
   longbridge #30" below says why. Before it `b5b39b2` (#26, "scroll layers on Direct3D 11"), with
@@ -705,11 +726,11 @@ git merge origin/main
 script/check-upstream && cargo test -p gpui --features test-support
 ```
 
-If longbridge imported a zed of its own since, both histories hold a `zed: import` merge
-and the tracked directories conflict. Keep whichever zed is newer: if ours, resolve the
-tracked files to ours and keep their `fast/` changes; if theirs, take theirs, keep
-`UPSTREAM` pointing at their vendor commit, and move `zed-vendor` to it. In both cases
-put our hooks and patches back and rerun `script/check-upstream`.
+Our zed imports sit on longbridge's vendor line, so a longbridge sync to a zed older
+than ours merges without touching zed's code, and one to a newer zed brings only what
+we lack. Where longbridge adapted `fast/` to a zed change we had adapted too, take
+longbridge's way unless ours is a deliberate difference this file records. Put our hooks
+and patches back and rerun `script/check-upstream`.
 
 ### From zed
 
@@ -755,6 +776,17 @@ In the bd747337 sync:
   within one font generation.
 - `view.rs`, `elements/text.rs`: take upstream around gpui-fast's forwarding bodies and
   visibility bumps.
+
+In the f8c2cc84 sync (zed #64990): upstream now does what this fork's iOS commits did
+in `gpui_apple` and `gpui` (`d253e07` and the iOS parts of the renderer): the surface
+element and `paint_surface` on iOS, the shader build per SDK (`CARGO_CFG_TARGET_OS` and
+`_ENV`), the crate on iOS, shared storage on iOS, and `MetalRenderer::from_layer`, now
+safe and taking an `objc2_quartz_core::CAMetalLayer`. Each is upstream's code, and the
+allow-list entries for `surface.rs`, `build.rs` and `metal_atlas.rs` are gone. The
+macOS dispatcher moved to `gpui_apple` as `AppleDispatcher`. `gpui_ios` runs on it, and
+its own `IosDispatcher` is deleted, leaving `ios/dispatcher.rs` with the main-queue
+helpers only. `gpui_apple` dropped `objc` 0.2 and `cocoa`, so `fast::video_layer`, the
+presentation check in `draw` and the GPU-time measurements use objc2.
 
 In the longbridge f6e82b4 merge (`4c13f16`): `TextMeasureInputs::new` went away, so the
 font generation moves into `fast::text::layout_text` and `shapes_as` compares it;

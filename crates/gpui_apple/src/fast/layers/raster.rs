@@ -13,7 +13,8 @@
 //! committed and orders the frame's reads of the tile textures after these
 //! writes, and the frame's encoding stays upstream's.
 
-use std::{cell::Cell, ptr};
+use std::cell::Cell;
+use std::ptr;
 
 use anyhow::Result;
 use block2::RcBlock;
@@ -21,6 +22,8 @@ use foreign_types::ForeignTypeRef;
 use gpui::{
     DevicePixels, LayerKey, PrimitiveBatch, Rgba, Scene, TileCoord, decode_layer_tile, size,
 };
+
+use objc2::runtime::AnyObject;
 
 use crate::metal_renderer::{
     InstanceBindings, InstanceBufferWriter, MetalRenderer, new_command_encoder_for_texture,
@@ -154,21 +157,19 @@ fn encode(
     let instance_buffer_pool = renderer.instance_buffer_pool.clone();
     let failed = renderer.fast_layers.failure_flag();
     let instance_buffer = Cell::new(Some(instance_buffer));
-    let block = RcBlock::new(
-        move |command_buffer: ptr::NonNull<objc2::runtime::AnyObject>| {
-            // SAFETY: Metal calls a completed handler with the `id<MTLCommandBuffer>` it was
-            // added to, alive for the duration of the call.
-            let command_buffer =
-                unsafe { metal::CommandBufferRef::from_ptr(command_buffer.as_ptr().cast()) };
-            if command_buffer.status() == metal::MTLCommandBufferStatus::Error {
-                failed.store(true, std::sync::atomic::Ordering::Release);
-            }
-            if let Some(instance_buffer) = instance_buffer.take() {
-                instance_buffer_pool.lock().release(instance_buffer);
-            }
-        },
-    );
-    // SAFETY: Both pointee types are opaque views of the same Objective-C block pointer ABI.
+    let block = RcBlock::new(move |command_buffer: ptr::NonNull<AnyObject>| {
+        // SAFETY: Metal hands its completion handlers the command buffer that completed.
+        let command_buffer =
+            unsafe { metal::CommandBufferRef::from_ptr(command_buffer.as_ptr().cast()) };
+        if command_buffer.status() == metal::MTLCommandBufferStatus::Error {
+            failed.store(true, std::sync::atomic::Ordering::Release);
+        }
+        if let Some(instance_buffer) = instance_buffer.take() {
+            instance_buffer_pool.lock().release(instance_buffer);
+        }
+    });
+    // SAFETY: Both pointee types are opaque views of the same Objective-C block
+    // pointer ABI, as upstream's `draw_primitives_to_texture` relies on too.
     unsafe {
         command_buffer.add_completed_handler(&*RcBlock::as_ptr(&block).cast());
     }

@@ -8,7 +8,7 @@
 //! - Touch-based input instead of mouse
 //! - System keyboard handling differs significantly
 
-use super::{IosDispatcher, IosDisplay, IosWindow};
+use super::{IosDisplay, IosWindow};
 use anyhow::{Context as _, anyhow};
 use core_foundation::{
     base::{CFType, CFTypeRef, OSStatus, TCFType},
@@ -74,7 +74,7 @@ impl Default for IosPlatform {
 
 impl IosPlatform {
     pub fn new() -> Self {
-        let dispatcher = Arc::new(IosDispatcher);
+        let dispatcher = Arc::new(gpui_apple::AppleDispatcher::new());
 
         let text_system: Arc<dyn PlatformTextSystem> = Arc::new(super::IosTextSystem::new());
 

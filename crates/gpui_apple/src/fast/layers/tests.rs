@@ -784,7 +784,6 @@ impl Harness {
 #[test]
 #[ignore = "a measurement, not a check"]
 fn scroll_frame_gpu_cost() {
-    use objc::{msg_send, sel, sel_impl};
     use std::time::{Duration, Instant};
 
     let Some(mut harness) = Harness::new() else {
@@ -890,9 +889,11 @@ fn scroll_frame_gpu_cost() {
             // SAFETY: `GPUStartTime` and `GPUEndTime` are `MTLCommandBuffer`
             // properties, read after the buffer completed.
             let (gpu_start, gpu_end): (f64, f64) = unsafe {
+                let command_buffer: &objc2::runtime::AnyObject =
+                    &*foreign_types::ForeignType::as_ptr(&command_buffer).cast();
                 (
-                    msg_send![command_buffer.as_ref(), GPUStartTime],
-                    msg_send![command_buffer.as_ref(), GPUEndTime],
+                    objc2::msg_send![command_buffer, GPUStartTime],
+                    objc2::msg_send![command_buffer, GPUEndTime],
                 )
             };
             (

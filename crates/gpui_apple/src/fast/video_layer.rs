@@ -31,7 +31,6 @@ use gpui::{
     Bounds, ContentMask, PaintSurface, PresentedFrame, ScaledPixels, Scene,
     composition::NativeHost, point, size,
 };
-use objc::{class, msg_send, runtime::YES, sel, sel_impl};
 use parking_lot::{Condvar, Mutex};
 
 use crate::metal_renderer::{InstanceBufferPool, MetalRenderer};
@@ -138,12 +137,12 @@ impl VideoLayer {
             bail!("the video renderer has no layer");
         };
         layer.set_maximum_drawable_count(options.maximum_drawable_count.clamp(2, 3));
-        let layer = renderer.layer_ptr().cast::<objc::runtime::Object>();
+        let layer = renderer.layer_ptr();
         // SAFETY: a new, live CAMetalLayer, configured and attached on the main thread; the
         // host's container retains it and the renderer keeps its own reference.
         unsafe {
             // Stretched to the layer: the element places the layer where the picture goes.
-            let () = msg_send![layer, setNeedsDisplayOnBoundsChange: objc::runtime::NO];
+            (*layer.cast::<objc2_quartz_core::CAMetalLayer>()).setNeedsDisplayOnBoundsChange(false);
             host.attach_layer(
                 std::ptr::NonNull::new(layer.cast()).context("the video renderer's layer")?,
             )?;
@@ -266,21 +265,15 @@ impl VideoRenderer {
             let Some(layer) = self.renderer.layer() else {
                 bail!("the video renderer has no layer");
             };
-            // SAFETY: an explicit transaction on this thread, as Core Animation requires of
-            // a thread without a run loop; `drawableSize` is not animatable, and actions are
-            // off.
-            unsafe {
-                let () = msg_send![class!(CATransaction), begin];
-                let () = msg_send![class!(CATransaction), setDisableActions: YES];
-            }
+            // An explicit transaction on this thread, as Core Animation requires of a thread
+            // without a run loop; `drawableSize` is not animatable, and actions are off.
+            objc2_quartz_core::CATransaction::begin();
+            objc2_quartz_core::CATransaction::setDisableActions(true);
             layer.set_drawable_size(core_graphics::geometry::CGSize::new(
                 width as f64,
                 height as f64,
             ));
-            // SAFETY: closes the transaction begun above.
-            unsafe {
-                let () = msg_send![class!(CATransaction), commit];
-            }
+            objc2_quartz_core::CATransaction::commit();
             self.drawable_size = (width, height);
         }
         // Takes in the renderer's own presentation records so they do not pile up.

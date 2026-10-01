@@ -193,6 +193,7 @@ pub(crate) fn draw_scene(
                 None,
             ),
             PrimitiveBatch::MonochromeSprites { texture_id, range } => {
+                // The atlas has released the texture; upstream skips the batch.
                 let Some([view]) = target.atlas.get_texture_view(texture_id) else {
                     continue;
                 };
@@ -200,6 +201,7 @@ pub(crate) fn draw_scene(
                 draw.instances(pipeline, range.start, range.len(), Some(&view))
             }
             PrimitiveBatch::SubpixelSprites { texture_id, range } => {
+                // The atlas has released the texture; upstream skips the batch.
                 let Some([view]) = target.atlas.get_texture_view(texture_id) else {
                     continue;
                 };
@@ -224,6 +226,7 @@ pub(crate) fn draw_scene(
                 })
             }
             PrimitiveBatch::PolychromeSprites { texture_id, range } => {
+                // The atlas has released the texture; upstream skips the batch.
                 let Some([view]) = target.atlas.get_texture_view(texture_id) else {
                     continue;
                 };

@@ -553,7 +553,6 @@ fn an_opaque_scene_renders_the_same_as_with_the_additive_alpha_blend() {
 #[test]
 #[ignore = "a measurement, not a check"]
 fn composition_overlay_gpu_cost() {
-    use objc::{msg_send, sel, sel_impl};
     use std::time::{Duration, Instant};
 
     const WIDTH: i32 = 3024;
@@ -687,9 +686,11 @@ fn composition_overlay_gpu_cost() {
                 // SAFETY: `GPUStartTime` and `GPUEndTime` are `MTLCommandBuffer`
                 // properties, read after the buffer completed.
                 let (start, end): (f64, f64) = unsafe {
+                    let buffer: &objc2::runtime::AnyObject =
+                        &*foreign_types::ForeignType::as_ptr(buffer).cast();
                     (
-                        msg_send![buffer.as_ref(), GPUStartTime],
-                        msg_send![buffer.as_ref(), GPUEndTime],
+                        objc2::msg_send![buffer, GPUStartTime],
+                        objc2::msg_send![buffer, GPUEndTime],
                     )
                 };
                 gpu += Duration::from_secs_f64((end - start).max(0.));
