@@ -35,7 +35,7 @@ use crate::{
 };
 use collections::FxHashSet;
 use smallvec::SmallVec;
-use std::{any::TypeId, mem, ops::Range, rc::Rc};
+use std::{mem, ops::Range, rc::Rc};
 
 /// The view a [`ViewElement`] renders, kept so that it can be built again on
 /// its own. Empty for a view that is not an entity or an [`AnyView`].
@@ -355,15 +355,17 @@ impl Window {
                 .map(|&gap| records[gap].layout.as_ref().unwrap().keys.as_slice()),
             &mut self.retained_state.splice_keys,
         );
-        // The gaps' element states are theirs to keep again as they are built:
-        // the elements they no longer draw are let go.
-        let gap_ids: Vec<&GlobalElementId> = gaps.iter().map(|&gap| &records[gap].id).collect();
-        let element_states: Vec<(GlobalElementId, TypeId)> = layout
-            .element_states
-            .iter()
-            .filter(|(id, _)| !inside_any(id, &gap_ids))
-            .cloned()
-            .collect();
+        let element_states = kept_element_states(
+            &layout.element_states,
+            gaps.iter().map(|&gap| {
+                records[gap]
+                    .layout
+                    .as_ref()
+                    .unwrap()
+                    .element_states
+                    .as_slice()
+            }),
+        );
         let dependencies = record.dependencies.clone();
         let kept_layout = RetainedLayout {
             root: layout.root,
@@ -1064,6 +1066,24 @@ impl OpenDispatchCopy {
             .find(|(range, _)| range.contains(&node.0))?;
         Some(DispatchNodeId(node.0 - range.start + start))
     }
+}
+
+/// The element states a view drawn around `gaps` keeps from last frame: those
+/// it used itself. Its record lists every state used while its layout was
+/// requested, the nested views' included, and a nested view built again in
+/// its gap uses its own states anew; one it no longer uses, such as the state
+/// of an element it no longer has, is dropped at the end of the frame, as
+/// upstream drops the state of every element a frame does not draw.
+pub(crate) fn kept_element_states<'a>(
+    element_states: &[(GlobalElementId, std::any::TypeId)],
+    gaps: impl Iterator<Item = &'a [(GlobalElementId, std::any::TypeId)]>,
+) -> Vec<(GlobalElementId, std::any::TypeId)> {
+    let in_gaps: FxHashSet<&(GlobalElementId, std::any::TypeId)> = gaps.flatten().collect();
+    element_states
+        .iter()
+        .filter(|state| !in_gaps.contains(state))
+        .cloned()
+        .collect()
 }
 
 /// `keys` without the keys of `gaps`, in their order: the layout nodes a view
