@@ -684,6 +684,12 @@ impl AsKeystroke for KeybindingKeystroke {
     }
 }
 
+impl<T: AsKeystroke + ?Sized> AsKeystroke for &T {
+    fn as_keystroke(&self) -> &Keystroke {
+        (**self).as_keystroke()
+    }
+}
+
 fn display_modifiers(modifiers: &Modifiers, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     if modifiers.control {
         #[cfg(any(target_os = "macos", target_os = "ios"))]
