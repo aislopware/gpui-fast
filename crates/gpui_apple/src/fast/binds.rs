@@ -84,7 +84,10 @@ impl Binds {
         offset: u64,
     ) {
         let pointer = buffer.as_ptr() as *const c_void;
-        let wanted = Slot::Buffer { buffer: pointer, offset };
+        let wanted = Slot::Buffer {
+            buffer: pointer,
+            offset,
+        };
         match self.vertex[index] {
             slot if slot == wanted => return,
             Slot::Buffer { buffer, .. } if buffer == pointer => {
@@ -121,7 +124,10 @@ impl Binds {
     ) {
         let index = SpriteInputIndex::Sprites as u64;
         let pointer = buffer.as_ptr() as *const c_void;
-        let wanted = Slot::Buffer { buffer: pointer, offset };
+        let wanted = Slot::Buffer {
+            buffer: pointer,
+            offset,
+        };
         match self.fragment {
             slot if slot == wanted => return,
             Slot::Buffer { buffer, .. } if buffer == pointer => {
@@ -276,21 +282,40 @@ impl MetalRenderer {
         // instances, the viewport size and the atlas size at the sprites'
         // indices.
         binds.pipeline(encoder, draw.pipeline);
-        binds.vertex_buffer(encoder, SpriteInputIndex::Vertices as usize, &self.unit_vertices, 0);
+        binds.vertex_buffer(
+            encoder,
+            SpriteInputIndex::Vertices as usize,
+            &self.unit_vertices,
+            0,
+        );
         binds.vertex_buffer(
             encoder,
             SpriteInputIndex::Sprites as usize,
             &draw.instances.buffer,
             draw.instances.offset as u64,
         );
-        binds.vertex_size(encoder, SpriteInputIndex::ViewportSize as usize, viewport_size);
+        binds.vertex_size(
+            encoder,
+            SpriteInputIndex::ViewportSize as usize,
+            viewport_size,
+        );
         if draw.fragment_reads_instances {
-            binds.fragment_buffer(encoder, &draw.instances.buffer, draw.instances.offset as u64);
+            binds.fragment_buffer(
+                encoder,
+                &draw.instances.buffer,
+                draw.instances.offset as u64,
+            );
         }
         if let Some(atlas) = draw.atlas {
-            let atlas_size =
-                size(DevicePixels(atlas.width() as i32), DevicePixels(atlas.height() as i32));
-            binds.vertex_size(encoder, SpriteInputIndex::AtlasTextureSize as usize, atlas_size);
+            let atlas_size = size(
+                DevicePixels(atlas.width() as i32),
+                DevicePixels(atlas.height() as i32),
+            );
+            binds.vertex_size(
+                encoder,
+                SpriteInputIndex::AtlasTextureSize as usize,
+                atlas_size,
+            );
             binds.atlas(encoder, atlas);
         }
         encoder.draw_primitives_instanced_base_instance(
@@ -363,12 +388,17 @@ mod tests {
                 }),
                 &mut || {
                     let alpha: Vec<u8> = (0..96).map(|texel| (texel * 5 % 256) as u8).collect();
-                    Ok(Some((size(DevicePixels(8), DevicePixels(12)), Cow::Owned(alpha))))
+                    Ok(Some((
+                        size(DevicePixels(8), DevicePixels(12)),
+                        Cow::Owned(alpha),
+                    )))
                 },
             )
             .unwrap()
             .unwrap();
-        let everywhere = ContentMask { bounds: bounds(0., 0., SIDE as f32, SIDE as f32) };
+        let everywhere = ContentMask {
+            bounds: bounds(0., 0., SIDE as f32, SIDE as f32),
+        };
         let glyph = |x: f32, y: f32, hue: f32| MonochromeSprite {
             order: 0,
             pad: 0,
@@ -443,11 +473,16 @@ mod tests {
     fn binding_only_what_changed_draws_what_upstream_draws() {
         let mut renderer = renderer();
         let scene = scene(&renderer, 30);
-        assert!(scene.batches().count() > 60, "the cards draw in batches of their own");
+        assert!(
+            scene.batches().count() > 60,
+            "the cards draw in batches of their own"
+        );
         let upstream = render(&mut renderer, &scene, true);
         let bound = render(&mut renderer, &scene, false);
         assert!(
-            upstream.pixels().any(|pixel| pixel.0 != upstream.get_pixel(0, 0).0),
+            upstream
+                .pixels()
+                .any(|pixel| pixel.0 != upstream.get_pixel(0, 0).0),
             "the scene draws something"
         );
         assert!(upstream == bound, "the frames differ");

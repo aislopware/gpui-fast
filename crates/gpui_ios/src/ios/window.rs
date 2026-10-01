@@ -1062,9 +1062,10 @@ impl IosWindow {
 
             let pixel_w = (screen_bounds_cg.width * scale) as i32;
             let pixel_h = (screen_bounds_cg.height * scale) as i32;
+            // The metal view's `layerClass` is CAMetalLayer, so its backing layer is one.
             let mut renderer = MetalRenderer::from_layer(
                 MetalContext::default(),
-                layer.cast::<metal::CAMetalLayer>(),
+                &*layer.cast::<objc2_quartz_core::CAMetalLayer>(),
                 false,
             );
             renderer.update_drawable_size(size(DevicePixels(pixel_w), DevicePixels(pixel_h)));
