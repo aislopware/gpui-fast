@@ -14,7 +14,7 @@ use collections::{FxHashMap, FxHashSet};
 use gpui::{LayerKey, SceneLayers, TileCoord};
 
 use crate::fast::frame::FrameTarget;
-use crate::wgpu_renderer::{GlobalParams, WgpuRenderer};
+use crate::wgpu_renderer::{GlobalParams, WgpuRendererCore};
 
 /// How much tile texture memory a window keeps, by default (spec §5.6).
 pub(crate) const DEFAULT_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
@@ -425,13 +425,13 @@ impl TileCache {
         }) {
             return;
         }
-        let (intermediate_texture, intermediate) = WgpuRenderer::create_path_intermediate(
+        let (intermediate_texture, intermediate) = WgpuRendererCore::create_path_intermediate(
             target.device,
             target.format,
             tile_size,
             tile_size,
         );
-        let (msaa_texture, msaa) = WgpuRenderer::create_msaa_if_needed(
+        let (msaa_texture, msaa) = WgpuRendererCore::create_msaa_if_needed(
             target.device,
             target.format,
             tile_size,

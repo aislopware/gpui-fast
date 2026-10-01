@@ -44,6 +44,7 @@ use crate::fast::layers::{TileCache, composite, raster};
 use crate::fast::pass_state::PassState;
 use crate::wgpu_renderer::{
     InstanceData, PathRasterizationVertex, PathSprite, WgpuBindGroupLayouts, WgpuPipelines,
+    WgpuRendererCore,
 };
 
 /// How far apart, in device pixels, path batches must be to share the
@@ -102,7 +103,7 @@ pub(crate) trait FrameHost {
     fn target(&self) -> Result<FrameTarget<'_>>;
 }
 
-impl FrameHost for crate::WgpuRenderer {
+impl FrameHost for WgpuRendererCore {
     fn frame_state(&mut self) -> &mut FrameState {
         &mut self.fast_frame
     }
@@ -138,10 +139,9 @@ impl FrameHost for crate::WgpuRenderer {
             globals_buffer: &resources.globals_buffer,
             gamma_offset: self.gamma_offset,
             gamma_size: size_of::<crate::wgpu_renderer::GammaParams>() as u64,
-            format: self.surface_config.format,
+            format: self.target_format,
             path_sample_count: self.rendering_params.path_sample_count,
-            premultiplied_alpha: self.surface_config.alpha_mode
-                == wgpu::CompositeAlphaMode::PreMultiplied,
+            premultiplied_alpha: self.fast_frame.globals.premultiplied_alpha(),
         })
     }
 }
@@ -180,18 +180,20 @@ struct PlannedScene<'a> {
     path_batches: Vec<PathBatch>,
 }
 
-/// Forwarded to by `WgpuRenderer::record_frame`. Records and submits the
-/// frame and returns true, or returns false for upstream to record it: the
-/// WebGL instance texture keeps upstream's way.
+/// Forwarded to by `WgpuRendererCore::record_frame`, which draws both the
+/// windows' frames and the headless renderer's. Records and submits the
+/// frame, or returns `None` for upstream to record it: the WebGL instance
+/// texture keeps upstream's way.
 pub(crate) fn record_frame(
-    renderer: &mut crate::WgpuRenderer,
+    renderer: &mut WgpuRendererCore,
     scene: &Scene,
     frame_view: &wgpu::TextureView,
-) -> Result<bool> {
+    clear_color: wgpu::Color,
+) -> Result<Option<wgpu::SubmissionIndex>> {
     if renderer.uses_webgl_instance_data {
-        return Ok(false);
+        return Ok(None);
     }
-    record_into(renderer, scene, frame_view, wgpu::Color::TRANSPARENT).map(|()| true)
+    record_into(renderer, scene, frame_view, clear_color).map(Some)
 }
 
 /// Records `scene` into `frame_view`, cleared to `clear` first, and submits it.
@@ -200,11 +202,14 @@ pub(crate) fn record_into(
     scene: &Scene,
     frame_view: &wgpu::TextureView,
     clear: wgpu::Color,
-) -> Result<()> {
+) -> Result<wgpu::SubmissionIndex> {
     // The state is taken for the frame so that it can change while the host
-    // lends out the GPU objects.
+    // lends out the GPU objects. The uploaded globals stay with the host,
+    // which tells the frame's alpha mode by them.
     let mut state = std::mem::take(host.frame_state());
+    std::mem::swap(&mut state.globals, &mut host.frame_state().globals);
     let result = record_with(host, &mut state, scene, frame_view, clear);
+    std::mem::swap(&mut state.globals, &mut host.frame_state().globals);
     *host.frame_state() = state;
     result
 }
@@ -215,7 +220,7 @@ fn record_with(
     scene: &Scene,
     frame_view: &wgpu::TextureView,
     clear: wgpu::Color,
-) -> Result<()> {
+) -> Result<wgpu::SubmissionIndex> {
     state.bind_groups.begin_frame();
 
     // The layer tiles to rasterize before the frame draws them.
@@ -264,10 +269,9 @@ fn record_with(
         .and_then(|(uploads, paths)| {
             let target = host.target()?;
             state.layers.prepare(&target, &scene.layers, &planned);
-            record(
+            Ok(record(
                 &target, state, scene, frame_view, clear, &rasters, &scenes, &uploads, &paths,
-            );
-            Ok(())
+            ))
         });
     if result.is_err() {
         // The tiles this frame was to rasterize were not.
@@ -473,7 +477,7 @@ fn record(
     scenes: &[PlannedScene],
     uploads: &[SceneUpload],
     paths: &PathUpload,
-) {
+) -> wgpu::SubmissionIndex {
     let mut encoder = target
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -513,7 +517,7 @@ fn record(
             },
         },
     );
-    target.queue.submit(std::iter::once(encoder.finish()));
+    target.queue.submit(std::iter::once(encoder.finish()))
 }
 
 /// A scene to draw, where, and with what.
@@ -638,35 +642,39 @@ pub(crate) fn draw_scene(
                 None,
                 range,
             ),
-            PrimitiveBatch::MonochromeSprites { texture_id, range } => draw_batch(
-                &mut pass,
-                &mut bound,
-                draw.globals,
-                &pipelines.mono_sprites,
-                &upload.monochrome_sprites,
-                Some(&atlas_bind_group(
-                    target.atlas,
-                    &texture_bind_group,
-                    texture_id,
-                )),
-                range,
-            ),
-            PrimitiveBatch::SubpixelSprites { texture_id, range } => draw_batch(
-                &mut pass,
-                &mut bound,
-                draw.globals,
-                pipelines
-                    .subpixel_sprites
-                    .as_ref()
-                    .unwrap_or(&pipelines.mono_sprites),
-                &upload.subpixel_sprites,
-                Some(&atlas_bind_group(
-                    target.atlas,
-                    &texture_bind_group,
-                    texture_id,
-                )),
-                range,
-            ),
+            PrimitiveBatch::MonochromeSprites { texture_id, range } => {
+                let Some(texture) = atlas_bind_group(target.atlas, &texture_bind_group, texture_id)
+                else {
+                    continue;
+                };
+                draw_batch(
+                    &mut pass,
+                    &mut bound,
+                    draw.globals,
+                    &pipelines.mono_sprites,
+                    &upload.monochrome_sprites,
+                    Some(&texture),
+                    range,
+                );
+            }
+            PrimitiveBatch::SubpixelSprites { texture_id, range } => {
+                let Some(texture) = atlas_bind_group(target.atlas, &texture_bind_group, texture_id)
+                else {
+                    continue;
+                };
+                draw_batch(
+                    &mut pass,
+                    &mut bound,
+                    draw.globals,
+                    pipelines
+                        .subpixel_sprites
+                        .as_ref()
+                        .unwrap_or(&pipelines.mono_sprites),
+                    &upload.subpixel_sprites,
+                    Some(&texture),
+                    range,
+                );
+            }
             PrimitiveBatch::PolychromeSprites { texture_id, range }
                 if composite::is_layer_texture(texture_id) =>
             {
@@ -690,19 +698,21 @@ pub(crate) fn draw_scene(
                     );
                 }
             }
-            PrimitiveBatch::PolychromeSprites { texture_id, range } => draw_batch(
-                &mut pass,
-                &mut bound,
-                draw.globals,
-                &pipelines.poly_sprites,
-                &upload.polychrome_sprites,
-                Some(&atlas_bind_group(
-                    target.atlas,
-                    &texture_bind_group,
-                    texture_id,
-                )),
-                range,
-            ),
+            PrimitiveBatch::PolychromeSprites { texture_id, range } => {
+                let Some(texture) = atlas_bind_group(target.atlas, &texture_bind_group, texture_id)
+                else {
+                    continue;
+                };
+                draw_batch(
+                    &mut pass,
+                    &mut bound,
+                    draw.globals,
+                    &pipelines.poly_sprites,
+                    &upload.polychrome_sprites,
+                    Some(&texture),
+                    range,
+                );
+            }
             // Surfaces are macOS-only for video playback and are not
             // implemented by the WGPU renderer.
             PrimitiveBatch::Surfaces(_surfaces) => {}
@@ -711,13 +721,19 @@ pub(crate) fn draw_scene(
     drop(pass);
 }
 
+/// The bind group of an atlas texture, or `None` once the atlas has released
+/// it: the batch then belongs to a stale paint that will be replaced once its
+/// view renders again, and is skipped, as upstream's `draw_sprites` does.
 fn atlas_bind_group(
     atlas: &WgpuAtlas,
     texture_bind_group: &impl Fn(&str, &wgpu::TextureView) -> wgpu::BindGroup,
     texture_id: AtlasTextureId,
-) -> wgpu::BindGroup {
-    let texture_info = atlas.get_texture_info(texture_id);
-    texture_bind_group("atlas_texture_bind_group", &texture_info.view)
+) -> Option<wgpu::BindGroup> {
+    let texture_info = atlas.get_texture_info(texture_id)?;
+    Some(texture_bind_group(
+        "atlas_texture_bind_group",
+        &texture_info.view,
+    ))
 }
 
 /// Begins a pass that draws into `view`, cleared to `clear` if one is given.
