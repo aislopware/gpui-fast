@@ -1912,3 +1912,97 @@ mod beside_an_input {
         assert_eq!(demoted(cx, window), 1);
     }
 }
+
+/// A list held by a view that is painted after other content, so that where
+/// the holder's paint starts in the window's scene lies past where its rows'
+/// paint lies in the layer's own scene.
+mod held_after_other_content {
+    use super::{Decision, VIEWPORT_HEIGHT, VIEWPORT_WIDTH, decision, draw, row_color, wheel};
+    use crate::{
+        AnyWindowHandle, AppContext as _, Context, Entity, IntoElement, ListAlignment, ListState,
+        ParentElement as _, Render, Styled as _, TestAppContext, Window, WindowHandle, div, px,
+        rgb,
+    };
+
+    /// A list of 1000 rows 20 px tall.
+    struct Holder {
+        state: ListState,
+    }
+
+    impl Render for Holder {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().bg(rgb(0xffffff)).child(
+                crate::list(self.state.clone(), |row, _, _| {
+                    div()
+                        .w(px(VIEWPORT_WIDTH))
+                        .h(px(20.))
+                        .bg(row_color(row))
+                        .into_any_element()
+                })
+                .w(px(VIEWPORT_WIDTH))
+                .h(px(VIEWPORT_HEIGHT)),
+            )
+        }
+    }
+
+    /// `marks` quads beside the list, painted before the holder.
+    struct Page {
+        marks: usize,
+        holder: Entity<Holder>,
+    }
+
+    impl Render for Page {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(div().absolute().left(px(VIEWPORT_WIDTH)).children(
+                    (0..self.marks).map(|mark| div().w(px(4.)).h(px(4.)).bg(row_color(mark))),
+                ))
+                .child(self.holder.clone())
+        }
+    }
+
+    fn page(cx: &mut TestAppContext) -> WindowHandle<Page> {
+        let handle = cx.add_window(|_, cx| Page {
+            marks: 40,
+            holder: cx.new(|_| Holder {
+                state: ListState::new(1000, ListAlignment::Top, px(0.)).measure_all(),
+            }),
+        });
+        let window: AnyWindowHandle = handle.into();
+        draw(cx, window);
+        draw(cx, window);
+        handle
+    }
+
+    /// The page is rendered again with the holder unchanged, so the holder's
+    /// paint is copied from the last frame and its layer's records follow the
+    /// copy. Its rows' scene indices count in the layer's scene and stay.
+    #[crate::test]
+    fn a_holder_copied_past_its_rows_scene_keeps_its_layer(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = page(cx);
+        let window: AnyWindowHandle = handle.into();
+        for _ in 0..3 {
+            wheel(cx, window, -20.);
+        }
+        assert_eq!(decision(cx, window), Some(Decision::Composite));
+        for step in 1..=4 {
+            handle
+                .update(cx, |page, _, cx| {
+                    page.marks = 40 + step;
+                    cx.notify();
+                })
+                .unwrap();
+            draw(cx, window);
+            wheel(cx, window, -15.);
+            assert_eq!(
+                decision(cx, window),
+                Some(Decision::Composite),
+                "step {step}"
+            );
+        }
+    }
+}

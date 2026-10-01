@@ -392,8 +392,23 @@ impl PartialEq for PaintIndex {
 impl PaintIndex {
     /// See [`PrepaintStateIndex::shifted`].
     pub(crate) fn shifted(&self, from: &Self, to: &Self) -> Self {
+        self.shifted_with_scene(
+            self.scene_index - from.scene_index + to.scene_index,
+            from,
+            to,
+        )
+    }
+
+    /// Shifted as [`Self::shifted`] shifts it, keeping its scene index: one
+    /// that counts in a layer's own scene, which a copy of the window's scene
+    /// leaves where it is.
+    pub(crate) fn shifted_outside_scene(&self, from: &Self, to: &Self) -> Self {
+        self.shifted_with_scene(self.scene_index, from, to)
+    }
+
+    fn shifted_with_scene(&self, scene_index: usize, from: &Self, to: &Self) -> Self {
         PaintIndex {
-            scene_index: self.scene_index - from.scene_index + to.scene_index,
+            scene_index,
             fast_window_control_hitboxes_index: self.fast_window_control_hitboxes_index
                 - from.fast_window_control_hitboxes_index
                 + to.fast_window_control_hitboxes_index,
