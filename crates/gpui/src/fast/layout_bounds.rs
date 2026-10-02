@@ -12,10 +12,44 @@
 //!
 //! [`TaffyLayoutEngine::layout_bounds`]: crate::TaffyLayoutEngine::layout_bounds
 
-use crate::util::round_half_toward_zero;
 use crate::{LayoutId, Point, TaffyLayoutEngine};
 
+/// A place in device pixels snapped to a device pixel: to the nearest one,
+/// ties toward the pixel below.
+///
+/// Upstream snaps a node's bounds half toward zero, which is the same on
+/// places at or past the window's top and left edges, and the other way past
+/// them. A view drawn cached is laid out on its own and placed at its bounds,
+/// where what sticks out above or left of it lies at a negative place, and a
+/// box half a device pixel past its top would snap a pixel lower than it
+/// does laid out in place, at a positive place in the window. Ties toward
+/// the pixel below snap a place alike wherever it is measured from.
+#[inline]
+pub(crate) fn snap(value: f32) -> f32 {
+    // Adding zero turns the negative zero `ceil` gives for a half into zero.
+    (value - 0.5).ceil() + 0.
+}
+
+/// Where layout places a node without a parent, at `location`: as far into
+/// its device pixel as [`TaffyLayoutEngine::place_root`] placed it, or not.
+pub(crate) fn root_origin(
+    engine: &TaffyLayoutEngine,
+    id: LayoutId,
+    location: taffy::Point<f32>,
+) -> Point<f32> {
+    let phase = engine.retention.root_phases.get(&id).copied();
+    Point::from(location) + phase.unwrap_or_default()
+}
+
 impl TaffyLayoutEngine {
+    /// Places `root`, laid out on its own for a view drawn at its bounds, at
+    /// `phase` in its device pixel, where the view lies laid out in place
+    /// (see [`Self::layout_phase`]), so that what it holds snaps as it does
+    /// there.
+    pub(crate) fn place_root(&mut self, root: LayoutId, phase: Point<f32>) {
+        self.retention.root_phases.insert(root, phase);
+    }
+
     /// How far past the device pixel its bounds snap to layout placed the
     /// node, in device pixels, once [`TaffyLayoutEngine::layout_bounds`] has
     /// placed it this frame.
@@ -30,9 +64,7 @@ impl TaffyLayoutEngine {
     pub(crate) fn layout_phase(&self, id: LayoutId) -> Point<f32> {
         self.absolute_outer_origins
             .get(&id)
-            .map_or_else(Point::default, |origin| {
-                origin.map(|c| c - round_half_toward_zero(c))
-            })
+            .map_or_else(Point::default, |origin| origin.map(|c| c - snap(c)))
     }
 }
 

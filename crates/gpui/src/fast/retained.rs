@@ -124,10 +124,10 @@ pub(crate) enum PaintStatus {
 #[derive(PartialEq)]
 pub(crate) struct RetainedContext {
     pub(crate) bounds: Bounds<Pixels>,
-    /// Where its content was laid out within the device pixel its bounds
-    /// snap to, which decides where what it holds snaps (see
-    /// [`crate::TaffyLayoutEngine::layout_phase`]); none for content laid
-    /// out on its own and drawn at its bounds.
+    /// Where it was laid out within the device pixel its bounds snap to,
+    /// which decides where what it holds snaps (see
+    /// [`crate::TaffyLayoutEngine::layout_phase`]), laid out in place or on
+    /// its own.
     pub(crate) phase: Point<f32>,
     pub(crate) content_mask: ContentMask<Pixels>,
     pub(crate) text_style: TextStyle,
@@ -1687,9 +1687,7 @@ impl<V: View> ViewElement<V> {
                 } => {
                     if !window.dirty_views.contains(&entity_id)
                         && let Some(previous) = window.reusable_retained(global_id, cx)
-                        // Laid out on its own and drawn at its bounds, its
-                        // content snaps alike wherever its node lies.
-                        && window.retained_context_matches(previous, bounds, Point::default())
+                        && window.retained_context_matches(previous, bounds, phase)
                     {
                         return ViewPrepaint::Reused(
                             window.reuse_retained_prepaint(previous, false, cx),
@@ -1703,6 +1701,13 @@ impl<V: View> ViewElement<V> {
                         .unwrap()
                         .render(window, cx)
                         .into_any_element();
+                    let root = element.request_layout(window, cx);
+                    // Laid out on its own, it snaps as it would in place.
+                    window
+                        .layout_engine
+                        .as_mut()
+                        .unwrap()
+                        .place_root(root, phase);
                     element.layout_as_root(bounds.size.into(), window, cx);
                     element.prepaint_at(bounds.origin, window, cx);
                     // Kept so that the view can be built again on its own
@@ -1716,7 +1721,7 @@ impl<V: View> ViewElement<V> {
                     let record = window.finish_retained_prepaint(
                         recording,
                         bounds,
-                        Point::default(),
+                        phase,
                         layout,
                         Some(layout_dependencies),
                         rebuild,
@@ -1783,8 +1788,7 @@ impl<V: View> ViewElement<V> {
         let (layout, dependencies) = window.finish_retained_layout(layout_recording, layout_id, cx);
 
         let recording = window.begin_retained(global_id, Some(&dependencies), cx);
-        let in_place = Some(layout_id) == root;
-        if in_place {
+        if Some(layout_id) == root {
             // Measurements taken again are laid out again within the view,
             // which is held at its size. Only a layout that changed can
             // change that size, which the next frame lays out from scratch.
@@ -1796,13 +1800,17 @@ impl<V: View> ViewElement<V> {
             }
             element.prepaint(window, cx);
         } else {
+            // Laid out on its own, it snaps as it would in place.
+            window
+                .layout_engine
+                .as_mut()
+                .unwrap()
+                .place_root(layout_id, phase);
             element.layout_as_root(bounds.size.into(), window, cx);
             element.prepaint_at(bounds.origin, window, cx);
             window.request_animation_frame();
         }
         let rebuild = window.rebuild_here(&self.rebuild, None, parent_layout_key);
-        // Laid out on its own, it is drawn at its bounds.
-        let phase = if in_place { phase } else { Point::default() };
         let record = window.finish_retained_prepaint(
             recording,
             bounds,

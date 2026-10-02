@@ -77,6 +77,10 @@ pub(crate) struct LayoutRetention {
     /// computations so that its table is not allocated for each one. See
     /// [`settle_measured_leaves`].
     pub(crate) measured_leaves: MeasuredLeaves,
+    /// Where in its device pixel each node laid out on its own this frame
+    /// for a view drawn at its bounds lies where the view is laid out in
+    /// place. See [`TaffyLayoutEngine::place_root`].
+    pub(crate) root_phases: crate::fast::layout_bounds::LayoutIdMap<crate::Point<f32>>,
 }
 
 /// The leaves a layout computation measured, each with the width it was last
@@ -875,6 +879,7 @@ pub(crate) fn release_unclaimed_nodes(engine: &mut TaffyLayoutEngine) {
     retention.claimed_this_frame = 0;
     retention.frame += 1;
     retention.measured.clear();
+    retention.root_phases.clear();
 }
 
 /// [`Window::request_layout`] for a style the caller keeps, and children it
