@@ -1,10 +1,7 @@
 use crate::{
     AbsoluteLength, App, Bounds, DefiniteLength, Edges, GridTemplate, Length, Pixels, Point, Size,
     Style, Window, size,
-    util::{
-        ceil_to_device_pixel, round_half_toward_zero, round_stroke_to_device_pixel,
-        round_to_device_pixel,
-    },
+    util::{ceil_to_device_pixel, round_stroke_to_device_pixel, round_to_device_pixel},
 };
 use collections::FxHashSet;
 use std::{fmt::Debug, ops::Range};
@@ -355,15 +352,15 @@ impl TaffyLayoutEngine {
                     .expect("parent absolute outer origin should be cached");
                 parent_origin + Point::from(layout_location)
             }
-            None => Point::from(layout_location),
+            None => crate::fast::layout_bounds::root_origin(self, id, layout_location),
         };
         self.absolute_outer_origins
             .insert(id, absolute_outer_origin);
 
         let absolute_far = absolute_outer_origin + Point::from(Size::from(layout_size));
         let snapped_bounds = Bounds::from_corners(
-            absolute_outer_origin.map(round_half_toward_zero),
-            absolute_far.map(round_half_toward_zero),
+            absolute_outer_origin.map(crate::fast::layout_bounds::snap),
+            absolute_far.map(crate::fast::layout_bounds::snap),
         );
 
         let bounds = (snapped_bounds / scale_factor).map(Pixels);
