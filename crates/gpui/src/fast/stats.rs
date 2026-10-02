@@ -172,6 +172,9 @@ pub(crate) struct MeasureTally {
     compute_started_at: Option<Instant>,
     /// The nodes measured.
     measured: Vec<crate::LayoutId>,
+    /// The leaves measured, and the width each was last measured at. See
+    /// [`crate::fast::layout::MeasuredLeaves`].
+    pub(crate) leaves: crate::fast::layout::MeasuredLeaves,
 }
 
 impl MeasureTally {
@@ -180,10 +183,18 @@ impl MeasureTally {
         self.timed.then(Instant::now)
     }
 
-    /// Counts a measurement of `node` started by [`Self::start`].
-    pub(crate) fn finish(&mut self, started_at: Option<Instant>, node: taffy::NodeId) {
+    /// Counts a measurement of `node` started by [`Self::start`], taken
+    /// under these constraints.
+    pub(crate) fn finish(
+        &mut self,
+        started_at: Option<Instant>,
+        node: taffy::NodeId,
+        known_dimensions: crate::Size<Option<crate::Pixels>>,
+        available_space: crate::Size<crate::AvailableSpace>,
+    ) {
         self.calls += 1;
         self.measured.push(node.into());
+        self.leaves.note(node, known_dimensions, available_space);
         if let Some(started_at) = started_at {
             self.time += started_at.elapsed();
         }
@@ -208,7 +219,7 @@ impl TaffyLayoutEngine {
 
 /// Starts counting the measurements of a layout computation.
 #[inline(always)]
-pub(crate) fn begin_measure_tally(engine: &TaffyLayoutEngine) -> MeasureTally {
+pub(crate) fn begin_measure_tally(engine: &mut TaffyLayoutEngine) -> MeasureTally {
     let timed = engine.retention.timed;
     MeasureTally {
         timed,
@@ -216,6 +227,7 @@ pub(crate) fn begin_measure_tally(engine: &TaffyLayoutEngine) -> MeasureTally {
         time: Duration::ZERO,
         compute_started_at: timed.then(Instant::now),
         measured: Vec::new(),
+        leaves: std::mem::take(&mut engine.retention.measured_leaves),
     }
 }
 
@@ -230,6 +242,7 @@ pub(crate) fn finish_measure_tally(engine: &mut TaffyLayoutEngine, tally: Measur
     stats.measure_calls += tally.calls;
     stats.measure_time += tally.time;
     engine.retention.measured.extend(tally.measured);
+    engine.retention.measured_leaves = tally.leaves;
 }
 
 impl Window {

@@ -490,6 +490,39 @@ impl Render for Shrinkable {
     }
 }
 
+const FLEXED_TEXT: &str =
+    "a heading long enough to wrap onto several lines in the narrow column it is laid out in";
+
+/// Text that takes the rest of a row (`flex_1`, allowed to shrink to nothing),
+/// in a column capped at a width, beside a line that changes every frame.
+struct FlexedText {
+    tick: u32,
+    layout: std::rc::Rc<std::cell::RefCell<Option<crate::TextLayout>>>,
+}
+
+impl Render for FlexedText {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let text = crate::StyledText::new(FLEXED_TEXT);
+        *self.layout.borrow_mut() = Some(text.layout().clone());
+        let content = div()
+            .flex()
+            .flex_col()
+            .child(div().flex().child(div().flex_1().min_w_0().child(text)))
+            .child(SharedString::from(format!("frame {}", self.tick)));
+        div().flex().child(
+            div().w_full().max_w(px(300.)).child(
+                div().flex().flex_col().child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .w_full()
+                        .child(div().flex().flex_col().min_w_0().w_full().child(content)),
+                ),
+            ),
+        )
+    }
+}
+
 /// Text wrapped in a box keeps its measurement from frame to frame. Let out
 /// of the box, it is asked how wide it is unwrapped, which the measurement
 /// taken in the box must not answer: in a flex item free to shrink below
@@ -521,4 +554,45 @@ fn text_let_out_of_the_box_that_wrapped_it_is_measured_unwrapped() {
         .unwrap();
     draw(&mut cx, window.into());
     assert_eq!(wraps(&layout), 0, "let out, the text should not wrap");
+}
+
+/// A measured leaf paints what its last measurement produced, and Taffy, which
+/// places a retained node from its cache, can still measure the leaf under
+/// other constraints when a node above it is laid out again. Here the line
+/// beside the row changes, the row is sized to its content once more, and the
+/// text, measured at width zero for it, would be painted one glyph to a line
+/// in the box it was laid out in. It has to be painted in as many lines as its
+/// box is tall, every frame.
+#[test]
+fn text_laid_out_from_the_cache_paints_the_lines_of_its_box() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(|_, _| FlexedText {
+        tick: 0,
+        layout: Default::default(),
+    });
+    for frame in 0..3 {
+        window
+            .update(&mut cx, |view, _, cx| {
+                view.tick = frame;
+                cx.notify();
+            })
+            .unwrap();
+        draw(&mut cx, window.into());
+        let (lines, bounds, line_height) = window
+            .update(&mut cx, |view, _, _| {
+                let layout = view.layout.borrow().clone().unwrap();
+                (
+                    layout.wrapped_text().lines().count(),
+                    layout.bounds(),
+                    layout.line_height(),
+                )
+            })
+            .unwrap();
+        assert!(lines > 1, "the text should wrap in its column: {lines}");
+        assert_eq!(
+            bounds.size.height,
+            line_height * lines as f32,
+            "frame {frame}: {lines} lines painted in {bounds:?}"
+        );
+    }
 }
