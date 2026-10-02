@@ -933,7 +933,11 @@ pub(crate) struct IosWindow {
     /// Callback for appearance changes
     appearance_changed_callback: RefCell<Option<Box<dyn FnMut()>>>,
     insets_changed_callback: RefCell<Option<Box<dyn FnMut(WindowInsets)>>>,
-    keyboard_height: Cell<f32>,
+    /// The keyboard's last end frame in screen coordinates, while it is shown on this
+    /// window's screen.
+    keyboard_frame: Cell<Option<ObjcCGRect>>,
+    /// How far up from the bottom the keyboard covers the view.
+    keyboard_height: Cell<Pixels>,
     /// Current mouse position (from touch)
     mouse_position: Cell<Point<Pixels>>,
     /// Current modifiers
@@ -1096,7 +1100,8 @@ impl IosWindow {
                 close_callback: RefCell::new(None),
                 appearance_changed_callback: RefCell::new(None),
                 insets_changed_callback: RefCell::new(None),
-                keyboard_height: Cell::new(0.),
+                keyboard_frame: Cell::new(None),
+                keyboard_height: Cell::new(Pixels::ZERO),
                 mouse_position: Cell::new(Point::default()),
                 modifiers: Cell::new(Modifiers::default()),
                 capslock: Cell::new(Capslock { on: false }),
@@ -1165,10 +1170,15 @@ impl IosWindow {
                     return;
                 }
                 let frame: ObjcCGRect = msg_send![frame_value, CGRectValue];
+                // Since iOS 16.1 the notification's object is the screen the keyboard is on.
+                let object: *mut AnyObject = msg_send![notification, object];
+                let on_screen =
+                    !object.is_null() && msg_send![object, isKindOfClass: class!(UIScreen)];
+                let screen = if on_screen { object } else { ptr::null_mut() };
                 if let Some(wrapper) = super::ffi::IOS_WINDOW_LIST.get() {
                     for &window in &*wrapper.0.get() {
                         if let Some(window) = window.as_ref() {
-                            window.set_keyboard_height(frame.height as f32);
+                            window.set_keyboard_frame(Some((frame, screen)));
                         }
                     }
                 }
@@ -1178,7 +1188,7 @@ impl IosWindow {
                 if let Some(wrapper) = super::ffi::IOS_WINDOW_LIST.get() {
                     for &window in &*wrapper.0.get() {
                         if let Some(window) = window.as_ref() {
-                            window.set_keyboard_height(0.);
+                            window.set_keyboard_frame(None);
                         }
                     }
                 }
@@ -1417,7 +1427,7 @@ impl IosWindow {
                 left: px(left),
             },
             ime: Edges {
-                bottom: px(self.keyboard_height.get()),
+                bottom: self.keyboard_height.get(),
                 ..Default::default()
             },
         }
@@ -1429,13 +1439,71 @@ impl IosWindow {
         }
     }
 
-    fn set_keyboard_height(&self, height: f32) {
-        let height = height.max(0.);
-        if (self.keyboard_height.get() - height).abs() <= 0.5 {
+    /// Takes the keyboard's end frame from a keyboard notification, in the coordinate space
+    /// of `screen` (null when the notification names none), or `None` once it hides.
+    fn set_keyboard_frame(&self, keyboard: Option<(ObjcCGRect, *mut AnyObject)>) {
+        // A keyboard on another screen covers none of this window.
+        let frame = keyboard
+            .filter(|&(_, screen)| screen.is_null() || screen == self.screen())
+            .map(|(frame, _)| frame);
+        self.keyboard_frame.set(frame);
+        let inset = self.keyboard_inset();
+        if (self.keyboard_height.get() - inset).abs() <= px(0.5) {
             return;
         }
-        self.keyboard_height.set(height);
+        self.keyboard_height.set(inset);
         self.notify_insets_changed();
+    }
+
+    /// The keyboard inset worked out from the last keyboard frame and where the view is now:
+    /// a keyboard notification and a resize (rotation, Stage Manager) both move it.
+    fn keyboard_inset(&self) -> Pixels {
+        self.keyboard_frame
+            .get()
+            .map_or(Pixels::ZERO, |frame| self.keyboard_overlap(frame))
+    }
+
+    /// The screen the window is on: its scene's, or the main screen until it has one.
+    fn screen(&self) -> *mut AnyObject {
+        // SAFETY: `self.window` is the live UIWindow this window owns; `windowScene`,
+        // `screen` and `mainScreen` are UIKit getters returning unretained objects or nil.
+        unsafe {
+            let scene: *mut AnyObject = msg_send![self.window, windowScene];
+            if scene.is_null() {
+                msg_send![class!(UIScreen), mainScreen]
+            } else {
+                msg_send![scene, screen]
+            }
+        }
+    }
+
+    /// How far up from the view's bottom a keyboard with the end frame `frame`, in screen
+    /// coordinates, covers it (see `crate::keyboard_inset`).
+    fn keyboard_overlap(&self, frame: ObjcCGRect) -> Pixels {
+        if self.view.is_null() {
+            return Pixels::ZERO;
+        }
+        let screen = self.screen();
+        // SAFETY: `self.view` is the live UIView this window owns. `convertRect:
+        // fromCoordinateSpace:` is UIView's (UICoordinateSpace), taking any object that
+        // conforms to UICoordinateSpace, which `UIScreen.coordinateSpace` does.
+        let (keyboard, screen, view) = unsafe {
+            let space: *mut AnyObject = msg_send![screen, coordinateSpace];
+            let screen_bounds: ObjcCGRect = msg_send![screen, bounds];
+            let keyboard: ObjcCGRect =
+                msg_send![self.view, convertRect: frame, fromCoordinateSpace: space];
+            let screen: ObjcCGRect =
+                msg_send![self.view, convertRect: screen_bounds, fromCoordinateSpace: space];
+            let view: ObjcCGRect = msg_send![self.view, bounds];
+            (keyboard, screen, view)
+        };
+        let rect = |r: ObjcCGRect| {
+            Bounds::new(
+                Point::new(px(r.x as f32), px(r.y as f32)),
+                size(px(r.width as f32), px(r.height as f32)),
+            )
+        };
+        crate::keyboard_inset::keyboard_inset(rect(keyboard), rect(screen), rect(view))
     }
 
     /// Defers the UIKit responder transition to avoid synchronous layout callbacks
@@ -1695,6 +1763,7 @@ impl IosWindow {
             let old_scale = self.scale_factor.get();
 
             let new_size = size(px(new_w), px(new_h));
+            self.keyboard_height.set(self.keyboard_inset());
             self.notify_insets_changed();
 
             if old_bounds.size == new_size && (old_scale - new_scale).abs() < 0.01 {
