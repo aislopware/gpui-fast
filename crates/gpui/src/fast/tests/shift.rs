@@ -654,3 +654,96 @@ fn what_a_clip_left_out_comes_back_when_the_clip_is_switched_off() {
         step(&mut cx, windows, |view| view.clipped = !view.clipped);
     }
 }
+
+/// A bar centred in a box, holding a label taller than it, centred too,
+/// which starts half a device pixel past a pixel's edge, where layout snaps
+/// it toward zero; drawn by a view of its own, if `view`.
+struct Straddle {
+    height: f32,
+    view: Option<Entity<StraddleBar>>,
+}
+
+struct StraddleBar;
+
+fn straddle_bar() -> Div {
+    div()
+        .flex_none()
+        .h(px(8.))
+        .flex()
+        .items_center()
+        .bg(hsla(0.6, 0.5, 0.5, 1.))
+        .child(
+            div()
+                .flex_none()
+                .w(px(40.))
+                .h(px(9.5))
+                .bg(hsla(0.1, 0.8, 0.5, 1.))
+                .child("label"),
+        )
+}
+
+impl Render for StraddleBar {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        straddle_bar()
+    }
+}
+
+impl Render for Straddle {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let column = div()
+            .flex_none()
+            .h(px(self.height))
+            .flex()
+            .flex_col()
+            .justify_center();
+        let column = match &self.view {
+            Some(view) => column.child(view.clone()),
+            None => column.child(straddle_bar()),
+        };
+        div().size_full().child(column)
+    }
+}
+
+/// Grows the box by a device pixel at a time, which moves the bar it
+/// centres by half of one, a move its bounds, snapped, do not always show:
+/// the label it centres, half a device pixel off a pixel's edge, then snaps
+/// a whole device pixel lower or higher, and drawn again where it was, would
+/// stay a pixel off where painting it afresh puts it.
+fn straddle(cx: &mut TestAppContext, windows: [WindowHandle<Straddle>; 2]) {
+    let mut reused = 0;
+    for _ in 0..3 {
+        let stats = step(cx, windows, |_| {});
+        reused += stats.elements_reused + stats.views_reused;
+    }
+    assert!(reused > 0, "nothing was drawn again");
+    for _ in 0..4 {
+        step(cx, windows, |straddle| straddle.height += 0.5);
+    }
+}
+
+#[test]
+fn a_move_its_snapped_bounds_hide_is_painted_afresh() {
+    let mut cx = text_cx();
+    let windows = windows(&mut cx, || Straddle {
+        height: 20.,
+        view: None,
+    });
+    straddle(&mut cx, windows);
+}
+
+#[test]
+fn a_view_moved_by_part_of_a_pixel_its_bounds_hide_is_drawn_afresh() {
+    let mut cx = text_cx();
+    let windows = windows(&mut cx, || Straddle {
+        height: 20.,
+        view: None,
+    });
+    for window in windows {
+        window
+            .update(&mut cx, |straddle, _, cx| {
+                straddle.view = Some(cx.new(|_| StraddleBar));
+            })
+            .unwrap();
+    }
+    straddle(&mut cx, windows);
+}

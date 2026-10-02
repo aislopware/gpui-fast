@@ -273,6 +273,10 @@ enum Paint {
 #[derive(Clone)]
 struct ElementContext {
     bounds: Bounds<Pixels>,
+    /// Where layout placed it within the device pixel its bounds snap to,
+    /// which decides where what it holds snaps (see
+    /// [`crate::TaffyLayoutEngine::layout_phase`]).
+    phase: Point<f32>,
     content_mask: ContentMask<Pixels>,
     opacity: f32,
     text_style: Rc<TextStyle>,
@@ -282,6 +286,7 @@ struct ElementContext {
 impl ElementContext {
     fn matches(&self, other: &Self) -> bool {
         self.bounds == other.bounds
+            && self.phase == other.phase
             && self.content_mask == other.content_mask
             && self.opacity == other.opacity
             && self.rem_size == other.rem_size
@@ -1886,8 +1891,14 @@ fn steady(previous: Bounds<Pixels>, bounds: Bounds<Pixels>, scale_factor: f32) -
 }
 
 fn context(layout_id: LayoutId, window: &mut Window) -> ElementContext {
+    let bounds = window.layout_bounds(layout_id);
     ElementContext {
-        bounds: window.layout_bounds(layout_id),
+        bounds,
+        phase: window
+            .layout_engine
+            .as_ref()
+            .unwrap()
+            .layout_phase(layout_id),
         content_mask: window.content_mask(),
         opacity: window.element_opacity,
         text_style: crate::fast::text_style::text_style(window),
@@ -2214,6 +2225,7 @@ fn moved_to(
     let nested = &subtree.records[first..=first + subtree.records[first].nested as usize];
     let old = &nested[0].context;
     if old.bounds.size != context.bounds.size
+        || old.phase != context.phase
         || old.opacity != context.opacity
         || old.rem_size != context.rem_size
         || !same_text_style(&old.text_style, &context.text_style)
