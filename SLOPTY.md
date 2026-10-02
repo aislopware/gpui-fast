@@ -599,6 +599,15 @@ Added in this fork:
   rasters of it (levels 0, 2, 3 and 4). `Native` stays the default, so nothing changes for
   an application that does not ask. iOS dilates nothing under either policy (UIKit has no
   font smoothing)
+- fix(gpui_macos, gpui_ios): every CSS weight reaches its own face. font-kit turns Core
+  Text's weight trait into a CSS weight through its own table, which puts every Medium
+  face (Core Text 0.23) at 530 and Heavy (0.56) at 780; CSS matching asks 500 for 500 or
+  less first and so drew Regular, and 800 drew Black. Faces are now matched on AppKit's
+  `NSFontWeight` values as the CSS weights 100 to 900
+  (`gpui_apple::fast::font_weight::css_weight`, used by both platforms' `font_id`), so
+  `FontWeight::MEDIUM` is SF Medium (`each_css_weight_reaches_its_own_face`: the system
+  face and Avenir Next, each weight its own face, each inking more than the one below).
+  Zed's issue #14175 is this
 
 ### Candidates for longbridge
 

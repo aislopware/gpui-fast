@@ -2,7 +2,9 @@
 
 use collections::HashMap;
 use core_text::font::CTFont;
+use core_text::font_descriptor::TraitAccessors;
 use font_kit::font::Font as FontKitFont;
+use font_kit::properties::{Properties, Weight};
 use gpui::{FontId, Pixels, PlatformTextSystem};
 use std::sync::Arc;
 
@@ -13,6 +15,17 @@ use std::sync::Arc;
 /// that only shapes and rasterises text takes the text system from here.
 pub fn text_system() -> Arc<dyn PlatformTextSystem> {
     Arc::new(crate::MacTextSystem::new())
+}
+
+/// What a face is matched on: font-kit's properties, with the CSS weight
+/// AppKit gives the face's Core Text weight in place of font-kit's
+/// ([`gpui_apple::fast::font_weight`]), so Medium is 500 and Heavy 800.
+pub(crate) fn properties(font: &FontKitFont) -> Properties {
+    let weight = font.native_font().all_traits().normalized_weight();
+    Properties {
+        weight: Weight(gpui_apple::fast::font_weight::css_weight(weight)),
+        ..font.properties()
+    }
 }
 
 /// Each font at each size a line has been laid out at. CoreText keeps the
@@ -48,10 +61,61 @@ impl SizedFonts {
 mod tests {
     use crate::MacTextSystem;
     use gpui::{
-        Font, FontRun, FontWeight, LineLayout, PlatformTextSystem, TextRun, TextSystem,
-        WindowTextSystem, font, px,
+        Font, FontId, FontRun, FontWeight, LineLayout, PlatformTextSystem, RenderGlyphParams,
+        TextRun, TextSystem, WindowTextSystem, font, point, px,
     };
     use std::sync::Arc;
+
+    /// Every CSS weight from 100 to 900 reaches a face of its own in the
+    /// system's UI family and in Avenir Next's, Medium at 500 and Heavy at 800
+    /// among them, each inking more than the one below. 500 used to fall back
+    /// to Regular and 800 to Black.
+    #[test]
+    fn each_css_weight_reaches_its_own_face() {
+        let text = MacTextSystem::new();
+        for (family, weights) in [
+            (
+                ".SystemUIFont",
+                &[100., 200., 300., 400., 500., 600., 700., 800., 900.][..],
+            ),
+            ("Avenir Next", &[100., 400., 500., 600., 700., 800.][..]),
+        ] {
+            let inked: Vec<(FontId, f64)> = weights
+                .iter()
+                .map(|&weight| {
+                    let face = Font {
+                        weight: FontWeight(weight),
+                        ..font(family)
+                    };
+                    let font_id = text.font_id(&face).unwrap();
+                    let glyph_id = text.glyph_for_char(font_id, 'n').unwrap();
+                    let params = RenderGlyphParams {
+                        font_id,
+                        glyph_id,
+                        font_size: px(24.),
+                        subpixel_variant: point(0, 0),
+                        scale_factor: 2.,
+                        is_emoji: false,
+                        subpixel_rendering: false,
+                        dilation: 0,
+                    };
+                    let bounds = text.glyph_raster_bounds(&params).unwrap();
+                    let (_, bytes) = text.rasterize_glyph(&params, bounds).unwrap();
+                    (font_id, bytes.iter().map(|&b| f64::from(b)).sum())
+                })
+                .collect();
+            for (pair, weight) in inked.windows(2).zip(&weights[1..]) {
+                assert_ne!(
+                    pair[0].0, pair[1].0,
+                    "{family} {weight} has no face of its own"
+                );
+                assert!(
+                    pair[1].1 > pair[0].1,
+                    "{family} {weight} inks no more than the weight below"
+                );
+            }
+        }
+    }
 
     /// Fonts are made once per size and kept, so a line laid out with a kept
     /// font has to come out exactly as it did with a new one: the same glyphs

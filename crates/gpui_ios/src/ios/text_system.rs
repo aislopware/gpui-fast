@@ -19,7 +19,8 @@ use core_graphics::{
 use core_text::{
     font::CTFont,
     font_descriptor::{
-        kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait, kCTFontWidthTrait,
+        TraitAccessors, kCTFontSlantTrait, kCTFontSymbolicTrait, kCTFontWeightTrait,
+        kCTFontWidthTrait,
     },
     line::CTLine,
     string_attributes::kCTFontAttributeName,
@@ -138,7 +139,7 @@ impl PlatformTextSystem for IosTextSystem {
 
             let candidate_properties: SmallVec<[font_kit::properties::Properties; 4]> = candidates
                 .iter()
-                .map(|font_id| lock.fonts[font_id.0].properties())
+                .map(|font_id| face_properties(&lock.fonts[font_id.0]))
                 .collect();
 
             let ix = font_kit::matching::find_best_match(
@@ -614,6 +615,17 @@ fn recti_to_bounds_device_pixels(rect: RectI) -> Bounds<DevicePixels> {
 
 fn vec2f_to_size_f32(vec: Vector2F) -> Size<f32> {
     size(vec.x(), vec.y())
+}
+
+/// What a face is matched on: font-kit's properties, with the CSS weight
+/// AppKit gives the face's Core Text weight in place of font-kit's
+/// (`gpui_apple::fast::font_weight`), so Medium is 500 and Heavy 800.
+fn face_properties(font: &FontKitFont) -> font_kit::properties::Properties {
+    let weight = font.native_font().all_traits().normalized_weight();
+    font_kit::properties::Properties {
+        weight: FontkitWeight(gpui_apple::fast::font_weight::css_weight(weight)),
+        ..font.properties()
+    }
 }
 
 fn font_weight_to_fontkit(value: FontWeight) -> FontkitWeight {
