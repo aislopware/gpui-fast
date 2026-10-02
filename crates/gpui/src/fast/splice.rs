@@ -320,34 +320,8 @@ impl Window {
             return None;
         }
 
-        // The outermost nested views that are out of date are the gaps. What
-        // a subtree read includes what the subtrees nested in it read, and a
-        // view around a dirty one is dirty too, so an up-to-date one holds
-        // none.
         let checked = cx.dependencies_checked();
-        let mut gaps = Vec::new();
-        let mut index = previous + 1;
-        while index <= previous + record.nested {
-            let nested = &records[index];
-            let out_of_date = view_entity(&nested.id)
-                .is_some_and(|entity| self.dirty_views.contains(&entity))
-                || self.retained_state.dirty_subtrees.contains(&nested.id)
-                || cx.dependencies_changed(&nested.dependencies, self.inside_notified_view())
-                || !self.hovers_unchanged(&nested.hover_dependencies);
-            if out_of_date {
-                if nested.rebuild.is_none()
-                    || nested.layout.is_none()
-                    || !matches!(nested.paint, PaintStatus::Painted { .. })
-                {
-                    return None;
-                }
-                gaps.push(index);
-            }
-            index += nested.nested + 1;
-        }
-        if gaps.is_empty() || self.deferred_out_of_date(previous, entity, &gaps, cx) {
-            return None;
-        }
+        let gaps = self.splice_gaps(previous, entity, cx)?;
 
         let kept = kept_keys(
             &layout.keys,
@@ -400,6 +374,15 @@ impl Window {
                 }
             }
         }
+        // A gap may have changed what the views copied around it read as
+        // it was built: moved the focus, or notified one of them, as it
+        // rendered. Copied, they would show what was.
+        if same_roots
+            && cx.dependencies_checked() != checked
+            && !self.splice_still_holds(previous, entity, &built, cx)
+        {
+            same_roots = false;
+        }
         if !same_roots {
             // The view around them is built after all; the views built so
             // far are taken over by their elements there, not built twice.
@@ -424,6 +407,57 @@ impl Window {
             checked,
             held,
         })
+    }
+
+    /// The records of the outermost views nested in last frame's record
+    /// `previous`, of the view `entity`, that are out of date, which a
+    /// splice builds again in gaps: `None` when there are none, or when one
+    /// cannot be built on its own or something its deferred draws hold is
+    /// out of date too. What a subtree read includes what the subtrees
+    /// nested in it read, and a view around a dirty one is dirty too, so an
+    /// up-to-date one holds none.
+    fn splice_gaps(&self, previous: usize, entity: EntityId, cx: &App) -> Option<Vec<usize>> {
+        let records = &self.rendered_frame.retained.records;
+        let mut gaps = Vec::new();
+        let mut index = previous + 1;
+        while index <= previous + records[previous].nested {
+            let nested = &records[index];
+            let out_of_date = view_entity(&nested.id)
+                .is_some_and(|entity| self.dirty_views.contains(&entity))
+                || self.retained_state.dirty_subtrees.contains(&nested.id)
+                || cx.dependencies_changed(&nested.dependencies, self.inside_notified_view())
+                || !self.hovers_unchanged(&nested.hover_dependencies);
+            if out_of_date {
+                if nested.rebuild.is_none()
+                    || nested.layout.is_none()
+                    || !matches!(nested.paint, PaintStatus::Painted { .. })
+                {
+                    return None;
+                }
+                gaps.push(index);
+            }
+            index += nested.nested + 1;
+        }
+        if gaps.is_empty() || self.deferred_out_of_date(previous, entity, &gaps, cx) {
+            return None;
+        }
+        Some(gaps)
+    }
+
+    /// Whether what the view of last frame's record `previous` drew, less
+    /// the gaps `built`, is still up to date once they are built.
+    fn splice_still_holds(
+        &self,
+        previous: usize,
+        entity: EntityId,
+        built: &[Gap],
+        cx: &App,
+    ) -> bool {
+        let record = &self.rendered_frame.retained.records[previous];
+        !cx.dependencies_changed(&record.own_dependencies, self.inside_notified_view())
+            && self
+                .splice_gaps(previous, entity, cx)
+                .is_some_and(|now| now.iter().all(|gap| built.iter().any(|b| b.record == *gap)))
     }
 
     /// Whether something drawn by the deferred draws last frame's record

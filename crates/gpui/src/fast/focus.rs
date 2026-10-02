@@ -13,11 +13,18 @@
 //! [`crate::Window::focused`] hands out the focused element itself, which
 //! the view may compare with anything; reading it counts as reading the
 //! focus as a whole, and any move of the focus builds the view again.
+//!
+//! A view may move the focus as it renders, as a workspace gives the
+//! keyboard to the tile it was asked to. The questions are then asked again
+//! at once, so the views drawn after it in that frame, drawn again from last
+//! frame or not, show the focus as it is; the views drawn before it showed
+//! it as it was, and the window asks for another frame for them once the
+//! frame is drawn, if the focus is not where it was when the frame began.
 
 use crate::fast::dependencies::{StateVersion, ambient};
 use crate::{App, FocusId, Window};
 use collections::FxHashMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 /// A question a view asks of the focus about one handle.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -35,6 +42,10 @@ enum Question {
 #[derive(Default)]
 pub(crate) struct FocusReads {
     answers: RefCell<FxHashMap<(FocusId, Question), (StateVersion, bool)>>,
+    /// The focus the questions on record were last asked again against.
+    stamped: Cell<Option<FocusId>>,
+    /// The focus when the frame being drawn began, while one is.
+    frame_began: Cell<Option<Option<FocusId>>>,
 }
 
 /// [`FocusId::is_focused`], recorded.
@@ -69,9 +80,38 @@ pub(crate) fn read_focused(window: &Window) {
 /// upstream refreshes the window: the views that read the focus as a whole
 /// are built again, and the window is drawn, where the questions views asked
 /// of it are asked again.
+///
+/// While the window draws, the questions are asked again now, and the views
+/// whose answers changed marked, as before a frame, so that the views drawn
+/// after this in the frame are built again rather than drawn from last
+/// frame. The frame for the views drawn before is asked for once the frame
+/// is drawn ([`finish_frame`]).
 pub(crate) fn focus_changed(window: &mut Window, cx: &mut App) {
     cx.ambient_changed::<ambient::Focus>();
     if window.invalidator.not_drawing() {
+        window.invalidator.set_dirty(true);
+    } else if window.focus != window.retained_state.focus_reads.stamped.get() {
+        stamp_changes(window, cx);
+        window.mark_changed_retained_views_dirty(cx);
+    }
+}
+
+/// Asks every question on record again as a frame begins. See
+/// [`stamp_changes`].
+pub(crate) fn begin_frame(window: &Window, cx: &App) {
+    let reads = &window.retained_state.focus_reads;
+    reads.frame_began.set(Some(window.focus));
+    stamp_changes(window, cx);
+}
+
+/// Asks for another frame when the focus moved while this one was drawn: a
+/// view drawn before it moved shows it as it was. Only a move counts, not
+/// the focus being set: a view that blurs, or focuses what has the focus,
+/// each time it is built must not keep its window drawing, nor one whose
+/// render moves it away and back.
+pub(crate) fn finish_frame(window: &Window) {
+    let began = window.retained_state.focus_reads.frame_began.take();
+    if began.is_some_and(|began| began != window.focus) {
         window.invalidator.set_dirty(true);
     }
 }
@@ -82,7 +122,9 @@ pub(crate) fn focus_changed(window: &mut Window, cx: &mut App) {
 /// that a subtree built every frame finds the same version, and so the same
 /// interned list of what it read, instead of making both again.
 pub(crate) fn stamp_changes(window: &Window, cx: &App) {
-    let mut answers = window.retained_state.focus_reads.answers.borrow_mut();
+    let reads = &window.retained_state.focus_reads;
+    reads.stamped.set(window.focus);
+    let mut answers = reads.answers.borrow_mut();
     if answers.is_empty() {
         return;
     }
