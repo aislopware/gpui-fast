@@ -587,3 +587,347 @@ fn a_keyed_stretch_moved_keeps_its_own_fade_and_takes_the_one_around() {
     }
     assert!(moved > 0, "the stretch was never drawn again moved");
 }
+
+/// A row painting its swatch under a key, and its label.
+fn keyed_row(ix: usize) -> impl IntoElement {
+    let hue = ix as f32 / 10.;
+    div()
+        .flex()
+        .flex_row()
+        .h(px(20.))
+        .child(format!("row {ix}"))
+        .child(
+            crate::canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| {
+                    window.paint_keyed(ix as u64, bounds.origin, |window| {
+                        window.paint_quad(crate::fill(bounds, hsla(hue, 0.5, 0.5, 1.)));
+                    });
+                },
+            )
+            .w(px(40.))
+            .h_full(),
+        )
+}
+
+/// A list or a scroll container faded only where its rows lie hidden,
+/// holding as many rows as `rows` says.
+struct Growing {
+    rows: usize,
+    content: GrowingContent,
+}
+
+enum GrowingContent {
+    List(crate::ListState),
+    Scroll(ScrollHandle),
+}
+
+impl Growing {
+    fn list(rows: usize) -> Self {
+        Self {
+            rows,
+            // Measuring every row, so that the list knows them all.
+            content: GrowingContent::List(crate::ListState::new(
+                rows,
+                crate::ListAlignment::Top,
+                px(1000.),
+            )),
+        }
+    }
+
+    fn scroll(rows: usize) -> Self {
+        Self {
+            rows,
+            content: GrowingContent::Scroll(ScrollHandle::new()),
+        }
+    }
+
+    /// Scrolls `y` down from the top.
+    fn scroll_to(&self, y: f32) {
+        match &self.content {
+            GrowingContent::List(list) => list.scroll_to(crate::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(y),
+            }),
+            GrowingContent::Scroll(scroll) => scroll.set_offset(point(px(0.), px(-y))),
+        }
+    }
+
+    /// Holds `rows` rows from now on.
+    fn set_rows(&mut self, rows: usize) {
+        if let GrowingContent::List(list) = &self.content {
+            list.splice(0..self.rows, rows);
+        }
+        self.rows = rows;
+    }
+}
+
+impl Render for Growing {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let faded = match &self.content {
+            GrowingContent::List(list) => edge_fade(
+                crate::list(list.clone(), |ix, _, _| keyed_row(ix).into_any_element()).size_full(),
+                EdgeFade::y(px(10.)),
+            )
+            .hidden_by_list(list),
+            GrowingContent::Scroll(scroll) => edge_fade(
+                div()
+                    .id("growing")
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .overflow_y_scroll()
+                    .track_scroll(scroll)
+                    .children((0..self.rows).map(|ix| row(format!("row {ix}"), ix as f32 / 10.))),
+                EdgeFade::y(px(10.)),
+            )
+            .hidden_by_scroll(scroll),
+        };
+        div()
+            .size_full()
+            .child(div().mt(px(10.)).w(px(200.)).h(px(100.)).child(faded))
+    }
+}
+
+/// Changes the rows of `window`, which draws the frame that follows as
+/// the update's effects flush, and returns what that frame painted and
+/// whether it asked for another.
+fn grow_and_draw(
+    cx: &mut TestAppContext,
+    window: WindowHandle<Growing>,
+    rows: usize,
+) -> (Vec<String>, bool) {
+    window
+        .update(cx, |growing, _, cx| {
+            growing.set_rows(rows);
+            cx.notify();
+        })
+        .unwrap();
+    with_window(cx, window.into(), |window, _| {
+        let asked = !window.next_frame_callbacks.borrow().is_empty();
+        (window.describe_rendered_frame(), asked)
+    })
+}
+
+/// What `window` shows once it has drawn every frame it asked for: the
+/// same state drawn again from scratch until it asks for none.
+fn settled(cx: &mut TestAppContext, window: WindowHandle<Growing>) -> Vec<String> {
+    with_window(cx, window.into(), |window, cx| {
+        for _ in 0..4 {
+            window.forget_retained_state();
+            window.draw(cx).clear(cx);
+            if window.simulate_next_frame(cx) == 0 {
+                break;
+            }
+        }
+        window.describe_rendered_frame()
+    })
+}
+
+/// The fade of the first frame after the rows change, and whether that
+/// frame asked for another, for each step of `rows`: growing past the
+/// container, shrinking back and growing again.
+fn fade_as_rows_change(new: fn(usize) -> Growing) {
+    let mut cx = text_cx();
+    let window = cx.add_window(|_, _| new(3));
+    let reference = cx.add_window(|_, _| new(3));
+    for rows in [10, 3, 12, 30, 4] {
+        let (shown, asked) = grow_and_draw(&mut cx, window, rows);
+        reference
+            .update(&mut cx, |growing, _, cx| {
+                growing.set_rows(rows);
+                cx.notify();
+            })
+            .unwrap();
+        let expected = settled(&mut cx, reference);
+        assert_eq!(shown, expected, "the first frame with {rows} rows");
+        assert!(!asked, "the frame with {rows} rows asked for another");
+        let faded = shown.iter().any(|line| line.contains(" fade "));
+        assert_eq!(faded, rows > 5, "{rows} rows in a container of five");
+        // Scrolled, so that what is drawn again from the frame the rows
+        // changed in moves: it moves in the fade it was drawn in, the fade
+        // the rows changed to.
+        for y in [3., 7.] {
+            for handle in [window, reference] {
+                handle
+                    .update(&mut cx, |growing, _, cx| {
+                        growing.scroll_to(y);
+                        cx.notify();
+                    })
+                    .unwrap();
+            }
+            let shown = with_window(&mut cx, window.into(), |window, _| {
+                window.describe_rendered_frame()
+            });
+            assert_eq!(
+                shown,
+                settled(&mut cx, reference),
+                "{rows} rows scrolled {y}"
+            );
+        }
+        // Built again with the same rows, in the fade they were noted in.
+        let (again, _) = grow_and_draw(&mut cx, window, rows);
+        grow_and_draw(&mut cx, reference, rows);
+        assert_eq!(
+            again,
+            settled(&mut cx, reference),
+            "drawn again with {rows} rows"
+        );
+        for handle in [window, reference] {
+            handle
+                .update(&mut cx, |growing, _, _| growing.scroll_to(0.))
+                .unwrap();
+        }
+    }
+}
+
+/// A list's rows are laid out as the list is: the first frame after they
+/// change fades as the list holds them, and asks for no second one.
+#[test]
+fn a_list_fades_in_the_frame_its_rows_change() {
+    fade_as_rows_change(Growing::list);
+}
+
+/// A scroll container's extent is worked out as it is prepainted: the
+/// first frame after its content changes fades as it holds it.
+#[test]
+fn a_scroll_container_fades_in_the_frame_its_content_changes() {
+    fade_as_rows_change(Growing::scroll);
+}
+
+/// A list of row views, each with a title fading at its ends, faded where
+/// its rows lie hidden.
+struct Feed {
+    list: crate::ListState,
+    rows: Vec<Entity<FeedRow>>,
+    shown: usize,
+    /// Shown above the list, to build the list's view again.
+    tick: usize,
+}
+
+struct FeedRow {
+    ix: usize,
+}
+
+impl Render for FeedRow {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_row()
+            .child(faded_row(format!("row {}", self.ix), self.ix as f32 / 30.))
+            .child(keyed_row(self.ix))
+    }
+}
+
+impl Feed {
+    fn new(shown: usize, cx: &mut App) -> Self {
+        Self {
+            list: crate::ListState::new(shown, crate::ListAlignment::Top, px(1000.)),
+            rows: (0..30).map(|ix| cx.new(|_| FeedRow { ix })).collect(),
+            shown,
+            tick: 0,
+        }
+    }
+}
+
+impl Render for Feed {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let rows = self.rows.clone();
+        div()
+            .size_full()
+            .child(format!("tick {}", self.tick))
+            .child(
+                div().mt(px(10.)).w(px(200.)).h(px(100.)).child(
+                    edge_fade(
+                        crate::list(self.list.clone(), move |ix, _, _| {
+                            rows[ix].clone().into_any_element()
+                        })
+                        .size_full(),
+                        EdgeFade::y(px(10.)),
+                    )
+                    .hidden_by_list(&self.list),
+                ),
+            )
+    }
+}
+
+/// What the rows noted of the fade they were drawn in moves with the fade
+/// the list lays out to: the next frame, in that fade, draws them from
+/// this one rather than building them again, and matches a frame drawn
+/// from scratch.
+#[test]
+fn rows_drawn_as_the_list_grows_are_drawn_again_in_the_fade_it_grew_to() {
+    let mut cx = text_cx();
+    let window = cx.add_window(|_, cx| Feed::new(3, cx));
+    let reference = cx.add_window(|_, cx| Feed::new(3, cx));
+    // Rows inside a scroll layer are retained by the layer, not as views.
+    for handle in [window, reference] {
+        with_window(&mut cx, handle.into(), |window, _| {
+            window.set_scroll_layers(false)
+        });
+    }
+    // Changes the feed as `change` says; the frame that follows is drawn as
+    // the update's effects flush, from scratch if `forget` is set.
+    let change = |cx: &mut TestAppContext,
+                  handle: WindowHandle<Feed>,
+                  forget: bool,
+                  change: &dyn Fn(&mut Feed)| {
+        with_window(cx, handle.into(), |window, _| {
+            if forget {
+                window.forget_retained_state();
+            }
+            window.reset_layout_stats();
+        });
+        handle
+            .update(cx, |feed, _, cx| {
+                change(feed);
+                cx.notify();
+            })
+            .unwrap();
+        with_window(cx, handle.into(), |window, _| {
+            let asked = !window.next_frame_callbacks.borrow().is_empty();
+            (
+                window.describe_rendered_frame(),
+                window.layout_stats(),
+                asked,
+            )
+        })
+    };
+    for shown in [10, 4, 20] {
+        let grow = move |feed: &mut Feed| {
+            feed.list.splice(0..feed.shown, shown);
+            feed.shown = shown;
+        };
+        let (grown, _, asked) = change(&mut cx, window, false, &grow);
+        let (expected, _, _) = change(&mut cx, reference, true, &grow);
+        assert_eq!(
+            grown, expected,
+            "the frame the list grew to {shown} rows in"
+        );
+        assert!(!asked, "growing to {shown} rows asked for another frame");
+        // Scrolled in the next frame: the rows move, and each paints again
+        // what it painted under its key, moved from where it was noted.
+        let scroll = |feed: &mut Feed| {
+            feed.list.scroll_to(crate::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(3.),
+            })
+        };
+        let (scrolled, _, _) = change(&mut cx, window, false, &scroll);
+        let (expected, _, _) = change(&mut cx, reference, true, &scroll);
+        assert_eq!(
+            scrolled, expected,
+            "scrolled after the list grew to {shown}"
+        );
+        // The list's view built again around the same rows.
+        let tick = |feed: &mut Feed| feed.tick += 1;
+        let (again, stats, _) = change(&mut cx, window, false, &tick);
+        let (expected, _, _) = change(&mut cx, reference, true, &tick);
+        assert_eq!(again, expected, "the frame after the list grew to {shown}");
+        assert_eq!(
+            stats.views_built, 1,
+            "only the feed is built again: {stats:?}"
+        );
+        assert!(stats.views_reused >= shown.min(5) as u64, "{stats:?}");
+    }
+}

@@ -63,6 +63,21 @@ pub(crate) fn for_each_fade(paints: &KeyedPaints, mark: &mut impl FnMut(u32)) {
     }
 }
 
+/// Gives every stretch of `paints` beginning in `operations` the fade `map`
+/// makes of the one it was painted in (see [`crate::fast::edge_fade`]'s
+/// `PaintNotes`).
+pub(crate) fn refade(
+    paints: &mut KeyedPaints,
+    operations: Range<usize>,
+    map: &mut impl FnMut(u32) -> u32,
+) {
+    for stretch in &mut paints.stretches {
+        if operations.contains(&(stretch.start as usize)) {
+            stretch.context.fade = map(stretch.context.fade);
+        }
+    }
+}
+
 impl KeyedPaints {
     pub(crate) fn clear(&mut self) {
         self.stretches.clear();

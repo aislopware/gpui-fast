@@ -289,6 +289,16 @@ video included. The code is in `crates/gpui/src/fast/edge_fade.rs`.
   inside what was drawn again takes the fade around it. One drawn again
   moved moves the fades set inside it and takes the one around it from
   where it now is.
+- A fade that deepens with what lies hidden past its edges
+  (`hidden_by_list`, `hidden_by_scroll`) is decided from the child's layout
+  in the same frame. A list lays out its rows as it prepaints, and a scroll
+  container works out how far it scrolls then, so the child is prepainted
+  in the fade from before. When the fade it lays out to differs, what the
+  child's prepaint noted (views, elements) is moved into the new fade, the
+  child is painted in it, and what its paint drew in the old one (drawn
+  again from last frame, or keyed stretches carried along) is moved too.
+  The first frame after the list changes is right, and no frame is asked
+  for after it. A frame where the fade stays costs nothing more.
 - A fade keeps its slot in the table while anything the next frame can draw
   again from refers to it; slots nothing refers to are swept once enough
   fades were added, and a slot's generation tells a reused slot from the old

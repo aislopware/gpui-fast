@@ -52,6 +52,16 @@
 //! moved and takes the ramps around it from where it is drawn now
 //! ([`EdgeFadeRamps::moved`]).
 //!
+//! A fade that deepens with what lies hidden past its edges
+//! ([`EdgeFadeElement::hidden_by_list`], [`EdgeFadeElement::hidden_by_scroll`])
+//! is known only once its child is laid out, as the child prepaints. The
+//! child is prepainted in the fade from before; when the fade it lays out to
+//! differs, what retention noted as it prepainted is moved into that fade
+//! ([`FadeShift`] with no move), it is painted in that fade, and whatever
+//! its paint drew in the old one is moved as well. The frame is drawn in
+//! the fade its child lays out to, and the next one finds everything noted
+//! in it.
+//!
 //! A scroll layer's content is painted into the layer's own scene, which
 //! starts with no fade, and the fade around the container is laid over the
 //! layer's tiles where they are composited, so the tiles move under it. A
@@ -218,9 +228,18 @@ impl IntoElement for EdgeFadeElement {
     }
 }
 
+/// What [`EdgeFadeElement`] prepainted its child in, for its paint.
+pub struct EdgeFadePrepaint {
+    /// The fade its child is painted in.
+    fade: EdgeFade,
+    /// How the fades its child was prepainted in become those it is painted
+    /// in, when they differ (see [`EdgeFadeElement`]'s `prepaint`).
+    refade: Option<FadeShift>,
+}
+
 impl Element for EdgeFadeElement {
     type RequestLayoutState = ();
-    type PrepaintState = EdgeFade;
+    type PrepaintState = EdgeFadePrepaint;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -248,17 +267,34 @@ impl Element for EdgeFadeElement {
         _request_layout: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) -> EdgeFade {
+    ) -> EdgeFadePrepaint {
         // Prepaint and paint run in the same fade, so that what retention
         // notes as the child prepaints is what its paint draws in.
+        let guess = self.resolved();
+        let notes = self.hidden.is_some().then(|| PrepaintNotes::mark(window));
+        window.with_edge_fade(bounds, guess, |window| self.child.prepaint(window, cx));
+        let Some(notes) = notes else {
+            return EdgeFadePrepaint {
+                fade: guess,
+                refade: None,
+            };
+        };
+        // What lies hidden is known once the child is laid out: a list lays
+        // out its rows as it prepaints, a scroll container works out how far
+        // it scrolls. What was noted in the fade from before is moved into
+        // the one it lays out to, and the child is painted in that one.
         let fade = self.resolved();
-        window.with_edge_fade(bounds, fade, |window| self.child.prepaint(window, cx));
-        // A list settles its scroll as it lays out, following its tail say:
-        // the fade drawn is the one before, until the next frame.
-        if self.hidden.is_some() && self.resolved() != fade {
-            window.request_animation_frame();
+        let refade = (fade != guess)
+            .then(|| FadeShift {
+                old: fade_in(window, bounds, guess),
+                new: fade_in(window, bounds, fade),
+                delta: Point::default(),
+            })
+            .filter(|shift| shift.old != shift.new);
+        if let Some(shift) = &refade {
+            notes.refade(window, shift);
         }
-        fade
+        EdgeFadePrepaint { fade, refade }
     }
 
     fn paint(
@@ -267,11 +303,144 @@ impl Element for EdgeFadeElement {
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut (),
-        fade: &mut EdgeFade,
+        prepaint: &mut EdgeFadePrepaint,
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.with_edge_fade(bounds, *fade, |window| self.child.paint(window, cx));
+        let notes = prepaint.refade.map(|_| PaintNotes::mark(window));
+        window.with_edge_fade(bounds, prepaint.fade, |window| self.child.paint(window, cx));
+        if let (Some(notes), Some(shift)) = (notes, &prepaint.refade) {
+            notes.refade(window, shift);
+        }
+    }
+}
+
+/// The fade painting `bounds` in `fade` is in, inside the one painting is
+/// in now: the index [`Window::with_edge_fade`] enters, or the one around
+/// when `fade` fades nothing.
+fn fade_in(window: &mut Window, bounds: Bounds<Pixels>, fade: EdgeFade) -> u32 {
+    entered(window, bounds, fade).unwrap_or_else(|| current(window))
+}
+
+/// The index [`Window::with_edge_fade`] enters for `fade` around `bounds`,
+/// or `None` when it fades nothing and painting stays in the fade around.
+fn entered(window: &mut Window, bounds: Bounds<Pixels>, fade: EdgeFade) -> Option<u32> {
+    let ramps = EdgeFadeRamps::new(
+        window.cover_bounds(bounds),
+        fade.width.scale(window.scale_factor()),
+        fade.depth,
+    );
+    if !ramps.fades() {
+        return None;
+    }
+    let outer = current(window);
+    Some(if outer == NONE {
+        window.fast_edge_fade.intern(&ramps)
+    } else {
+        let around = window
+            .fast_edge_fade
+            .ramps(outer)
+            .unwrap_or(&EdgeFadeRamps::NONE);
+        let within = around.within(&ramps);
+        window.fast_edge_fade.intern(&within)
+    })
+}
+
+/// Where what is noted of the fades as an element prepaints begins: the
+/// retained views and the elements recorded.
+struct PrepaintNotes {
+    views: usize,
+    elements: crate::fast::element::RecordsMark,
+}
+
+impl PrepaintNotes {
+    fn mark(window: &Window) -> Self {
+        let retained = &window.next_frame.retained;
+        Self {
+            views: retained.records.len(),
+            elements: crate::fast::element::mark(&retained.elements),
+        }
+    }
+
+    /// Moves what was noted since the mark from the fades `shift` moves
+    /// from to those it moves to, so that the next frame, drawn in those,
+    /// finds it drawn in them.
+    fn refade(self, window: &mut Window, shift: &FadeShift) {
+        let mut refade = Refade::new(shift, &mut window.fast_edge_fade);
+        let retained = &mut window.next_frame.retained;
+        crate::fast::retained::refade(&mut retained.records[self.views..], &mut |fade| {
+            refade.map(fade)
+        });
+        crate::fast::element::refade(&mut retained.elements, &self.elements, &mut |fade| {
+            refade.map(fade)
+        });
+    }
+}
+
+/// Where what an element paints begins in the scene: its primitives and
+/// the stretches it paints under keys.
+struct PaintNotes {
+    starts: [u32; KINDS],
+    operations: usize,
+}
+
+impl PaintNotes {
+    fn mark(window: &Window) -> Self {
+        let scene = &window.next_frame.scene;
+        Self {
+            starts: lengths(scene),
+            operations: scene.paint_operations.len(),
+        }
+    }
+
+    /// Moves what was painted since the mark, and the stretches painted
+    /// under keys, from the fades `shift` moves from to those it moves to.
+    ///
+    /// Painted in the fade it is moved to, a primitive is in it already.
+    /// Drawn again from last frame, or inside a view built again where it
+    /// was, it is in the fade it was prepainted in.
+    fn refade(self, window: &mut Window, shift: &FadeShift) {
+        let mut refade = Refade::new(shift, &mut window.fast_edge_fade);
+        let scene = &mut window.next_frame.scene;
+        map_since(scene, &self.starts, &mut |fade| refade.map(fade));
+        crate::fast::keyed::refade(
+            &mut scene.fast_painted.keyed,
+            self.operations..scene.paint_operations.len(),
+            &mut |fade| refade.map(fade),
+        );
+    }
+}
+
+/// A [`FadeShift`] in place, remembering what each fade became.
+struct Refade<'a> {
+    shift: &'a FadeShift,
+    fades: &'a mut WindowFades,
+    known: FxHashMap<u32, u32>,
+}
+
+impl<'a> Refade<'a> {
+    fn new(shift: &'a FadeShift, fades: &'a mut WindowFades) -> Self {
+        Self {
+            shift,
+            fades,
+            known: FxHashMap::default(),
+        }
+    }
+
+    fn map(&mut self, fade: u32) -> u32 {
+        if fade == self.shift.old {
+            return self.shift.new;
+        }
+        if fade == self.shift.new {
+            return fade;
+        }
+        if let Some(&known) = self.known.get(&fade) {
+            return known;
+        }
+        // Noted this frame, so its slot is held.
+        let mapped = self.shift.map_slow(fade, self.fades).unwrap_or(fade);
+        self.known.insert(fade, mapped);
+        mapped
     }
 }
 
@@ -291,24 +460,8 @@ impl Window {
         fade: EdgeFade,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        let ramps = EdgeFadeRamps::new(
-            self.cover_bounds(bounds),
-            fade.width.scale(self.scale_factor()),
-            fade.depth,
-        );
-        if !ramps.fades() {
+        let Some(inner) = entered(self, bounds, fade) else {
             return f(self);
-        }
-        let outer = current(self);
-        let inner = if outer == NONE {
-            self.fast_edge_fade.intern(&ramps)
-        } else {
-            let around = self
-                .fast_edge_fade
-                .ramps(outer)
-                .unwrap_or(&EdgeFadeRamps::NONE);
-            let within = around.within(&ramps);
-            self.fast_edge_fade.intern(&within)
         };
         self.fast_edge_fade.applied += 1;
         enter(&mut self.next_frame.scene, inner);
@@ -402,16 +555,7 @@ struct Open {
 /// then costs nothing, where checking for a fade as each is inserted made
 /// a frame painting a strip of terminals 0.4% dearer.
 pub(crate) fn enter(scene: &mut Scene, fade: u32) {
-    let starts = [
-        scene.shadows.len(),
-        scene.quads.len(),
-        scene.paths.len(),
-        scene.underlines.len(),
-        scene.monochrome_sprites.len(),
-        scene.subpixel_sprites.len(),
-        scene.polychrome_sprites.len(),
-    ]
-    .map(|len| len as u32);
+    let starts = lengths(scene);
     let fades = &mut scene.fast_painted.fades;
     fades.open.push(Open { fade, starts });
     fades.current = fade;
@@ -443,17 +587,44 @@ pub(crate) fn settle(scene: &mut Scene) {
 /// it was drawn with, which is this fade or one set inside it, and one
 /// painted in a fade nested in this one was given that one as it closed.
 fn stamp_since(scene: &mut Scene, open: &Open) {
-    fn stamp<T>(list: &mut [T], start: u32, fade: u32, slot: impl Fn(&mut T) -> &mut u32) {
-        for item in list.get_mut(start as usize..).unwrap_or_default() {
-            let slot = slot(item);
-            if *slot == NONE {
-                *slot = fade;
-            }
-        }
-    }
     let fade = open.fade;
     if fade == NONE {
         return;
+    }
+    map_since(scene, &open.starts, &mut |slot| {
+        if slot == NONE { fade } else { slot }
+    });
+}
+
+/// How long each list of primitives that takes a fade is.
+fn lengths(scene: &Scene) -> [u32; KINDS] {
+    [
+        scene.shadows.len(),
+        scene.quads.len(),
+        scene.paths.len(),
+        scene.underlines.len(),
+        scene.monochrome_sprites.len(),
+        scene.subpixel_sprites.len(),
+        scene.polychrome_sprites.len(),
+    ]
+    .map(|len| len as u32)
+}
+
+/// Gives each primitive inserted since the lists were `starts` long the
+/// fade `map` makes of its own.
+#[inline]
+fn map_since(scene: &mut Scene, starts: &[u32; KINDS], map: &mut impl FnMut(u32) -> u32) {
+    #[inline(always)]
+    fn each<T>(
+        list: &mut [T],
+        start: u32,
+        map: &mut impl FnMut(u32) -> u32,
+        slot: impl Fn(&mut T) -> &mut u32,
+    ) {
+        for item in list.get_mut(start as usize..).unwrap_or_default() {
+            let slot = slot(item);
+            *slot = map(*slot);
+        }
     }
     let [
         shadows,
@@ -463,22 +634,22 @@ fn stamp_since(scene: &mut Scene, open: &Open) {
         monochrome,
         subpixel,
         polychrome,
-    ] = open.starts;
-    stamp(&mut scene.shadows, shadows, fade, |shadow| &mut shadow.pad);
-    stamp(&mut scene.quads, quads, fade, |quad| {
+    ] = *starts;
+    each(&mut scene.shadows, shadows, map, |shadow| &mut shadow.pad);
+    each(&mut scene.quads, quads, map, |quad| {
         &mut quad.background.pad
     });
-    stamp(&mut scene.paths, paths, fade, |path| &mut path.color.pad);
-    stamp(&mut scene.underlines, underlines, fade, |underline| {
+    each(&mut scene.paths, paths, map, |path| &mut path.color.pad);
+    each(&mut scene.underlines, underlines, map, |underline| {
         &mut underline.pad
     });
-    stamp(&mut scene.monochrome_sprites, monochrome, fade, |sprite| {
+    each(&mut scene.monochrome_sprites, monochrome, map, |sprite| {
         &mut sprite.pad
     });
-    stamp(&mut scene.subpixel_sprites, subpixel, fade, |sprite| {
+    each(&mut scene.subpixel_sprites, subpixel, map, |sprite| {
         &mut sprite.pad
     });
-    stamp(&mut scene.polychrome_sprites, polychrome, fade, |sprite| {
+    each(&mut scene.polychrome_sprites, polychrome, map, |sprite| {
         &mut sprite.pad
     });
 }
