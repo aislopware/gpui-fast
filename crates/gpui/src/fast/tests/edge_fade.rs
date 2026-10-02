@@ -615,6 +615,8 @@ fn keyed_row(ix: usize) -> impl IntoElement {
 struct Growing {
     rows: usize,
     content: GrowingContent,
+    /// Whether a fade at the sides is drawn around it.
+    within: bool,
 }
 
 enum GrowingContent {
@@ -626,6 +628,7 @@ impl Growing {
     fn list(rows: usize) -> Self {
         Self {
             rows,
+            within: false,
             // Measuring every row, so that the list knows them all.
             content: GrowingContent::List(crate::ListState::new(
                 rows,
@@ -638,6 +641,7 @@ impl Growing {
     fn scroll(rows: usize) -> Self {
         Self {
             rows,
+            within: false,
             content: GrowingContent::Scroll(ScrollHandle::new()),
         }
     }
@@ -683,9 +687,12 @@ impl Render for Growing {
             )
             .hidden_by_scroll(scroll),
         };
-        div()
-            .size_full()
-            .child(div().mt(px(10.)).w(px(200.)).h(px(100.)).child(faded))
+        let faded = div().mt(px(10.)).w(px(200.)).h(px(100.)).child(faded);
+        div().size_full().child(if self.within {
+            edge_fade(faded, EdgeFade::x(px(6.))).into_any_element()
+        } else {
+            faded.into_any_element()
+        })
     }
 }
 
@@ -728,9 +735,19 @@ fn settled(cx: &mut TestAppContext, window: WindowHandle<Growing>) -> Vec<String
 /// frame asked for another, for each step of `rows`: growing past the
 /// container, shrinking back and growing again.
 fn fade_as_rows_change(new: fn(usize) -> Growing) {
+    for within in [false, true] {
+        fade_as_rows_change_in(move |rows| Growing {
+            within,
+            ..new(rows)
+        });
+    }
+}
+
+fn fade_as_rows_change_in(new: impl Fn(usize) -> Growing + Copy + 'static) {
     let mut cx = text_cx();
-    let window = cx.add_window(|_, _| new(3));
-    let reference = cx.add_window(|_, _| new(3));
+    let window = cx.add_window(move |_, _| new(3));
+    let reference = cx.add_window(move |_, _| new(3));
+    let within = new(0).within;
     for rows in [10, 3, 12, 30, 4] {
         let (shown, asked) = grow_and_draw(&mut cx, window, rows);
         reference
@@ -743,7 +760,11 @@ fn fade_as_rows_change(new: fn(usize) -> Growing) {
         assert_eq!(shown, expected, "the first frame with {rows} rows");
         assert!(!asked, "the frame with {rows} rows asked for another");
         let faded = shown.iter().any(|line| line.contains(" fade "));
-        assert_eq!(faded, rows > 5, "{rows} rows in a container of five");
+        assert_eq!(
+            faded,
+            within || rows > 5,
+            "{rows} rows in a container of five"
+        );
         // Scrolled, so that what is drawn again from the frame the rows
         // changed in moves: it moves in the fade it was drawn in, the fade
         // the rows changed to.

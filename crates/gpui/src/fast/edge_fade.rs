@@ -268,8 +268,9 @@ impl Element for EdgeFadeElement {
         window: &mut Window,
         cx: &mut App,
     ) -> EdgeFadePrepaint {
-        // Prepaint and paint run in the same fade, so that what retention
-        // notes as the child prepaints is what its paint draws in.
+        // What retention notes as the child prepaints is the fade its paint
+        // draws in: the one worked out now, or the one the child lays out
+        // to, with what was noted moved into it.
         let guess = self.resolved();
         let notes = self.hidden.is_some().then(|| PrepaintNotes::mark(window));
         window.with_edge_fade(bounds, guess, |window| self.child.prepaint(window, cx));
