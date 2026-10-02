@@ -17,15 +17,18 @@
 //! - `scroll-list`: a `list` of rows of varying height;
 //! - `scroll-list-beside-input`: that `list` below a filter input that
 //!   writes its state each time it is rendered and prepainted, as GPUI Kit's
-//!   `Input` does, in the view the wheel notifies.
+//!   `Input` does, in the view the wheel notifies;
+//! - `scroll-child-view-faded` and `scroll-list-faded`: the child view and
+//!   the `list`, fading out over 24 pixels at each edge the scroll hides
+//!   content behind (`edge_fade`), as a transcript or a palette does.
 
 use std::borrow::Cow;
 
 use gpui::{
-    AnyElement, AnyView, App, AssetSource, Context, Entity, FontWeight, Hsla, ListAlignment,
-    ListState, Modifiers, PlatformInput, Render, Result, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, TouchPhase, UniformListScrollHandle, Window, div, hsla, list,
-    point, prelude::*, px, svg, uniform_list,
+    AnyElement, AnyView, App, AssetSource, Context, EdgeFade, Entity, FontWeight, Hsla,
+    ListAlignment, ListState, Modifiers, PlatformInput, Render, Result, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, TouchPhase, UniformListScrollHandle, Window, div, edge_fade,
+    hsla, list, point, prelude::*, px, svg, uniform_list,
 };
 
 use crate::Scenario;
@@ -40,6 +43,9 @@ const SIDEBAR_WIDTH: f32 = 240.;
 const WHEEL_STEP: f32 = 40.;
 /// Frames scrolled in one direction before turning back.
 const FRAMES_PER_SWEEP: usize = 50;
+/// How far the faded scenarios' content fades out at an edge it is hidden
+/// behind, in logical pixels.
+const FADE_WIDTH: f32 = 24.;
 
 const ICONS: [&str; 6] = [
     "icons/check.svg",
@@ -306,6 +312,10 @@ enum Content {
     List(ListState),
     /// A `list` below a filter input.
     ListBesideInput(ListState, Entity<FilterState>),
+    /// A child view fading out at the edges it scrolls behind.
+    FadedChildView(Entity<Page>),
+    /// A `list` fading out at the edges it scrolls behind.
+    FadedList(ListState),
 }
 
 /// What a filter input keeps of how it is set up.
@@ -456,6 +466,23 @@ impl Render for Gallery {
                         .w_full(),
                 )
                 .into_any_element(),
+            Content::FadedChildView(page) => edge_fade(
+                div()
+                    .id("page")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(page.clone()),
+                EdgeFade::y(px(FADE_WIDTH)),
+            )
+            .hidden_by_scroll(&self.scroll)
+            .into_any_element(),
+            Content::FadedList(state) => edge_fade(
+                list(state.clone(), |ix, _, _| row(ix, true)).size_full(),
+                EdgeFade::y(px(FADE_WIDTH)),
+            )
+            .hidden_by_list(state)
+            .into_any_element(),
         };
         div()
             .flex()
@@ -527,6 +554,16 @@ pub fn scenarios() -> Vec<Box<dyn Scenario>> {
                     }),
                 )
             },
+        }),
+        Box::new(WheelScroll {
+            name: "scroll-child-view-faded",
+            description: "scroll-child-view fading out over 24 pixels at the edges it scrolls behind",
+            content: |cx| Content::FadedChildView(cx.new(|_| Page)),
+        }),
+        Box::new(WheelScroll {
+            name: "scroll-list-faded",
+            description: "scroll-list fading out over 24 pixels at the edges it scrolls behind",
+            content: |_| Content::FadedList(ListState::new(2_000, ListAlignment::Top, px(200.))),
         }),
     ]
 }

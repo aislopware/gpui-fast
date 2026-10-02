@@ -949,6 +949,7 @@ impl MetalRenderer {
                         writer,
                         viewport_size,
                         command_buffer,
+                        &instance_bindings.fades,
                     )?;
 
                     command_encoder = new_command_encoder_for_texture(
@@ -1012,6 +1013,7 @@ impl MetalRenderer {
         writer: &mut InstanceBufferWriter,
         viewport_size: Size<DevicePixels>,
         command_buffer: &metal::CommandBufferRef,
+        fast_fades: &InstanceBinding,
     ) -> Result<bool> {
         if paths.is_empty() {
             return Ok(false);
@@ -1051,6 +1053,7 @@ impl MetalRenderer {
 
         let command_encoder = command_buffer.new_render_command_encoder(render_pass_descriptor);
         command_encoder.set_render_pipeline_state(&self.paths_rasterization_pipeline_state);
+        crate::fast::edge_fade::bind(command_encoder, fast_fades);
         command_encoder.set_vertex_buffer(
             PathRasterizationInputIndex::Vertices as u64,
             Some(&vertex_instance_bindings.buffer),
@@ -1088,6 +1091,7 @@ impl MetalRenderer {
         }
 
         command_encoder.set_render_pipeline_state(&self.shadows_pipeline_state);
+        crate::fast::edge_fade::bind(command_encoder, &instance_bindings.fades);
         command_encoder.set_vertex_buffer(
             ShadowInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -1130,6 +1134,7 @@ impl MetalRenderer {
         }
 
         command_encoder.set_render_pipeline_state(&self.quads_pipeline_state);
+        crate::fast::edge_fade::bind(command_encoder, &instance_bindings.fades);
         command_encoder.set_vertex_buffer(
             QuadInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -1173,6 +1178,7 @@ impl MetalRenderer {
             return;
         }
         command_encoder.set_render_pipeline_state(&self.holes_pipeline_state);
+        crate::fast::edge_fade::bind(command_encoder, &instance_bindings.fades);
         command_encoder.set_vertex_buffer(
             QuadInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -1285,6 +1291,7 @@ impl MetalRenderer {
         }
 
         command_encoder.set_render_pipeline_state(&self.underlines_pipeline_state);
+        crate::fast::edge_fade::bind(command_encoder, &instance_bindings.fades);
         command_encoder.set_vertex_buffer(
             UnderlineInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -1335,6 +1342,7 @@ impl MetalRenderer {
             DevicePixels(texture.height() as i32),
         );
         command_encoder.set_render_pipeline_state(&self.monochrome_sprites_pipeline_state);
+        crate::fast::edge_fade::bind(command_encoder, &instance_bindings.fades);
         command_encoder.set_vertex_buffer(
             SpriteInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -1402,6 +1410,7 @@ impl MetalRenderer {
             DevicePixels(texture.height() as i32),
         );
         command_encoder.set_render_pipeline_state(&self.polychrome_sprites_pipeline_state);
+        crate::fast::edge_fade::bind(command_encoder, &instance_bindings.fades);
         command_encoder.set_vertex_buffer(
             SpriteInputIndex::Vertices as u64,
             Some(&self.unit_vertices),
@@ -2163,6 +2172,7 @@ pub(crate) struct InstanceBindings {
     pub(crate) monochrome_sprites: InstanceBinding,
     pub(crate) polychrome_sprites: InstanceBinding,
     pub(crate) surfaces: InstanceBinding,
+    pub(crate) fades: InstanceBinding,
 }
 
 pub(crate) fn write_instances(
@@ -2180,6 +2190,7 @@ pub(crate) fn write_instances(
             bounds: surface.bounds,
             content_mask: surface.content_mask,
         }))?,
+        fades: crate::fast::edge_fade::write(scene, writer)?,
     })
 }
 

@@ -204,6 +204,7 @@ impl Interiors {
                     },
                     instances: &self.quads,
                     fragment_reads_instances: false,
+                    fades: None,
                     atlas: None,
                     range: index..index + 1,
                 },

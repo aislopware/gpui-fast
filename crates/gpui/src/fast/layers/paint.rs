@@ -304,7 +304,8 @@ fn paint_children_of_layers(
 /// The opaque colour a layer's tiles are cleared with: what the frame has
 /// painted so far under the viewport, the current content mask, if it is
 /// one solid quad covering it (spec §5.2).
-pub(crate) fn bake_background(window: &Window) -> Option<Rgba> {
+pub(crate) fn bake_background(window: &mut Window) -> Option<Rgba> {
+    crate::fast::edge_fade::settle(&mut window.next_frame.scene);
     let window_opaque =
         window.platform_window.background_appearance() == WindowBackgroundAppearance::Opaque;
     let viewport = window.snapped_content_mask().bounds;
@@ -662,12 +663,15 @@ pub(crate) fn draw_into_frame(
     delta: Point<ScaledPixels>,
 ) {
     let viewport = window.snapped_content_mask().bounds;
+    let outer = crate::fast::edge_fade::current(window);
+    let fades = &mut window.fast_edge_fade;
     let scene = &mut window.next_frame.scene;
     for operation in operations {
         match operation {
             Operation::Primitive(primitive) => {
                 let mut primitive = translate_primitive(&primitive, delta);
                 clip_primitive(&mut primitive, &viewport);
+                crate::fast::edge_fade::compose(fades, outer, &mut primitive);
                 scene.insert_primitive(primitive);
             }
             Operation::StartLayer(bounds) => {
@@ -733,8 +737,14 @@ fn repaint(
     let hovers_start = window.retained_state.hover_dependencies.len();
     let recording = cx.begin_recording_dependencies();
     window.fast_layers.painting = Some(painting);
+    let fades_before = crate::fast::edge_fade::applied(window);
 
     f(window, cx);
+
+    // Fades the content set of its own move with what it painted, which its
+    // tiles can't carry: it is drawn into the frame, as content with paths
+    // is, and the layer let go.
+    let own_fades = crate::fast::edge_fade::applied(window) != fades_before;
 
     let mut painting = window
         .fast_layers
@@ -761,7 +771,7 @@ fn repaint(
         size: region.size,
     };
     let (content, paths, has_paths) = match lift_paths(content) {
-        Ok((content, paths)) => (content, paths, false),
+        Ok((content, paths)) => (content, paths, own_fades),
         Err(content) => (*content, Rc::from([]), true),
     };
     let mut visible = painting.viewport.scale(scale_factor);
@@ -829,6 +839,9 @@ fn repaint(
             .stats
             .layer_frames_repainted += 1;
         insert_layer(window, &painting.id, translation, dirtied);
+    }
+    if own_fades {
+        policy::defer_unbaked(window, &painting.id);
     }
 }
 

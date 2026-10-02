@@ -269,6 +269,36 @@ in `crates/gpui/src/fast/keyed.rs`.
 `LayoutStats::paints_keyed` counts the stretches painted, `paints_replayed`
 those drawn again, and `paints_moved` those of them drawn again moved.
 
+### Edge fades
+
+`edge_fade(child, EdgeFade)` and `Window::with_edge_fade(bounds, fade, f)`
+fade what is painted inside a region out toward the region's edges, per
+pixel, so a list fades where it is clipped over any background, glass and
+video included. The code is in `crates/gpui/src/fast/edge_fade.rs`.
+
+- A primitive carries its fade as an index in the four bytes of padding
+  every primitive kind already has (`pad` in a shadow, an underline and the
+  sprites; `Background`'s padding in a quad and a path), 0 for none. Fades
+  add no byte to any primitive, and a frame without one copies and uploads
+  what it did before. A fade gives its index to what was painted in it as
+  it closes, all at once, so painting outside any fade does no more work
+  than before. The window keeps each fade once in a table, which the
+  scene hands to the renderer as one small buffer a frame.
+- Views, elements and keyed stretches note the fade they were drawn in and
+  are drawn again from last frame only in the same one. A view built again
+  inside what was drawn again takes the fade around it. One drawn again
+  moved moves the fades set inside it and takes the one around it from
+  where it now is.
+- A fade keeps its slot in the table while anything the next frame can draw
+  again from refers to it; slots nothing refers to are swept once enough
+  fades were added, and a slot's generation tells a reused slot from the old
+  one.
+- A scroll layer's tiles take the fade around the container, so they move
+  under it. A layer whose content sets fades of its own is drawn as content,
+  without tiles (docs/scroll-layers.md).
+- Metal draws fades. The wgpu and Direct3D renderers draw everything unfaded,
+  and a `PaintSurface` is never faded.
+
 ### Records per retained subtree
 
 Each frame keeps a record per retained subtree: where its hitboxes, dispatch

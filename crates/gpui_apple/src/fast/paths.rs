@@ -92,6 +92,7 @@ pub(crate) fn draw_primitives_to_texture(
             first.group.clone(),
             viewport_size,
             command_buffer,
+            &instance_bindings.fades,
         )?,
         None => false,
     };
@@ -159,6 +160,7 @@ pub(crate) fn draw_primitives_to_texture(
                         path_batch.group.clone(),
                         viewport_size,
                         command_buffer,
+                        &instance_bindings.fades,
                     )?;
                     command_encoder = new_command_encoder_for_texture(
                         command_buffer,
@@ -337,6 +339,7 @@ fn rasterize_group(
     group: Option<Range<u64>>,
     viewport_size: Size<DevicePixels>,
     command_buffer: &metal::CommandBufferRef,
+    fades: &InstanceBinding,
 ) -> Result<bool> {
     let (Some(vertices), Some(group)) = (vertices, group.filter(|group| !group.is_empty())) else {
         return Ok(false);
@@ -365,6 +368,7 @@ fn rasterize_group(
 
     let command_encoder = command_buffer.new_render_command_encoder(render_pass_descriptor);
     command_encoder.set_render_pipeline_state(&renderer.paths_rasterization_pipeline_state);
+    crate::fast::edge_fade::bind(command_encoder, fades);
     command_encoder.set_vertex_buffer(
         PathRasterizationInputIndex::Vertices as u64,
         Some(&vertices.buffer),

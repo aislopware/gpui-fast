@@ -48,6 +48,8 @@ pub(crate) struct Binds {
     vertex: [Slot; 4],
     /// The fragment stage's instances.
     fragment: Slot,
+    /// The fragment stage's table of edge fades.
+    fades: Slot,
     atlas: *const c_void,
 }
 
@@ -57,6 +59,7 @@ impl Default for Binds {
             pipeline: std::ptr::null(),
             vertex: [Slot::Unknown; 4],
             fragment: Slot::Unknown,
+            fades: Slot::Unknown,
             atlas: std::ptr::null(),
         }
     }
@@ -138,6 +141,17 @@ impl Binds {
         self.fragment = wanted;
     }
 
+    fn fades(&mut self, encoder: &RenderCommandEncoderRef, fades: &InstanceBinding) {
+        let wanted = Slot::Buffer {
+            buffer: fades.buffer.as_ptr() as *const c_void,
+            offset: fades.offset as u64,
+        };
+        if self.fades != wanted {
+            crate::fast::edge_fade::bind(encoder, fades);
+            self.fades = wanted;
+        }
+    }
+
     fn atlas(&mut self, encoder: &RenderCommandEncoderRef, texture: &TextureRef) {
         let pointer = texture.as_ptr() as *const c_void;
         if self.atlas != pointer {
@@ -153,6 +167,9 @@ pub(crate) struct Instanced<'a> {
     pub(crate) instances: &'a InstanceBinding,
     /// Whether the kind's fragment shader reads its instance.
     pub(crate) fragment_reads_instances: bool,
+    /// The frame's table of edge fades, for a kind whose fragment shader
+    /// reads it.
+    pub(crate) fades: Option<&'a InstanceBinding>,
     pub(crate) atlas: Option<&'a TextureRef>,
     pub(crate) range: Range<usize>,
 }
@@ -173,6 +190,7 @@ impl MetalRenderer {
                 pipeline: &self.shadows_pipeline_state,
                 instances: &instance_bindings.shadows,
                 fragment_reads_instances: true,
+                fades: Some(&instance_bindings.fades),
                 atlas: None,
                 range: range.clone(),
             },
@@ -180,6 +198,7 @@ impl MetalRenderer {
                 pipeline: &self.quads_pipeline_state,
                 instances: &instance_bindings.quads,
                 fragment_reads_instances: true,
+                fades: Some(&instance_bindings.fades),
                 atlas: None,
                 range: range.clone(),
             },
@@ -187,6 +206,7 @@ impl MetalRenderer {
                 pipeline: &self.underlines_pipeline_state,
                 instances: &instance_bindings.underlines,
                 fragment_reads_instances: true,
+                fades: Some(&instance_bindings.fades),
                 atlas: None,
                 range: range.clone(),
             },
@@ -199,6 +219,7 @@ impl MetalRenderer {
                         pipeline: &self.monochrome_sprites_pipeline_state,
                         instances: &instance_bindings.monochrome_sprites,
                         fragment_reads_instances: false,
+                        fades: Some(&instance_bindings.fades),
                         atlas: Some(&atlas),
                         range: range.clone(),
                     },
@@ -227,6 +248,7 @@ impl MetalRenderer {
                         pipeline: &self.polychrome_sprites_pipeline_state,
                         instances: &instance_bindings.polychrome_sprites,
                         fragment_reads_instances: true,
+                        fades: Some(&instance_bindings.fades),
                         atlas: Some(&atlas),
                         range: range.clone(),
                     },
@@ -255,6 +277,7 @@ impl MetalRenderer {
                 pipeline: &self.holes_pipeline_state,
                 instances: &instance_bindings.holes,
                 fragment_reads_instances: true,
+                fades: Some(&instance_bindings.fades),
                 atlas: None,
                 range,
             },
@@ -305,6 +328,9 @@ impl MetalRenderer {
                 &draw.instances.buffer,
                 draw.instances.offset as u64,
             );
+        }
+        if let Some(fades) = draw.fades {
+            binds.fades(encoder, fades);
         }
         if let Some(atlas) = draw.atlas {
             let atlas_size = size(

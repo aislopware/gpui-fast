@@ -46,6 +46,7 @@
 //!
 //! Moved primitives are ordered as inserting them afresh orders them.
 
+use crate::fast::edge_fade::{FadeShift, WindowFades};
 use crate::fast::scene::PaintedRef;
 use crate::{
     Bounds, ContentMask, MonochromeSprite, PaintOperation, Pixels, Point, PolychromeSprite, Quad,
@@ -61,6 +62,8 @@ pub(crate) struct Shift {
     /// How far, in logical pixels.
     pub(crate) by: Point<Pixels>,
     pub(crate) masks: Masks,
+    /// How the edge fades it was drawn in change.
+    pub(crate) fades: FadeShift,
 }
 
 /// What the primitives of a moved stretch are clipped by.
@@ -741,6 +744,7 @@ pub(crate) fn shift_operations(
     range: Range<usize>,
     shift: &Shift,
     moved: &mut Vec<ShiftedOperation>,
+    fades: &mut WindowFades,
 ) -> bool {
     let start = moved.len();
     let mut last = LastMask {
@@ -767,6 +771,10 @@ pub(crate) fn shift_operations(
             return false;
         };
         moved.push(shifted);
+    }
+    if !crate::fast::edge_fade::shift_fades(&shift.fades, &mut moved[start..], fades) {
+        moved.truncate(start);
+        return false;
     }
     true
 }

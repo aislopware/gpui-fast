@@ -7,6 +7,7 @@
 //! call to it. The logic itself — data structures, algorithms, bookkeeping,
 //! tests — is written here, one file per topic.
 
+pub(crate) mod edge_fade;
 pub mod font_weight;
 pub(crate) mod layers;
 pub(crate) mod occlusion;

@@ -56,6 +56,13 @@ pub(crate) struct KeyedPaints {
     moved: Vec<ShiftedOperation>,
 }
 
+/// Calls `mark` with the edge fade every stretch of `paints` was painted in.
+pub(crate) fn for_each_fade(paints: &KeyedPaints, mark: &mut impl FnMut(u32)) {
+    for stretch in &paints.stretches {
+        mark(stretch.context.fade);
+    }
+}
+
 impl KeyedPaints {
     pub(crate) fn clear(&mut self) {
         self.stretches.clear();
@@ -149,6 +156,8 @@ struct Stretch {
 struct Context {
     origin: Point<Pixels>,
     mask: Bounds<Pixels>,
+    /// The edge fade it is painted in (see [`crate::fast::edge_fade`]).
+    fade: u32,
     opacity: f32,
     layered: bool,
     scale_factor: f32,
@@ -183,6 +192,7 @@ impl Window {
         let context = Context {
             origin,
             mask: self.content_mask().bounds,
+            fade: crate::fast::edge_fade::current(self),
             opacity: self.element_opacity(),
             layered: !self.next_frame.scene.layer_stack.is_empty(),
             scale_factor: self.scale_factor(),
@@ -238,7 +248,9 @@ impl Window {
         }
         let start = self.next_frame.scene.paint_operations.len();
         let operations = previous.start as usize..previous.end as usize;
-        let noted = if old.origin == context.origin && old.mask == context.mask {
+        let in_place =
+            old.origin == context.origin && old.mask == context.mask && old.fade == context.fade;
+        let noted = if in_place {
             // Drawing it again carries it, and what is nested in it, along,
             // unless it painted nothing.
             if operations.is_empty() {
@@ -268,7 +280,13 @@ impl Window {
             };
             let moved = &mut self.next_frame.scene.fast_painted.keyed.moved;
             moved.clear();
-            if !shift_operations(&self.rendered_frame.scene, operations, &shift, moved) {
+            if !shift_operations(
+                &self.rendered_frame.scene,
+                operations,
+                &shift,
+                moved,
+                &mut self.fast_edge_fade,
+            ) {
                 return false;
             }
             let moved = std::mem::take(&mut self.next_frame.scene.fast_painted.keyed.moved);
@@ -345,7 +363,16 @@ impl Window {
                 new: new_cover,
             }
         };
-        Some(Shift { offset, by, masks })
+        Some(Shift {
+            offset,
+            by,
+            masks,
+            fades: crate::fast::edge_fade::FadeShift {
+                old: previous.context.fade,
+                new: context.fade,
+                delta: offset,
+            },
+        })
     }
 }
 
