@@ -824,7 +824,7 @@ impl Writes {
 
 /// Where the entity updates and the global changes stood when dependencies
 /// were found unchanged. See [`App::dependencies_checked`].
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Checked {
     updates: u64,
     generation: u64,

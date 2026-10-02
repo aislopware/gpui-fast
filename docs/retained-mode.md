@@ -57,7 +57,7 @@ the frame callback that notifies it: what it drew was for the frame it was
 drawn in.
 
 Nothing is drawn from the last frame while the window is being refreshed
-(`window.refresh()`, and what refreshes it: a resize, a focus change), on the
+(`window.refresh()`, and what refreshes it, a resize for one), on the
 first frame after fonts were added (`TextSystem::add_fonts`), while something
 is dragged, while the inspector is picking, or while accessibility is active.
 
@@ -75,6 +75,19 @@ around it are drawn from the last frame around it rather than built again
 because something nested in them changed. The more of a window is split into
 views, the less a change costs. The code is in
 `crates/gpui/src/fast/splice.rs`.
+
+A view may change the window as it renders: move the focus, as a workspace
+gives the keyboard to the tile it was asked to, or notify another view. What
+is drawn after it in that frame shows the change. The focus questions views
+asked are asked again as the focus moves (`crates/gpui/src/fast/focus.rs`),
+so a view still to be drawn whose answer changed is built rather than drawn
+from the last frame. A view drawn from the last frame around nested views
+built again checks, once they are built, whether what it copies around them
+still holds, and is built after all if it does not. What was laid out before
+the change shows the window as it was: when the focus ends the frame
+somewhere other than where it began, the window asks for another frame, which
+builds those views. A notification while drawing asks for no frame, as
+upstream has it.
 
 A view counts as having read itself, so an application that changes a view
 outside drawing (`entity.update(..)`) and notifies it gets it built again on

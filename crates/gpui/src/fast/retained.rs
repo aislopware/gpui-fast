@@ -34,7 +34,7 @@ use std::{any::TypeId, cell::RefCell, mem, ops::Range, rc::Rc};
 #[inline(always)]
 pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
     window.fast_layout.phase_times.begin();
-    crate::fast::focus::stamp_changes(window, cx);
+    crate::fast::focus::begin_frame(window, cx);
     window.mark_changed_retained_views_dirty(cx);
 }
 
@@ -1379,6 +1379,7 @@ pub(crate) fn finish_deferred(
 /// becomes the rendered frame.
 #[inline]
 pub(crate) fn finish_retained_frame(window: &mut Window) {
+    crate::fast::focus::finish_frame(window);
     // The sprite atlas may be cleared when the frame is presented.
     window.fast_glyph_bounds.finish_frame();
     window.retained_state.prebuilt.clear();

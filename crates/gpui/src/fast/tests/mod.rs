@@ -10,6 +10,7 @@ mod element_bench;
 mod element_oracle;
 mod focus;
 mod focus_notify;
+mod focus_while_drawing;
 mod gesture;
 mod global_id;
 mod keyed;
