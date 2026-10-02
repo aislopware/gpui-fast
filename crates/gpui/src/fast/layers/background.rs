@@ -79,7 +79,7 @@ fn covers(quad: &Quad, viewport: Bounds<ScaledPixels>) -> bool {
         return false;
     }
     let visible = quad.bounds.intersect(&quad.content_mask.bounds);
-    if !contains(&visible, &viewport) {
+    if !contains(&visible, &viewport) || !quad.fast_fade.whole_over(viewport) {
         return false;
     }
     if visible_border(quad) {

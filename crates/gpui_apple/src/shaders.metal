@@ -36,6 +36,11 @@ float4 over(float4 below, float4 above);
 float radians(float degrees);
 float4 fill_color(Background background, float2 position, Bounds_ScaledPixels bounds,
   float4 solid_color, float4 color0, float4 color1);
+float2 edge_fade_position(float2 unit_vertex, Bounds_ScaledPixels bounds);
+float2 edge_fade_position_transformed(float2 unit_vertex, Bounds_ScaledPixels bounds,
+                                      TransformationMatrix transformation);
+float4 edge_fade_ramps(float2 position, FadeRamps fade);
+float edge_fade_alpha(float4 ramps);
 
 struct GradientColor {
   float4 solid;
@@ -52,6 +57,7 @@ struct QuadVertexOutput {
   float4 background_color0 [[flat]];
   float4 background_color1 [[flat]];
   float clip_distance [[clip_distance]][4];
+  float4 fade;
 };
 
 struct QuadFragmentInput {
@@ -61,6 +67,7 @@ struct QuadFragmentInput {
   float4 background_solid [[flat]];
   float4 background_color0 [[flat]];
   float4 background_color1 [[flat]];
+  float4 fade;
 };
 
 vertex QuadVertexOutput quad_vertex(uint unit_vertex_id [[vertex_id]],
@@ -94,7 +101,8 @@ vertex QuadVertexOutput quad_vertex(uint unit_vertex_id [[vertex_id]],
       gradient.solid,
       gradient.color0,
       gradient.color1,
-      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      edge_fade_ramps(edge_fade_position(unit_vertex, quad.bounds), quad.fast_fade)};
 }
 
 // Slopty: clears what a native's hole covers whole (fast/occlusion.rs).
@@ -118,7 +126,7 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
       quad.border_widths.right == 0.0 &&
       quad.border_widths.bottom == 0.0 &&
       unrounded) {
-    return background_color;
+    return background_color * float4(1., 1., 1., edge_fade_alpha(input.fade));
   }
 
   float2 size = float2(quad.bounds.size.width, quad.bounds.size.height);
@@ -178,7 +186,7 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
 
   // Fast path for points that must be part of the background
   if (is_within_inner_straight_border && !is_near_rounded_corner) {
-    return background_color;
+    return background_color * float4(1., 1., 1., edge_fade_alpha(input.fade));
   }
 
   // Signed distance of the point to the outside edge of the quad's border
@@ -396,7 +404,7 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
                 saturate(antialias_threshold - inner_sdf));
   }
 
-  return color * float4(1.0, 1.0, 1.0, saturate(antialias_threshold - outer_sdf));
+  return color * float4(1.0, 1.0, 1.0, saturate(antialias_threshold - outer_sdf) * edge_fade_alpha(input.fade));
 }
 
 // Returns the dash velocity of a corner given the dash velocity of the two
@@ -454,12 +462,14 @@ struct ShadowVertexOutput {
   float4 color [[flat]];
   uint shadow_id [[flat]];
   float clip_distance [[clip_distance]][4];
+  float4 fade;
 };
 
 struct ShadowFragmentInput {
   float4 position [[position]];
   float4 color [[flat]];
   uint shadow_id [[flat]];
+  float4 fade;
 };
 
 vertex ShadowVertexOutput shadow_vertex(
@@ -494,7 +504,8 @@ vertex ShadowVertexOutput shadow_vertex(
       device_position,
       color,
       shadow_id,
-      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      edge_fade_ramps(edge_fade_position(unit_vertex, bounds), shadow.fast_fade)};
 }
 
 fragment float4 shadow_fragment(ShadowFragmentInput input [[stage_in]],
@@ -554,7 +565,7 @@ fragment float4 shadow_fragment(ShadowFragmentInput input [[stage_in]],
     alpha *= saturate(0.5 - element_distance);
   }
 
-  return input.color * float4(1., 1., 1., alpha);
+  return input.color * float4(1., 1., 1., alpha * edge_fade_alpha(input.fade));
 }
 
 struct UnderlineVertexOutput {
@@ -562,12 +573,14 @@ struct UnderlineVertexOutput {
   float4 color [[flat]];
   uint underline_id [[flat]];
   float clip_distance [[clip_distance]][4];
+  float4 fade;
 };
 
 struct UnderlineFragmentInput {
   float4 position [[position]];
   float4 color [[flat]];
   uint underline_id [[flat]];
+  float4 fade;
 };
 
 vertex UnderlineVertexOutput underline_vertex(
@@ -587,7 +600,8 @@ vertex UnderlineVertexOutput underline_vertex(
       device_position,
       color,
       underline_id,
-      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      edge_fade_ramps(edge_fade_position(unit_vertex, underline.bounds), underline.fast_fade)};
 }
 
 fragment float4 underline_fragment(UnderlineFragmentInput input [[stage_in]],
@@ -615,9 +629,9 @@ fragment float4 underline_fragment(UnderlineFragmentInput input [[stage_in]],
     float distance_from_bottom_border = distance_in_pixels + half_thickness;
     float alpha = saturate(
         0.5 - max(-distance_from_bottom_border, distance_from_top_border));
-    return input.color * float4(1., 1., 1., alpha);
+    return input.color * float4(1., 1., 1., alpha * edge_fade_alpha(input.fade));
   } else {
-    return input.color;
+    return input.color * float4(1., 1., 1., edge_fade_alpha(input.fade));
   }
 }
 
@@ -626,6 +640,7 @@ struct MonochromeSpriteVertexOutput {
   float2 tile_position;
   float4 color [[flat]];
   float4 clip_distance;
+  float4 fade;
 };
 
 struct MonochromeSpriteFragmentInput {
@@ -633,6 +648,7 @@ struct MonochromeSpriteFragmentInput {
   float2 tile_position;
   float4 color [[flat]];
   float4 clip_distance;
+  float4 fade;
 };
 
 vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
@@ -655,7 +671,8 @@ vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
       device_position,
       tile_position,
       color,
-      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      edge_fade_ramps(edge_fade_position_transformed(unit_vertex, sprite.bounds, sprite.transformation), sprite.fast_fade)};
 }
 
 fragment float4 monochrome_sprite_fragment(
@@ -671,7 +688,7 @@ fragment float4 monochrome_sprite_fragment(
   float4 sample =
       atlas_texture.sample(atlas_texture_sampler, input.tile_position);
   float4 color = input.color;
-  color.a *= sample.a;
+  color.a *= sample.a * edge_fade_alpha(input.fade);
   return color;
 }
 
@@ -680,12 +697,14 @@ struct PolychromeSpriteVertexOutput {
   float2 tile_position;
   uint sprite_id [[flat]];
   float clip_distance [[clip_distance]][4];
+  float4 fade;
 };
 
 struct PolychromeSpriteFragmentInput {
   float4 position [[position]];
   float2 tile_position;
   uint sprite_id [[flat]];
+  float4 fade;
 };
 
 vertex PolychromeSpriteVertexOutput polychrome_sprite_vertex(
@@ -708,7 +727,8 @@ vertex PolychromeSpriteVertexOutput polychrome_sprite_vertex(
       device_position,
       tile_position,
       sprite_id,
-      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      edge_fade_ramps(edge_fade_position(unit_vertex, sprite.bounds), sprite.fast_fade)};
 }
 
 fragment float4 polychrome_sprite_fragment(
@@ -730,7 +750,7 @@ fragment float4 polychrome_sprite_fragment(
     color.g = grayscale;
     color.b = grayscale;
   }
-  color.a *= sprite.opacity * saturate(0.5 - distance);
+  color.a *= sprite.opacity * saturate(0.5 - distance) * edge_fade_alpha(input.fade);
   return color;
 }
 
@@ -739,12 +759,14 @@ struct PathRasterizationVertexOutput {
   float2 st_position;
   uint vertex_id [[flat]];
   float clip_rect_distance [[clip_distance]][4];
+  float4 fade;
 };
 
 struct PathRasterizationFragmentInput {
   float4 position [[position]];
   float2 st_position;
   uint vertex_id [[flat]];
+  float4 fade;
 };
 
 vertex PathRasterizationVertexOutput path_rasterization_vertex(
@@ -768,7 +790,8 @@ vertex PathRasterizationVertexOutput path_rasterization_vertex(
         v.bounds.origin.x + v.bounds.size.width - v.xy_position.x,
         v.xy_position.y - v.bounds.origin.y,
         v.bounds.origin.y + v.bounds.size.height - v.xy_position.y
-      }
+      },
+      edge_fade_ramps(vertex_position, v.fade)
   };
 }
 
@@ -811,7 +834,7 @@ fragment float4 path_rasterization_fragment(
     gradient_color.color0,
     gradient_color.color1
   );
-  return float4(color.rgb * color.a * alpha, alpha * color.a);
+  return float4(color.rgb * color.a * alpha, alpha * color.a) * edge_fade_alpha(input.fade);
 }
 
 struct PathSpriteVertexOutput {
@@ -854,11 +877,13 @@ struct SurfaceVertexOutput {
   float4 position [[position]];
   float2 texture_position;
   float clip_distance [[clip_distance]][4];
+  float4 fade;
 };
 
 struct SurfaceFragmentInput {
   float4 position [[position]];
   float2 texture_position;
+  float4 fade;
 };
 
 vertex SurfaceVertexOutput surface_vertex(
@@ -881,7 +906,8 @@ vertex SurfaceVertexOutput surface_vertex(
   return SurfaceVertexOutput{
       device_position,
       texture_position,
-      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
+      edge_fade_ramps(edge_fade_position(unit_vertex, surface.bounds), surface.fade)};
 }
 
 // The matrix comes from the renderer, read off the surface: the buffer's Y′CbCr matrix tag
@@ -898,7 +924,9 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
       y_texture.sample(texture_sampler, input.texture_position).r,
       cb_cr_texture.sample(texture_sampler, input.texture_position).rg, 1.0);
 
-  return *ycbcr_to_rgb * ycbcr;
+  float4 color = *ycbcr_to_rgb * ycbcr;
+  color.a *= edge_fade_alpha(input.fade);
+  return color;
 }
 
 float4 hsla_to_rgba(Hsla hsla) {
@@ -1278,4 +1306,37 @@ float4 fill_color(Background background,
   }
 
   return color;
+}
+
+// Slopty: an edge fade (gpui's fast/edge_fade.rs). Each edge's ramp is linear
+// in the pixel's coordinate, so its value at the vertices interpolates exactly.
+float2 edge_fade_position(float2 unit_vertex, Bounds_ScaledPixels bounds) {
+  return unit_vertex * float2(bounds.size.width, bounds.size.height) +
+         float2(bounds.origin.x, bounds.origin.y);
+}
+
+float2 edge_fade_position_transformed(float2 unit_vertex, Bounds_ScaledPixels bounds,
+                                      TransformationMatrix transformation) {
+  float2 position = edge_fade_position(unit_vertex, bounds);
+  return float2(
+      position.x * transformation.rotation_scale[0][0] +
+          position.y * transformation.rotation_scale[0][1] + transformation.translation[0],
+      position.x * transformation.rotation_scale[1][0] +
+          position.y * transformation.rotation_scale[1][1] + transformation.translation[1]);
+}
+
+float4 edge_fade_ramps(float2 position, FadeRamps fade) {
+  float4 edge = float4(fade.edge[0], fade.edge[1], fade.edge[2], fade.edge[3]);
+  float4 rate = float4(float2(as_type<half2>(fade.rate[0])), float2(as_type<half2>(fade.rate[1])));
+  float4 start = float4(unpack_unorm2x16_to_float(fade.start[0]),
+                        unpack_unorm2x16_to_float(fade.start[1]));
+  return start + rate * (position.xyxy - edge);
+}
+
+// How strongly a pixel is drawn under the ramps `ramps`: each clamped and
+// eased with smoothstep, then multiplied.
+float edge_fade_alpha(float4 ramps) {
+  float4 ramp = saturate(ramps);
+  ramp = ramp * ramp * (3. - 2. * ramp);
+  return ramp.x * ramp.y * ramp.z * ramp.w;
 }

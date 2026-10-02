@@ -410,6 +410,7 @@ fn tile_sprite(
 ) -> PolychromeSprite {
     let bounds = layer.tile_bounds(tile);
     PolychromeSprite {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         pad: 0,
         grayscale: false.into(),
@@ -571,6 +572,7 @@ fn add_content(
     });
     // The shadow's tail crosses the tile edge its bounds stop short of.
     scene.insert_primitive(Shadow {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         blur_radius: ScaledPixels(8.),
         bounds: at(380., 420., 120., 70.),
@@ -594,6 +596,7 @@ fn add_content(
         ..Default::default()
     });
     scene.insert_primitive(Underline {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         pad: 0,
         bounds: at(50., 505., 900., 8.),
@@ -603,6 +606,7 @@ fn add_content(
         wavy: true.into(),
     });
     scene.insert_primitive(Underline {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         pad: 0,
         bounds: at(60., 530., 700., 2.),
@@ -621,6 +625,7 @@ fn add_content(
 
     let mono = glyph_tile(harness, 1);
     scene.insert_primitive(MonochromeSprite {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         pad: 0,
         bounds: at(505., 700., 16., 16.),
@@ -630,6 +635,7 @@ fn add_content(
         transformation: TransformationMatrix::unit(),
     });
     scene.insert_primitive(PolychromeSprite {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         pad: 0,
         grayscale: false.into(),
@@ -818,6 +824,7 @@ fn scroll_frame_gpu_cost() {
             });
             for (i, tile) in glyphs.iter().cycle().skip(row).take(40).enumerate() {
                 scene.insert_primitive(MonochromeSprite {
+                    fast_fade: gpui::FadeRamps::NONE,
                     order: 0,
                     pad: 0,
                     bounds: sp(x + 24. + i as f32 * 17., y + 12., 16., 16.),
@@ -837,6 +844,7 @@ fn scroll_frame_gpu_cost() {
                 ..Default::default()
             });
             scene.insert_primitive(Underline {
+                fast_fade: gpui::FadeRamps::NONE,
                 order: 0,
                 pad: 0,
                 bounds: sp(x + 16., y + 39., 1568., 1.),

@@ -124,6 +124,7 @@ pub(crate) enum PaintStatus {
 pub(crate) struct RetainedContext {
     pub(crate) bounds: Bounds<Pixels>,
     pub(crate) content_mask: ContentMask<Pixels>,
+    pub(crate) fade: crate::fast::edge_fade::FadeRamps,
     pub(crate) text_style: TextStyle,
     pub(crate) opacity: f32,
 }
@@ -617,6 +618,7 @@ impl Window {
             && context.bounds == bounds
             && context.opacity == self.element_opacity
             && context.content_mask == self.content_mask()
+            && context.fade == crate::fast::edge_fade::current(self)
             && context.text_style == self.text_style()
     }
 
@@ -924,6 +926,7 @@ impl Window {
                 context: Rc::new(RetainedContext {
                     bounds: Bounds::default(),
                     content_mask: ContentMask::default(),
+                    fade: crate::fast::edge_fade::FadeRamps::NONE,
                     text_style: TextStyle::default(),
                     opacity: 1.,
                 }),
@@ -1001,6 +1004,7 @@ impl Window {
         let context = RetainedContext {
             bounds,
             content_mask: self.content_mask(),
+            fade: crate::fast::edge_fade::current(self),
             text_style: self.text_style(),
             opacity: self.element_opacity,
         };

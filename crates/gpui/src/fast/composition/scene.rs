@@ -52,6 +52,8 @@ impl NativePlacement {
             border_color: black().opacity(0.),
             corner_radii: self.corner_radii,
             border_widths: Edges::default(),
+            // A native is drawn by the system, which no fade reaches.
+            fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
         }
     }
 }

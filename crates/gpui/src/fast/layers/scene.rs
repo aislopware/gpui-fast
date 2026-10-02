@@ -469,6 +469,8 @@ pub(crate) fn move_primitive(primitive: &mut Primitive, delta: Point<ScaledPixel
             mv(&mut surface.content_mask.bounds);
         }
     }
+    let fade = crate::fast::edge_fade::primitive_fade(primitive);
+    *fade = fade.translated(delta);
 }
 
 /// A sprite's transformation applies to window positions (`R·p + t`, see

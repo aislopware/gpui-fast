@@ -294,6 +294,9 @@ pub struct Style {
     /// A ring drawn outside the element's border, like CSS's `outline`
     pub outline: Option<Outline>,
 
+    /// How the element's children fade out toward its edges
+    pub edge_fade: Option<crate::fast::edge_fade::EdgeFade>,
+
     /// The text style of this element
     #[refineable]
     pub text: TextStyleRefinement,
@@ -842,6 +845,7 @@ impl Default for Style {
             corner_radii: Corners::default(),
             box_shadow: Default::default(),
             outline: None,
+            edge_fade: None,
             text: TextStyleRefinement::default(),
             mouse_cursor: None,
             opacity: None,

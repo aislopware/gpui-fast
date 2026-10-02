@@ -2419,7 +2419,14 @@ impl Interactivity {
 
                             let scroll_offset =
                                 self.clamp_scroll_position(bounds, &style, window, cx);
-                            let result = f(&style, scroll_offset, hitbox, window, cx);
+                            let result = crate::fast::edge_fade::children(
+                                &style,
+                                bounds,
+                                self.content_size,
+                                scroll_offset,
+                                window,
+                                |window| f(&style, scroll_offset, hitbox, window, cx),
+                            );
                             (result, element_state)
                         },
                     )
@@ -2639,7 +2646,16 @@ impl Interactivity {
                                             }
                                         }
 
-                                        f(&style, window, cx);
+                                        crate::fast::edge_fade::children(
+                                            &style,
+                                            bounds,
+                                            self.content_size,
+                                            crate::fast::edge_fade::scroll_offset(
+                                                self.scroll_offset.as_ref(),
+                                            ),
+                                            window,
+                                            |window| f(&style, window, cx),
+                                        );
 
                                         if let Some(_hitbox) = hitbox {
                                             #[cfg(any(feature = "inspector", debug_assertions))]

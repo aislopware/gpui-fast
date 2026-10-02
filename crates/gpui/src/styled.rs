@@ -754,6 +754,13 @@ pub trait Styled: Sized {
         self
     }
 
+    /// Fades this element's children out toward its edges, per pixel, where its overflow
+    /// clips them or a title would end in an ellipsis.
+    fn edge_fade(mut self, fade: crate::fast::edge_fade::EdgeFade) -> Self {
+        self.style().edge_fade = Some(fade);
+        self
+    }
+
     /// Sets the grid columns of this element.
     fn grid_cols(mut self, cols: u16) -> Self {
         self.style().grid_cols = Some(GridTemplate {

@@ -201,6 +201,7 @@ fn content_in_parts_draws_each_tile_as_one_scene_does() {
             if row == 3 {
                 operations.push(Operation::Primitive(
                     Shadow {
+                        fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
                         order: 0,
                         blur_radius: ScaledPixels(20.),
                         bounds: sp(100., y + 150., 300., 40.),
@@ -300,6 +301,7 @@ fn translation_moves_every_position_a_primitive_carries() {
     let translate = |primitive: Primitive| translate_primitive(&primitive, delta);
 
     let shadow = Shadow {
+        fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
         order: 0,
         blur_radius: ScaledPixels(2.),
         bounds: sp(1., 2., 3., 4.),
@@ -375,6 +377,7 @@ fn translation_moves_every_position_a_primitive_carries() {
     );
 
     let underline = Underline {
+        fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
         order: 0,
         pad: 0,
         bounds: sp(1., 2., 3., 4.),
@@ -401,6 +404,7 @@ fn translation_moves_every_position_a_primitive_carries() {
         translation: [5. + 4., 6. - 10.],
     };
     let mono = MonochromeSprite {
+        fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
         order: 0,
         pad: 0,
         bounds: sp(1., 2., 3., 4.),
@@ -432,6 +436,7 @@ fn translation_moves_every_position_a_primitive_carries() {
     assert_eq!(moved.transformation, TransformationMatrix::unit());
 
     let subpixel = SubpixelSprite {
+        fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
         order: 0,
         pad: 0,
         bounds: sp(1., 2., 3., 4.),
@@ -448,6 +453,7 @@ fn translation_moves_every_position_a_primitive_carries() {
     assert_eq!(moved.transformation, expected);
 
     let poly = PolychromeSprite {
+        fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
         order: 0,
         pad: 0,
         grayscale: false.into(),
@@ -1667,6 +1673,7 @@ mod footprints {
     fn shadow(color: Hsla) -> Shadow {
         // Its blur reaches x = 500 + 3 * 10 = 530, inside tile (1, 0).
         Shadow {
+            fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
             order: 0,
             blur_radius: crate::ScaledPixels(10.),
             bounds: sp(400., 100., 100., 100.),
@@ -1684,6 +1691,7 @@ mod footprints {
         // A 70 px square ending 2 px short of tile (1, 0), turned an eighth
         // around its centre (475, 135): its corners reach x = 524.5.
         MonochromeSprite {
+            fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
             order: 0,
             pad: 0,
             bounds: sp(440., 100., 70., 70.),

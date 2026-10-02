@@ -274,6 +274,7 @@ enum Paint {
 struct ElementContext {
     bounds: Bounds<Pixels>,
     content_mask: ContentMask<Pixels>,
+    fade: crate::fast::edge_fade::FadeRamps,
     opacity: f32,
     text_style: Rc<TextStyle>,
     rem_size: Pixels,
@@ -283,6 +284,7 @@ impl ElementContext {
     fn matches(&self, other: &Self) -> bool {
         self.bounds == other.bounds
             && self.content_mask == other.content_mask
+            && self.fade == other.fade
             && self.opacity == other.opacity
             && self.rem_size == other.rem_size
             && same_text_style(&self.text_style, &other.text_style)
@@ -1889,6 +1891,7 @@ fn context(layout_id: LayoutId, window: &mut Window) -> ElementContext {
     ElementContext {
         bounds: window.layout_bounds(layout_id),
         content_mask: window.content_mask(),
+        fade: crate::fast::edge_fade::current(window),
         opacity: window.element_opacity,
         text_style: crate::fast::text_style::text_style(window),
         rem_size: window.rem_size(),
@@ -2191,6 +2194,7 @@ impl Moved {
                 bounds: moved.intersect(&new.bounds),
             },
         };
+        context.fade = self.shift.fade(&context.fade);
         ElementRecord {
             context,
             noted: record.noted.moved(&self.shift),
@@ -2291,6 +2295,7 @@ fn moved_to(
             offset: scaled,
             by: offset,
             masks,
+            fades: (old.fade, context.fade),
         },
         content_masks,
     })

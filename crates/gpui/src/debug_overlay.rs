@@ -225,6 +225,7 @@ fn solid_quad(
         border_color: transparent_black(),
         corner_radii: Corners::default(),
         border_widths: Edges::default(),
+        fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
     }
 }
 

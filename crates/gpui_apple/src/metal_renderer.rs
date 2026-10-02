@@ -275,6 +275,8 @@ pub struct PathRasterizationVertex {
     pub st_position: Point<f32>,
     pub color: Background,
     pub bounds: Bounds<ScaledPixels>,
+    /// The path's edge fade (`gpui::FadeRamps`), applied as it is rasterized.
+    pub fade: gpui::FadeRamps,
 }
 
 impl MetalRenderer {
@@ -1026,6 +1028,7 @@ impl MetalRenderer {
                 st_position: v.st_position,
                 color: path.color,
                 bounds: path.bounds.intersect(&path.content_mask.bounds),
+                fade: path.fast_fade,
             }));
         }
         let vertex_instance_bindings = writer.write(&vertices)?;
@@ -1792,6 +1795,7 @@ mod ycbcr_tests {
         .scale(1.0);
         let mut scene = Scene::default();
         scene.insert_primitive(PaintSurface {
+            fast_fade: gpui::FadeRamps::NONE,
             order: 0,
             bounds,
             content_mask: ContentMask { bounds },
@@ -2177,6 +2181,7 @@ pub(crate) fn write_instances(
         surfaces: writer.write_iter(scene.surfaces.iter().map(|surface| SurfaceBounds {
             bounds: surface.bounds,
             content_mask: surface.content_mask,
+            fade: surface.fast_fade,
         }))?,
     })
 }
@@ -2366,11 +2371,13 @@ pub struct PathSprite {
     pub bounds: Bounds<ScaledPixels>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 #[repr(C)]
 pub struct SurfaceBounds {
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
+    /// The surface's edge fade (`gpui::FadeRamps`).
+    pub fade: gpui::FadeRamps,
 }
 
 #[cfg(any(test, feature = "bench-support", feature = "test-support"))]

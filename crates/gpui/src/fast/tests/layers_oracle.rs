@@ -122,6 +122,7 @@ fn scenes(tiles: &[TileCoord], nudge: f32) -> (Scene, Scene) {
     for &tile in tiles {
         let bounds = frame.tile_bounds(tile);
         layered.insert_primitive(PolychromeSprite {
+            fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
             order: 0,
             pad: 0,
             grayscale: false.into(),

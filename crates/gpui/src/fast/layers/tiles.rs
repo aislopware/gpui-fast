@@ -297,6 +297,24 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
             hash_mask(&surface.content_mask, tile, hasher);
         }
     }
+    let fade = match primitive {
+        Primitive::Shadow(p) => &p.fast_fade,
+        Primitive::Quad(p) => &p.fast_fade,
+        Primitive::Path(p) => &p.fast_fade,
+        Primitive::Underline(p) => &p.fast_fade,
+        Primitive::MonochromeSprite(p) => &p.fast_fade,
+        Primitive::SubpixelSprite(p) => &p.fast_fade,
+        Primitive::PolychromeSprite(p) => &p.fast_fade,
+        Primitive::Surface(p) => &p.fast_fade,
+    };
+    if fade.fades() {
+        for edge in fade.edge {
+            hash_f32(edge, hasher);
+        }
+        for word in fade.rate.iter().chain(&fade.start) {
+            hasher.write_u32(*word);
+        }
+    }
 }
 
 fn hash_f32(value: f32, hasher: &mut FxHasher) {

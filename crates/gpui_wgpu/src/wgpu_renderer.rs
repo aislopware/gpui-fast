@@ -2812,6 +2812,7 @@ mod tests {
     #[test]
     fn webgl_quad_layout_matches_fixed_decoder() {
         let quad = Quad {
+            fast_fade: gpui::FadeRamps::NONE,
             order: 41,
             border_style: BorderStyle::Dashed,
             bounds: Bounds {

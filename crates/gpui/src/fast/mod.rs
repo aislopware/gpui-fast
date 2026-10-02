@@ -18,6 +18,7 @@ pub mod composition;
 pub mod cursor;
 pub(crate) mod dependencies;
 pub(crate) mod dispatch;
+pub mod edge_fade;
 pub(crate) mod element;
 pub(crate) mod focus;
 pub mod gesture;

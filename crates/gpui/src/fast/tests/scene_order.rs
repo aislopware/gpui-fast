@@ -189,6 +189,7 @@ fn paint(scene: &mut Scene, rng: &mut StdRng) -> Vec<Painted> {
                     }
                     match kind {
                         Kind::Monochrome => scene.insert_primitive(MonochromeSprite {
+                            fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
                             order: 0,
                             pad: 0,
                             bounds: b,
@@ -198,6 +199,7 @@ fn paint(scene: &mut Scene, rng: &mut StdRng) -> Vec<Painted> {
                             transformation: TransformationMatrix::unit(),
                         }),
                         Kind::Subpixel => scene.insert_primitive(SubpixelSprite {
+                            fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
                             order: 0,
                             pad: 0,
                             bounds: b,
@@ -207,6 +209,7 @@ fn paint(scene: &mut Scene, rng: &mut StdRng) -> Vec<Painted> {
                             transformation: TransformationMatrix::unit(),
                         }),
                         Kind::Polychrome => scene.insert_primitive(PolychromeSprite {
+                            fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
                             order: 0,
                             pad: 0,
                             grayscale: false.into(),

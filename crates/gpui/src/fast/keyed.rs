@@ -149,6 +149,7 @@ struct Stretch {
 struct Context {
     origin: Point<Pixels>,
     mask: Bounds<Pixels>,
+    fade: crate::fast::edge_fade::FadeRamps,
     opacity: f32,
     layered: bool,
     scale_factor: f32,
@@ -183,6 +184,7 @@ impl Window {
         let context = Context {
             origin,
             mask: self.content_mask().bounds,
+            fade: crate::fast::edge_fade::current(self),
             opacity: self.element_opacity(),
             layered: !self.next_frame.scene.layer_stack.is_empty(),
             scale_factor: self.scale_factor(),
@@ -238,7 +240,10 @@ impl Window {
         }
         let start = self.next_frame.scene.paint_operations.len();
         let operations = previous.start as usize..previous.end as usize;
-        let noted = if old.origin == context.origin && old.mask == context.mask {
+        let noted = if old.origin == context.origin
+            && old.mask == context.mask
+            && old.fade == context.fade
+        {
             // Drawing it again carries it, and what is nested in it, along,
             // unless it painted nothing.
             if operations.is_empty() {
@@ -345,7 +350,12 @@ impl Window {
                 new: new_cover,
             }
         };
-        Some(Shift { offset, by, masks })
+        Some(Shift {
+            offset,
+            by,
+            masks,
+            fades: (previous.context.fade, context.fade),
+        })
     }
 }
 

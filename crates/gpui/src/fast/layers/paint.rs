@@ -372,11 +372,13 @@ pub(crate) fn composite_at(
             crate::fast::layers::policy::defer_unbaked(window, id);
             draw_into_frame(window, record.content.operations(), translation);
             let viewport = window.snapped_content_mask().bounds;
+            let fade = crate::fast::edge_fade::current(window);
             insert_paths(
                 &mut window.next_frame.scene,
                 &record.paths,
                 translation,
                 viewport,
+                &fade,
             );
             return;
         }
@@ -406,12 +408,20 @@ pub(crate) fn insert_layer(
         draw_into_frame(window, content.operations(), translation);
         return;
     }
-    insert_tile_quads(&mut window.next_frame.scene, layer, viewport, translation);
+    let fade = crate::fast::edge_fade::current(window);
+    insert_tile_quads(
+        &mut window.next_frame.scene,
+        layer,
+        viewport,
+        translation,
+        fade,
+    );
     insert_paths(
         &mut window.next_frame.scene,
         &record.paths,
         translation,
         viewport,
+        &fade,
     );
     let stats = &mut window.layout_engine.as_mut().unwrap().retention.stats;
     stats.layer_frames_composited += 1;
@@ -422,12 +432,14 @@ pub(crate) fn insert_layer(
 /// Inserts into `scene` the quads of the tiles of `layer` that show in
 /// `viewport` with its content moved by `translation`, all at one draw
 /// order, and the layer's [`LayerFrame`] they are rasterized from (spec
-/// §5.1).
+/// §5.1). The tiles are drawn with `fade`, the container's: what fades with
+/// the viewport is drawn into no tile, as the tiles move under it.
 pub(crate) fn insert_tile_quads(
     scene: &mut Scene,
     layer: &Layer,
     viewport: Bounds<ScaledPixels>,
     translation: Point<ScaledPixels>,
+    fade: crate::fast::edge_fade::FadeRamps,
 ) {
     let Some(record) = layer.record.as_ref() else {
         return;
@@ -487,6 +499,7 @@ pub(crate) fn insert_tile_quads(
                         ),
                     },
                 },
+                fast_fade: fade,
             });
         }
     }
@@ -496,16 +509,19 @@ pub(crate) fn insert_tile_quads(
 
 /// Inserts into `scene` the `paths` a layer keeps apart from its tiles,
 /// moved by `translation` and clipped to `viewport`, after its tile quads,
-/// so that they are drawn over them (see [`lift_paths`]).
+/// so that they are drawn over them (see [`lift_paths`]), faded as the
+/// container fades (`fade`).
 fn insert_paths(
     scene: &mut Scene,
     paths: &[crate::Path<ScaledPixels>],
     translation: Point<ScaledPixels>,
     viewport: Bounds<ScaledPixels>,
+    fade: &crate::fast::edge_fade::FadeRamps,
 ) {
     for path in paths {
         let mut primitive = translate_primitive(&Primitive::Path(path.clone()), translation);
         clip_primitive(&mut primitive, &viewport);
+        crate::fast::edge_fade::compose(&mut primitive, fade);
         scene.insert_primitive(primitive);
     }
 }
@@ -655,19 +671,22 @@ pub(crate) fn replay_layers(scene: &mut Scene, range: Range<usize>, previous: &S
 
 /// Draws the primitives of `content`, moved by `delta` into window space,
 /// straight into the frame, clipped to the viewport, the current content
-/// mask: what painting the content into the frame would have drawn.
+/// mask, and faded as the container fades, the current fade: what painting
+/// the content into the frame would have drawn.
 pub(crate) fn draw_into_frame(
     window: &mut Window,
     operations: impl IntoIterator<Item = Operation>,
     delta: Point<ScaledPixels>,
 ) {
     let viewport = window.snapped_content_mask().bounds;
+    let fade = crate::fast::edge_fade::current(window);
     let scene = &mut window.next_frame.scene;
     for operation in operations {
         match operation {
             Operation::Primitive(primitive) => {
                 let mut primitive = translate_primitive(&primitive, delta);
                 clip_primitive(&mut primitive, &viewport);
+                crate::fast::edge_fade::compose(&mut primitive, &fade);
                 scene.insert_primitive(primitive);
             }
             Operation::StartLayer(bounds) => {
@@ -734,7 +753,9 @@ fn repaint(
     let recording = cx.begin_recording_dependencies();
     window.fast_layers.painting = Some(painting);
 
-    f(window, cx);
+    // The content is painted in content space; the container's fade is laid
+    // over it where the layer is composited.
+    crate::fast::edge_fade::without(window, |window| f(window, cx));
 
     let mut painting = window
         .fast_layers

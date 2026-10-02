@@ -205,6 +205,7 @@ fn composited_scene(
     for &tile in tiles {
         let bounds = layer.tile_bounds(tile);
         composited.insert_primitive(PolychromeSprite {
+            fast_fade: gpui::FadeRamps::NONE,
             order: 0,
             pad: 0,
             grayscale: false.into(),
@@ -379,6 +380,7 @@ fn rasterize_and_assemble(harness: &mut Harness, content: Scene, tiles: &[(i32, 
     for &tile in &coords {
         let bounds = layer.tile_bounds(tile);
         frame.insert_primitive(PolychromeSprite {
+            fast_fade: gpui::FadeRamps::NONE,
             order: 0,
             pad: 0,
             grayscale: false.into(),
@@ -488,6 +490,7 @@ fn add_content(
     });
     // The shadow's tail crosses the tile edge its bounds stop short of.
     scene.insert_primitive(Shadow {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         blur_radius: ScaledPixels(8.),
         bounds: at(380., 420., 120., 70.),
@@ -511,6 +514,7 @@ fn add_content(
         ..Default::default()
     });
     scene.insert_primitive(Underline {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         pad: 0,
         bounds: at(50., 505., 900., 8.),
@@ -520,6 +524,7 @@ fn add_content(
         wavy: true.into(),
     });
     scene.insert_primitive(Underline {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         pad: 0,
         bounds: at(200., 530., 400., 2.),
@@ -539,6 +544,7 @@ fn add_content(
     // Glyphs across the vertical and the horizontal tile edge.
     let mono = glyph_tile(harness, 1, false);
     scene.insert_primitive(MonochromeSprite {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         pad: 0,
         bounds: at(505., 700., 16., 16.),
@@ -549,6 +555,7 @@ fn add_content(
     });
     let subpixel = glyph_tile(harness, 2, true);
     scene.insert_primitive(SubpixelSprite {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         pad: 0,
         bounds: at(520., 505., 16., 16.),
@@ -558,6 +565,7 @@ fn add_content(
         transformation: TransformationMatrix::unit(),
     });
     scene.insert_primitive(PolychromeSprite {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         pad: 0,
         grayscale: false.into(),

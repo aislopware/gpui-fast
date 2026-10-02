@@ -62,6 +62,7 @@ mod apple_build {
             "SurfaceInputIndex".into(),
             "SurfaceBounds".into(),
             "TransformationMatrix".into(),
+            "FadeRamps".into(), // fast::edge_fade
         ]);
         config.no_includes = true;
         config.enumeration.prefix_with_name = true;
@@ -77,6 +78,7 @@ mod apple_build {
             gpui_dir.join("src/color.rs"),
             gpui_dir.join("src/window.rs"),
             gpui_dir.join("src/platform.rs"),
+            gpui_dir.join("src/fast/edge_fade.rs"),
         ];
 
         // Source files from this crate

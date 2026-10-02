@@ -140,6 +140,7 @@ fn random_quad(rng: &mut Rng) -> Quad {
     let bounds = random_box(rng);
     let border = rng.chance(30);
     Quad {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         border_style: if rng.chance(20) {
             BorderStyle::Dashed
@@ -184,6 +185,7 @@ fn random_scene(seed: u64) -> Vec<Operation> {
                 let bounds = random_box(&mut rng);
                 let corner_radii = random_radii(&mut rng, bounds);
                 Operation::Shadow(Shadow {
+                    fast_fade: gpui::FadeRamps::NONE,
                     order: 0,
                     blur_radius: ScaledPixels(rng.range(0., 12.)),
                     bounds: bounds.dilate(ScaledPixels(12.)),
@@ -199,6 +201,7 @@ fn random_scene(seed: u64) -> Vec<Operation> {
             45..52 => {
                 let bounds = random_box(&mut rng);
                 Operation::Underline(Underline {
+                    fast_fade: gpui::FadeRamps::NONE,
                     order: 0,
                     pad: 0,
                     bounds: scaled(
@@ -297,6 +300,7 @@ fn build(operations: &[Operation], natives_as_quads: bool) -> Scene {
             Operation::Native(placement, color) => {
                 if natives_as_quads {
                     scene.insert_primitive(Quad {
+                        fast_fade: gpui::FadeRamps::NONE,
                         order: 0,
                         border_style: BorderStyle::Solid,
                         bounds: placement.bounds,
@@ -563,6 +567,7 @@ fn composition_overlay_gpu_cost() {
         bounds: scaled(0., 0., WIDTH as f32, HEIGHT as f32),
     };
     let solid = |bounds: Bounds<ScaledPixels>, color: u32, radius: f32| Quad {
+        fast_fade: gpui::FadeRamps::NONE,
         order: 0,
         border_style: BorderStyle::Solid,
         bounds,
@@ -592,6 +597,7 @@ fn composition_overlay_gpu_cost() {
     let palette = |scene: &mut Scene| {
         let panel = scaled(912., 360., 1200., 880.);
         scene.insert_primitive(Shadow {
+            fast_fade: gpui::FadeRamps::NONE,
             order: 0,
             blur_radius: ScaledPixels(48.),
             bounds: panel.dilate(ScaledPixels(144.)),
@@ -609,6 +615,7 @@ fn composition_overlay_gpu_cost() {
             let color = if row == 0 { 0x3fa66b40 } else { 0x2e2e33ff };
             scene.insert_primitive(solid(scaled(936., y, 1152., 48.), color, 8.));
             scene.insert_primitive(Underline {
+                fast_fade: gpui::FadeRamps::NONE,
                 order: 0,
                 pad: 0,
                 bounds: scaled(952., y + 47., 1120., 1.),

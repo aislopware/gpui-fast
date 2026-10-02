@@ -532,6 +532,7 @@ pub struct Quad {
     pub border_color: Hsla,
     pub corner_radii: Corners<ScaledPixels>,
     pub border_widths: Edges<ScaledPixels>,
+    pub fast_fade: crate::fast::edge_fade::FadeRamps,
 }
 
 impl From<Quad> for Primitive {
@@ -551,6 +552,7 @@ pub struct Underline {
     pub color: Hsla,
     pub thickness: ScaledPixels,
     pub wavy: PaddedBool32,
+    pub fast_fade: crate::fast::edge_fade::FadeRamps,
 }
 
 impl From<Underline> for Primitive {
@@ -574,6 +576,7 @@ pub struct Shadow {
     /// 0 = drop shadow (rendered outside the element), 1 = inset shadow (rendered inside).
     pub inset: u32,
     pub pad: u32, // align to 8 bytes
+    pub fast_fade: crate::fast::edge_fade::FadeRamps,
 }
 
 impl From<Shadow> for Primitive {
@@ -707,6 +710,7 @@ pub struct MonochromeSprite {
     pub color: Hsla,
     pub tile: AtlasTile,
     pub transformation: TransformationMatrix,
+    pub fast_fade: crate::fast::edge_fade::FadeRamps,
 }
 
 impl From<MonochromeSprite> for Primitive {
@@ -726,6 +730,7 @@ pub struct SubpixelSprite {
     pub color: Hsla,
     pub tile: AtlasTile,
     pub transformation: TransformationMatrix,
+    pub fast_fade: crate::fast::edge_fade::FadeRamps,
 }
 
 impl From<SubpixelSprite> for Primitive {
@@ -746,6 +751,7 @@ pub struct PolychromeSprite {
     pub content_mask: ContentMask<ScaledPixels>,
     pub corner_radii: Corners<ScaledPixels>,
     pub tile: AtlasTile,
+    pub fast_fade: crate::fast::edge_fade::FadeRamps,
 }
 
 impl From<PolychromeSprite> for Primitive {
@@ -760,6 +766,7 @@ pub struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
+    pub fast_fade: crate::fast::edge_fade::FadeRamps,
     #[cfg(any(target_os = "macos", target_os = "ios"))]
     pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
 }
@@ -784,6 +791,7 @@ pub struct Path<P: Clone + Debug + Default + PartialEq> {
     pub content_mask: ContentMask<P>,
     pub vertices: Vec<PathVertex<P>>,
     pub color: Background,
+    pub fast_fade: crate::fast::edge_fade::FadeRamps,
     start: Point<P>,
     current: Point<P>,
     contour_count: usize,
@@ -804,6 +812,7 @@ impl Path<Pixels> {
             },
             content_mask: Default::default(),
             color: Default::default(),
+            fast_fade: crate::fast::edge_fade::FadeRamps::NONE,
             contour_count: 0,
         }
     }
@@ -824,6 +833,7 @@ impl Path<Pixels> {
             current: self.current.scale(factor),
             contour_count: self.contour_count,
             color: self.color,
+            fast_fade: self.fast_fade,
         }
     }
 

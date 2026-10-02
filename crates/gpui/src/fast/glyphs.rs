@@ -245,6 +245,7 @@ impl Window {
                     color: color.opacity(element_opacity),
                     tile,
                     transformation: TransformationMatrix::unit(),
+                    fast_fade: self.fast_edge_fade,
                 });
             } else {
                 self.next_frame.scene.insert_primitive(MonochromeSprite {
@@ -255,6 +256,7 @@ impl Window {
                     color: color.opacity(element_opacity),
                     tile,
                     transformation: TransformationMatrix::unit(),
+                    fast_fade: self.fast_edge_fade,
                 });
             }
         }

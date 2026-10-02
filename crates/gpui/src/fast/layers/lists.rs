@@ -1895,9 +1895,9 @@ pub(crate) fn paint_row(
     let hovers_start = window.retained_state.hover_dependencies.len();
     let paint_start = window.paint_index();
     set_current_row(window, &id, Some(row));
-    {
-        f(window, cx);
-    }
+    // Into the layer's content: the list's fade is laid over it where the
+    // layer is composited.
+    crate::fast::edge_fade::without(window, |window| f(window, cx));
     set_current_row(window, &id, None);
     let paint_end = window.paint_index();
     let end = window.next_frame.scene.paint_operations.len();

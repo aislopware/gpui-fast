@@ -293,6 +293,7 @@ fn write_vertices(
                 st_position: v.st_position,
                 color: path.color,
                 bounds,
+                fade: path.fast_fade,
             })
         });
     // The plan counted these same vertices, so the iterator yields exactly

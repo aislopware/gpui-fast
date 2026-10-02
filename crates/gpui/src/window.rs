@@ -1186,6 +1186,7 @@ pub struct Window {
     pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
     pub(crate) fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache,
     pub(crate) fast_text_smoothing: crate::fast::text_smoothing::WindowTextSmoothing,
+    pub(crate) fast_edge_fade: crate::fast::edge_fade::FadeRamps,
     pub(crate) fast_layers: crate::fast::layers::WindowLayers,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
@@ -2078,6 +2079,7 @@ impl Window {
             text_style_stack: crate::fast::text_style::TextStyleStack::default(),
             fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache::default(),
             fast_text_smoothing: crate::fast::text_smoothing::WindowTextSmoothing::new(cx),
+            fast_edge_fade: crate::fast::edge_fade::FadeRamps::NONE,
             fast_layers: crate::fast::layers::WindowLayers::default(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
@@ -3208,6 +3210,7 @@ impl Window {
             pad: 0,
             bounds: self.underline_bounds(origin, width, style),
             content_mask: self.snapped_content_mask(),
+            fast_fade: self.fast_edge_fade,
             color: style
                 .color
                 .unwrap_or_default()
@@ -4523,6 +4526,7 @@ impl Window {
                 blur_radius: shadow.blur_radius.scale(scale_factor),
                 bounds: self.cover_bounds(shadow_bounds),
                 content_mask,
+                fast_fade: self.fast_edge_fade,
                 corner_radii: corner_radii.scale(scale_factor),
                 color: shadow.color.opacity(opacity),
                 element_bounds,
@@ -4568,6 +4572,7 @@ impl Window {
                 blur_radius: shadow.blur_radius.scale(scale_factor),
                 bounds: self.cover_bounds(hole),
                 content_mask,
+                fast_fade: self.fast_edge_fade,
                 corner_radii: hole_corner_radii.scale(scale_factor),
                 color: shadow.color.opacity(opacity),
                 element_bounds,
@@ -4636,6 +4641,7 @@ impl Window {
             order: 0,
             bounds: snapped_bounds,
             content_mask: self.snapped_content_mask(),
+            fast_fade: self.fast_edge_fade,
             background: quad.background.opacity(opacity),
             border_color: quad.border_color.opacity(opacity),
             corner_radii: quad.corner_radii.scale(self.scale_factor()),
@@ -4710,6 +4716,7 @@ impl Window {
         let content_mask = self.content_mask();
         let opacity = self.element_opacity();
         path.content_mask = content_mask;
+        path.fast_fade = self.fast_edge_fade;
         let color: Background = color.into();
         path.color = color.opacity(opacity);
         self.next_frame
@@ -4757,6 +4764,7 @@ impl Window {
             pad: 0,
             bounds,
             content_mask: self.snapped_content_mask(),
+            fast_fade: self.fast_edge_fade,
             thickness: self.snap_stroke(style.thickness),
             color: style.color.unwrap_or_default().opacity(opacity),
             wavy: false.into(),
@@ -4821,6 +4829,7 @@ impl Window {
                     pad: 0,
                     bounds,
                     content_mask,
+                    fast_fade: self.fast_edge_fade,
                     color: color.opacity(element_opacity),
                     tile,
                     transformation: TransformationMatrix::unit(),
@@ -4831,6 +4840,7 @@ impl Window {
                     pad: 0,
                     bounds,
                     content_mask,
+                    fast_fade: self.fast_edge_fade,
                     color: color.opacity(element_opacity),
                     tile,
                     transformation: TransformationMatrix::unit(),
@@ -4905,6 +4915,7 @@ impl Window {
                 pad: 0,
                 bounds,
                 content_mask,
+                fast_fade: self.fast_edge_fade,
                 color: color.opacity(element_opacity),
                 tile,
                 transformation: TransformationMatrix::unit(),
@@ -4988,6 +4999,7 @@ impl Window {
                 bounds,
                 corner_radii: Default::default(),
                 content_mask,
+                fast_fade: self.fast_edge_fade,
                 tile,
                 opacity,
             });
@@ -5052,6 +5064,7 @@ impl Window {
             pad: 0,
             bounds: final_bounds,
             content_mask,
+            fast_fade: self.fast_edge_fade,
             color: color.opacity(element_opacity),
             tile,
             transformation,
@@ -5159,6 +5172,7 @@ impl Window {
             grayscale: grayscale.into(),
             bounds: visible_bounds_snapped,
             content_mask,
+            fast_fade: self.fast_edge_fade,
             corner_radii,
             tile: sub_tile,
             opacity,
@@ -5181,6 +5195,7 @@ impl Window {
             order: 0,
             bounds,
             content_mask,
+            fast_fade: self.fast_edge_fade,
             image_buffer,
         });
     }

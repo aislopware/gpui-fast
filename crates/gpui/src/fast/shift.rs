@@ -42,6 +42,7 @@
 //!
 //! Moved primitives are ordered as inserting them afresh orders them.
 
+use crate::fast::edge_fade::FadeRamps;
 use crate::fast::scene::PaintedRef;
 use crate::{
     Bounds, ContentMask, MonochromeSprite, PaintOperation, Pixels, Point, PolychromeSprite, Quad,
@@ -57,6 +58,9 @@ pub(crate) struct Shift {
     /// How far, in logical pixels.
     pub(crate) by: Point<Pixels>,
     pub(crate) masks: Masks,
+    /// The edge fade around what moved where it was drawn, and where it is
+    /// drawn now (see [`crate::fast::edge_fade::FadeRamps::moved`]).
+    pub(crate) fades: (FadeRamps, FadeRamps),
 }
 
 /// What the primitives of a moved stretch are clipped by.
@@ -648,6 +652,12 @@ impl Shift {
         (!moved.intersect(&content_mask.bounds).is_empty()).then_some((moved, content_mask))
     }
 
+    /// The ramps of a primitive drawn with `fade`, moved.
+    #[inline]
+    pub(crate) fn fade(&self, fade: &FadeRamps) -> FadeRamps {
+        fade.moved(self.offset, &self.fades.0, &self.fades.1)
+    }
+
     /// `primitive`, moved, if it can be.
     fn primitive(
         &self,
@@ -663,6 +673,7 @@ impl Shift {
                     bounds,
                     element_bounds: shadow.element_bounds + self.offset,
                     content_mask,
+                    fast_fade: self.fade(&shadow.fast_fade),
                     ..*shadow
                 })
             }
@@ -671,6 +682,7 @@ impl Shift {
                 ShiftedOperation::Quad(Quad {
                     bounds,
                     content_mask,
+                    fast_fade: self.fade(&quad.fast_fade),
                     ..*quad
                 })
             }
@@ -680,6 +692,7 @@ impl Shift {
                 ShiftedOperation::Underline(Underline {
                     bounds,
                     content_mask,
+                    fast_fade: self.fade(&underline.fast_fade),
                     ..*underline
                 })
             }
@@ -689,6 +702,7 @@ impl Shift {
                 ShiftedOperation::MonochromeSprite(MonochromeSprite {
                     bounds,
                     content_mask,
+                    fast_fade: self.fade(&sprite.fast_fade),
                     ..*sprite
                 })
             }
@@ -698,6 +712,7 @@ impl Shift {
                 ShiftedOperation::SubpixelSprite(SubpixelSprite {
                     bounds,
                     content_mask,
+                    fast_fade: self.fade(&sprite.fast_fade),
                     ..*sprite
                 })
             }
@@ -718,6 +733,7 @@ impl Shift {
                 ShiftedOperation::PolychromeSprite(PolychromeSprite {
                     bounds,
                     content_mask,
+                    fast_fade: self.fade(&sprite.fast_fade),
                     ..*sprite
                 })
             }

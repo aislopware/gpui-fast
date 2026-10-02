@@ -400,6 +400,7 @@ mod tests {
             bounds: bounds(0., 0., SIDE as f32, SIDE as f32),
         };
         let glyph = |x: f32, y: f32, hue: f32| MonochromeSprite {
+            fast_fade: gpui::FadeRamps::NONE,
             order: 0,
             pad: 0,
             bounds: bounds(x, y, 8., 12.),
@@ -426,6 +427,7 @@ mod tests {
             let y = 20. + card as f32 * 7.;
             let card_bounds = bounds(x, y, 160., 40.);
             scene.insert_primitive(Shadow {
+                fast_fade: gpui::FadeRamps::NONE,
                 bounds: card_bounds,
                 content_mask: everywhere,
                 blur_radius: ScaledPixels(6.),
@@ -447,6 +449,7 @@ mod tests {
                 scene.insert_primitive(glyph(x + 8. + column as f32 * 8., y + 8., 0.1));
             }
             scene.insert_primitive(Underline {
+                fast_fade: gpui::FadeRamps::NONE,
                 bounds: bounds(x + 8., y + 22., 128., 2.),
                 content_mask: everywhere,
                 color: hsla(0.1, 0.9, 0.6, 1.),

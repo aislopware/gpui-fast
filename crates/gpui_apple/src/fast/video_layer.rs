@@ -287,6 +287,7 @@ impl VideoRenderer {
             order: 0,
             bounds,
             content_mask: ContentMask { bounds },
+            fast_fade: gpui::FadeRamps::NONE,
             image_buffer: picture.clone(),
         });
         self.scene.finish();
