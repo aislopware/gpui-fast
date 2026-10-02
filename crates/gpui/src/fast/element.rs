@@ -1925,6 +1925,56 @@ pub(crate) fn for_each_fade(records: &ElementRecords, mark: &mut impl FnMut(u32)
     each(&records.building);
 }
 
+/// Where the records of the elements prepainted from now on begin: the
+/// roots added from here, and the records the root being built adds.
+pub(crate) struct RecordsMark {
+    roots: usize,
+    building: usize,
+}
+
+/// Where the records of the elements prepainted from now on begin.
+pub(crate) fn mark(records: &ElementRecords) -> RecordsMark {
+    RecordsMark {
+        roots: records.roots.len(),
+        building: records.building.len(),
+    }
+}
+
+/// Gives every element recorded since `mark` the fade `map` makes of the
+/// one it was drawn in (see [`crate::fast::edge_fade`]'s `PrepaintNotes`).
+pub(crate) fn refade(
+    records: &mut ElementRecords,
+    mark: &RecordsMark,
+    map: &mut impl FnMut(u32) -> u32,
+) {
+    let mut each = |records: &mut [ElementRecord]| {
+        for record in records {
+            record.context.fade = map(record.context.fade);
+        }
+    };
+    for root in records.roots.get_mut(mark.roots..).unwrap_or_default() {
+        match &mut root.records {
+            RootRecords::Pending(records) => each(records),
+            // Carried from last frame and shared with it, so copied.
+            RootRecords::Frozen(subtree) => {
+                let mut copy = subtree.records.to_vec();
+                each(&mut copy);
+                *subtree = Rc::new(Subtree {
+                    records: copy.into(),
+                    by_key: OnceCell::new(),
+                });
+            }
+            RootRecords::Building | RootRecords::Lost => {}
+        }
+    }
+    each(
+        records
+            .building
+            .get_mut(mark.building..)
+            .unwrap_or_default(),
+    );
+}
+
 /// Starts this frame's record of an element being prepainted, returning
 /// the root it is in and where it is among its records.
 fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {

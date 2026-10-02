@@ -136,6 +136,25 @@ pub(crate) struct RetainedContext {
     pub(crate) fade: u32,
 }
 
+/// Gives every subtree of `records` the fade `map` makes of the one it was
+/// drawn in (see [`crate::fast::edge_fade`]'s `PrepaintNotes`).
+pub(crate) fn refade(records: &mut [RetainedSubtree], map: &mut impl FnMut(u32) -> u32) {
+    for record in records {
+        let fade = map(record.context.fade);
+        if fade != record.context.fade {
+            let context = &record.context;
+            record.context = Rc::new(RetainedContext {
+                bounds: context.bounds,
+                phase: context.phase,
+                content_mask: context.content_mask,
+                text_style: context.text_style.clone(),
+                opacity: context.opacity,
+                fade,
+            });
+        }
+    }
+}
+
 /// What it takes to lay a view out as it was laid out last frame without
 /// building it: the view is laid out by its content, so its layout is only
 /// known from the nodes its content left.
