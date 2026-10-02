@@ -1217,7 +1217,7 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         aria: _,
         #[cfg(any(feature = "inspector", debug_assertions))]
             source_location: _,
-        #[cfg(any(test, feature = "test-support"))]
+        #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
             debug_selector: _,
     } = interactivity;
     key_context.is_none()
