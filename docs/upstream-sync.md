@@ -192,6 +192,13 @@ unchanged, and a new entry needs as good a reason.
   needs none, so a test that shapes and rasterises real glyphs (Slopty's terminal
   paint oracle) takes it from here. Windows' and Linux's text systems need their
   platform's devices and still come from a headless platform.
+- `TextSmoothing`, `App::set_text_smoothing`, `App::text_smoothing`,
+  `Window::with_text_smoothing` and `Window::text_smoothing` are new public API
+  (`fast/text_smoothing.rs`). Upstream dilates light glyphs on macOS as Core
+  Graphics' font smoothing does, with only the user's `AppleFontSmoothing`
+  default to turn it off; an application designed in weights, as on the web
+  with `-webkit-font-smoothing: antialiased`, needs every colour drawn at the
+  weight it is set in. `Native`, upstream's behaviour, is the default.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what
