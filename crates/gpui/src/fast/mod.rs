@@ -45,6 +45,7 @@ pub(crate) mod subscriptions;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_window;
 pub(crate) mod text;
+pub mod text_smoothing;
 pub(crate) mod text_style;
 
 #[cfg(test)]

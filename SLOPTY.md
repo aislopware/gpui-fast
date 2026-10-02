@@ -581,6 +581,24 @@ Added in this fork:
   takes it from here too, so a benchmark on macOS no longer makes a platform for it.
   Tested off the main thread (`the_text_system_is_made_and_used_off_the_main_thread`:
   Menlo resolves, "gpui" shapes to four glyphs, one rasterises into ink)
+- feat(gpui): a text smoothing policy, `TextSmoothing::{Native, Antialiased}`, the
+  application's with `App::set_text_smoothing` and an element's with
+  `Window::with_text_smoothing` (`fast/text_smoothing.rs`). On macOS GPUI dilates a glyph
+  by its colour's luminance as Core Graphics' font smoothing does, so light text on a dark
+  ground paints heavier than it is set; `Antialiased` dilates nothing, as the web's
+  `-webkit-font-smoothing: antialiased` and Ghostty's default `font-thicken = false` draw.
+  The dilation is part of the glyph's atlas key, so the two policies never share a raster,
+  and changing the application's policy draws every window again from scratch
+  (`antialiased_text_is_never_dilated_and_shares_one_raster_across_colours`,
+  `a_scoped_smoothing_overrides_the_applications`). Measured on Core Text at 2×
+  (`gpui_macos` `measure_dilation`, printable ASCII): the system face at 13 pt gains
+  +6.5 / +13.0 / +14.9 % ink at dilation 2 / 3 / 4 (levels 0 and 1 draw alike), Menlo
+  +6.1 / +12.1 / +13.9 %, against +30 % from regular to semibold; a raster costs the same
+  at every level (about 7 µs a glyph in the system face, 4 µs in Menlo). Antialiased, a
+  glyph is rasterised once whatever its colour, where native smoothing keeps up to four
+  rasters of it (levels 0, 2, 3 and 4). `Native` stays the default, so nothing changes for
+  an application that does not ask. iOS dilates nothing under either policy (UIKit has no
+  font smoothing)
 
 ### Candidates for longbridge
 

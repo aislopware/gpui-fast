@@ -1185,6 +1185,7 @@ pub struct Window {
     pub(crate) composition: crate::fast::composition::WindowComposition,
     pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
     pub(crate) fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache,
+    pub(crate) fast_text_smoothing: crate::fast::text_smoothing::WindowTextSmoothing,
     pub(crate) fast_layers: crate::fast::layers::WindowLayers,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
@@ -2076,6 +2077,7 @@ impl Window {
             composition: crate::fast::composition::WindowComposition::default(),
             text_style_stack: crate::fast::text_style::TextStyleStack::default(),
             fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache::default(),
+            fast_text_smoothing: crate::fast::text_smoothing::WindowTextSmoothing::new(cx),
             fast_layers: crate::fast::layers::WindowLayers::default(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
@@ -4786,7 +4788,7 @@ impl Window {
 
         let (integer_origin, subpixel_variant) = crate::fast::glyphs::quantize_origin(glyph_origin);
         let subpixel_rendering = self.should_use_subpixel_rendering(font_id, font_size);
-        let dilation = self.text_system().glyph_dilation_for_color(color);
+        let dilation = crate::fast::text_smoothing::dilation(self, color);
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
@@ -4871,7 +4873,7 @@ impl Window {
         };
 
         let (integer_origin, subpixel_variant) = crate::fast::glyphs::quantize_origin(glyph_origin);
-        let dilation = self.text_system().glyph_dilation_for_color(color);
+        let dilation = crate::fast::text_smoothing::dilation(self, color);
         let params = RenderGlyphParams {
             font_id,
             glyph_id,
