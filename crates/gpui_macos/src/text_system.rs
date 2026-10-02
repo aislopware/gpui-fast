@@ -157,7 +157,7 @@ impl PlatformTextSystem for MacTextSystem {
 
             let candidate_properties = candidates
                 .iter()
-                .map(|font_id| lock.fonts[font_id.0].properties())
+                .map(|font_id| crate::fast::text_system::properties(&lock.fonts[font_id.0]))
                 .collect::<SmallVec<[_; 4]>>();
 
             let ix = font_kit::matching::find_best_match(

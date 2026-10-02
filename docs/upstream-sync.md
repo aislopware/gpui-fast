@@ -199,6 +199,11 @@ unchanged, and a new entry needs as good a reason.
   default to turn it off; an application designed in weights, as on the web
   with `-webkit-font-smoothing: antialiased`, needs every colour drawn at the
   weight it is set in. `Native`, upstream's behaviour, is the default.
+- On macOS and iOS a face is matched on the CSS weight AppKit gives its Core
+  Text weight (`gpui_apple::fast::font_weight::css_weight`, public for
+  `gpui_ios`), not font-kit's, so `FontWeight(500)` is a family's Medium face
+  rather than its Regular. The call's signature is upstream's; what it
+  returns for 500 and 800 differs.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what
