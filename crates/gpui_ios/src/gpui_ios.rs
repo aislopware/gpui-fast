@@ -11,6 +11,8 @@ pub mod described;
 #[cfg(any(target_os = "ios", test))]
 mod frame_pacing;
 pub mod hardware_keyboard;
+#[cfg(any(target_os = "ios", test))]
+mod keyboard_inset;
 
 #[cfg(target_os = "ios")]
 pub use ios::{IosPlatform, current_platform, text_system};
