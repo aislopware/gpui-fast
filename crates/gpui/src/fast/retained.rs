@@ -21,7 +21,8 @@ use crate::fast::splice::{Prebuilt, Rebuild, Splice, SplicedPrepaint};
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, ElementId, EntityId, GlobalElementId,
-    HitboxId, IntoElement, LayoutId, Pixels, Size, Style, TextStyle, View, ViewElement, Window,
+    HitboxId, IntoElement, LayoutId, Pixels, Point, Size, Style, TextStyle, View, ViewElement,
+    Window,
 };
 use collections::{FxHashMap, FxHashSet};
 use refineable::Refineable;
@@ -123,6 +124,11 @@ pub(crate) enum PaintStatus {
 #[derive(PartialEq)]
 pub(crate) struct RetainedContext {
     pub(crate) bounds: Bounds<Pixels>,
+    /// Where its content was laid out within the device pixel its bounds
+    /// snap to, which decides where what it holds snaps (see
+    /// [`crate::TaffyLayoutEngine::layout_phase`]); none for content laid
+    /// out on its own and drawn at its bounds.
+    pub(crate) phase: Point<f32>,
     pub(crate) content_mask: ContentMask<Pixels>,
     pub(crate) text_style: TextStyle,
     pub(crate) opacity: f32,
@@ -610,11 +616,18 @@ impl Window {
     }
 
     /// Whether the subtree last frame's record `previous` stands for would be
-    /// drawn at `bounds` just as it was.
-    pub(crate) fn retained_context_matches(&self, previous: usize, bounds: Bounds<Pixels>) -> bool {
+    /// drawn at `bounds`, its content laid out at `phase` there, just as it
+    /// was.
+    pub(crate) fn retained_context_matches(
+        &self,
+        previous: usize,
+        bounds: Bounds<Pixels>,
+        phase: Point<f32>,
+    ) -> bool {
         let context = &self.rendered_frame.retained.records[previous].context;
         !crate::fast::layers::paint::inside_layer(self)
             && context.bounds == bounds
+            && context.phase == phase
             && context.opacity == self.element_opacity
             && context.content_mask == self.content_mask()
             && context.text_style == self.text_style()
@@ -923,6 +936,7 @@ impl Window {
                 nested: 0,
                 context: Rc::new(RetainedContext {
                     bounds: Bounds::default(),
+                    phase: Point::default(),
                     content_mask: ContentMask::default(),
                     text_style: TextStyle::default(),
                     opacity: 1.,
@@ -965,6 +979,7 @@ impl Window {
         &mut self,
         recording: RetainedRecording,
         bounds: Bounds<Pixels>,
+        phase: Point<f32>,
         layout: Option<Rc<RetainedLayout>>,
         layout_dependencies: Option<RecordedDependencies>,
         rebuild: Option<Rebuild>,
@@ -1000,6 +1015,7 @@ impl Window {
         }
         let context = RetainedContext {
             bounds,
+            phase,
             content_mask: self.content_mask(),
             text_style: self.text_style(),
             opacity: self.element_opacity,
@@ -1409,7 +1425,7 @@ impl Window {
 
 /// How a view was laid out, for its prepaint to follow up on.
 #[doc(hidden)]
-pub struct ViewLayoutState(ViewLayout);
+pub struct ViewLayoutState(ViewLayout, LayoutId);
 
 /// What a view's prepaint left for its paint.
 #[doc(hidden)]
@@ -1569,7 +1585,7 @@ impl<V: View> ViewElement<V> {
     fn prepaint_view_inner(
         &mut self,
         global_id: Option<&GlobalElementId>,
-        bounds: Bounds<Pixels>,
+        (bounds, phase): (Bounds<Pixels>, Point<f32>),
         layout: ViewLayout,
         window: &mut Window,
         cx: &mut App,
@@ -1619,6 +1635,7 @@ impl<V: View> ViewElement<V> {
                     let record = window.finish_retained_prepaint(
                         recording,
                         bounds,
+                        phase,
                         layout,
                         Some(dependencies),
                         rebuild,
@@ -1627,12 +1644,12 @@ impl<V: View> ViewElement<V> {
                     ViewPrepaint::Built { element, record }
                 }
                 ViewLayout::Retained { previous } => {
-                    if window.retained_context_matches(previous, bounds) {
+                    if window.retained_context_matches(previous, bounds, phase) {
                         return ViewPrepaint::Reused(
                             window.reuse_retained_prepaint(previous, true, cx),
                         );
                     }
-                    self.build_at_retained_layout(previous, global_id, bounds, window, cx)
+                    self.build_at_retained_layout(previous, global_id, (bounds, phase), window, cx)
                 }
                 ViewLayout::Kept(layout) => {
                     // The layer is painted afresh after all: the view is
@@ -1646,7 +1663,7 @@ impl<V: View> ViewElement<V> {
                         Some(layout.root),
                         layout.parent_layout_key,
                         global_id,
-                        bounds,
+                        (bounds, phase),
                         window,
                         cx,
                     )
@@ -1657,20 +1674,22 @@ impl<V: View> ViewElement<V> {
                 }
                 ViewLayout::Spliced(splice) => {
                     let previous = splice.previous();
-                    if window.retained_context_matches(previous, bounds)
+                    if window.retained_context_matches(previous, bounds, phase)
                         && window.splice_layout_holds(&splice)
                     {
                         return window.splice_prepaint(global_id, splice, cx);
                     }
                     window.abandon_splice(splice);
-                    self.build_at_retained_layout(previous, global_id, bounds, window, cx)
+                    self.build_at_retained_layout(previous, global_id, (bounds, phase), window, cx)
                 }
                 ViewLayout::Cached {
                     retained: (layout, layout_dependencies),
                 } => {
                     if !window.dirty_views.contains(&entity_id)
                         && let Some(previous) = window.reusable_retained(global_id, cx)
-                        && window.retained_context_matches(previous, bounds)
+                        // Laid out on its own and drawn at its bounds, its
+                        // content snaps alike wherever its node lies.
+                        && window.retained_context_matches(previous, bounds, Point::default())
                     {
                         return ViewPrepaint::Reused(
                             window.reuse_retained_prepaint(previous, false, cx),
@@ -1697,6 +1716,7 @@ impl<V: View> ViewElement<V> {
                     let record = window.finish_retained_prepaint(
                         recording,
                         bounds,
+                        Point::default(),
                         layout,
                         Some(layout_dependencies),
                         rebuild,
@@ -1720,7 +1740,7 @@ impl<V: View> ViewElement<V> {
         &mut self,
         previous: usize,
         global_id: &GlobalElementId,
-        bounds: Bounds<Pixels>,
+        bounds: (Bounds<Pixels>, Point<f32>),
         window: &mut Window,
         cx: &mut App,
     ) -> ViewPrepaint {
@@ -1742,7 +1762,7 @@ impl<V: View> ViewElement<V> {
         root: Option<LayoutId>,
         parent_layout_key: Option<u64>,
         global_id: &GlobalElementId,
-        bounds: Bounds<Pixels>,
+        (bounds, phase): (Bounds<Pixels>, Point<f32>),
         window: &mut Window,
         cx: &mut App,
     ) -> ViewPrepaint {
@@ -1763,7 +1783,8 @@ impl<V: View> ViewElement<V> {
         let (layout, dependencies) = window.finish_retained_layout(layout_recording, layout_id, cx);
 
         let recording = window.begin_retained(global_id, Some(&dependencies), cx);
-        if Some(layout_id) == root {
+        let in_place = Some(layout_id) == root;
+        if in_place {
             // Measurements taken again are laid out again within the view,
             // which is held at its size. Only a layout that changed can
             // change that size, which the next frame lays out from scratch.
@@ -1780,9 +1801,12 @@ impl<V: View> ViewElement<V> {
             window.request_animation_frame();
         }
         let rebuild = window.rebuild_here(&self.rebuild, None, parent_layout_key);
+        // Laid out on its own, it is drawn at its bounds.
+        let phase = if in_place { phase } else { Point::default() };
         let record = window.finish_retained_prepaint(
             recording,
             bounds,
+            phase,
             layout,
             Some(dependencies),
             rebuild,
@@ -1803,7 +1827,7 @@ pub(crate) fn request_view_layout<V: View>(
     cx: &mut App,
 ) -> (LayoutId, ViewLayoutState) {
     let (layout_id, layout) = view.request_view_layout_inner(global_id, window, cx);
-    (layout_id, ViewLayoutState(layout))
+    (layout_id, ViewLayoutState(layout, layout_id))
 }
 
 /// Prepaints the view as [`crate::Element::prepaint`] does, following up on how
@@ -1817,8 +1841,13 @@ pub(crate) fn prepaint_view<V: View>(
     window: &mut Window,
     cx: &mut App,
 ) -> ViewPrepaintState {
+    let phase = window
+        .layout_engine
+        .as_ref()
+        .unwrap()
+        .layout_phase(layout.1);
     let layout = mem::replace(&mut layout.0, ViewLayout::Taken);
-    ViewPrepaintState(view.prepaint_view_inner(global_id, bounds, layout, window, cx))
+    ViewPrepaintState(view.prepaint_view_inner(global_id, (bounds, phase), layout, window, cx))
 }
 
 /// Paints the view as [`crate::Element::paint`] does.

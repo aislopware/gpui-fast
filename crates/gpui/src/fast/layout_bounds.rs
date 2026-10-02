@@ -12,7 +12,29 @@
 //!
 //! [`TaffyLayoutEngine::layout_bounds`]: crate::TaffyLayoutEngine::layout_bounds
 
-use crate::LayoutId;
+use crate::util::round_half_toward_zero;
+use crate::{LayoutId, Point, TaffyLayoutEngine};
+
+impl TaffyLayoutEngine {
+    /// How far past the device pixel its bounds snap to layout placed the
+    /// node, in device pixels, once [`TaffyLayoutEngine::layout_bounds`] has
+    /// placed it this frame.
+    ///
+    /// Bounds are snapped from where layout places a node in the window, not
+    /// from where it lies in its parent, so what a node holds snaps by where
+    /// the node itself lies within its pixel: a node moved by part of a
+    /// device pixel can snap where it did while a box it centres, half a
+    /// device pixel off a pixel's edge, snaps to the next pixel. Two places
+    /// with the same phase snap everything inside alike, moved by the
+    /// difference of the two.
+    pub(crate) fn layout_phase(&self, id: LayoutId) -> Point<f32> {
+        self.absolute_outer_origins
+            .get(&id)
+            .map_or_else(Point::default, |origin| {
+                origin.map(|c| c - round_half_toward_zero(c))
+            })
+    }
+}
 
 /// One slot of a [`LayoutIdMap`].
 #[derive(Clone, Copy, Default)]
