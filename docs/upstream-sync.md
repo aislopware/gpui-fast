@@ -204,6 +204,20 @@ unchanged, and a new entry needs as good a reason.
   `gpui_ios`), not font-kit's, so `FontWeight(500)` is a family's Medium face
   rather than its Regular. The call's signature is upstream's; what it
   returns for 500 and 800 differs.
+- `edge_fade(child, EdgeFade)`, `EdgeFade`, `EdgeFadeElement`,
+  `Window::with_edge_fade`, `EdgeFadeRamps` and `Scene::edge_fades` are new
+  public API (`fast/edge_fade.rs`, `gpui_apple/src/fast/edge_fade.rs`; docs/
+  retained-mode.md, "Edge fades"). Upstream can fade content at a clipped
+  edge only by painting a gradient of the background's colour over it,
+  which needs an opaque background of one colour; over a window's glass, a
+  video or another tile only fading the content itself works. The index a
+  primitive's fade is kept under goes in the padding every primitive
+  already has: `pad` in a shadow, an underline and the three sprites, and
+  `Background`'s padding, now `pub(crate)`, in a quad and a path. The
+  primitives keep upstream's layout and size. Only Metal draws the fade;
+  the wgpu and Direct3D renderers draw everything unfaded. With
+  `test-support`, `Scene::edge_fade_ramps`, `Scene::add_edge_fade` and
+  `Scene::insert_faded_primitive` let a renderer's test build a faded scene.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what

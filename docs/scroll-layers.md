@@ -77,6 +77,11 @@ each frame it then takes one of three paths (`fast::layers::policy::decide`):
     surfaces;
   - the content changes on at least eight of the last sixteen frames (demotion);
   - paths in the content are covered by something drawn after them.
+  - the content sets edge fades of its own (`edge_fade` inside the
+    container), whose ramps would move with the tiles. A fade around the
+    container is no reason: it is laid over the tiles where they are
+    composited, and the background under it must still be one opaque quad
+    without a fade.
 
 The demotion policy also tracks rebuilding work over the last 32 completed
 layer frames. Virtual lists count the rows and paint operations they actually

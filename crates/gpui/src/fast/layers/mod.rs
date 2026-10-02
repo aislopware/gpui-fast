@@ -107,6 +107,20 @@ pub(crate) struct Layer {
     pub(crate) prepainted: Option<paint::Prepainted>,
 }
 
+/// Calls `mark` with the edge fade of every primitive `layer` keeps
+/// painted (see [`crate::fast::edge_fade`]).
+pub(crate) fn for_each_fade(layer: &Layer, mark: &mut impl FnMut(u32)) {
+    if let Some(record) = &layer.record {
+        for scene in record.content.scenes() {
+            crate::fast::edge_fade::mark_scene(scene, mark);
+        }
+        record.paths.iter().for_each(|path| mark(path.color.pad));
+    }
+    layer
+        .rows
+        .for_each_scene(&mut |scene| crate::fast::edge_fade::mark_scene(scene, mark));
+}
+
 impl Layer {
     /// A generation this layer's content has never had.
     pub(crate) fn next_generation(&mut self) -> u64 {

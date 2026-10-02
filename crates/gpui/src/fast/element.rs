@@ -33,6 +33,7 @@
 //! frame takes that subtree over as it is, however many elements it holds;
 //! only elements drawn again inside one built this frame copy their records.
 
+use crate::fast::edge_fade::WindowFades;
 use crate::fast::layout_key::{KeyPosition, key_position, pop_layout_key, push_layout_key};
 use crate::fast::shift::{
     Masks, Noted, Shift, ShiftedOperation, clear_of_zero, known_inside, replay_shifted,
@@ -278,6 +279,8 @@ struct ElementContext {
     /// [`crate::TaffyLayoutEngine::layout_phase`]).
     phase: Point<f32>,
     content_mask: ContentMask<Pixels>,
+    /// The edge fade it was drawn in (see [`crate::fast::edge_fade`]).
+    fade: u32,
     opacity: f32,
     text_style: Rc<TextStyle>,
     rem_size: Pixels,
@@ -288,6 +291,7 @@ impl ElementContext {
         self.bounds == other.bounds
             && self.phase == other.phase
             && self.content_mask == other.content_mask
+            && self.fade == other.fade
             && self.opacity == other.opacity
             && self.rem_size == other.rem_size
             && same_text_style(&self.text_style, &other.text_style)
@@ -1900,10 +1904,25 @@ fn context(layout_id: LayoutId, window: &mut Window) -> ElementContext {
             .unwrap()
             .layout_phase(layout_id),
         content_mask: window.content_mask(),
+        fade: crate::fast::edge_fade::current(window),
         opacity: window.element_opacity,
         text_style: crate::fast::text_style::text_style(window),
         rem_size: window.rem_size(),
     }
+}
+
+/// Calls `mark` with the edge fade every element of `records` was drawn in.
+pub(crate) fn for_each_fade(records: &ElementRecords, mark: &mut impl FnMut(u32)) {
+    let mut each =
+        |records: &[ElementRecord]| records.iter().for_each(|record| mark(record.context.fade));
+    for root in &records.roots {
+        match &root.records {
+            RootRecords::Pending(records) => each(records),
+            RootRecords::Frozen(subtree) => each(&subtree.records),
+            RootRecords::Building | RootRecords::Lost => {}
+        }
+    }
+    each(&records.building);
 }
 
 /// Starts this frame's record of an element being prepainted, returning
@@ -2048,6 +2067,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
                 &moved.shift,
                 &window.rendered_frame.scene,
                 &mut window.next_frame.retained.elements.shifted,
+                &mut window.fast_edge_fade,
             )?;
         }
         (prepaint_range, paint_range, moved)
@@ -2072,8 +2092,8 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
     }
     window.next_frame.retained.reused_any = true;
     let target = &mut window.next_frame.retained.elements;
-    let placed = |record: &ElementRecord| match &moved {
-        Some(moved) => moved.record(record),
+    let placed = |record: &ElementRecord, fades: &mut WindowFades| match &moved {
+        Some(moved) => moved.record(record, fades),
         None => record.clone(),
     };
 
@@ -2084,6 +2104,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
             previous_motion(kept.key, window)
         };
         let target = &mut window.next_frame.retained.elements;
+        let fades = &mut window.fast_edge_fade;
         // Drawn again as a root: its subtree is taken over as it is, or,
         // when it was nested in another last frame or moved, cut out of
         // that one's.
@@ -2100,7 +2121,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
                             ..record.prepaint_range.end.minus(from_prepaint),
                         paint_range: record.paint_range.start.minus(from_paint)
                             ..record.paint_range.end.minus(from_paint),
-                        ..placed(record)
+                        ..placed(record, fades)
                     })
                     .collect(),
                 by_key: OnceCell::new(),
@@ -2138,6 +2159,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
         &target.roots[target.building_root as usize].prepaint_start,
         &start,
     );
+    let fades = &mut window.fast_edge_fade;
     target
         .building
         .extend(subtree.records[first..=last].iter().map(|record| {
@@ -2157,7 +2179,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
                     paint => paint,
                 },
                 rest: Rest::default(),
-                ..placed(record)
+                ..placed(record, fades)
             }
         }));
     Some(Phase::ReusedNested {
@@ -2185,8 +2207,15 @@ struct Moved {
 
 impl Moved {
     /// `record`, of last frame, where it is drawn now.
-    fn record(&self, record: &ElementRecord) -> ElementRecord {
+    fn record(&self, record: &ElementRecord, fades: &mut WindowFades) -> ElementRecord {
         let mut context = record.context.clone();
+        // What last frame refers to keeps its fade's slot (see
+        // `crate::fast::edge_fade::finish_frame`).
+        context.fade = self
+            .shift
+            .fades
+            .map(context.fade, fades)
+            .unwrap_or(self.shift.fades.new);
         let offset = self.shift.by;
         context.bounds.origin += offset;
         let moved = Bounds {
@@ -2303,6 +2332,11 @@ fn moved_to(
             offset: scaled,
             by: offset,
             masks,
+            fades: crate::fast::edge_fade::FadeShift {
+                old: old.fade,
+                new: context.fade,
+                delta: scaled,
+            },
         },
         content_masks,
     })
@@ -2332,6 +2366,7 @@ fn can_move(
     shift: &Shift,
     previous: &Scene,
     moved: &mut Vec<ShiftedOperation>,
+    fades: &mut WindowFades,
 ) -> Option<Range<u32>> {
     let (from, to) = (&prepaint.start, &prepaint.end);
     let placed_in_prepaint = from.hitboxes_index != to.hitboxes_index
@@ -2347,7 +2382,13 @@ fn can_move(
     let start = moved.len() as u32;
     (!placed_in_prepaint
         && !placed_in_paint
-        && shift_operations(previous, from.scene_index..to.scene_index, shift, moved))
+        && shift_operations(
+            previous,
+            from.scene_index..to.scene_index,
+            shift,
+            moved,
+            fades,
+        ))
     .then(|| start..moved.len() as u32)
 }
 

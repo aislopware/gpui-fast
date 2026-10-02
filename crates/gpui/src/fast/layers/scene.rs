@@ -295,6 +295,11 @@ impl LayerContent {
         }
     }
 
+    /// The scenes of the content's parts.
+    pub(crate) fn scenes(&self) -> impl Iterator<Item = &Scene> {
+        self.parts.iter().map(|part| &*part.scene)
+    }
+
     /// The content's scene, when it is one part, as a `div`'s is.
     pub fn scene(&self) -> Option<&Scene> {
         match &*self.parts {

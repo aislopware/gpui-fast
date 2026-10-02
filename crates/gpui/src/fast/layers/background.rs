@@ -75,7 +75,10 @@ pub(crate) fn bake_operations(
 
 fn covers(quad: &Quad, viewport: Bounds<ScaledPixels>) -> bool {
     let background = &quad.background;
-    if background.tag != BackgroundTag::Solid || background.solid.a < 1. {
+    if background.tag != BackgroundTag::Solid
+        || background.solid.a < 1.
+        || crate::fast::edge_fade::quad_fades(quad)
+    {
         return false;
     }
     let visible = quad.bounds.intersect(&quad.content_mask.bounds);

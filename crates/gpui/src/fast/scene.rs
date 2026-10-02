@@ -48,6 +48,9 @@ pub(crate) struct Painted {
     noted: Noting,
     /// The stretches painted under keys. See [`crate::fast::keyed`].
     pub(crate) keyed: crate::fast::keyed::KeyedPaints,
+    /// The fade painting is in, and the window's table of fades. See
+    /// [`crate::fast::edge_fade`].
+    pub(crate) fades: crate::fast::edge_fade::SceneFades,
 }
 
 /// The keys a kind's primitives were sorted by, and the order sorting put
@@ -600,36 +603,62 @@ impl Scene {
                 )),
             }
         }
-        lines.extend(self.shadows.iter().map(|shadow| format!("{shadow:?}")));
-        lines.extend(self.quads.iter().map(|quad| format!("{quad:?}")));
+        // Two windows number their edge fades apart: a fade is told by its
+        // ramps.
+        let fade = |id: u32| crate::fast::edge_fade::describe(self, id);
+        lines.extend(self.shadows.iter().map(|shadow| {
+            let unfaded = crate::Shadow { pad: 0, ..*shadow };
+            format!("{unfaded:?}{}", fade(shadow.pad))
+        }));
         lines.extend(
-            self.underlines
+            self.quads
                 .iter()
-                .map(|underline| format!("{underline:?}")),
+                .map(|quad| format!("{quad:?}{}", fade(quad.background.pad))),
         );
+        lines.extend(self.underlines.iter().map(|underline| {
+            let unfaded = crate::Underline {
+                pad: 0,
+                ..*underline
+            };
+            format!("{unfaded:?}{}", fade(underline.pad))
+        }));
         lines.extend(self.monochrome_sprites.iter().map(|sprite| {
             format!(
-                "monochrome sprite {} {:?} {:?} {:?}",
-                sprite.order, sprite.bounds, sprite.content_mask, sprite.color
+                "monochrome sprite {} {:?} {:?} {:?}{}",
+                sprite.order,
+                sprite.bounds,
+                sprite.content_mask,
+                sprite.color,
+                fade(sprite.pad)
             )
         }));
         lines.extend(self.subpixel_sprites.iter().map(|sprite| {
             format!(
-                "subpixel sprite {} {:?} {:?} {:?}",
-                sprite.order, sprite.bounds, sprite.content_mask, sprite.color
+                "subpixel sprite {} {:?} {:?} {:?}{}",
+                sprite.order,
+                sprite.bounds,
+                sprite.content_mask,
+                sprite.color,
+                fade(sprite.pad)
             )
         }));
         lines.extend(self.polychrome_sprites.iter().map(|sprite| {
             format!(
-                "polychrome sprite {} {:?} {:?}",
-                sprite.order, sprite.bounds, sprite.content_mask
+                "polychrome sprite {} {:?} {:?}{}",
+                sprite.order,
+                sprite.bounds,
+                sprite.content_mask,
+                fade(sprite.pad)
             )
         }));
-        lines.extend(
-            self.paths
-                .iter()
-                .map(|path| format!("path {} {:?}", path.order, path.bounds)),
-        );
+        lines.extend(self.paths.iter().map(|path| {
+            format!(
+                "path {} {:?}{}",
+                path.order,
+                path.bounds,
+                fade(path.color.pad)
+            )
+        }));
         lines
     }
 }

@@ -44,6 +44,7 @@ pub(crate) fn draw_tiles(
                 pipeline: &renderer.polychrome_sprites_pipeline_state,
                 instances: &instance_bindings.polychrome_sprites,
                 fragment_reads_instances: true,
+                fades: Some(&instance_bindings.fades),
                 atlas: Some(texture),
                 range: run,
             },

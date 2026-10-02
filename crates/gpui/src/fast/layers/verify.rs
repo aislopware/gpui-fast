@@ -78,6 +78,7 @@ fn expand_layer(
     translation: Point<ScaledPixels>,
     viewport: &Bounds<ScaledPixels>,
     composited: &[TileCoord],
+    fade: u32,
 ) -> Vec<Primitive> {
     let mut scratch = Scene::default();
     for operation in layer.content.operations() {
@@ -86,6 +87,9 @@ fn expand_layer(
                 let mut moved =
                     crate::fast::layers::scene::translate_primitive(&primitive, translation);
                 clip_to(&mut moved, viewport);
+                // The edge fade the tiles were composited in fades their
+                // content.
+                crate::fast::edge_fade::stamp_with(fade, &mut moved);
                 scratch.insert_primitive(moved);
             }
             Operation::StartLayer(bounds) => scratch.push_layer(Bounds {
@@ -117,7 +121,7 @@ fn expand_layer(
                     composited.contains(&TileCoord { x, y }),
                     "no tile composited at ({x}, {y}) of layer {:?}, under {}",
                     layer.key,
-                    describe(primitive)
+                    describe_unfaded(primitive)
                 );
             }
         }
@@ -130,7 +134,12 @@ fn expand_layer(
 fn expanded_sequence(scene: &Scene) -> Vec<Primitive> {
     let mut composited: HashMap<
         LayerKey,
-        (Point<ScaledPixels>, Bounds<ScaledPixels>, Vec<TileCoord>),
+        (
+            Point<ScaledPixels>,
+            Bounds<ScaledPixels>,
+            Vec<TileCoord>,
+            u32,
+        ),
     > = HashMap::new();
     let mut first_tiles: Vec<(usize, LayerKey)> = Vec::new();
     let mut sequence = Vec::new();
@@ -148,12 +157,12 @@ fn expanded_sequence(scene: &Scene) -> Vec<Primitive> {
             let viewport = sprite.content_mask.bounds;
             let entry = composited.entry(key).or_insert_with(|| {
                 first_tiles.push((sequence.len(), key));
-                (translation, viewport, Vec::new())
+                (translation, viewport, Vec::new(), sprite.pad)
             });
             assert_eq!(
-                (entry.0, entry.1),
-                (translation, viewport),
-                "tiles of layer {key:?} composited at different offsets or clips"
+                (entry.0, entry.1, entry.3),
+                (translation, viewport, sprite.pad),
+                "tiles of layer {key:?} composited at different offsets, clips or fades"
             );
             entry.2.push(tile);
             continue;
@@ -161,8 +170,14 @@ fn expanded_sequence(scene: &Scene) -> Vec<Primitive> {
         sequence.push(primitive);
     }
     for (at, key) in first_tiles.into_iter().rev() {
-        let (translation, viewport, tiles) = &composited[&key];
-        let content = expand_layer(layer_frame(scene, key), *translation, viewport, tiles);
+        let (translation, viewport, tiles, fade) = &composited[&key];
+        let content = expand_layer(
+            layer_frame(scene, key),
+            *translation,
+            viewport,
+            tiles,
+            *fade,
+        );
         sequence.splice(at..at, content);
     }
     sequence
@@ -177,9 +192,18 @@ fn layer_frame(scene: &Scene, key: LayerKey) -> &LayerFrame {
         .unwrap_or_else(|| panic!("a tile of layer {key:?}, which the scene has no frame of"))
 }
 
-/// A primitive as text, without its draw order or where its atlas put its
-/// raster, which two windows drawing the same thing may number differently.
-fn describe(primitive: &Primitive) -> String {
+/// A primitive of `scene` as text, without its draw order, where its atlas
+/// put its raster or the number its edge fade has in the window's table,
+/// which two windows drawing the same thing may number differently: its
+/// fade is told by its ramps.
+fn describe(primitive: &Primitive, scene: &Scene) -> String {
+    let fade = crate::fast::edge_fade::describe(scene, crate::fast::edge_fade::fade_of(primitive));
+    let mut primitive = primitive.clone();
+    crate::fast::edge_fade::unfade(&mut primitive);
+    format!("{}{fade}", describe_unfaded(&primitive))
+}
+
+fn describe_unfaded(primitive: &Primitive) -> String {
     fn neutral(tile: AtlasTile) -> AtlasTile {
         AtlasTile {
             texture_id: AtlasTextureId {
@@ -250,7 +274,7 @@ pub(crate) fn drawn(scene: &Scene) -> Vec<String> {
     }
     let mut lines: Vec<(u32, String)> = depths
         .into_iter()
-        .zip(sequence.iter().map(describe))
+        .zip(sequence.iter().map(|primitive| describe(primitive, scene)))
         .collect();
     lines.sort();
     lines

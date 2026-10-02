@@ -132,6 +132,8 @@ pub(crate) struct RetainedContext {
     pub(crate) content_mask: ContentMask<Pixels>,
     pub(crate) text_style: TextStyle,
     pub(crate) opacity: f32,
+    /// The edge fade it was drawn in (see [`crate::fast::edge_fade`]).
+    pub(crate) fade: u32,
 }
 
 /// What it takes to lay a view out as it was laid out last frame without
@@ -630,6 +632,7 @@ impl Window {
             && context.phase == phase
             && context.opacity == self.element_opacity
             && context.content_mask == self.content_mask()
+            && context.fade == crate::fast::edge_fade::current(self)
             && context.text_style == self.text_style()
     }
 
@@ -940,6 +943,7 @@ impl Window {
                     content_mask: ContentMask::default(),
                     text_style: TextStyle::default(),
                     opacity: 1.,
+                    fade: crate::fast::edge_fade::NONE,
                 }),
                 dependencies: RenderDependencies::default(),
                 own_dependencies: RenderDependencies::default(),
@@ -1019,6 +1023,7 @@ impl Window {
             content_mask: self.content_mask(),
             text_style: self.text_style(),
             opacity: self.element_opacity,
+            fade: crate::fast::edge_fade::current(self),
         };
         let end = self.prepaint_index();
         let retained = &mut self.next_frame.retained;
@@ -1390,6 +1395,7 @@ pub(crate) fn finish_retained_frame(window: &mut Window) {
     window.next_frame.retained.finish_frame();
     crate::fast::layers::paint::finish_frame(window);
     crate::fast::layers::finish_frame(window);
+    crate::fast::edge_fade::finish_frame(window);
 }
 
 // These reach into the window's layout state, for views drawn again at the

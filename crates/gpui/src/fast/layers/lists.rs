@@ -105,6 +105,13 @@ pub(crate) struct LayerRows {
 }
 
 impl LayerRows {
+    /// Calls `f` with the scene of every row the layer holds.
+    pub(crate) fn for_each_scene(&self, f: &mut impl FnMut(&Scene)) {
+        for row in self.rows.values() {
+            f(&row.part.scene);
+        }
+    }
+
     /// Ends the frame being drawn.
     pub(crate) fn finish_frame(&mut self) {
         self.frame = None;
@@ -361,6 +368,10 @@ struct RowPaint {
     operations: Range<usize>,
     paint: Range<PaintIndex>,
     hovers: Vec<(HitboxId, bool)>,
+    /// Whether the row set edge fades of its own, which move with what it
+    /// painted where the layer's tiles can't carry them (see
+    /// [`crate::fast::edge_fade`]).
+    fades: bool,
 }
 
 /// What a `uniform_list` does with its rows this frame: nothing new, or
@@ -1894,11 +1905,13 @@ pub(crate) fn paint_row(
     window.take_hover_reads();
     let hovers_start = window.retained_state.hover_dependencies.len();
     let paint_start = window.paint_index();
+    let fades_before = crate::fast::edge_fade::applied(window);
     set_current_row(window, &id, Some(row));
     {
         f(window, cx);
     }
     set_current_row(window, &id, None);
+    let fades = crate::fast::edge_fade::applied(window) != fades_before;
     let paint_end = window.paint_index();
     let end = window.next_frame.scene.paint_operations.len();
     window.take_hover_reads();
@@ -1909,6 +1922,7 @@ pub(crate) fn paint_row(
             operations: start..end,
             paint: paint_start..paint_end,
             hovers,
+            fades,
         });
     }
 }
@@ -2053,6 +2067,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
     }
     let mut operations: Vec<Option<Operation>> =
         crate::fast::scene::operations(&painted).map(Some).collect();
+    let own_fades = paint.spans.iter().any(|span| span.fades);
     for span in paint.spans {
         let Some(slot) = frame.slots.get(&span.row) else {
             continue;
@@ -2080,12 +2095,15 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
         let (tile_hashes, reach) = part_tile_hashes(&row_operations, paint::TILE_SIZE);
         // Content placing a native is drawn into the frame as content with
         // paths is (see `paint::lift_paths`).
-        let has_paths = row_operations.iter().any(|operation| {
-            matches!(
-                operation,
-                Operation::Primitive(Primitive::Path(_)) | Operation::Native(_)
-            )
-        });
+        // So is a row that set fades of its own, painted at the translation
+        // it is drawn at this frame, after which the layer is let go.
+        let has_paths = span.fades
+            || row_operations.iter().any(|operation| {
+                matches!(
+                    operation,
+                    Operation::Primitive(Primitive::Path(_)) | Operation::Native(_)
+                )
+            });
         // The fork's scene names each primitive by its place in its kind's
         // list, so the row's scene is built by inserting them.
         let mut scene = Scene::default();
@@ -2240,6 +2258,10 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
     }
     policy::note_work(window, id, work);
     paint::insert_layer(window, id, translation, dirtied);
+    if own_fades {
+        clear_rows(window, id, &frame);
+        policy::defer_unbaked(window, id);
+    }
 }
 
 /// Notes, for the layer of the list `id`, where the records of its rows lie

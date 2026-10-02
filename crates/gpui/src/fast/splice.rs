@@ -251,8 +251,10 @@ impl Window {
         rebuild: &Rebuild,
         content_mask: ContentMask<Pixels>,
         opacity: f32,
+        fade: u32,
     ) -> Inherited {
         let parent_ids = &id.0[..id.0.len() - 1];
+        crate::fast::edge_fade::enter(&mut self.next_frame.scene, fade);
         Inherited {
             element_id_stack: mem::replace(
                 &mut self.element_id_stack,
@@ -282,6 +284,7 @@ impl Window {
         self.element_offset_stack = inherited.element_offset_stack;
         self.rem_size_override_stack = inherited.rem_size_override_stack;
         self.element_opacity = inherited.element_opacity;
+        crate::fast::edge_fade::leave(&mut self.next_frame.scene);
     }
 
     /// Lays out the view `id`, dirty only because views nested in it are, as
@@ -521,7 +524,13 @@ impl Window {
         let recording = self.record_claimed_layout_keys();
         let element_states_start = self.next_frame.accessed_element_states.len();
         let dependency_recording = cx.begin_recording_dependencies();
-        let inherited = self.enter_gap(&global_id, &rebuild, context.content_mask, context.opacity);
+        let inherited = self.enter_gap(
+            &global_id,
+            &rebuild,
+            context.content_mask,
+            context.opacity,
+            context.fade,
+        );
         let mut view = ViewElement::new(rebuild.view.clone()).rebuildable(rebuild.view.clone());
         view.cached_style = rebuild.cached_style.clone();
         // What its element's request for layout does, inside the view around
@@ -708,8 +717,13 @@ impl Window {
             let copied_node = parent
                 .and_then(|parent| dispatch.copied(parent))
                 .filter(|&node| self.next_frame.dispatch_tree.active_node_id() == Some(node));
-            let inherited =
-                self.enter_gap(&gap_id, &rebuild, context.content_mask, context.opacity);
+            let inherited = self.enter_gap(
+                &gap_id,
+                &rebuild,
+                context.content_mask,
+                context.opacity,
+                context.fade,
+            );
             // What its element's prepaint does, inside the view around it.
             let bounds = self.layout_bounds(gap.layout_id);
             self.element_id_stack.push(gap.element_id());
@@ -931,8 +945,13 @@ impl Window {
 
             segments.push((cursor.clone(), self.paint_index()));
             self.reuse_paint(cursor.clone()..gap_range.start.clone());
-            let inherited =
-                self.enter_gap(&gap_id, &rebuild, context.content_mask, context.opacity);
+            let inherited = self.enter_gap(
+                &gap_id,
+                &rebuild,
+                context.content_mask,
+                context.opacity,
+                context.fade,
+            );
             // What its element's paint does, inside the view around it.
             let element_id = gap.element_id();
             if let Some((node, prepaint)) = gap.prepainted.as_mut() {
