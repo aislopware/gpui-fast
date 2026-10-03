@@ -49,6 +49,7 @@ pub(crate) mod text;
 pub mod text_smoothing;
 pub(crate) mod text_style;
 pub(crate) mod transition;
+pub(crate) mod value_transition;
 
 #[cfg(test)]
 mod tests;

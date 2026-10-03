@@ -231,6 +231,23 @@ unchanged, and a new entry needs as good a reason.
   `App::reduce_motion` turns it off. Unused, it is one empty pointer in
   `Interactivity` and one test in its paint (`transition_bench` in
   `fast/tests/transition.rs`).
+- `ValueTransition`, `ValueTransitionState`, `Window::use_keyed_transition`
+  and `Window::use_transition` are new public API
+  (`fast/value_transition.rs`), ported from gpui-ce's `Transition`
+  (<https://github.com/gpui-ce/gpui-ce>, `crates/gpui/src/transition.rs`,
+  the duration-based form before its `Motion` rewrite; Apache-2.0, the
+  gpui-ce contributors; the notice is kept at the top of the file).
+  Upstream's `with_animation` restarts from its start, and `with_spring`
+  wraps one element; neither gives a surface one value, eased over a
+  duration, that every property it draws can follow and that turns back
+  from where it stands. Changed from gpui-ce: the executor's clock, so tests
+  advance it; the value shown when the goal changes is taken at that moment
+  rather than from the last frame drawn; a turn back takes only the time
+  the way back covers, as CSS transitions shorten a reversal;
+  `App::reduce_motion` applies every change at once; a changed goal
+  notifies the view holding the value. No upstream code calls it, so it
+  costs nothing unused; a hundred values at rest add about 0.02 ms to a
+  frame (`value_transition_bench` in `fast/tests/value_transition.rs`).
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what
