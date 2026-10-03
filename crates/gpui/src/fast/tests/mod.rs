@@ -38,3 +38,4 @@ mod test_window;
 mod text;
 mod text_shaping;
 mod text_smoothing;
+mod transition;

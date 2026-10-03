@@ -1183,6 +1183,7 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         group_hover_style,
         active_style,
         group_active_style,
+        fast_transition,
         drag_over_styles,
         group_drag_over_styles,
         mouse_down_listeners,
@@ -1242,6 +1243,7 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         && group_hover_style.is_none()
         && active_style.is_none()
         && group_active_style.is_none()
+        && fast_transition.is_none()
         && drag_over_styles.is_empty()
         && group_drag_over_styles.is_empty()
         && mouse_down_listeners.is_empty()

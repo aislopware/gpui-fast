@@ -128,6 +128,7 @@ pub use fast::stats::LayoutStats;
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::subscriptions::SubscriptionCounts;
 pub use fast::text_smoothing::TextSmoothing;
+pub use fast::transition::StateTransition;
 pub use geometry::*;
 pub use gestures::*;
 pub use global::*;

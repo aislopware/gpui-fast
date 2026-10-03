@@ -1583,6 +1583,16 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// Ease this element's background and border colours into and out of its
+    /// hover, active, focus and drag-over styles, rather than swapping them.
+    fn transition(mut self, transition: crate::fast::transition::StateTransition) -> Self
+    where
+        Self: Sized,
+    {
+        crate::fast::transition::set(self.interactivity(), transition);
+        self
+    }
+
     /// Bind the given callback to click events of this element.
     /// The fluent API equivalent to [`Interactivity::on_click`].
     ///
@@ -2179,6 +2189,8 @@ pub struct Interactivity {
     pub(crate) group_hover_style: crate::fast::interactivity::Rare<GroupStyle>,
     pub(crate) active_style: Option<Box<StyleRefinement>>,
     pub(crate) group_active_style: crate::fast::interactivity::Rare<GroupStyle>,
+    pub(crate) fast_transition:
+        crate::fast::interactivity::Rare<crate::fast::transition::StateTransition>,
     pub(crate) drag_over_styles: crate::fast::interactivity::LazyVec<(
         TypeId,
         Box<dyn Fn(&dyn Any, &mut Window, &mut App) -> StyleRefinement>,
@@ -2555,6 +2567,8 @@ impl Interactivity {
                     element_state.map(|element_state| element_state.unwrap_or_default());
 
                 let style = self.compute_style_internal(hitbox, element_state.as_mut(), window, cx);
+                let style =
+                    crate::fast::transition::paint(self, style, &mut element_state, window, cx);
 
                 #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
                 if let Some(debug_selector) = &self.debug_selector {
@@ -3672,6 +3686,8 @@ pub struct InteractiveElementState {
     ongoing_scroll: Option<Rc<RefCell<OngoingScroll>>>,
     pub(crate) active_tooltip: Option<Rc<RefCell<Option<ActiveTooltip>>>>,
     long_press_tooltip_active: Option<Rc<Cell<bool>>>,
+    pub(crate) fast_transition:
+        crate::fast::interactivity::Rare<crate::fast::transition::TransitionState>,
 }
 
 /// Whether or not the element or a group that contains it is clicked by the mouse.
