@@ -117,17 +117,67 @@ mod tests {
         }
     }
 
+    /// A line is shaped at the size it is asked for, so it is as wide as Core
+    /// Text sets it with the font at exactly that size: at sizes on either
+    /// side of 20 pt, where San Francisco changes how it tracks its letters.
+    /// Every other run of a line, the first among them, used to be shaped a
+    /// float step above its size to keep ligatures from joining runs, and
+    /// Core Text tracks a size off the point differently: 0.11% wider at 20 pt
+    /// and 0.1% narrower at 11.
+    #[test]
+    fn a_line_is_as_wide_as_core_text_sets_it_at_its_size() {
+        use core_foundation::{
+            attributed_string::CFMutableAttributedString,
+            base::{CFRange, TCFType as _},
+            string::CFString,
+        };
+        use core_text::{line::CTLine, string_attributes::kCTFontAttributeName};
+
+        let fonts = MacTextSystem::new();
+        let font_id = fonts.font_id(&font(".SystemUIFont")).unwrap();
+        let line = "Sphinx of black quartz, judge my vow";
+        for size in [11., 13., 17., 19., 20., 21., 26., 34.] {
+            let ours = fonts
+                .layout_line(
+                    line,
+                    px(size),
+                    &[FontRun {
+                        font_id,
+                        len: line.len(),
+                    }],
+                )
+                .width;
+
+            let native = core_text::font::new_from_name(".AppleSystemUIFont", f64::from(size))
+                .expect("the system UI font");
+            let mut string = CFMutableAttributedString::new();
+            string.replace_str(&CFString::new(line), CFRange::init(0, 0));
+            // SAFETY: the range is the whole string just written, and the value
+            // is a CTFont, the type `kCTFontAttributeName` takes.
+            unsafe {
+                string.set_attribute(
+                    CFRange::init(0, string.char_len()),
+                    kCTFontAttributeName,
+                    &native,
+                );
+            }
+            let theirs = CTLine::new_with_attributed_string(string.as_concrete_TypeRef())
+                .get_typographic_bounds()
+                .width;
+            assert_eq!(ours, gpui::Pixels::from(theirs), "at {size} pt");
+        }
+    }
+
     /// Fonts are made once per size and kept, so a line laid out with a kept
     /// font has to come out exactly as it did with a new one: the same glyphs
-    /// in the same places, however many runs split it into sizes a hair
-    /// apart, and never mixed up with the same font at another size.
+    /// in the same places, however many runs split it, and never mixed up
+    /// with the same font at another size.
     #[test]
     fn lines_laid_out_with_kept_fonts_match_the_first_layout() {
         let fonts = MacTextSystem::new();
         let font_id = fonts.font_id(&font("Helvetica")).unwrap();
         let line = "AVAWAY fi ffi 12.5 office";
-        // Runs alternate between two sizes a hair apart, to keep ligatures
-        // from joining across them.
+        // Several runs of one font, which Core Text shapes as one.
         let runs = [5, 3, 4, 5, 8].map(|len| FontRun { font_id, len });
         let shape = |size| {
             let layout = fonts.layout_line(line, px(size), &runs);
