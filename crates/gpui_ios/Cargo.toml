@@ -45,8 +45,16 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
     "UIAccessibility",
     "UIAccessibilityConstants",
     "UIAccessibilityElement",
+    "UICommand",
+    "UIImage",
+    "UIKeyCommand",
+    "UIMainMenuSystem",
     "UIMenu",
+    "UIMenuBuilder",
+    "UIMenuElement",
+    "UIMenuSystem",
     "UIResponder",
+    "block2",
     "objc2-core-foundation",
 ] }
 parking_lot.workspace = true

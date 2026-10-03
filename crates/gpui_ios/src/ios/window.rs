@@ -99,6 +99,8 @@ fn register_view_controller_class() -> &'static AnyClass {
 
         /// A menu command on its way up the responder chain (`ios::menus`).
         extern "C" fn menu_command(this: *mut AnyObject, _sel: Sel, sender: *mut AnyObject) {
+            // SAFETY: UIKit sends an action with nil or a sender it keeps alive for the call.
+            let sender = unsafe { sender.as_ref() };
             super::menus::perform(sender, window_of_view_controller(this));
         }
 
@@ -108,9 +110,11 @@ fn register_view_controller_class() -> &'static AnyClass {
             action: Sel,
             sender: *mut AnyObject,
         ) -> Bool {
+            // SAFETY: UIKit asks with nil or a sender it keeps alive for the call.
+            let answer = super::menus::answers(action, unsafe { sender.as_ref() });
             // SAFETY: `this` is a GPUIViewController, a UIViewController subclass, so the
             // superclass answers every other action as UIResponder does.
-            super::menus::answers(action, sender).unwrap_or_else(|| unsafe {
+            answer.unwrap_or_else(|| unsafe {
                 msg_send![super(this, class!(UIViewController)), canPerformAction: action, withSender: sender]
             })
         }

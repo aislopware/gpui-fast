@@ -153,8 +153,6 @@ pub enum Element {
     Submenu {
         /// Its title.
         title: String,
-        /// Whether it is greyed out.
-        disabled: bool,
         /// What it holds.
         children: Vec<Element>,
     },
@@ -173,7 +171,8 @@ pub struct Command {
     pub keystroke: Option<Keystroke>,
     /// Shown with a check mark.
     pub checked: bool,
-    /// Greyed out whatever the action's availability.
+    /// Greyed out whatever the action's availability: the item, or a menu holding it, is
+    /// disabled.
     pub disabled: bool,
     /// The standard edit command it stands for, whose UIKit twin it replaces.
     pub os_action: Option<EditCommand>,
@@ -244,8 +243,6 @@ pub struct TopMenu {
     pub title: String,
     /// Where it goes.
     pub place: Place,
-    /// Whether it is greyed out.
-    pub disabled: bool,
     /// What it holds.
     pub children: Vec<Element>,
 }
@@ -303,16 +300,17 @@ pub fn describe(
             TopMenu {
                 title: menu.name.to_string(),
                 place,
-                disabled: menu.disabled,
-                children: items(&menu.items, keymap, actions, &mut taken),
+                children: items(&menu.items, menu.disabled, keymap, actions, &mut taken),
             }
         })
         .collect()
 }
 
-/// A menu's items, cut into inline groups at its separators when it has any.
+/// A menu's items, cut into inline groups at its separators when it has any, all greyed when
+/// `disabled`.
 fn items(
     items: &[MenuItem],
+    disabled: bool,
     keymap: &Keymap,
     actions: &mut Vec<Box<dyn Action>>,
     taken: &mut Vec<KeyChord>,
@@ -324,11 +322,16 @@ fn items(
             // The Services menu and its like are the Mac's own.
             MenuItem::SystemMenu(_) => {}
             MenuItem::Submenu(menu) => {
-                let children = self::items(&menu.items, keymap, actions, taken);
+                let children = self::items(
+                    &menu.items,
+                    disabled || menu.disabled,
+                    keymap,
+                    actions,
+                    taken,
+                );
                 if let Some(group) = groups.last_mut() {
                     group.push(Element::Submenu {
                         title: menu.name.to_string(),
-                        disabled: menu.disabled,
                         children,
                     });
                 }
@@ -338,7 +341,7 @@ fn items(
                 action,
                 os_action,
                 checked,
-                disabled,
+                disabled: item_disabled,
             } => {
                 let keystroke = keystroke_for(action.as_ref(), keymap);
                 let chord = keystroke
@@ -354,7 +357,7 @@ fn items(
                     keystroke: chord.as_ref().and(keystroke),
                     chord,
                     checked: *checked,
-                    disabled: *disabled,
+                    disabled: disabled || *item_disabled,
                     os_action: os_action.map(EditCommand::from),
                 };
                 actions.push(action.boxed_clone());
@@ -372,12 +375,19 @@ fn items(
 }
 
 /// Whether a press of `held` modifiers is the keyboard asking for `keystroke`'s command: the
-/// modifiers it was pressed with are the chord's. A pick from the menu bar holds none.
+/// modifiers it was pressed with are the chord's. A pick from the menu bar holds none. A
+/// symbol is spelled without the Shift that typed it ("cmd-?"), as the hardware keyboard
+/// spells it, so Shift may be held for one.
 pub fn pressed(keystroke: &Keystroke, held: Modifiers) -> bool {
     let chord = keystroke.modifiers;
+    let mut chars = keystroke.key.chars();
+    let symbol = matches!(
+        (chars.next(), chars.next()),
+        (Some(c), None) if !c.is_alphanumeric() && !c.is_whitespace()
+    );
     held.control == chord.control
         && held.alt == chord.alt
-        && held.shift == chord.shift
+        && (held.shift == chord.shift || symbol && !chord.shift)
         && held.platform == chord.platform
 }
 
@@ -553,6 +563,44 @@ mod tests {
     }
 
     #[test]
+    fn a_disabled_menu_greys_every_command_in_it() {
+        let menus = vec![
+            Menu::new("App").items([MenuItem::action("New Shell", NewShell)]),
+            Menu::new("Layout")
+                .items([
+                    MenuItem::action("Commands…", Palette),
+                    MenuItem::submenu(Menu::new("More").items([MenuItem::action("Other", Other)])),
+                ])
+                .disabled(true),
+            Menu::new("Tools").items([
+                MenuItem::action("Find…", Find),
+                MenuItem::submenu(
+                    Menu::new("Quiet ones")
+                        .items([MenuItem::action("Quiet", Quiet)])
+                        .disabled(true),
+                ),
+            ]),
+        ];
+        let mut actions = Vec::new();
+        let top = describe(&menus, &keymap(), &mut actions);
+        let greyed: Vec<(&str, bool)> = top
+            .iter()
+            .flat_map(TopMenu::commands)
+            .map(|c| (c.title.as_str(), c.disabled))
+            .collect();
+        assert_eq!(
+            greyed,
+            [
+                ("New Shell", false),
+                ("Commands…", true),
+                ("Other", true),
+                ("Find…", false),
+                ("Quiet", true),
+            ]
+        );
+    }
+
+    #[test]
     fn a_press_holds_exactly_the_chords_modifiers() {
         let palette = ks("cmd-shift-p");
         let held = |text: &str| ks(&format!("{text}-a")).modifiers;
@@ -563,5 +611,15 @@ mod tests {
         );
         assert!(!pressed(&palette, held("cmd")));
         assert!(!pressed(&palette, held("ctrl-cmd-shift")));
+        let help = ks("cmd-?");
+        assert!(
+            pressed(&help, held("cmd-shift")),
+            "a symbol typed with Shift"
+        );
+        assert!(pressed(&help, held("cmd")));
+        assert!(
+            !pressed(&ks("cmd-1"), held("cmd-shift")),
+            "a digit is no symbol"
+        );
     }
 }

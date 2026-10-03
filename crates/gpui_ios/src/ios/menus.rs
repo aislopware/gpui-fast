@@ -1,59 +1,83 @@
 //! The application's menus in iPadOS's main menu: the menu bar, and the sheet a held ⌘ shows.
 //!
 //! `UIMainMenuSystem` builds the main menu through a handler given once with its
-//! configuration; each later `set_menus` asks it to build again. The handler lays out
-//! [`crate::menus`]' description: the first GPUI menu after "About" in the application menu, a
-//! menu titled like one of UIKit's own (File, Edit, View…) at the start of that menu, any other
-//! as a menu of its own before Window. The group UIKit would add for new scenes, documents,
-//! printing, finding, the toolbar, the sidebar, the inspector and text formatting is left out,
-//! as an application's menus are its own on the Mac too, and a standard edit command a GPUI
-//! item stands for replaces UIKit's.
+//! configuration, when the platform starts running ([`configure`]); each `set_menus` asks it
+//! to build again. The handler lays out [`crate::menus`]' description: the first GPUI menu
+//! after "About" in the application menu, a menu titled like one of UIKit's own (File, Edit,
+//! View…) at the start of that menu, any other as a menu of its own before Window. The group
+//! UIKit would add for new scenes, documents, printing, finding, the toolbar, the sidebar, the
+//! inspector and text formatting is left out, as an application's menus are its own on the Mac
+//! too, and a standard edit command a GPUI item stands for replaces UIKit's.
 //!
 //! Every item is a `UICommand` (a `UIKeyCommand` when it shows a chord) whose action,
 //! `gpuiMenuCommand:`, goes up the responder chain to `GPUIViewController`, with its index in
-//! the kept actions as its property list. UIKit asks the controller's `canPerformAction:` whether
-//! one is enabled, which GPUI answers with the action's availability, as `validateMenuItem:`
-//! does on the Mac. A command picked in the menu bar dispatches its action. A key command
-//! matched by a press is matched before the focused view hears it, so the press goes to the
-//! window as the keystroke it was: the keymap then decides in the focused context, exactly as
-//! without the menu, and a remote window or a terminal still gets a chord it binds itself.
+//! the actions of the last build as its property list. A `set_menus` waits for the build
+//! before its actions replace those, so a command UIKit still shows always finds its own.
+//! UIKit asks the controller's `canPerformAction:` whether one is enabled, which GPUI answers
+//! with the action's availability, as `validateMenuItem:` does on the Mac. A command picked in
+//! the menu bar dispatches its action. A key command matched by a press is matched before the
+//! focused view hears it, so the press goes to the window as the keystroke it was: the keymap
+//! then decides in the focused context, exactly as without the menu, and a remote window or a
+//! terminal still gets a chord it binds itself.
 
 use std::cell::RefCell;
+use std::ptr::NonNull;
 
 use block2::RcBlock;
 use gpui::{Action, Keymap, Keystroke, Menu, OwnedMenu, PlatformWindow as _};
-use objc2::runtime::{AnyClass, AnyObject, Bool, Sel};
-use objc2::{class, msg_send, sel};
-use objc2_foundation::NSString;
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
+use objc2::{MainThreadMarker, MainThreadOnly as _, Message as _, sel};
+use objc2_foundation::{NSArray, NSNumber, NSString};
+use objc2_ui_kit::{
+    UICommand, UIKeyCommand, UIKeyModifierFlags, UIMainMenuSystem, UIMainMenuSystemConfiguration,
+    UIMenu, UIMenuBuilder, UIMenuElement, UIMenuElementAttributes, UIMenuElementState,
+    UIMenuIdentifier, UIMenuOptions, UIMenuSystemElementGroupPreference,
+};
 
-use super::util::nsstring;
 use super::window::IosWindow;
+use crate::hardware_keyboard::{ALTERNATE, COMMAND, CONTROL, SHIFT};
 use crate::menus::{
     Command, EditCommand, Element, KeyChord, KeyInput, NamedInput, Place, Standard, TopMenu,
 };
 
-/// `UIMenuOptionsDisplayInline`.
-const DISPLAY_INLINE: usize = 1;
-/// `UIMenuElementAttributesDisabled`.
-const DISABLED: usize = 1;
-/// `UIMenuElementStateOn`.
-const STATE_ON: isize = 1;
-/// `UIMenuSystemElementGroupPreferenceRemoved`.
-const REMOVED: isize = 1;
+// The description's chords use the hardware keyboard's flags, which are UIKit's.
+const _: () = assert!(
+    COMMAND as isize == UIKeyModifierFlags::Command.bits()
+        && CONTROL as isize == UIKeyModifierFlags::Control.bits()
+        && ALTERNATE as isize == UIKeyModifierFlags::Alternate.bits()
+        && SHIFT as isize == UIKeyModifierFlags::Shift.bits()
+);
+
+/// One command of a build: what its index names.
+struct Entry {
+    action: Box<dyn Action>,
+    /// What a press of its chord delivers.
+    keystroke: Option<Keystroke>,
+    /// Greyed by the app, whatever the action's availability.
+    disabled: bool,
+}
+
+/// A description of the menus and the commands it holds, by index.
+#[derive(Default)]
+struct Layout {
+    menus: Vec<TopMenu>,
+    entries: Vec<Entry>,
+}
 
 /// What the menus hold and what GPUI asked to hear. Main thread only, as UIKit's menus are.
 #[derive(Default)]
 struct State {
-    menus: Vec<TopMenu>,
-    actions: Vec<Box<dyn Action>>,
-    /// Per command index: the keystroke its chord delivers, and whether it is always greyed.
-    commands: Vec<(Option<Keystroke>, bool)>,
+    /// What the last `set_menus` gave, until the main menu is built from it.
+    pending: Option<Layout>,
+    /// What the main menu was last built from: the commands UIKit holds index this.
+    built: Layout,
     owned: Option<Vec<OwnedMenu>>,
     perform: Option<Box<dyn FnMut(&dyn Action)>>,
     validate: Option<Box<dyn FnMut(&dyn Action) -> bool>>,
     configured: bool,
     #[cfg(feature = "test-support")]
-    built: Vec<String>,
+    built_identifiers: Vec<String>,
 }
 
 thread_local! {
@@ -68,52 +92,87 @@ pub(crate) fn command_selector() -> Sel {
 /// `Platform::set_menus`: keep `menus` and have the main menu built from them.
 pub(crate) fn set(menus: Vec<Menu>, keymap: &Keymap) {
     set_state(menus, keymap);
-    rebuild();
+    let Some(mtm) = MainThreadMarker::new() else {
+        log::error!("GPUI iOS: set_menus off the main thread");
+        return;
+    };
+    if STATE.with_borrow(|state| state.configured) {
+        UIMainMenuSystem::sharedSystem(mtm).setNeedsRebuild();
+    } else {
+        configure_on(mtm);
+    }
 }
 
-/// Keep `menus`, described.
+/// Keep `menus`, described, for the next build.
 fn set_state(menus: Vec<Menu>, keymap: &Keymap) {
     let mut actions = Vec::new();
     let top = crate::menus::describe(&menus, keymap, &mut actions);
-    let mut commands = vec![(None, false); actions.len()];
+    let mut entries: Vec<Entry> = actions
+        .into_iter()
+        .map(|action| Entry {
+            action,
+            keystroke: None,
+            disabled: false,
+        })
+        .collect();
     for command in top.iter().flat_map(TopMenu::commands) {
-        if let Some(slot) = commands.get_mut(command.index) {
-            *slot = (command.keystroke.clone(), command.disabled);
+        if let Some(entry) = entries.get_mut(command.index) {
+            entry.keystroke = command.keystroke.clone();
+            entry.disabled = command.disabled;
         }
     }
     let owned = menus.into_iter().map(Menu::owned).collect();
     STATE.with_borrow_mut(|state| {
-        state.menus = top;
-        state.actions = actions;
-        state.commands = commands;
+        state.pending = Some(Layout {
+            menus: top,
+            entries,
+        });
         state.owned = Some(owned);
     });
 }
 
-/// Hand the main menu system its configuration the first time, else ask it to build again.
-fn rebuild() {
-    // SAFETY: UIKit's menu system is main-thread only: GPUI calls `set_menus` on its foreground
-    // (main) thread, which `isMainThread` confirms before anything is sent.
-    unsafe {
-        let on_main: bool = msg_send![class!(NSThread), isMainThread];
-        if !on_main {
-            log::error!("GPUI iOS: set_menus off the main thread");
-            return;
+/// Take what the last `set_menus` gave as what the main menu is built from, and return its
+/// menus.
+fn lay_out() -> Vec<TopMenu> {
+    STATE.with_borrow_mut(|state| {
+        if let Some(pending) = state.pending.take() {
+            state.built = pending;
         }
-        let Some(system_class) = AnyClass::get(c"UIMainMenuSystem") else {
-            log::warn!("GPUI iOS: no UIMainMenuSystem here; the menus stay UIKit's");
-            return;
-        };
-        let system: *mut AnyObject = msg_send![system_class, sharedSystem];
-        if system.is_null() {
-            return;
-        }
-        if STATE.with_borrow_mut(|state| std::mem::replace(&mut state.configured, true)) {
-            let _: () = msg_send![system, setNeedsRebuild];
-        } else {
-            configure(system);
-        }
+        state.built.menus.clone()
+    })
+}
+
+/// Give the main menu system its configuration and build handler, once. Apple asks for this
+/// as early as possible: the platform does it as it starts running, before GPUI holds the app,
+/// so the build it sets off never runs inside a GPUI update.
+pub(crate) fn configure() {
+    match MainThreadMarker::new() {
+        Some(mtm) => configure_on(mtm),
+        None => log::error!("GPUI iOS: the main menu configured off the main thread"),
     }
+}
+
+fn configure_on(mtm: MainThreadMarker) {
+    if STATE.with_borrow_mut(|state| std::mem::replace(&mut state.configured, true)) {
+        return;
+    }
+    let configuration = UIMainMenuSystemConfiguration::new(mtm);
+    let removed = UIMenuSystemElementGroupPreference::Removed;
+    configuration.setNewScenePreference(removed);
+    configuration.setDocumentPreference(removed);
+    configuration.setPrintingPreference(removed);
+    configuration.setFindingPreference(removed);
+    configuration.setToolbarPreference(removed);
+    configuration.setSidebarPreference(removed);
+    configuration.setInspectorPreference(removed);
+    configuration.setTextFormattingPreference(removed);
+    // UIKit copies the block and calls it on the main thread whenever it builds.
+    let handler = RcBlock::new(|builder: NonNull<ProtocolObject<dyn UIMenuBuilder>>| {
+        // SAFETY: UIKit passes a live builder that it keeps for the call.
+        build(unsafe { builder.as_ref() });
+    });
+    UIMainMenuSystem::sharedSystem(mtm)
+        .setBuildConfiguration_buildHandler(&configuration, Some(&handler));
 }
 
 /// `Platform::get_menus`.
@@ -131,118 +190,112 @@ pub(crate) fn on_validate(callback: Box<dyn FnMut(&dyn Action) -> bool>) {
     STATE.with_borrow_mut(|state| state.validate = Some(callback));
 }
 
-/// Give `system` the configuration and the build handler, once.
-///
-/// # Safety
-/// Main thread, `system` the shared `UIMainMenuSystem`.
-unsafe fn configure(system: *mut AnyObject) {
-    // SAFETY: the caller is on the main thread; `UIMainMenuSystemConfiguration` is a plain
-    // NSObject made with `new` (+1) and released once the system has copied it (NSCopying).
-    unsafe {
-        let configuration: *mut AnyObject = msg_send![class!(UIMainMenuSystemConfiguration), new];
-        let _: () = msg_send![configuration, setNewScenePreference: REMOVED];
-        let _: () = msg_send![configuration, setDocumentPreference: REMOVED];
-        let _: () = msg_send![configuration, setPrintingPreference: REMOVED];
-        let _: () = msg_send![configuration, setFindingPreference: REMOVED];
-        let _: () = msg_send![configuration, setToolbarPreference: REMOVED];
-        let _: () = msg_send![configuration, setSidebarPreference: REMOVED];
-        let _: () = msg_send![configuration, setInspectorPreference: REMOVED];
-        let _: () = msg_send![configuration, setTextFormattingPreference: REMOVED];
-        // UIKit copies the block and calls it on the main thread whenever it rebuilds.
-        let handler = RcBlock::new(|builder: *mut AnyObject| {
-            if !builder.is_null() {
-                build(builder);
-            }
-        });
-        let _: () = msg_send![
-            system,
-            setBuildConfiguration: configuration,
-            buildHandler: &*handler
-        ];
-        let _: () = msg_send![configuration, release];
-    }
-}
-
 /// The build handler: lay the kept menus into UIKit's.
-fn build(builder: *mut AnyObject) {
-    // Cloned out, so a validation UIKit runs while building finds the state free.
-    let menus = STATE.with_borrow(|state| state.menus.clone());
+fn build(builder: &ProtocolObject<dyn UIMenuBuilder>) {
+    let mtm = builder.mtm();
+    let menus = lay_out();
     let edits: Vec<EditCommand> = menus
         .iter()
         .flat_map(TopMenu::commands)
         .filter_map(|command| command.os_action)
         .collect();
-    // SAFETY: the build handler runs on the main thread with a live `UIMenuBuilder`; every
-    // identifier is a UIKit `UIMenuIdentifier` constant or an `NSString` made here, and every
-    // menu passed is a `UIMenu` made by `menu`.
-    unsafe {
-        use objc2_ui_kit::{
-            UIMenuAbout, UIMenuApplication, UIMenuRoot, UIMenuStandardEdit, UIMenuUndoRedo,
-            UIMenuWindow,
-        };
-        if edits
-            .iter()
-            .any(|e| matches!(e, EditCommand::Undo | EditCommand::Redo))
-        {
-            let _: () = msg_send![builder, removeMenuForIdentifier: UIMenuUndoRedo];
-        }
-        if edits
-            .iter()
-            .any(|e| !matches!(e, EditCommand::Undo | EditCommand::Redo))
-        {
-            let _: () = msg_send![builder, removeMenuForIdentifier: UIMenuStandardEdit];
-        }
-        let has = |identifier: &NSString| -> bool {
-            let menu: *mut AnyObject = msg_send![builder, menuForIdentifier: identifier];
-            !menu.is_null()
-        };
-        for (nth, top) in menus.iter().enumerate() {
-            let children = elements(&top.children, top.disabled);
-            let identifier = format!("dev.gpui.menu.{nth}");
-            match top.place {
-                Place::Application => {
-                    let inline = menu("", Some(&identifier), DISPLAY_INLINE, children);
-                    if has(UIMenuAbout) {
-                        let _: () = msg_send![builder, insertSiblingMenu: inline, afterMenuForIdentifier: UIMenuAbout];
-                    } else {
-                        let _: () = msg_send![builder, insertChildMenu: inline, atStartOfMenuForIdentifier: UIMenuApplication];
-                    }
+    // SAFETY: UIKit's exported `UIMenuIdentifier` constants, written once as it loads.
+    let (about, application, root, standard_edit, undo_redo, window) = unsafe {
+        use objc2_ui_kit as ui;
+        (
+            ui::UIMenuAbout,
+            ui::UIMenuApplication,
+            ui::UIMenuRoot,
+            ui::UIMenuStandardEdit,
+            ui::UIMenuUndoRedo,
+            ui::UIMenuWindow,
+        )
+    };
+    if edits
+        .iter()
+        .any(|e| matches!(e, EditCommand::Undo | EditCommand::Redo))
+    {
+        builder.removeMenuForIdentifier(undo_redo);
+    }
+    if edits
+        .iter()
+        .any(|e| !matches!(e, EditCommand::Undo | EditCommand::Redo))
+    {
+        builder.removeMenuForIdentifier(standard_edit);
+    }
+    let has = |identifier: &UIMenuIdentifier| builder.menuForIdentifier(identifier).is_some();
+    for (nth, top) in menus.iter().enumerate() {
+        let children = elements(&top.children, mtm);
+        let identifier = NSString::from_str(&identifier(nth));
+        match top.place {
+            Place::Application => {
+                let inline = menu(
+                    "",
+                    Some(&identifier),
+                    UIMenuOptions::DisplayInline,
+                    &children,
+                    mtm,
+                );
+                if has(about) {
+                    builder.insertSiblingMenu_afterMenuForIdentifier(&inline, about);
+                } else {
+                    builder.insertChildMenu_atStartOfMenuForIdentifier(&inline, application);
                 }
-                Place::Standard(standard) if has(standard_identifier(standard)) => {
-                    let inline = menu("", Some(&identifier), DISPLAY_INLINE, children);
-                    let parent = standard_identifier(standard);
-                    let _: () = msg_send![builder, insertChildMenu: inline, atStartOfMenuForIdentifier: parent];
-                }
-                Place::Standard(_) | Place::Own => {
-                    let own = menu(&top.title, Some(&identifier), 0, children);
-                    if has(UIMenuWindow) {
-                        let _: () = msg_send![builder, insertSiblingMenu: own, beforeMenuForIdentifier: UIMenuWindow];
-                    } else {
-                        let _: () = msg_send![builder, insertChildMenu: own, atEndOfMenuForIdentifier: UIMenuRoot];
-                    }
+            }
+            Place::Standard(standard) if has(standard_identifier(standard)) => {
+                let inline = menu(
+                    "",
+                    Some(&identifier),
+                    UIMenuOptions::DisplayInline,
+                    &children,
+                    mtm,
+                );
+                builder.insertChildMenu_atStartOfMenuForIdentifier(
+                    &inline,
+                    standard_identifier(standard),
+                );
+            }
+            Place::Standard(_) | Place::Own => {
+                let own = menu(
+                    &top.title,
+                    Some(&identifier),
+                    UIMenuOptions::empty(),
+                    &children,
+                    mtm,
+                );
+                if has(window) {
+                    builder.insertSiblingMenu_beforeMenuForIdentifier(&own, window);
+                } else {
+                    builder.insertChildMenu_atEndOfMenuForIdentifier(&own, root);
                 }
             }
         }
-        #[cfg(feature = "test-support")]
-        {
-            let built = (0..menus.len())
-                .map(|nth| format!("dev.gpui.menu.{nth}"))
-                .filter(|identifier| has(&NSString::from_str(identifier)))
-                .collect();
-            STATE.with_borrow_mut(|state| state.built = built);
-        }
+    }
+    #[cfg(feature = "test-support")]
+    {
+        let built = (0..menus.len())
+            .map(identifier)
+            .filter(|identifier| has(&NSString::from_str(identifier)))
+            .collect();
+        STATE.with_borrow_mut(|state| state.built_identifiers = built);
     }
 }
 
-/// The identifiers of the GPUI menus the main menu holds after its last build. Test builds only.
+/// The identifier of the `nth` GPUI menu in the main menu.
+fn identifier(nth: usize) -> String {
+    format!("dev.gpui.menu.{nth}")
+}
+
+/// The identifiers of the application's menus the main menu held after its last build. Test
+/// builds only.
 #[cfg(feature = "test-support")]
 pub(crate) fn built() -> Vec<String> {
-    STATE.with_borrow(|state| state.built.clone())
+    STATE.with_borrow(|state| state.built_identifiers.clone())
 }
 
 /// The identifier of UIKit's own menu `standard`.
-fn standard_identifier(standard: Standard) -> &'static NSString {
-    // SAFETY: UIKit's exported `UIMenuIdentifier` constants, which are never written.
+fn standard_identifier(standard: Standard) -> &'static UIMenuIdentifier {
+    // SAFETY: UIKit's exported `UIMenuIdentifier` constants, written once as it loads.
     unsafe {
         match standard {
             Standard::File => objc2_ui_kit::UIMenuFile,
@@ -255,181 +308,157 @@ fn standard_identifier(standard: Standard) -> &'static NSString {
     }
 }
 
-/// `elements` as an `NSArray` of `UIMenuElement`s, every command greyed when `disabled`.
-fn elements(elements: &[Element], disabled: bool) -> *mut AnyObject {
-    let made: Vec<*mut AnyObject> = elements
+/// `elements` as UIKit's menu elements.
+fn elements(elements: &[Element], mtm: MainThreadMarker) -> Retained<NSArray<UIMenuElement>> {
+    let made: Vec<Retained<UIMenuElement>> = elements
         .iter()
         .map(|element| match element {
-            Element::Command(command) => self::command(command, disabled),
-            Element::Group(children) => {
-                menu("", None, DISPLAY_INLINE, self::elements(children, disabled))
-            }
-            Element::Submenu {
+            Element::Command(command) => self::command(command, mtm),
+            Element::Group(children) => Retained::into_super(menu(
+                "",
+                None,
+                UIMenuOptions::DisplayInline,
+                &self::elements(children, mtm),
+                mtm,
+            )),
+            Element::Submenu { title, children } => Retained::into_super(menu(
                 title,
-                disabled: own,
-                children,
-            } => menu(title, None, 0, self::elements(children, disabled || *own)),
+                None,
+                UIMenuOptions::empty(),
+                &self::elements(children, mtm),
+                mtm,
+            )),
         })
         .collect();
-    // SAFETY: every pointer is a live autoreleased UIMenuElement; `arrayWithObjects:count:`
-    // retains them into an autoreleased array.
-    unsafe {
-        msg_send![
-            class!(NSArray),
-            arrayWithObjects: made.as_ptr(),
-            count: made.len()
-        ]
-    }
+    NSArray::from_retained_slice(&made)
 }
 
-/// An autoreleased `UIMenu` of `children` (an `NSArray`), under `identifier` or one UIKit
-/// makes up.
+/// A `UIMenu` of `children`, under `identifier` or one UIKit makes up.
 fn menu(
     title: &str,
-    identifier: Option<&str>,
-    options: usize,
-    children: *mut AnyObject,
-) -> *mut AnyObject {
-    // SAFETY: main thread (menus are built and set only there); `menuWithTitle:…` returns an
-    // autoreleased UIMenu, and a nil image and identifier are allowed.
-    unsafe {
-        let identifier = identifier.map_or(std::ptr::null_mut(), |id| nsstring(id));
-        msg_send![
-            class!(UIMenu),
-            menuWithTitle: nsstring(title),
-            image: std::ptr::null_mut::<AnyObject>(),
-            identifier: identifier,
-            options: options,
-            children: children
-        ]
-    }
+    identifier: Option<&UIMenuIdentifier>,
+    options: UIMenuOptions,
+    children: &NSArray<UIMenuElement>,
+    mtm: MainThreadMarker,
+) -> Retained<UIMenu> {
+    UIMenu::menuWithTitle_image_identifier_options_children(
+        &NSString::from_str(title),
+        None,
+        identifier,
+        options,
+        children,
+        mtm,
+    )
 }
 
-/// An autoreleased `UIKeyCommand` for `command` when it has a chord, else a `UICommand`.
-fn command(command: &Command, disabled: bool) -> *mut AnyObject {
-    // SAFETY: main thread; both constructors return autoreleased commands, a nil image is
-    // allowed, and the property list is an NSNumber, which is a property-list type.
-    unsafe {
-        let title = nsstring(&command.title);
-        let index: *mut AnyObject =
-            msg_send![class!(NSNumber), numberWithUnsignedInteger: command.index];
-        let action = command_selector();
-        let image = std::ptr::null_mut::<AnyObject>();
-        let made: *mut AnyObject = match &command.chord {
-            Some(KeyChord { input, flags }) => {
-                let made: *mut AnyObject = msg_send![
-                    class!(UIKeyCommand),
-                    commandWithTitle: title,
-                    image: image,
-                    action: action,
-                    input: key_input(input),
-                    modifierFlags: *flags as isize,
-                    propertyList: index
-                ];
-                // The chord is the keymap's as written, wherever the keys sit on the layout.
-                let _: () = msg_send![made, setAllowsAutomaticLocalization: false];
-                let _: () = msg_send![made, setAllowsAutomaticMirroring: false];
-                let _: () = msg_send![made, setWantsPriorityOverSystemBehavior: true];
-                made
-            }
-            None => msg_send![
-                class!(UICommand),
-                commandWithTitle: title,
-                image: image,
-                action: action,
-                propertyList: index
-            ],
-        };
-        if command.checked {
-            let _: () = msg_send![made, setState: STATE_ON];
+/// A `UIKeyCommand` for `command` when it has a chord, else a `UICommand`.
+fn command(command: &Command, mtm: MainThreadMarker) -> Retained<UIMenuElement> {
+    let title = NSString::from_str(&command.title);
+    let index = NSNumber::numberWithUnsignedInteger(command.index);
+    let chord = command
+        .chord
+        .as_ref()
+        .and_then(|KeyChord { input, flags }| Some((key_input(input)?, *flags)));
+    let made: Retained<UICommand> = match chord {
+        Some((input, flags)) => {
+            // SAFETY: the action is `gpuiMenuCommand:`, which the GPUI view controller
+            // implements, and the property list an NSNumber, a property-list type.
+            let made = unsafe {
+                UIKeyCommand::commandWithTitle_image_action_input_modifierFlags_propertyList(
+                    &title,
+                    None,
+                    command_selector(),
+                    &input,
+                    UIKeyModifierFlags::from_bits_retain(flags as isize),
+                    Some(&index),
+                    mtm,
+                )
+            };
+            // The chord is the keymap's as written, wherever the keys sit on the layout, and
+            // it comes before what the system would do with the keys (moving a caret, say).
+            made.setAllowsAutomaticLocalization(false);
+            made.setAllowsAutomaticMirroring(false);
+            made.setWantsPriorityOverSystemBehavior(true);
+            Retained::into_super(made)
         }
-        if disabled || command.disabled {
-            let _: () = msg_send![made, setAttributes: DISABLED];
-        }
-        made
+        // SAFETY: as for the key command.
+        None => unsafe {
+            UICommand::commandWithTitle_image_action_propertyList(
+                &title,
+                None,
+                command_selector(),
+                Some(&index),
+                mtm,
+            )
+        },
+    };
+    if command.checked {
+        made.setState(UIMenuElementState::On);
     }
+    if command.disabled {
+        made.setAttributes(UIMenuElementAttributes::Disabled);
+    }
+    Retained::into_super(made)
 }
 
-/// The `input` string of a key command.
-fn key_input(input: &KeyInput) -> *mut AnyObject {
-    let named = |name: NamedInput| -> &'static NSString {
+/// The `input` string of a key command, `None` for a function key UIKit names none for.
+fn key_input(input: &KeyInput) -> Option<Retained<NSString>> {
+    let name = match input {
+        KeyInput::Text(text) => return Some(NSString::from_str(text)),
+        KeyInput::Named(name) => *name,
+    };
+    // SAFETY: UIKit's exported `UIKeyInput…` constants, written once as it loads.
+    let named: &'static NSString = unsafe {
         use objc2_ui_kit as ui;
-        // SAFETY: UIKit's exported `UIKeyInput…` constants, which are never written.
-        unsafe {
-            match name {
-                NamedInput::Up => ui::UIKeyInputUpArrow,
-                NamedInput::Down => ui::UIKeyInputDownArrow,
-                NamedInput::Left => ui::UIKeyInputLeftArrow,
-                NamedInput::Right => ui::UIKeyInputRightArrow,
-                NamedInput::Escape => ui::UIKeyInputEscape,
-                NamedInput::PageUp => ui::UIKeyInputPageUp,
-                NamedInput::PageDown => ui::UIKeyInputPageDown,
-                NamedInput::Home => ui::UIKeyInputHome,
-                NamedInput::End => ui::UIKeyInputEnd,
-                NamedInput::Delete => ui::UIKeyInputDelete,
-                NamedInput::F(1) => ui::UIKeyInputF1,
-                NamedInput::F(2) => ui::UIKeyInputF2,
-                NamedInput::F(3) => ui::UIKeyInputF3,
-                NamedInput::F(4) => ui::UIKeyInputF4,
-                NamedInput::F(5) => ui::UIKeyInputF5,
-                NamedInput::F(6) => ui::UIKeyInputF6,
-                NamedInput::F(7) => ui::UIKeyInputF7,
-                NamedInput::F(8) => ui::UIKeyInputF8,
-                NamedInput::F(9) => ui::UIKeyInputF9,
-                NamedInput::F(10) => ui::UIKeyInputF10,
-                NamedInput::F(11) => ui::UIKeyInputF11,
-                NamedInput::F(_) => ui::UIKeyInputF12,
-            }
+        match name {
+            NamedInput::Up => ui::UIKeyInputUpArrow,
+            NamedInput::Down => ui::UIKeyInputDownArrow,
+            NamedInput::Left => ui::UIKeyInputLeftArrow,
+            NamedInput::Right => ui::UIKeyInputRightArrow,
+            NamedInput::Escape => ui::UIKeyInputEscape,
+            NamedInput::PageUp => ui::UIKeyInputPageUp,
+            NamedInput::PageDown => ui::UIKeyInputPageDown,
+            NamedInput::Home => ui::UIKeyInputHome,
+            NamedInput::End => ui::UIKeyInputEnd,
+            NamedInput::Delete => ui::UIKeyInputDelete,
+            NamedInput::F(n) => [
+                ui::UIKeyInputF1,
+                ui::UIKeyInputF2,
+                ui::UIKeyInputF3,
+                ui::UIKeyInputF4,
+                ui::UIKeyInputF5,
+                ui::UIKeyInputF6,
+                ui::UIKeyInputF7,
+                ui::UIKeyInputF8,
+                ui::UIKeyInputF9,
+                ui::UIKeyInputF10,
+                ui::UIKeyInputF11,
+                ui::UIKeyInputF12,
+            ]
+            .get(usize::from(n).checked_sub(1)?)?,
         }
     };
-    match input {
-        // SAFETY: inside a UIKit build handler, which has an autorelease pool.
-        KeyInput::Text(text) => unsafe { nsstring(text) },
-        KeyInput::Named(name) => std::ptr::from_ref(named(*name)).cast_mut().cast(),
-    }
+    Some(named.retain())
 }
 
 /// The index a command carries, when `sender` is one of ours.
-fn index_of(sender: *mut AnyObject) -> Option<usize> {
-    if sender.is_null() {
-        return None;
-    }
-    // SAFETY: main thread; `sender` is the object UIKit passed, checked to be a UICommand
-    // before its property list is read, and that checked to be an NSNumber before it is read.
-    unsafe {
-        let is_command: bool = msg_send![sender, isKindOfClass: class!(UICommand)];
-        if !is_command {
-            return None;
-        }
-        let list: *mut AnyObject = msg_send![sender, propertyList];
-        if list.is_null() {
-            return None;
-        }
-        let is_number: bool = msg_send![list, isKindOfClass: class!(NSNumber)];
-        if !is_number {
-            return None;
-        }
-        let index: usize = msg_send![list, unsignedIntegerValue];
-        Some(index)
-    }
+fn index_of(sender: Option<&AnyObject>) -> Option<usize> {
+    let list = sender?.downcast_ref::<UICommand>()?.propertyList()?;
+    Some(list.downcast_ref::<NSNumber>()?.unsignedIntegerValue())
 }
 
 /// `canPerformAction:withSender:` for [`command_selector`]: whether the command's action is
 /// available now.
-pub(crate) fn can_perform(sender: *mut AnyObject) -> bool {
+pub(crate) fn can_perform(sender: Option<&AnyObject>) -> bool {
     let Some(index) = index_of(sender) else {
         return false;
     };
-    let Some((action, greyed)) = STATE.with_borrow(|state| {
-        let action = state.actions.get(index)?.boxed_clone();
-        let greyed = state.commands.get(index).is_some_and(|(_, greyed)| *greyed);
-        Some((action, greyed))
+    let Some(action) = STATE.with_borrow(|state| {
+        let entry = state.built.entries.get(index)?;
+        (!entry.disabled).then(|| entry.action.boxed_clone())
     }) else {
         return false;
     };
-    if greyed {
-        return false;
-    }
     let Some(mut validate) = STATE.with_borrow_mut(|state| state.validate.take()) else {
         return false;
     };
@@ -443,19 +472,17 @@ pub(crate) fn can_perform(sender: *mut AnyObject) -> bool {
 /// [`command_selector`]'s action, from the controller of `window`: a key command matched by
 /// its chord goes to the window as that keystroke, a command picked from the menu dispatches
 /// its action.
-pub(crate) fn perform(sender: *mut AnyObject, window: Option<&IosWindow>) {
+pub(crate) fn perform(sender: Option<&AnyObject>, window: Option<&IosWindow>) {
     let Some(index) = index_of(sender) else {
         return;
     };
     let Some((action, keystroke)) = STATE.with_borrow(|state| {
-        let action = state.actions.get(index)?.boxed_clone();
-        let keystroke = state.commands.get(index).and_then(|(k, _)| k.clone());
-        Some((action, keystroke))
+        let entry = state.built.entries.get(index)?;
+        Some((entry.action.boxed_clone(), entry.keystroke.clone()))
     }) else {
         return;
     };
-    // SAFETY: main thread; `sender` is the UICommand UIKit passed (checked by `index_of`).
-    let by_key: bool = unsafe { msg_send![sender, isKindOfClass: class!(UIKeyCommand)] };
+    let by_key = sender.is_some_and(|sender| sender.downcast_ref::<UIKeyCommand>().is_some());
     if by_key
         && let Some(window) = window
         && let Some(keystroke) = keystroke
@@ -474,7 +501,7 @@ pub(crate) fn perform(sender: *mut AnyObject, window: Option<&IosWindow>) {
 }
 
 /// The `canPerformAction:withSender:` the controller answers with.
-pub(crate) fn answers(action: Sel, sender: *mut AnyObject) -> Option<Bool> {
+pub(crate) fn answers(action: Sel, sender: Option<&AnyObject>) -> Option<Bool> {
     (action == command_selector()).then(|| Bool::new(can_perform(sender)))
 }
 
@@ -486,9 +513,15 @@ mod tests {
     use gpui::{KeyBinding, MenuItem};
 
     use super::*;
-    use crate::hardware_keyboard::{ALTERNATE, COMMAND};
 
     gpui::actions!(ios_menus_test, [NewShell, Left, Quiet, Greyed]);
+
+    /// Test threads are not the main thread, and the tests make menu elements on them.
+    fn mtm() -> MainThreadMarker {
+        // SAFETY: menus and commands are plain model objects until a menu system shows them;
+        // these are made, read and dropped on one test thread and never reach one.
+        unsafe { MainThreadMarker::new_unchecked() }
+    }
 
     fn describe() -> Vec<TopMenu> {
         let keymap = Keymap::new(vec![
@@ -514,20 +547,8 @@ mod tests {
         crate::menus::describe(&menus, &keymap, &mut actions)
     }
 
-    fn string(ns: *mut AnyObject) -> String {
-        // SAFETY: `ns` is a live NSString the test read off a command; `UTF8String` points into
-        // it for as long as it lives.
-        unsafe {
-            let utf8: *const std::ffi::c_char = msg_send![ns, UTF8String];
-            std::ffi::CStr::from_ptr(utf8)
-                .to_string_lossy()
-                .into_owned()
-        }
-    }
-
-    fn child(array: *mut AnyObject, at: usize) -> *mut AnyObject {
-        // SAFETY: `array` is an NSArray the test made, `at` in its bounds.
-        unsafe { msg_send![array, objectAtIndex: at] }
+    fn child<T: objc2::Message>(array: &NSArray<T>, at: usize) -> Retained<T> {
+        array.objectAtIndex(at)
     }
 
     /// A command with a chord is a `UIKeyCommand` matching it, one without a `UICommand`; both
@@ -536,56 +557,59 @@ mod tests {
     fn commands_carry_their_chord_and_index() {
         objc2::rc::autoreleasepool(|_| {
             let top = describe();
-            let app = elements(&top[0].children, false);
-            let new_shell = child(app, 0);
-            // SAFETY: main-thread-free reads of plain UIKit objects the test made.
-            unsafe {
-                let is_key: bool = msg_send![new_shell, isKindOfClass: class!(UIKeyCommand)];
-                assert!(is_key);
-                let input: *mut AnyObject = msg_send![new_shell, input];
-                assert_eq!(string(input), "t");
-                let flags: isize = msg_send![new_shell, modifierFlags];
-                assert_eq!(flags, COMMAND as isize);
-                let title: *mut AnyObject = msg_send![new_shell, title];
-                assert_eq!(string(title), "New Shell");
-                assert_eq!(index_of(new_shell), Some(0));
+            let app = elements(&top[0].children, mtm());
+            let new_shell = child(&app, 0);
+            let key = new_shell
+                .downcast_ref::<UIKeyCommand>()
+                .expect("a chord makes a key command");
+            assert_eq!(key.input().map(|s| s.to_string()).as_deref(), Some("t"));
+            assert_eq!(key.modifierFlags(), UIKeyModifierFlags::Command);
+            assert_eq!(key.title().to_string(), "New Shell");
+            assert_eq!(index_of(Some(&new_shell)), Some(0));
 
-                let layout = elements(&top[1].children, false);
-                let count: usize = msg_send![layout, count];
-                assert_eq!(count, 2, "two groups");
-                let first = child(layout, 0);
-                let options: usize = msg_send![first, options];
-                assert_eq!(options & DISPLAY_INLINE, DISPLAY_INLINE);
-                let left = child(msg_send![first, children], 0);
-                let input: *mut AnyObject = msg_send![left, input];
-                let arrow: *const NSString = objc2_ui_kit::UIKeyInputLeftArrow;
-                let same: bool = msg_send![input, isEqualToString: arrow];
-                assert!(same, "the left arrow is UIKit's own input");
-                let flags: isize = msg_send![left, modifierFlags];
-                assert_eq!(flags, (COMMAND | ALTERNATE) as isize);
+            let layout = elements(&top[1].children, mtm());
+            assert_eq!(layout.count(), 2, "two groups");
+            let first = child(&layout, 0);
+            let first = first.downcast_ref::<UIMenu>().expect("a group is a menu");
+            assert!(first.options().contains(UIMenuOptions::DisplayInline));
+            let left = child(&first.children(), 0);
+            let left = left.downcast_ref::<UIKeyCommand>().expect("a key command");
+            // SAFETY: UIKit's exported constant, written once as it loads.
+            let arrow = unsafe { objc2_ui_kit::UIKeyInputLeftArrow };
+            assert_eq!(left.input().as_deref(), Some(arrow), "UIKit's own input");
+            assert_eq!(
+                left.modifierFlags(),
+                UIKeyModifierFlags::Command | UIKeyModifierFlags::Alternate
+            );
 
-                let second: *mut AnyObject = msg_send![child(layout, 1), children];
-                let quiet = child(second, 0);
-                let is_key: bool = msg_send![quiet, isKindOfClass: class!(UIKeyCommand)];
-                assert!(!is_key, "no chord, a plain command");
-                assert_eq!(index_of(quiet), Some(2));
-                let greyed = child(second, 1);
-                let attributes: usize = msg_send![greyed, attributes];
-                assert_eq!(attributes & DISABLED, DISABLED);
-                let state: isize = msg_send![greyed, state];
-                assert_eq!(state, STATE_ON);
-            }
+            let second = child(&layout, 1);
+            let second = second.downcast_ref::<UIMenu>().expect("a menu").children();
+            let quiet = child(&second, 0);
+            assert!(
+                quiet.downcast_ref::<UIKeyCommand>().is_none(),
+                "no chord, a plain command"
+            );
+            assert_eq!(index_of(Some(&quiet)), Some(2));
+            let greyed = child(&second, 1);
+            let greyed = greyed.downcast_ref::<UICommand>().expect("a command");
+            assert!(
+                greyed
+                    .attributes()
+                    .contains(UIMenuElementAttributes::Disabled)
+            );
+            assert_eq!(greyed.state(), UIMenuElementState::On);
         });
     }
 
     /// A pick from the menu asks GPUI whether its action is available and dispatches it; an
     /// item greyed by the app is never available. With no window holding the chord's
-    /// modifiers, a key command is a pick too.
+    /// modifiers, a key command is a pick too. Menus set again are not used before the main
+    /// menu is built from them.
     #[test]
     fn a_pick_validates_and_dispatches_its_action() {
         objc2::rc::autoreleasepool(|_| {
             let keymap = Keymap::new(vec![KeyBinding::new("cmd-t", NewShell, None)]);
-            set_state(
+            let menus = || {
                 vec![
                     Menu::new("App").items([MenuItem::action("New Shell", NewShell)]),
                     Menu::new("More").items([MenuItem::Action {
@@ -595,9 +619,9 @@ mod tests {
                         checked: false,
                         disabled: true,
                     }]),
-                ],
-                &keymap,
-            );
+                ]
+            };
+            set_state(menus(), &keymap);
             let asked = Rc::new(Cell::new(0));
             let ran = Rc::new(Cell::new(0));
             on_validate(Box::new({
@@ -614,22 +638,38 @@ mod tests {
                     ran.set(ran.get() + 1);
                 }
             }));
-            let menus = STATE.with_borrow(|state| state.menus.clone());
-            let new_shell = child(elements(&menus[0].children, false), 0);
-            let greyed = child(elements(&menus[1].children, false), 0);
-            assert!(can_perform(new_shell));
+            let new_shell = child(&elements(&describe()[0].children, mtm()), 0);
+            assert!(!can_perform(Some(&new_shell)), "nothing built yet");
+            assert_eq!(asked.get(), 0);
+
+            let built = lay_out();
+            let new_shell = child(&elements(&built[0].children, mtm()), 0);
+            let greyed = child(&elements(&built[1].children, mtm()), 0);
+            assert!(can_perform(Some(&new_shell)));
             assert_eq!(asked.get(), 1);
-            assert!(!can_perform(greyed), "greyed by the app");
+            assert!(!can_perform(Some(&greyed)), "greyed by the app");
             assert_eq!(asked.get(), 1, "without asking GPUI");
-            assert!(!can_perform(std::ptr::null_mut()));
+            assert!(!can_perform(None));
             assert_eq!(
-                answers(sel!(copy:), new_shell),
+                answers(sel!(copy:), Some(&new_shell)),
                 None,
                 "other actions are UIKit's"
             );
-            assert_eq!(answers(command_selector(), new_shell), Some(Bool::YES));
-            perform(new_shell, None);
+            assert_eq!(
+                answers(command_selector(), Some(&new_shell)),
+                Some(Bool::YES)
+            );
+
+            // Set again with the greyed item first: until the next build, index 0 is still
+            // New Shell's.
+            set_state(menus().into_iter().rev().collect(), &keymap);
+            perform(Some(&new_shell), None);
             assert_eq!(ran.get(), 1);
+            lay_out();
+            assert!(
+                !can_perform(Some(&new_shell)),
+                "index 0 is the greyed item now"
+            );
         });
     }
 }

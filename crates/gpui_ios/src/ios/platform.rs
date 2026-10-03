@@ -204,6 +204,7 @@ impl Platform for IosPlatform {
     }
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
+        super::menus::configure();
         super::ffi::set_finish_launching_callback(on_finish_launching);
     }
 
