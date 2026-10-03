@@ -853,6 +853,14 @@ xcrun simctl spawn <device> target/aarch64-apple-ios-sim/debug/deps/gpui_ios-<ha
 xcrun simctl shutdown <device>
 ```
 
+The main menu (`gpui_ios/src/ios/menus.rs`, described host-side in `gpui_ios/src/menus.rs`)
+is checked inside the example app, since `UIMainMenuSystem` builds only in a running
+application: build the example with `--features menu-test` and launch it with
+`SIMCTL_CHILD_GPUI_IOS_MENU_TEST=1` (the steps are at the top of
+`examples/ios/src/menu_test.rs`). It checks that UIKit built the menus, that a picked command
+reaches the focused view's action through the responder chain and an unavailable one is
+refused, and that a key command pressed with its chord's modifiers goes through the keymap.
+
 ## Building inside Slopty's checkout
 
 Under `slopty/.research/`, Cargo also reads Slopty's `.cargo/config.toml`. Its
