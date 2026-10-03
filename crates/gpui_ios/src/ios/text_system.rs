@@ -460,7 +460,6 @@ impl IosTextSystemState {
 
         {
             let mut text = text;
-            let mut break_ligature = true;
             for run in font_runs {
                 let text_run;
                 (text_run, text) = text.split_at(run.len);
@@ -479,11 +478,6 @@ impl IosTextSystemState {
                 max_ascent = max_ascent.max(font_metrics.ascent * font_scale);
                 max_descent = max_descent.max(-font_metrics.descent * font_scale);
 
-                let font_size = if break_ligature {
-                    px(font_size.as_f32().next_up())
-                } else {
-                    font_size
-                };
                 unsafe {
                     string.set_attribute(
                         cf_range,
@@ -491,7 +485,6 @@ impl IosTextSystemState {
                         &font.native_font().clone_with_font_size(font_size.into()),
                     );
                 }
-                break_ligature = !break_ligature;
             }
         }
         // Retrieve the glyphs from the shaped line, converting UTF16 offsets to UTF8 offsets.
