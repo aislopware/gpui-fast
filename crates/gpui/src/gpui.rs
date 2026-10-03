@@ -129,6 +129,7 @@ pub use fast::stats::LayoutStats;
 pub use fast::subscriptions::SubscriptionCounts;
 pub use fast::text_smoothing::TextSmoothing;
 pub use fast::transition::StateTransition;
+pub use fast::value_transition::{ValueTransition, ValueTransitionState};
 pub use geometry::*;
 pub use gestures::*;
 pub use global::*;

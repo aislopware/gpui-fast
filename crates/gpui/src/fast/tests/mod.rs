@@ -39,3 +39,4 @@ mod text;
 mod text_shaping;
 mod text_smoothing;
 mod transition;
+mod value_transition;
