@@ -97,7 +97,37 @@ fn register_view_controller_class() -> &'static AnyClass {
             }
         }
 
+        /// A menu command on its way up the responder chain (`ios::menus`).
+        extern "C" fn menu_command(this: *mut AnyObject, _sel: Sel, sender: *mut AnyObject) {
+            // SAFETY: UIKit sends an action with nil or a sender it keeps alive for the call.
+            let sender = unsafe { sender.as_ref() };
+            super::menus::perform(sender, window_of_view_controller(this));
+        }
+
+        extern "C" fn can_perform_action(
+            this: *mut AnyObject,
+            _sel: Sel,
+            action: Sel,
+            sender: *mut AnyObject,
+        ) -> Bool {
+            // SAFETY: UIKit asks with nil or a sender it keeps alive for the call.
+            let answer = super::menus::answers(action, unsafe { sender.as_ref() });
+            // SAFETY: `this` is a GPUIViewController, a UIViewController subclass, so the
+            // superclass answers every other action as UIResponder does.
+            answer.unwrap_or_else(|| unsafe {
+                msg_send![super(this, class!(UIViewController)), canPerformAction: action, withSender: sender]
+            })
+        }
+
         unsafe {
+            decl.add_method(
+                super::menus::command_selector(),
+                menu_command as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
+            );
+            decl.add_method(
+                sel!(canPerformAction:withSender:),
+                can_perform_action as extern "C" fn(*mut AnyObject, Sel, Sel, *mut AnyObject) -> Bool,
+            );
             decl.add_method(
                 sel!(preferredStatusBarStyle),
                 preferred_status_bar_style as extern "C" fn(*mut AnyObject, Sel) -> isize,
@@ -112,6 +142,38 @@ fn register_view_controller_class() -> &'static AnyClass {
     });
 
     class!(GPUIViewController)
+}
+
+/// The window whose root view controller is `view_controller`, among those registered.
+fn window_of_view_controller(view_controller: *mut AnyObject) -> Option<&'static IosWindow> {
+    let wrapper = super::ffi::IOS_WINDOW_LIST.get()?;
+    // SAFETY: the list is touched only on the main thread, where UIKit calls the controller,
+    // and a window is unregistered before it is dropped.
+    unsafe {
+        (*wrapper.0.get())
+            .iter()
+            .filter_map(|window| window.as_ref())
+            .find(|window| window.view_controller == view_controller)
+    }
+}
+
+/// The window GPUI should treat as active: the registered one whose `UIWindow` is key, else
+/// the last opened.
+pub(crate) fn active_window_handle() -> Option<AnyWindowHandle> {
+    let wrapper = super::ffi::IOS_WINDOW_LIST.get()?;
+    // SAFETY: as in `window_of_view_controller`; `isKeyWindow` is read on the main thread GPUI
+    // asks from.
+    unsafe {
+        let windows: Vec<&IosWindow> = (*wrapper.0.get())
+            .iter()
+            .filter_map(|window| window.as_ref())
+            .collect();
+        let key = windows.iter().find(|window| {
+            let key: bool = msg_send![window.window, isKeyWindow];
+            key
+        });
+        key.or(windows.last()).map(|window| window.handle)
+    }
 }
 
 /// Set the iOS status bar content style (light or dark text/icons).
@@ -891,6 +953,8 @@ fn handle_scroll_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
 
 #[allow(clippy::type_complexity)]
 pub(crate) struct IosWindow {
+    /// GPUI's handle for it.
+    handle: AnyWindowHandle,
     /// The UIWindow object
     window: *mut AnyObject,
     /// The UIViewController
@@ -962,7 +1026,7 @@ unsafe impl Send for IosWindow {}
 unsafe impl Sync for IosWindow {}
 
 impl IosWindow {
-    pub fn new(_handle: AnyWindowHandle, _params: WindowParams) -> anyhow::Result<Self> {
+    pub fn new(handle: AnyWindowHandle, _params: WindowParams) -> anyhow::Result<Self> {
         // Create the window on the main screen
         let screen = IosDisplay::main();
         let screen_bounds = screen.bounds();
@@ -1077,6 +1141,7 @@ impl IosWindow {
             renderer.set_refresh_interval(refresh_interval);
 
             let ios_window = Self {
+                handle,
                 window,
                 view_controller,
                 view,
@@ -1588,6 +1653,16 @@ impl IosWindow {
             }
         }
         true
+    }
+
+    /// A press UIKit matched to a menu's key command before the view heard it: delivered as
+    /// the key down it was, so the keymap decides in the focused context.
+    pub(super) fn deliver_menu_keystroke(&self, keystroke: Keystroke) {
+        self.dispatch_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
+            keystroke,
+            is_held: false,
+            prefer_character_input: false,
+        }));
     }
 
     fn set_modifiers(&self, modifiers: Modifiers, capslock: Capslock) {

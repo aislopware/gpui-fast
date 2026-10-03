@@ -9,6 +9,8 @@ use gpui::{App, Context, Window, WindowOptions, div, prelude::*, px, rgb};
 use std::{cell::Cell, rc::Rc};
 
 mod composition_test;
+#[cfg(feature = "menu-test")]
+mod menu_test;
 
 struct IosExample {
     tap_count: usize,
@@ -55,6 +57,12 @@ pub extern "C" fn gpui_ios_example_run() -> bool {
     gpui_ios::ios::ffi::set_app_callback(Box::new({
         let did_open_window = did_open_window.clone();
         move |cx: &mut App| {
+            #[cfg(feature = "menu-test")]
+            if std::env::var_os("GPUI_IOS_MENU_TEST").is_some() {
+                did_open_window.set(true);
+                menu_test::open(cx);
+                return;
+            }
             if std::env::var_os("GPUI_IOS_COMPOSITION_TEST").is_some() {
                 did_open_window.set(true);
                 composition_test::open(cx);

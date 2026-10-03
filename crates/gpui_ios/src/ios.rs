@@ -8,6 +8,7 @@ mod display;
 mod events;
 
 pub mod ffi;
+pub(crate) mod menus;
 mod platform;
 mod text_input;
 mod text_system;

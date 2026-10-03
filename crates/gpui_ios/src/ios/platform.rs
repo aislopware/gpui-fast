@@ -3,7 +3,7 @@
 //! This implements the Platform trait for iOS using UIKit.
 //! Key differences from macOS:
 //! - Uses UIApplication instead of NSApplication
-//! - No menu bar (iOS apps don't have traditional menus)
+//! - Menus go to the main menu system (`menus`): the iPad's menu bar and the ⌘ sheet
 //! - No windowed mode (iOS apps are always fullscreen on their display)
 //! - Touch-based input instead of mouse
 //! - System keyboard handling differs significantly
@@ -21,9 +21,9 @@ use futures::channel::oneshot;
 use gpui::{
     Action, ActivityGuard, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, ClipboardEntry,
     ClipboardItem, CursorStyle, DummyKeyboardMapper, ForegroundExecutor, Image, ImageFormat,
-    Keymap, Menu, MenuItem, PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Result, Task, ThermalState,
-    WindowAppearance, WindowParams,
+    Keymap, Menu, MenuItem, OwnedMenu, PathPromptOptions, Platform, PlatformDisplay,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Result,
+    Task, ThermalState, WindowAppearance, WindowParams,
 };
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{class, msg_send};
@@ -204,6 +204,7 @@ impl Platform for IosPlatform {
     }
 
     fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
+        super::menus::configure();
         super::ffi::set_finish_launching_callback(on_finish_launching);
     }
 
@@ -245,9 +246,7 @@ impl Platform for IosPlatform {
     }
 
     fn active_window(&self) -> Option<AnyWindowHandle> {
-        // iOS typically has one active window
-        // This would need to track the current key window
-        None
+        super::window::active_window_handle()
     }
 
     fn open_window(
@@ -380,25 +379,29 @@ impl Platform for IosPlatform {
         super::ffi::set_memory_warning_callback(callback);
     }
 
-    fn set_menus(&self, _menus: Vec<Menu>, _keymap: &Keymap) {
-        // iOS doesn't have a menu bar
-        // Could potentially integrate with UIMenuBuilder for context menus
+    fn set_menus(&self, menus: Vec<Menu>, keymap: &Keymap) {
+        super::menus::set(menus, keymap);
+    }
+
+    fn get_menus(&self) -> Option<Vec<OwnedMenu>> {
+        super::menus::get()
     }
 
     fn set_dock_menu(&self, _menu: Vec<MenuItem>, _keymap: &Keymap) {
         // iOS doesn't have a dock menu
     }
 
-    fn on_app_menu_action(&self, _callback: Box<dyn FnMut(&dyn Action)>) {
-        // Not applicable on iOS
+    fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn Action)>) {
+        super::menus::on_perform(callback);
     }
 
     fn on_will_open_app_menu(&self, _callback: Box<dyn FnMut()>) {
-        // Not applicable on iOS
+        // UIKit tells nobody a menu opens; GPUI's use (dropping a half-typed chord) has no
+        // moment to run in.
     }
 
-    fn on_validate_app_menu_command(&self, _callback: Box<dyn FnMut(&dyn Action) -> bool>) {
-        // Not applicable on iOS
+    fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(&dyn Action) -> bool>) {
+        super::menus::on_validate(callback);
     }
 
     fn app_path(&self) -> Result<PathBuf> {

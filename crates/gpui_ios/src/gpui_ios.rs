@@ -13,6 +13,8 @@ mod frame_pacing;
 pub mod hardware_keyboard;
 #[cfg(any(target_os = "ios", test))]
 mod keyboard_inset;
+#[cfg(any(target_os = "ios", test))]
+mod menus;
 
 #[cfg(target_os = "ios")]
 pub use ios::{IosPlatform, current_platform, text_system};
@@ -47,6 +49,13 @@ impl std::error::Error for InjectError {}
 #[cfg(all(target_os = "ios", feature = "test-support"))]
 pub fn inject(input: described::DescribedInput) -> Result<(), InjectError> {
     ios::ffi::inject(input)
+}
+
+/// The identifiers of the application's menus (`dev.gpui.menu.<n>`, in the order given to
+/// `set_menus`) that iPadOS's main menu held after it was last built. Test builds only.
+#[cfg(all(target_os = "ios", feature = "test-support"))]
+pub fn built_menus() -> Vec<String> {
+    ios::menus::built()
 }
 
 /// The foreground color used by the iOS status bar.

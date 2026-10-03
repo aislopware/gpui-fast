@@ -12,6 +12,11 @@ workspace = true
 path = "src/gpui_ios_example.rs"
 crate-type = ["staticlib"]
 
+[features]
+# The main menu checks (`src/menu_test.rs`), which deliver key presses through
+# `gpui_ios::inject`.
+menu-test = ["gpui_ios/test-support"]
+
 [target.'cfg(target_os = "ios")'.dependencies]
 gpui.workspace = true
 gpui_ios.workspace = true
