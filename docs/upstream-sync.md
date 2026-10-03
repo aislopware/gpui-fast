@@ -218,6 +218,19 @@ unchanged, and a new entry needs as good a reason.
   the wgpu and Direct3D renderers draw everything unfaded. With
   `test-support`, `Scene::edge_fade_ramps`, `Scene::add_edge_fade` and
   `Scene::insert_faded_primitive` let a renderer's test build a faded scene.
+- `StateTransition` and `StatefulInteractiveElement::transition` are new
+  public API (`fast/transition.rs`). Upstream swaps a hover, active, focus or
+  drag-over style in the frame its state changes; a design system's pointer
+  states that come in at once and leave over 150 ms, as Linear's and
+  Raycast's do, need the colours eased. Upstream's only way is an
+  `AnimationElement` the application restarts from a hover listener, which
+  rebuilds the element every frame and still cannot start from the colour
+  shown when the state changes again. The transition follows only the
+  background and border colours paint uses, so layout never waits on it, an
+  element's own colour changing is applied at once, and
+  `App::reduce_motion` turns it off. Unused, it is one empty pointer in
+  `Interactivity` and one test in its paint (`transition_bench` in
+  `fast/tests/transition.rs`).
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what

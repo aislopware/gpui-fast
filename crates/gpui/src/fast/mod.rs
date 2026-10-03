@@ -48,6 +48,7 @@ pub(crate) mod test_window;
 pub(crate) mod text;
 pub mod text_smoothing;
 pub(crate) mod text_style;
+pub(crate) mod transition;
 
 #[cfg(test)]
 mod tests;
