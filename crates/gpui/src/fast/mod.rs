@@ -21,6 +21,7 @@ pub(crate) mod dispatch;
 pub(crate) mod edge_fade;
 pub(crate) mod element;
 pub(crate) mod focus;
+pub(crate) mod focus_tooltip;
 pub mod gesture;
 pub(crate) mod global_id;
 pub(crate) mod glyphs;

@@ -218,6 +218,18 @@ unchanged, and a new entry needs as good a reason.
   the wgpu and Direct3D renderers draw everything unfaded. With
   `test-support`, `Scene::edge_fade_ramps`, `Scene::add_edge_fade` and
   `Scene::insert_faded_primitive` let a renderer's test build a faded scene.
+- A tooltip (`.tooltip(..)`, `.hoverable_tooltip(..)`) on an element that
+  tracks a focus handle also shows while the element is focus-visible:
+  focused, with the keyboard the last input (`fast/focus_tooltip.rs`).
+  Upstream shows tooltips to the pointer alone, and counts no element
+  hovered after keyboard input, so a control reached with Tab never names
+  itself. The tooltip shows after the element's delay, centred below the
+  element or above it at the window's foot. It hides when the focus leaves
+  or the pointer is used, and on Escape, which a keystroke interceptor
+  takes before any binding sees it, keeping the focus where it is. An
+  element with a tooltip pays one test in its paint and, with a focus
+  handle, one focus question; `focus_tooltip_bench` in
+  `fast/tests/focus_tooltip.rs` measures 100 such controls.
 - `StateTransition` and `StatefulInteractiveElement::transition` are new
   public API (`fast/transition.rs`). Upstream swaps a hover, active, focus or
   drag-over style in the frame its state changes; a design system's pointer

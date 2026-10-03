@@ -1197,6 +1197,7 @@ pub struct Window {
     pub(crate) fast_text_smoothing: crate::fast::text_smoothing::WindowTextSmoothing,
     pub(crate) fast_edge_fade: crate::fast::edge_fade::WindowFades,
     pub(crate) fast_layers: crate::fast::layers::WindowLayers,
+    pub(crate) fast_focus_tooltip: crate::fast::focus_tooltip::WindowFocusTooltip,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
     pub(crate) element_opacity: f32,
@@ -2125,6 +2126,7 @@ impl Window {
             fast_text_smoothing: crate::fast::text_smoothing::WindowTextSmoothing::new(cx),
             fast_edge_fade: crate::fast::edge_fade::WindowFades::default(),
             fast_layers: crate::fast::layers::WindowLayers::default(),
+            fast_focus_tooltip: crate::fast::focus_tooltip::WindowFocusTooltip::default(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
             content_mask_stack: Vec::new(),
@@ -3821,6 +3823,8 @@ impl Window {
                     );
                 }
             }
+
+            crate::fast::focus_tooltip::place(self, tooltip_request.id, &mut tooltip_bounds);
 
             // It's possible for an element to have an active tooltip while not being painted (e.g.
             // via the `visible_on_hover` method). Since mouse listeners are not active in this

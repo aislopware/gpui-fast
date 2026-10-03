@@ -50,7 +50,7 @@ type StackSafe<T> = stacksafe::StackSafe<T>;
 type StackSafe<T> = T;
 
 const DRAG_THRESHOLD: f64 = 2.;
-const DEFAULT_TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(500);
+pub(crate) const DEFAULT_TOOLTIP_SHOW_DELAY: Duration = Duration::from_millis(500);
 const HOVERABLE_TOOLTIP_HIDE_DELAY: Duration = Duration::from_millis(500);
 
 /// The styling information for a given group.
@@ -2412,6 +2412,13 @@ impl Interactivity {
                     if let Some(active_tooltip) = element_state.active_tooltip.as_ref() {
                         if self.tooltip_builder.is_some() {
                             self.tooltip_id = set_tooltip_on_window(active_tooltip, window);
+                            crate::fast::focus_tooltip::anchor(
+                                &element_state.fast_focus_tooltip,
+                                active_tooltip,
+                                self.tooltip_id,
+                                bounds,
+                                window,
+                            );
                         } else {
                             // If there is no longer a tooltip builder, remove the active tooltip.
                             if let Some(long_press_tooltip_active) =
@@ -3274,6 +3281,16 @@ impl Interactivity {
                         pending_mouse_down.borrow().is_none() && hitbox.is_hovered(window)
                     }
                 });
+                crate::fast::focus_tooltip::paint(
+                    self.tracked_focus_handle.as_ref(),
+                    &active_tooltip,
+                    &mut element_state.fast_focus_tooltip,
+                    build_tooltip.clone(),
+                    self.tooltip_show_delay,
+                    hitbox.bounds,
+                    window,
+                    cx,
+                );
                 register_tooltip_mouse_handlers(
                     &active_tooltip,
                     self.tooltip_id,
@@ -3688,6 +3705,7 @@ pub struct InteractiveElementState {
     long_press_tooltip_active: Option<Rc<Cell<bool>>>,
     pub(crate) fast_transition:
         crate::fast::interactivity::Rare<crate::fast::transition::TransitionState>,
+    pub(crate) fast_focus_tooltip: Option<Rc<crate::fast::focus_tooltip::FocusTooltip>>,
 }
 
 /// Whether or not the element or a group that contains it is clicked by the mouse.
