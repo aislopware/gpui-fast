@@ -12,9 +12,28 @@ use std::{
 /// through every call of its builder, so the properties' 300-odd bytes are
 /// kept out of it until they are needed.
 ///
+/// The second field is how the element announces a change to its value, as a
+/// live region ([`crate::fast::live_region`]); upstream's properties have no
+/// place for it.
+///
 /// [`Interactivity`]: crate::Interactivity
 #[derive(Default)]
-pub(crate) struct Aria(Option<Box<AriaProperties>>);
+pub(crate) struct Aria(Option<Box<AriaProperties>>, Option<accesskit::Live>);
+
+impl Aria {
+    /// Make the element a live region that announces changes politely or
+    /// assertively.
+    pub(crate) fn set_live(&mut self, live: accesskit::Live) {
+        self.1 = Some(live);
+    }
+
+    /// Write the element's live region, if it is one, onto its node.
+    pub(crate) fn write_live(&self, node: &mut accesskit::Node) {
+        if let Some(live) = self.1 {
+            node.set_live(live);
+        }
+    }
+}
 
 static NO_ARIA: AriaProperties = AriaProperties {
     author_id: None,
@@ -30,7 +49,6 @@ static NO_ARIA: AriaProperties = AriaProperties {
     numeric_value_step: None,
     value: None,
     placeholder: None,
-    live: None,
     orientation: None,
     level: None,
     position_in_set: None,

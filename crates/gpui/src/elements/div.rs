@@ -1429,21 +1429,6 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
-    /// Make this element a live region: when its [value][Self::aria_value]
-    /// changes, or it first appears with one, assistive technology announces
-    /// the value without the element taking focus. [`accesskit::Live::Polite`]
-    /// waits for what is being said to finish; [`accesskit::Live::Assertive`]
-    /// interrupts it.
-    ///
-    /// On macOS, AccessKit posts `NSAccessibilityAnnouncementRequestedNotification`
-    /// with the value, at medium priority for polite and high for assertive.
-    /// Announce a settled value: a value that changes on every frame is announced
-    /// on every frame, so debounce a running count before setting it.
-    fn aria_live(mut self, live: accesskit::Live) -> Self {
-        self.interactivity().aria.live = Some(live);
-        self
-    }
-
     /// Set the placeholder text reported to assistive technology for this
     /// element, shown when a text input is empty.
     fn aria_placeholder(mut self, placeholder: impl Into<SharedString>) -> Self {
@@ -2163,7 +2148,6 @@ pub(crate) struct AriaProperties {
     pub(crate) numeric_value_step: Option<f64>,
     pub(crate) value: Option<SharedString>,
     pub(crate) placeholder: Option<SharedString>,
-    pub(crate) live: Option<accesskit::Live>,
     pub(crate) orientation: Option<accesskit::Orientation>,
     pub(crate) level: Option<usize>,
     pub(crate) position_in_set: Option<usize>,
@@ -3662,9 +3646,7 @@ impl Interactivity {
         if let Some(placeholder) = &self.aria.placeholder {
             node.set_placeholder(placeholder.to_string());
         }
-        if let Some(live) = self.aria.live {
-            node.set_live(live);
-        }
+        crate::fast::interactivity::Aria::write_live(&self.aria, node);
         if let Some(orientation) = self.aria.orientation {
             node.set_orientation(orientation);
         }
@@ -5726,61 +5708,6 @@ mod tests {
         assert!(clickable);
         // Bounds are device pixels.
         assert_eq!(width, Some(f64::from(40. * scale)));
-    }
-
-    struct Announcing;
-
-    impl Render for Announcing {
-        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .id("root")
-                .role(accesskit::Role::Group)
-                .size_full()
-                .child(
-                    div()
-                        .id("count")
-                        .role(accesskit::Role::Status)
-                        .aria_live(accesskit::Live::Polite)
-                        .aria_value("3 new")
-                        .w(px(40.))
-                        .h(px(20.)),
-                )
-        }
-    }
-
-    /// A live region reaches the tree as one, with the value it announces; an element
-    /// that does not ask for one stays quiet.
-    #[test]
-    fn a_live_region_carries_its_politeness_and_value() {
-        let mut cx = TestAppContext::single();
-        let window: AnyWindowHandle = cx.add_window(|_, _| Announcing).into();
-        cx.update_window(window, |_, window, cx| {
-            window.set_a11y_active(true);
-            window.draw(cx).clear(cx);
-        })
-        .unwrap();
-        let (live, value, quiet) = cx
-            .update_window(window, |_, window, _| {
-                let tree = window.a11y_tree().expect("a tree after an active frame");
-                let node = |role| {
-                    tree.nodes
-                        .iter()
-                        .find(|(_, node)| node.role() == role)
-                        .map(|(_, node)| node.clone())
-                        .expect("the node")
-                };
-                let status = node(accesskit::Role::Status);
-                let group = node(accesskit::Role::Group);
-                (
-                    status.live(),
-                    status.value().map(str::to_owned),
-                    group.live(),
-                )
-            })
-            .unwrap();
-        assert_eq!(live, Some(accesskit::Live::Polite));
-        assert_eq!(value.as_deref(), Some("3 new"));
-        assert_eq!(quiet, None, "no region unless asked");
     }
 
     struct Ringed;
