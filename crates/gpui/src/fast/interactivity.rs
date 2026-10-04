@@ -30,6 +30,7 @@ static NO_ARIA: AriaProperties = AriaProperties {
     numeric_value_step: None,
     value: None,
     placeholder: None,
+    live: None,
     orientation: None,
     level: None,
     position_in_set: None,
