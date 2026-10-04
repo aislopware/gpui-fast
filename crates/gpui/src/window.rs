@@ -277,6 +277,10 @@ impl WindowInvalidator {
         self.inner.borrow().draw_phase == DrawPhase::None
     }
 
+    pub fn painting(&self) -> bool {
+        self.inner.borrow().draw_phase == DrawPhase::Paint
+    }
+
     #[track_caller]
     pub fn debug_assert_paint(&self) {
         debug_assert!(
