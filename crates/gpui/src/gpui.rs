@@ -123,6 +123,7 @@ pub use fast::layers::scene::{
     LAYER_TILE_TEXTURE_BASE, LayerContent, LayerFrame, LayerKey, SceneLayers, TileCoord,
     decode_layer_tile, layer_tile_id, layer_tile_texture_id,
 };
+pub use fast::live_region::LiveRegion;
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::stats::LayoutStats;
 #[cfg(any(test, feature = "test-support"))]
