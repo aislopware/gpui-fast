@@ -149,8 +149,8 @@ pub(crate) fn stamp_changes(window: &Window, cx: &App) {
 }
 
 /// The answer to `question` about `id`, as upstream gives it: the focused
-/// element is the one the window focuses while its handle is alive, and
-/// containing is as the last frame drawn has it.
+/// element is the one the window focuses while its handle is alive. See
+/// [`answer`] for which frame says what contains what.
 fn ask(id: FocusId, question: Question, window: &Window, cx: &App) -> bool {
     let focused = window.focus.filter(|focused| {
         cx.focus_handles
@@ -162,11 +162,26 @@ fn ask(id: FocusId, question: Question, window: &Window, cx: &App) -> bool {
 }
 
 /// The answer to `question` about `id` while `focused` has the focus.
+///
+/// What contains what is as the frame being painted has it while one is,
+/// its dispatch tree whole since its prepaint, and as the last frame drawn
+/// has it otherwise. Upstream asks the last frame drawn always, so an
+/// element drawn for the first time inside the focused element is not
+/// within it until a later frame, and nothing asks for that frame: the
+/// focus did not move. Prepaint still asks the last frame drawn, the tree
+/// being drawn not yet holding what comes after the element asking.
 fn answer(id: FocusId, question: Question, focused: Option<FocusId>, window: &Window) -> bool {
+    let tree = if window.invalidator.painting() {
+        &window.next_frame.dispatch_tree
+    } else {
+        &window.rendered_frame.dispatch_tree
+    };
     match question {
         Question::Focused => window.focus == Some(id),
-        Question::ContainsFocused => focused.is_some_and(|focused| id.contains(focused, window)),
-        Question::WithinFocused => focused.is_some_and(|focused| focused.contains(id, window)),
+        Question::ContainsFocused => {
+            focused.is_some_and(|focused| tree.focus_contains(id, focused))
+        }
+        Question::WithinFocused => focused.is_some_and(|focused| tree.focus_contains(focused, id)),
     }
 }
 

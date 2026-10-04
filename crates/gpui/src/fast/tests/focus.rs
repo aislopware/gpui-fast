@@ -258,3 +258,67 @@ fn focusing_the_focused_view_again_builds_nothing() {
     focus(&mut cx, windows, &builds, Some(2));
     assert_eq!(focus(&mut cx, windows, &builds, Some(2)), ([0; 4], false));
 }
+
+/// A focusable box that, once told to, holds a focusable child marked while
+/// the focus is within it, as a row reveals its actions while focused.
+struct Host {
+    focus: FocusHandle,
+    shown: Rc<Cell<bool>>,
+}
+
+impl Render for Host {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let child = self.shown.get().then(|| {
+            div()
+                .id("child")
+                .tab_index(0)
+                .w(px(20.))
+                .h(px(20.))
+                .bg(hsla(0., 0., 0.5, 1.))
+                .in_focus(|style| style.bg(hsla(0.6, 0.8, 0.5, 1.)))
+        });
+        div()
+            .track_focus(&self.focus)
+            .w(px(80.))
+            .h(px(40.))
+            .children(child)
+    }
+}
+
+/// An element drawn for the first time inside the focused element is
+/// within it in that first frame, as a frame drawn from scratch after it
+/// has it: the focus did not move, so no later frame comes to put it right.
+#[test]
+fn an_element_drawn_first_inside_the_focused_one_is_within_it_at_once() {
+    let mut cx = TestAppContext::single();
+    let shown = Rc::new(Cell::new(false));
+    let told = shown.clone();
+    let window = cx.add_window(move |_, cx| Host {
+        focus: cx.focus_handle(),
+        shown: told,
+    });
+    window
+        .update(&mut cx, |host, window, cx| window.focus(&host.focus, cx))
+        .unwrap();
+    // The window is drawn as each update ends: the child's first frame.
+    window
+        .update(&mut cx, |host, _, cx| {
+            host.shown.set(true);
+            cx.notify();
+        })
+        .unwrap();
+    let first = cx
+        .update_window(window.into(), |_, window, _| {
+            window.describe_rendered_frame()
+        })
+        .unwrap();
+    let from_scratch = cx
+        .update_window(window.into(), |_, window, cx| {
+            window.forget_retained_state();
+            window.draw(cx).clear(cx);
+            window.describe_rendered_frame()
+        })
+        .unwrap();
+    assert!(shown.get());
+    assert_eq!(first, from_scratch);
+}
