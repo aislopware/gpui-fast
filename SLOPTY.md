@@ -473,6 +473,10 @@ Added in this fork:
   whether a step moved them and where they are; a custom scroll handler reports nothing and
   keeps its fling. Upstream's open zed #64534 keeps a scroll gesture with the content it
   started on, which is a different question: its fling still runs out its curve.
+- fix(gpui): a node's bounds in the accessibility tree are what shows of it, cut to its
+  ancestors' content mask (`fast/a11y.rs`), and an a11y press skips a node with nothing
+  showing. Upstream reported a node scrolled out of view at its layout bounds, so VoiceOver
+  framed, and its activate pressed, whatever was drawn there instead.
 - `1776aa2` test(gpui): a video surface shows the buffer its view holds, retained or not
 - `4d0009e` gpui: build a view that asked for an animation frame on the next frame drawn
 - the commit after `4c13f16`: a spliced view builds every nested view that is out of

@@ -440,6 +440,7 @@ impl<E: Element> Drawable<E> {
                         if let Some(role) = self.element.a11y_role() {
                             let node_id = global_id.accesskit_node_id();
                             let mut node = accesskit::Node::new(role);
+                            let bounds = crate::fast::a11y::visible(window, bounds);
                             let scale = window.scale_factor();
                             node.set_bounds(accesskit::Rect {
                                 x0: (bounds.origin.x.0 * scale) as f64,

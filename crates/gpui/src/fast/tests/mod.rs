@@ -1,5 +1,6 @@
 //! Tests of what gpui-fast adds, kept out of upstream files' test modules.
 
+mod a11y;
 mod cached_snapping;
 mod composition;
 mod cursor;
