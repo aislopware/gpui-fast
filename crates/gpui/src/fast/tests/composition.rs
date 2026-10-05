@@ -459,7 +459,7 @@ fn a_native_and_its_focus_handle_share_the_keyboard() {
     assert_eq!(keyboard(&mut cx), None);
 
     test_host(&host).simulate_focus(true);
-    cx.update(|_| {});
+    cx.run_until_parked();
     draw(&mut cx, window);
     window
         .update(&mut cx, |_, window, _| {
