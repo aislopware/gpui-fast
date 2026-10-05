@@ -23,6 +23,7 @@ mod layers_oracle;
 mod layout;
 mod line_breaks;
 mod live_region;
+mod mask;
 mod number_shaping;
 mod oracle;
 mod path_cache;

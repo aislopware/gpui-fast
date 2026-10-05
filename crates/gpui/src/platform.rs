@@ -1685,6 +1685,19 @@ pub enum AtlasKey {
     Glyph(RenderGlyphParams),
     Svg(RenderSvgParams),
     Image(RenderImageParams),
+    Mask(RenderMaskParams),
+}
+
+/// A monochrome mask its caller rasterises, at exact device pixels
+/// ([`Window::paint_mask`]): an operating system's symbol, drawn by the
+/// system at the size it is shown, never scaled after.
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+pub struct RenderMaskParams {
+    /// What the mask is, as its caller names it. It must tell apart every
+    /// drawing of the same size: a symbol's name, weight and scale factor.
+    pub key: SharedString,
+    /// Its size in device pixels: one alpha byte per pixel, row by row.
+    pub size: Size<DevicePixels>,
 }
 
 impl AtlasKey {
@@ -1700,7 +1713,7 @@ impl AtlasKey {
                     AtlasTextureKind::Monochrome
                 }
             }
-            AtlasKey::Svg(_) => AtlasTextureKind::Monochrome,
+            AtlasKey::Svg(_) | AtlasKey::Mask(_) => AtlasTextureKind::Monochrome,
             AtlasKey::Image(_) => AtlasTextureKind::Polychrome,
         }
     }
@@ -1715,6 +1728,12 @@ impl From<RenderGlyphParams> for AtlasKey {
 impl From<RenderSvgParams> for AtlasKey {
     fn from(params: RenderSvgParams) -> Self {
         Self::Svg(params)
+    }
+}
+
+impl From<RenderMaskParams> for AtlasKey {
+    fn from(params: RenderMaskParams) -> Self {
+        Self::Mask(params)
     }
 }
 
