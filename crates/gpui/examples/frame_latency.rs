@@ -18,6 +18,20 @@
 //!   notify to the glass of the first frame submitted after it, `wake_to_submit` to its
 //!   submission.
 //!
+//! - `wake`: as `idle`, but timed to the start of the view's render, which needs no frame to
+//!   reach the glass: a window the compositor does not show (covered, or on another Space)
+//!   still renders, in a `test-support` build, which keeps the display link running while
+//!   hidden. `wake_to_render` is from the notify to that render.
+//! - `rest`: one frame, then nothing for `FRAME_LATENCY_REST_SECS` (12 by default), for the
+//!   process's idle wakeups to be read from outside (`top -stats pid,idlew`).
+//!
+//! - `animate`: a view that asks for every frame (`request_animation_frame`) for
+//!   `FRAME_LATENCY_REST_SECS`, timed by its renders rather than the glass, as `wake` is:
+//!   `gap` is between renders, so a tick the display link missed shows as a gap of two
+//!   refreshes.
+//!
+//! `wake`, `rest` and `animate` leave the focus where it is.
+//!
 //! `FRAME_LATENCY_SPIN_US` makes every render busy-wait that long first, which moves each
 //! frame's submission later in its refresh (to find where the compositor's deadline sits).
 //!
@@ -44,6 +58,8 @@ use gpui_platform::application;
 const WARMUP_FRAMES: usize = 60;
 const CONTINUOUS_FRAMES: usize = 900;
 const IDLE_SAMPLES: usize = 40;
+/// `wake`'s samples, each a quarter second apart.
+const WAKE_SAMPLES: usize = 120;
 const IDLE_GAP: Duration = Duration::from_millis(250);
 const FLOOD_SAMPLES: usize = 200;
 const FLOOD_GAP: Duration = Duration::from_millis(60);
@@ -55,6 +71,9 @@ enum Mode {
     Idle,
     Echo,
     Flood,
+    Wake,
+    Rest,
+    Animate,
 }
 
 #[derive(Default)]
@@ -71,6 +90,8 @@ struct Stats {
     echo: Option<(Instant, Instant)>,
     echo_to_glass: Vec<f64>,
     wake_to_submit: Vec<f64>,
+    wake_to_render: Vec<f64>,
+    renders: Vec<Instant>,
 }
 
 struct FrameLatency {
@@ -94,7 +115,7 @@ impl FrameLatency {
                 }
             }
         });
-        if matches!(mode, Mode::Idle | Mode::Echo) {
+        if matches!(mode, Mode::Idle | Mode::Echo | Mode::Wake) {
             let echo_after = (mode == Mode::Echo)
                 .then(|| Duration::from_micros(env_us("FRAME_LATENCY_ECHO_US", 3000)));
             // Wakes come from another thread at a phase that walks across the refresh, as
@@ -193,7 +214,10 @@ fn record(stats: &mut Stats, mode: Mode, frame: PresentedFrame) -> bool {
     {
         render_started = Some(started);
     }
-    let warmup = if matches!(mode, Mode::Idle | Mode::Echo) {
+    let warmup = if matches!(
+        mode,
+        Mode::Idle | Mode::Echo | Mode::Wake | Mode::Rest | Mode::Animate
+    ) {
         2
     } else {
         WARMUP_FRAMES
@@ -245,6 +269,7 @@ fn record(stats: &mut Stats, mode: Mode, frame: PresentedFrame) -> bool {
             }
             stats.echo_to_glass.len() >= IDLE_SAMPLES
         }
+        Mode::Wake | Mode::Rest | Mode::Animate => false,
     }
 }
 
@@ -268,7 +293,42 @@ fn report(mode: Mode, stats: &Stats) {
         Mode::Idle => "idle",
         Mode::Echo => "echo",
         Mode::Flood => "flood",
+        Mode::Wake => "wake",
+        Mode::Rest => "rest",
+        Mode::Animate => "animate",
     };
+    if mode == Mode::Animate {
+        let gaps: Vec<f64> = stats
+            .renders
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).as_secs_f64() * 1e3)
+            .collect();
+        let span = match (stats.renders.first(), stats.renders.last()) {
+            (Some(first), Some(last)) => (*last - *first).as_secs_f64(),
+            _ => 0.0,
+        };
+        println!(
+            "mode=animate renders={} per_s={:.1} {}",
+            stats.renders.len(),
+            stats.renders.len() as f64 / span.max(f64::EPSILON),
+            summary("gap", &gaps)
+        );
+        return;
+    }
+    if mode == Mode::Wake {
+        let mut us: Vec<f64> = stats.wake_to_render.iter().map(|ms| ms * 1e3).collect();
+        us.sort_by(f64::total_cmp);
+        let at = |q: f64| us[((us.len() - 1) as f64 * q).round() as usize];
+        println!(
+            "mode=wake samples={} wake_to_render_us min={:.0} p50={:.0} p90={:.0} max={:.0}",
+            us.len(),
+            at(0.0),
+            at(0.5),
+            at(0.9),
+            at(1.0)
+        );
+        return;
+    }
     let mut line = format!(
         "mode={name} frames={} dropped={}",
         stats.submit_to_glass.len(),
@@ -310,8 +370,29 @@ fn report(mode: Mode, stats: &Stats) {
 }
 
 impl Render for FrameLatency {
-    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.tick += 1;
+        if self.mode == Mode::Animate {
+            // The first second is the window coming up.
+            if self.tick > 60 {
+                self.stats.borrow_mut().renders.push(Instant::now());
+            }
+            window.request_animation_frame();
+        }
+        if self.mode == Mode::Wake {
+            let mut stats = self.stats.borrow_mut();
+            if let Some(wake) = stats.wake.take() {
+                let ms = wake.elapsed().as_secs_f64() * 1e3;
+                // The first few are the window coming up.
+                if self.tick > 3 {
+                    stats.wake_to_render.push(ms);
+                }
+            }
+            if stats.wake_to_render.len() >= WAKE_SAMPLES {
+                report(self.mode, &stats);
+                cx.defer(|cx| cx.quit());
+            }
+        }
         self.stats
             .borrow_mut()
             .render_started
@@ -362,8 +443,13 @@ fn main() {
         Some("idle") => Mode::Idle,
         Some("echo") => Mode::Echo,
         Some("flood") => Mode::Flood,
+        Some("wake") => Mode::Wake,
+        Some("rest") => Mode::Rest,
+        Some("animate") => Mode::Animate,
         Some(other) => {
-            eprintln!("unknown mode {other}; expected continuous, heavy, idle, echo or flood");
+            eprintln!(
+                "unknown mode {other}; expected continuous, heavy, idle, echo, flood, wake, rest or animate"
+            );
             std::process::exit(2);
         }
     };
@@ -372,20 +458,43 @@ fn main() {
             .ok()
             .and_then(|cells| cells.parse().ok())
             .unwrap_or(4000),
-        Mode::Continuous | Mode::Idle | Mode::Echo | Mode::Flood => 0,
+        Mode::Continuous
+        | Mode::Idle
+        | Mode::Echo
+        | Mode::Flood
+        | Mode::Wake
+        | Mode::Rest
+        | Mode::Animate => 0,
     };
     application().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(900.), px(700.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                // Full rate even when another app keeps focus, as a run from a terminal does.
-                inactive_frame_interval: None,
-                ..Default::default()
-            },
-            |window, cx| cx.new(|cx| FrameLatency::new(mode, cells, window, cx)),
-        )
-        .expect("open the probe window");
-        cx.activate(true);
+        let probe = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    // Full rate even when another app keeps focus, as a run from a terminal does.
+                    inactive_frame_interval: None,
+                    ..Default::default()
+                },
+                |window, cx| cx.new(|cx| FrameLatency::new(mode, cells, window, cx)),
+            )
+            .expect("open the probe window");
+        if matches!(mode, Mode::Rest | Mode::Animate) {
+            let stats = probe
+                .update(cx, |view, _, _| view.stats.clone())
+                .expect("the probe window");
+            let rest = Duration::from_secs(env_us("FRAME_LATENCY_REST_SECS", 12));
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(rest).await;
+                if mode == Mode::Animate {
+                    report(mode, &stats.borrow());
+                }
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        }
+        if !matches!(mode, Mode::Wake | Mode::Rest | Mode::Animate) {
+            cx.activate(true);
+        }
     });
 }

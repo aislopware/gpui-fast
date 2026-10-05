@@ -678,9 +678,10 @@ pub(crate) struct MacWindowState {
     pub(crate) background_appearance: WindowBackgroundAppearance,
     pub(crate) cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
-    frame_source: Option<WindowFrameSource>,
+    pub(crate) frame_source: Option<WindowFrameSource>,
     /// A vsync tick passed since the last immediate frame; see `immediate_frame`.
     immediate_frame_armed: bool,
+    pub(crate) fast_frame_park: crate::fast::frame_park::FramePark,
     pub(crate) renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     pub(crate) event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
@@ -847,7 +848,7 @@ impl MacWindowState {
         }
     }
 
-    fn start_display_link(&mut self) {
+    pub(crate) fn start_display_link(&mut self) {
         self.stop_display_link();
         unsafe {
             if !FRAMES_WHILE_HIDDEN
@@ -878,7 +879,8 @@ impl MacWindowState {
             .log_err();
     }
 
-    fn stop_display_link(&mut self) {
+    pub(crate) fn stop_display_link(&mut self) {
+        crate::fast::frame_park::FramePark::stopped(&mut self.fast_frame_park);
         if let Some(frame_source) = self.frame_source.as_mut() {
             frame_source.stop();
         }
@@ -1124,6 +1126,7 @@ impl MacWindow {
                 cursor_visible,
                 frame_source: None,
                 immediate_frame_armed: false,
+                fast_frame_park: crate::fast::frame_park::FramePark::default(),
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -2035,6 +2038,10 @@ impl PlatformWindow for MacWindow {
                 .styleMask()
                 .contains(NSWindowStyleMask::NSFullScreenWindowMask)
         }
+    }
+
+    fn schedule_frame(&self) {
+        crate::fast::frame_park::schedule_frame(&self.0);
     }
 
     fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
@@ -3436,6 +3443,7 @@ extern "C" fn step(view: *mut c_void) {
             ..Default::default()
         });
         window_state.lock().request_frame_callback = Some(callback);
+        crate::fast::frame_park::after_tick(&mut window_state.lock());
     }
 }
 
@@ -3443,7 +3451,7 @@ extern "C" fn step(view: *mut c_void) {
 /// a keystroke into a quiet window reaches the glass up to a refresh sooner. At most one runs
 /// between two ticks, and only when no frame began for a refresh, which keeps a notifier that
 /// is faster than the display, or a throttled window, from drawing out of step with it.
-extern "C" fn immediate_frame(window_state: *mut c_void) {
+pub(crate) extern "C" fn immediate_frame(window_state: *mut c_void) {
     // SAFETY: `frame_waker` passed a reference from `Weak::into_raw` for this call to own.
     let window_state = unsafe { Weak::from_raw(window_state.cast::<Mutex<MacWindowState>>()) };
     let Some(window_state) = window_state.upgrade() else {
@@ -3451,10 +3459,7 @@ extern "C" fn immediate_frame(window_state: *mut c_void) {
     };
     let mut lock = window_state.lock();
     let armed = mem::take(&mut lock.immediate_frame_armed);
-    let ticking = lock
-        .frame_source
-        .as_ref()
-        .is_some_and(WindowFrameSource::is_running);
+    let ticking = crate::fast::frame_park::ticking(&mut lock, armed);
     if !armed || !ticking || !lock.renderer.idle_for_a_refresh() {
         return;
     }
@@ -3463,6 +3468,7 @@ extern "C" fn immediate_frame(window_state: *mut c_void) {
         callback(Default::default());
         let mut lock = window_state.lock();
         lock.request_frame_callback = Some(callback);
+        crate::fast::frame_park::after_immediate_frame(&mut lock);
         // A wake that only ran next-frame callbacks drew nothing, so it must not take the
         // slot from the draw that follows it, such as a keystroke's echo a moment later.
         if lock.renderer.idle_for_a_refresh() {
