@@ -17,3 +17,4 @@ pub(crate) mod text_smoothing;
 pub(crate) mod text_system;
 
 pub(crate) mod composition;
+pub(crate) mod frame_park;
