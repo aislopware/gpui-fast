@@ -124,6 +124,7 @@ pub use fast::layers::scene::{
     decode_layer_tile, layer_tile_id, layer_tile_texture_id,
 };
 pub use fast::live_region::LiveRegion;
+pub use fast::mask::RenderMaskParams;
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::stats::LayoutStats;
 #[cfg(any(test, feature = "test-support"))]

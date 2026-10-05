@@ -686,6 +686,8 @@ Retained Mode draws a view from the last frame while nothing it read changed
   the view for the next frame, which is then built again and asks again.
 - **`CursorStyle::None`, the outline style, `paint_glyph_scaled`**: painted into the frame's
   cursor styles and scene, which a retained view's replay copies.
+- **Masks** (`Window::paint_mask`, `fast/mask.rs`): a sprite in the scene like an SVG's,
+  rasterised once per key and size into the atlas, which a retained view's replay copies.
 - **Natives** (`native_view`, `Window::paint_native`): the placement is painted into
   the scene, so a view drawn from the last frame places its native again as it was, and
   the platform is not called. A native no view placed in a frame is hidden. What moves

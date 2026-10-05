@@ -192,6 +192,13 @@ unchanged, and a new entry needs as good a reason.
   needs none, so a test that shapes and rasterises real glyphs (Slopty's terminal
   paint oracle) takes it from here. Windows' and Linux's text systems need their
   platform's devices and still come from a headless platform.
+- `Window::paint_mask`, `RenderMaskParams` and `AtlasKey::Mask` are new public API
+  (`fast/mask.rs`). Upstream's monochrome sprites are glyphs and SVGs, and an SVG is
+  rasterised at twice the device size and halved by the sampler. Slopty's icons are the
+  operating system's symbols, drawn by the system at the size they are shown; halving
+  them after costs crispness, most at 1x. A mask is the caller's bytes, one alpha byte
+  per device pixel, painted at exactly that size with its origin rounded to a device
+  pixel, and rasterised once per key and size (`fast/tests/mask.rs`).
 - `TextSmoothing`, `App::set_text_smoothing`, `App::text_smoothing`,
   `Window::with_text_smoothing` and `Window::text_smoothing` are new public API
   (`fast/text_smoothing.rs`). Upstream dilates light glyphs on macOS as Core
