@@ -2601,7 +2601,6 @@ dependencies = [
  "async-task",
  "backtrace",
  "bench_metrics",
- "bindgen",
  "bitflags 2.13.1",
  "chrono",
  "collections",
@@ -2671,7 +2670,6 @@ dependencies = [
  "web-sys",
  "web-time",
  "windows 0.62.2",
- "zed-font-kit 0.14.1-zed (git+https://github.com/zed-industries/font-kit?rev=94b0f28166665e8fd2f53ff6d268a14955c82269)",
  "zed-scap 0.0.8-zed (git+https://github.com/zed-industries/scap?rev=4afea48c3b002197176fb19cd0f9b180dd36eaac)",
 ]
 
@@ -3690,7 +3688,6 @@ dependencies = [
  "async-fs",
  "async-tar",
  "bytes",
- "derive_more",
  "futures",
  "http",
  "http-body",
@@ -5417,6 +5414,7 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "tempfile",
+ "tendril",
 ]
 
 [[package]]
@@ -8045,7 +8043,6 @@ dependencies = [
  "shlex 1.3.0",
  "smol",
  "tempfile",
- "tendril",
  "unicase",
  "url",
  "util_macros",
