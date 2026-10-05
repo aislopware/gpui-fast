@@ -12,6 +12,7 @@ mod element_oracle;
 mod focus;
 mod focus_notify;
 mod focus_tooltip;
+mod fling;
 mod focus_while_drawing;
 mod gesture;
 mod global_id;

@@ -468,6 +468,11 @@ Added in this fork:
   Windows, Linux and the web send `None`: Direct Manipulation's inertia could be
   mapped, but it is untested here. Consumers that build a `ScrollWheelEvent` without
   `..Default::default()` have to add the field.
+- fix(gpui): a touch's fling ends once a step of it moves nothing, and a touch outside what
+  it scrolls stays a tap (`fast/fling.rs`). `div`'s and `list`'s scroll listeners report
+  whether a step moved them and where they are; a custom scroll handler reports nothing and
+  keeps its fling. Upstream's open zed #64534 keeps a scroll gesture with the content it
+  started on, which is a different question: its fling still runs out its curve.
 - `1776aa2` test(gpui): a video surface shows the buffer its view holds, retained or not
 - `4d0009e` gpui: build a view that asked for an animation frame on the next frame drawn
 - the commit after `4c13f16`: a spliced view builds every nested view that is out of
