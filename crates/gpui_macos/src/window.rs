@@ -2408,6 +2408,18 @@ impl PlatformWindow for MacWindow {
         this.renderer.render_to_image(scene)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    fn fast_render_scene_to_image(
+        &self,
+        scene: &gpui::Scene,
+        fast_size: gpui::Size<gpui::DevicePixels>,
+    ) -> Result<RgbaImage> {
+        self.0
+            .lock()
+            .renderer
+            .render_scene_to_image(scene, fast_size)
+    }
+
     fn a11y_init(&self, callbacks: gpui::A11yCallbacks) {
         let mut lock = self.0.lock();
 

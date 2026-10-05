@@ -195,6 +195,11 @@ unchanged, and a new entry needs as good a reason.
   per device pixel, painted at exactly that size with its origin rounded to a device
   pixel, and rasterised once per key and size (`fast/tests/mask.rs`). A transformation, as
   `paint_svg` takes, turns it while it moves (a disclosure chevron); at rest it is the unit.
+- `Window::render_to_image_at(scale, cx)` (test-support, `fast/render_at.rs`) and the
+  defaulted `PlatformWindow::fast_render_scene_to_image`, forwarded by the macOS window to
+  its renderer's offscreen render, are new. Upstream renders a window only at its display's
+  scale; Slopty's visual tests run on a 1x display and keep one Retina golden, so a
+  regression that shows only at 2x is caught too.
 - `TextSmoothing`, `App::set_text_smoothing`, `App::text_smoothing`,
   `Window::with_text_smoothing` and `Window::text_smoothing` are new public API
   (`fast/text_smoothing.rs`). Upstream dilates light glyphs on macOS as Core

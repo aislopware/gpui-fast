@@ -37,6 +37,8 @@ pub(crate) mod live_region;
 pub(crate) mod mask;
 pub(crate) mod number_shaping;
 pub(crate) mod path_cache;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod render_at;
 pub(crate) mod retained;
 pub(crate) mod scene;
 pub(crate) mod scroll;

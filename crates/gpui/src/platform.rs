@@ -1389,6 +1389,16 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn render_to_image(&self, _scene: &Scene) -> Result<RgbaImage> {
         anyhow::bail!("render_to_image not implemented for this platform")
     }
+
+    /// Renders `scene` offscreen at `fast_size` device pixels (`fast::render_at`).
+    #[cfg(any(test, feature = "test-support"))]
+    fn fast_render_scene_to_image(
+        &self,
+        _scene: &Scene,
+        _fast_size: Size<DevicePixels>,
+    ) -> Result<RgbaImage> {
+        anyhow::bail!("fast_render_scene_to_image not implemented for this platform")
+    }
 }
 
 /// A renderer for headless windows that can produce real rendered output.
