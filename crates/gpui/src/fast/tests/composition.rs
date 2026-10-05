@@ -459,7 +459,7 @@ fn a_native_and_its_focus_handle_share_the_keyboard() {
     assert_eq!(keyboard(&mut cx), None);
 
     test_host(&host).simulate_focus(true);
-    cx.run_until_parked();
+    cx.update(|_| {});
     draw(&mut cx, window);
     window
         .update(&mut cx, |_, window, _| {
@@ -705,4 +705,60 @@ fn the_test_platform_places_natives_where_its_own_draws_put_them() {
         })
         .unwrap();
     assert_eq!(presented.unwrap().placement(host.id()), Some(&placement));
+}
+
+struct Gallery {
+    picture: Option<Entity<Picture>>,
+}
+
+impl Render for Gallery {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .child(div().size(px(20.)).child("label"))
+            .children(self.picture.clone())
+    }
+}
+
+/// A native whose view is dropped lets go of its content with the view, not a
+/// frame later: what the last frame keeps to draw a view again holds the view
+/// weakly, so the platform view (a page and everything it holds open) goes as
+/// soon as its owner lets it, whether or not the window draws again.
+#[test]
+fn a_native_dropped_with_its_view_goes_without_waiting_for_a_frame() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(|window, cx| {
+        let host = host(window, cx);
+        Gallery {
+            picture: Some(cx.new(|_| Picture { host })),
+        }
+    });
+    let platform = window
+        .update(&mut cx, |gallery, _, cx| {
+            let picture = gallery.picture.as_ref().unwrap().read(cx);
+            std::rc::Rc::downgrade(picture.host.platform())
+        })
+        .unwrap();
+    draw(&mut cx, window);
+    window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+    draw(&mut cx, window);
+    assert!(platform.upgrade().is_some(), "drawn, the native is held");
+
+    window
+        .update(&mut cx, |gallery, _, cx| {
+            gallery.picture = None;
+            cx.notify();
+        })
+        .unwrap();
+    assert!(
+        platform.upgrade().is_none(),
+        "the last frame holds nothing of a dropped view's native"
+    );
+    draw(&mut cx, window);
+    let placed = cx
+        .update_window(window.into(), |_, window, _| {
+            window.rendered_frame.scene.composition.placements.len()
+        })
+        .unwrap();
+    assert_eq!(placed, 0, "and the next frame places nothing");
 }
