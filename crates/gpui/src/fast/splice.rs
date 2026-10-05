@@ -30,8 +30,8 @@ use crate::key_dispatch::{DispatchNodeId, DispatchTree};
 use crate::window::DeferredDraw;
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
-    AnyView, App, ContentMask, ElementId, ElementIdStack, EntityId, FocusId, GlobalElementId,
-    HitboxId, LayoutId, Pixels, Point, StyleRefinement, View, ViewElement, Window,
+    AnyView, AnyWeakView, App, ContentMask, ElementId, ElementIdStack, EntityId, FocusId,
+    GlobalElementId, HitboxId, LayoutId, Pixels, Point, StyleRefinement, View, ViewElement, Window,
 };
 use collections::FxHashSet;
 use smallvec::SmallVec;
@@ -70,7 +70,12 @@ impl<V: View> ViewElement<V> {
 
 /// What it takes to build a view again on its own, where it was drawn.
 pub(crate) struct Rebuild {
-    view: AnyView,
+    /// The view, held weakly: a frame keeps a record of every view drawn in
+    /// it, and a strong handle there would keep a view its owner has dropped
+    /// (and whatever the view holds: a native, a page and its process) alive
+    /// until the next frame replaces this one. A view gone by then is not
+    /// drawn again, so it needs no rebuilding.
+    view: AnyWeakView,
     /// The layout key its element was requested under, which its own key,
     /// and the keys of its nodes, are derived from.
     parent_layout_key: u64,
@@ -102,7 +107,7 @@ impl Window {
             return None;
         }
         Some(Rebuild {
-            view: handle.0.clone()?,
+            view: handle.0.as_ref()?.downgrade(),
             parent_layout_key: parent_layout_key?,
             text_style_stack: self.text_style_stack.clone(),
             element_offset: self.element_offset(),
@@ -513,6 +518,7 @@ impl Window {
     fn lay_out_gap(&mut self, record: usize, cx: &mut App) -> Option<(Gap, GapLayout)> {
         let nested = &self.rendered_frame.retained.records[record];
         let rebuild = nested.rebuild.clone()?;
+        let rebuilt = rebuild.view.upgrade()?;
         let root = nested.layout.as_ref()?.root;
         let global_id = nested.id.clone();
         let context = nested.context.clone();
@@ -534,7 +540,7 @@ impl Window {
             context.opacity,
             context.fade,
         );
-        let mut view = ViewElement::new(rebuild.view.clone()).rebuildable(rebuild.view.clone());
+        let mut view = ViewElement::new(rebuilt.clone()).rebuildable(rebuilt);
         view.cached_style = rebuild.cached_style.clone();
         // What its element's request for layout does, inside the view around
         // it.
