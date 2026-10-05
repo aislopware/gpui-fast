@@ -47,7 +47,10 @@ impl Window {
     /// it is shown wants. `rasterize` runs only when the atlas lacks `key`
     /// at `size`, and gives one alpha byte per device pixel, row by row;
     /// `None` paints nothing. `key` must tell apart every drawing of the
-    /// same size, the scale factor included.
+    /// same size, the scale factor included. `transformation` is applied in
+    /// device pixels, as [`Self::paint_svg`]'s is: a chevron turning as a
+    /// row opens. At rest it should be [`TransformationMatrix::unit`], so
+    /// the mask's pixels stay the screen's.
     ///
     /// This method should only be called as part of the paint phase of
     /// element drawing.
@@ -56,6 +59,7 @@ impl Window {
         origin: Point<Pixels>,
         size: Size<DevicePixels>,
         key: SharedString,
+        transformation: TransformationMatrix,
         color: Hsla,
         rasterize: impl FnOnce() -> Result<Option<Vec<u8>>>,
     ) -> Result<()> {
@@ -108,7 +112,7 @@ impl Window {
             content_mask,
             color: color.opacity(element_opacity),
             tile,
-            transformation: TransformationMatrix::unit(),
+            transformation,
         });
         Ok(())
     }

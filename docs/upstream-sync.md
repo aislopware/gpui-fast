@@ -193,7 +193,8 @@ unchanged, and a new entry needs as good a reason.
   operating system's symbols, drawn by the system at the size they are shown; halving
   them after costs crispness, most at 1x. A mask is the caller's bytes, one alpha byte
   per device pixel, painted at exactly that size with its origin rounded to a device
-  pixel, and rasterised once per key and size (`fast/tests/mask.rs`).
+  pixel, and rasterised once per key and size (`fast/tests/mask.rs`). A transformation, as
+  `paint_svg` takes, turns it while it moves (a disclosure chevron); at rest it is the unit.
 - `TextSmoothing`, `App::set_text_smoothing`, `App::text_smoothing`,
   `Window::with_text_smoothing` and `Window::text_smoothing` are new public API
   (`fast/text_smoothing.rs`). Upstream dilates light glyphs on macOS as Core

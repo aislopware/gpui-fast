@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::{
     Context, DevicePixels, IntoElement, Pixels, Point, Render, ScaledPixels, TestAppContext,
-    Window, WindowHandle, canvas, hsla, point, prelude::*, px, size,
+    TransformationMatrix, Window, WindowHandle, canvas, hsla, point, prelude::*, px, size,
 };
 
 /// A 13 pt symbol at 2x: 26 by 24 device pixels.
@@ -15,6 +15,8 @@ const SIDE: (i32, i32) = (26, 24);
 
 struct Symbol {
     origin: Point<Pixels>,
+    /// How the mask is turned: as a chevron turning while a row opens.
+    turn: TransformationMatrix,
     /// How many times the mask was rasterised.
     rasters: Rc<Cell<u32>>,
     /// What painting a mask of the wrong length said.
@@ -24,6 +26,7 @@ struct Symbol {
 impl Render for Symbol {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let (origin, rasters, wrong) = (self.origin, self.rasters.clone(), self.wrong.clone());
+        let turn = self.turn;
         canvas(
             |_, _, _| {},
             move |_, (), window, _| {
@@ -34,6 +37,7 @@ impl Render for Symbol {
                         origin,
                         side,
                         "chevron.right 13 regular @2".into(),
+                        turn,
                         ink,
                         || {
                             rasters.set(rasters.get() + 1);
@@ -41,14 +45,25 @@ impl Render for Symbol {
                         },
                     )
                     .unwrap();
-                let short =
-                    window.paint_mask(origin, side, "short".into(), ink, || Ok(Some(vec![255; 3])));
+                let short = window.paint_mask(
+                    origin,
+                    side,
+                    "short".into(),
+                    TransformationMatrix::unit(),
+                    ink,
+                    || Ok(Some(vec![255; 3])),
+                );
                 *wrong.borrow_mut() = short.err().map(|e| e.to_string());
                 let none = size(DevicePixels(0), DevicePixels(SIDE.1));
                 window
-                    .paint_mask(origin, none, "empty".into(), ink, || {
-                        unreachable!("an empty mask is never rasterised")
-                    })
+                    .paint_mask(
+                        origin,
+                        none,
+                        "empty".into(),
+                        TransformationMatrix::unit(),
+                        ink,
+                        || unreachable!("an empty mask is never rasterised"),
+                    )
                     .unwrap();
             },
         )
@@ -64,6 +79,7 @@ fn a_mask_paints_at_its_device_size_and_is_rasterised_once(cx: &mut TestAppConte
         let (rasters, wrong) = (rasters.clone(), wrong.clone());
         move |_, _| Symbol {
             origin: point(px(10.3), px(5.2)),
+            turn: TransformationMatrix::unit(),
             rasters,
             wrong,
         }
@@ -78,11 +94,16 @@ fn a_mask_paints_at_its_device_size_and_is_rasterised_once(cx: &mut TestAppConte
                 1,
                 "the one mask; the short and empty ones paint nothing"
             );
-            (sprites[0].bounds, sprites[0].tile.bounds.size)
+            (
+                sprites[0].bounds,
+                sprites[0].tile.bounds.size,
+                sprites[0].transformation,
+            )
         })
         .unwrap()
     };
-    let (bounds, tile) = sprite(cx);
+    let (bounds, tile, at_rest) = sprite(cx);
+    assert_eq!(at_rest, TransformationMatrix::unit(), "upright at rest");
     // 10.3 and 5.2 points are 20.6 and 10.4 device pixels: rounded to one.
     assert_eq!(bounds.origin, point(ScaledPixels(21.), ScaledPixels(10.)));
     assert_eq!(
@@ -105,7 +126,7 @@ fn a_mask_paints_at_its_device_size_and_is_rasterised_once(cx: &mut TestAppConte
                 cx.notify();
             })
             .unwrap();
-        let (bounds, _) = sprite(cx);
+        let (bounds, _, _) = sprite(cx);
         assert_eq!(
             bounds.origin.x,
             ScaledPixels(x * 2.),
@@ -113,4 +134,15 @@ fn a_mask_paints_at_its_device_size_and_is_rasterised_once(cx: &mut TestAppConte
         );
     }
     assert_eq!(rasters.get(), 1, "rasterised once for its key and size");
+
+    let quarter = TransformationMatrix::unit().rotate(crate::radians(std::f32::consts::FRAC_PI_2));
+    window
+        .update(cx, |symbol, _, cx| {
+            symbol.turn = quarter;
+            cx.notify();
+        })
+        .unwrap();
+    let (_, _, turned) = sprite(cx);
+    assert_eq!(turned, quarter, "a turning mask carries its turn");
+    assert_eq!(rasters.get(), 1, "turning draws the same pixels");
 }
