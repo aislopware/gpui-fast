@@ -470,8 +470,9 @@ sorted them by atlas tile, which only made that order arbitrary.
   not tessellated again, wherever it is drawn (`fast/path_cache.rs`).
 - **Glyph runs** work out their rendering once per run rather than once per
   glyph (`fast/glyphs.rs`).
-- **Element ids and absolute bounds** are cached per frame without rehashing
-  (`fast/global_id.rs`, `fast/layout_bounds.rs`).
+- **Absolute bounds** are cached per frame without rehashing
+  (`fast/layout_bounds.rs`). Element ids hash their path once, as upstream
+  now does itself (zed #64209).
 
 ## Scrolled content: layers
 

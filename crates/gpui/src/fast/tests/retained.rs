@@ -2252,7 +2252,7 @@ fn a_spliced_view_lets_go_of_the_element_states_its_gaps_no_longer_use() {
                     .rendered_frame
                     .element_states
                     .keys()
-                    .filter_map(|(id, _)| match id.0.last()? {
+                    .filter_map(|(id, _)| match id.last()? {
                         ElementId::NamedInteger(name, element) if name == "randomized-element" => {
                             Some(*element)
                         }

@@ -127,7 +127,7 @@ fn a_view_drawn_around_a_rebuilt_view_keeps_no_state_of_its_removed_elements() {
                 .rendered_frame
                 .element_states
                 .keys()
-                .filter(|(id, _)| id.0.last() == Some(&ElementId::from("leaf")))
+                .filter(|(id, _)| id.last() == Some(&ElementId::from("leaf")))
                 .count()
         })
         .unwrap()

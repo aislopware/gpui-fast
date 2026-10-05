@@ -167,7 +167,7 @@ pub(crate) fn painted_container(window: &mut Window, element: &Interactivity) ->
     if !COMPILED {
         return ScrollContainer(None);
     }
-    let id = crate::fast::global_id::current(window);
+    let id = window.element_id_stack.global_id();
     let (source, version) = match element.tracked_scroll_handle.as_ref() {
         Some(handle) => {
             let version = handle.0.borrow().version.clone();
@@ -602,7 +602,7 @@ pub(crate) fn note_uncarried(window: &mut Window) {
 
 pub(crate) fn note_anchored(window: &mut Window) {
     if COMPILED && !window.fast_layers.layers.is_empty() {
-        let id = crate::fast::global_id::current(window);
+        let id = window.element_id_stack.global_id();
         // A list has no id its rows' ids start with (see
         // `lists::content_prefix`): the layer being painted is noted too.
         let painting = window.fast_layers.painting.as_ref().map(|p| p.id.clone());

@@ -807,7 +807,7 @@ In the bd747337 sync:
   (#64433) join `PaintIndex` beside gpui-fast's window control hitboxes, and
   `PaintIndex::shifted` in `fast/retained.rs` has to carry every new index.
 - `entity_map.rs`: the access and update hooks sit in `read_inner` and `lease_inner`.
-- `element.rs`: the global id cache and layout key hooks sit in `prepare_element_id`.
+- `element.rs`: the layout key hooks sit in `prepare_element_id`.
 - `line_layout.rs`: `LineLayoutIndex` gained `font_generation`; `fast/text.rs` shifts it, a
   frame after `TextSystem::add_fonts` is drawn from scratch
   (`fast::text::refresh_if_fonts_changed`), and a text measurement is carried over only
@@ -825,6 +825,18 @@ macOS dispatcher moved to `gpui_apple` as `AppleDispatcher`. `gpui_ios` runs on 
 its own `IosDispatcher` is deleted, leaving `ios/dispatcher.rs` with the main-queue
 helpers only. `gpui_apple` dropped `objc` 0.2 and `cocoa`, so `fast::video_layer`, the
 presentation check in `draw` and the GPU-time measurements use objc2.
+
+In the ed54236e sync (zed #64209, "Hash a GlobalElementId once, when it is built"):
+upstream now does what `fast/global_id.rs` did. It keeps the hash of every prefix on the
+window's `ElementIdStack` and builds a `GlobalElementId` with its hash known
+(`with_hash`), so ids compare and hash in constant time. `fast/global_id.rs` is deleted
+with its `PathHash`, `path_hash` and `from_path`. Its other half, the cache that handed
+the same `Arc<[ElementId]>` out again across frames, went too. Measured with
+`gpui_perf --headless --frames 300` against upstream's allocating `global_id()`, it saved
+1–11 % of a frame's allocations but no instructions: from −1.9 % (scroll-child-view
+from scratch) to +0.7 % (strip-scroll retained), and within ±0.3 % for the retained
+workspace and list scenarios. `fast/splice.rs` rebuilds a gap's `ElementIdStack` from
+its parent's path, and `fast/layers` reads upstream's `global_id()`.
 
 In the longbridge f6e82b4 merge (`4c13f16`): `TextMeasureInputs::new` went away, so the
 font generation moves into `fast::text::layout_text` and `shapes_as` compares it;

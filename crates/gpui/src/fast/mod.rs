@@ -23,7 +23,6 @@ pub(crate) mod element;
 pub(crate) mod focus;
 pub(crate) mod focus_tooltip;
 pub mod gesture;
-pub(crate) mod global_id;
 pub(crate) mod glyphs;
 pub(crate) mod headless_atlas;
 pub(crate) mod interactivity;

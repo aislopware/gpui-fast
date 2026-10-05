@@ -127,11 +127,6 @@ few places where gpui-fast's differs from upstream's are listed here. Each is
 forced by what `fast/` keeps; anything not listed here is upstream's API
 unchanged, and a new entry needs as good a reason.
 
-- `GlobalElementId` carries the hash of its path next to the path
-  (`fast::global_id::PathHash`), so ids compare and hash in constant time.
-  It no longer implements `DerefMut`: changing the path in place would leave
-  the hash stale. `Default`, `PartialEq`, `Eq` and `Hash` are implemented in
-  `fast/global_id.rs` instead of derived, with upstream's meaning.
 - `ViewElement`'s `Element::RequestLayoutState` and `PrepaintState` are
   `fast::retained::ViewLayoutState` and `ViewPrepaintState`, opaque types, in
   place of `Option<AnyElement>`. `ViewElement` is `#[doc(hidden)]`, and the

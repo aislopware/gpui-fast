@@ -30,8 +30,8 @@ use crate::key_dispatch::{DispatchNodeId, DispatchTree};
 use crate::window::DeferredDraw;
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
-    AnyView, App, ContentMask, ElementId, EntityId, FocusId, GlobalElementId, HitboxId, LayoutId,
-    Pixels, Point, StyleRefinement, View, ViewElement, Window,
+    AnyView, App, ContentMask, ElementId, ElementIdStack, EntityId, FocusId, GlobalElementId,
+    HitboxId, LayoutId, Pixels, Point, StyleRefinement, View, ViewElement, Window,
 };
 use collections::FxHashSet;
 use smallvec::SmallVec;
@@ -135,7 +135,7 @@ pub(crate) struct Gap {
 
 impl Gap {
     fn element_id(&self) -> ElementId {
-        self.global_id.0.last().cloned().expect("a view has an id")
+        self.global_id.last().cloned().expect("a view has an id")
     }
 }
 
@@ -234,7 +234,7 @@ pub(crate) struct SplicedPrepaint {
 /// What the window inherits at some point of the element tree, set aside while
 /// a nested view is built where it was.
 struct Inherited {
-    element_id_stack: SmallVec<[ElementId; 32]>,
+    element_id_stack: ElementIdStack,
     text_style_stack: TextStyleStack,
     content_mask_stack: Vec<ContentMask<Pixels>>,
     element_offset_stack: Vec<Point<Pixels>>,
@@ -253,13 +253,16 @@ impl Window {
         opacity: f32,
         fade: u32,
     ) -> Inherited {
-        let parent_ids = &id.0[..id.0.len() - 1];
+        let parent_ids = &id[..id.len() - 1];
         crate::fast::edge_fade::enter(&mut self.next_frame.scene, fade);
         Inherited {
-            element_id_stack: mem::replace(
-                &mut self.element_id_stack,
-                parent_ids.iter().cloned().collect(),
-            ),
+            element_id_stack: mem::replace(&mut self.element_id_stack, {
+                let mut stack = ElementIdStack::default();
+                for id in parent_ids {
+                    stack.push(id.clone());
+                }
+                stack
+            }),
             text_style_stack: mem::replace(
                 &mut self.text_style_stack,
                 rebuild.text_style_stack.clone(),
@@ -513,7 +516,7 @@ impl Window {
         let root = nested.layout.as_ref()?.root;
         let global_id = nested.id.clone();
         let context = nested.context.clone();
-        let element_id = global_id.0.last().cloned()?;
+        let element_id = global_id.last().cloned()?;
 
         let engine = self.layout_engine.as_ref().unwrap();
         let (changes, remeasures, transient) = (
@@ -1025,7 +1028,7 @@ impl Window {
 
 /// Whether the element `id` is inside one of the views `views`.
 fn inside_any(id: &GlobalElementId, views: &[&GlobalElementId]) -> bool {
-    views.iter().any(|view| id.0.starts_with(&view.0))
+    views.iter().any(|view| id.starts_with(view))
 }
 
 /// A copy of `record`, with its prepaint at `prepaint_range` in this frame and
@@ -1060,7 +1063,7 @@ fn copy_record(
 /// The entity of the view whose element has the id `id`.
 #[inline(always)]
 pub(crate) fn view_entity(id: &GlobalElementId) -> Option<EntityId> {
-    match id.0.last()? {
+    match id.last()? {
         ElementId::View(entity) => Some(*entity),
         _ => None,
     }

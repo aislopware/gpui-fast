@@ -973,11 +973,59 @@ pub(crate) struct TooltipRequest {
     tooltip: AnyTooltip,
 }
 
+/// The ids of the elements being drawn, root first, with the hash of every
+/// prefix alongside: a [`GlobalElementId`] for the current element is then
+/// the ids cloned out and the hash on top of the stack, without walking the
+/// path — the ids of every ancestor, string names byte by byte — for each
+/// element on every frame.
+#[derive(Clone, Default)]
+pub(crate) struct ElementIdStack {
+    ids: SmallVec<[ElementId; 32]>,
+    hashes: SmallVec<[u64; 32]>,
+}
+
+impl ElementIdStack {
+    pub(crate) fn push(&mut self, id: ElementId) {
+        self.hashes.push(crate::extend_path_hash(self.hash(), &id));
+        self.ids.push(id);
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<ElementId> {
+        self.hashes.pop();
+        self.ids.pop()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.ids.clear();
+        self.hashes.clear();
+    }
+
+    /// The hash of the whole path on the stack.
+    fn hash(&self) -> u64 {
+        self.hashes
+            .last()
+            .copied()
+            .unwrap_or(crate::EMPTY_PATH_HASH)
+    }
+
+    pub(crate) fn global_id(&self) -> GlobalElementId {
+        GlobalElementId::with_hash(&self.ids, self.hash())
+    }
+}
+
+impl std::ops::Deref for ElementIdStack {
+    type Target = [ElementId];
+
+    fn deref(&self) -> &Self::Target {
+        &self.ids
+    }
+}
+
 pub(crate) struct DeferredDraw {
     pub(crate) current_view: EntityId,
     pub(crate) priority: usize,
     pub(crate) parent_node: DispatchNodeId,
-    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
+    pub(crate) element_id_stack: ElementIdStack,
     pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
     pub(crate) content_mask: Option<ContentMask<Pixels>>,
     pub(crate) rem_size: Pixels,
@@ -1192,8 +1240,7 @@ pub struct Window {
     pub(crate) layout_engine: Option<TaffyLayoutEngine>,
     pub(crate) fast_layout: crate::fast::layout_key::WindowLayout,
     pub(crate) root: Option<AnyView>,
-    pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
-    pub(crate) global_ids: crate::fast::global_id::GlobalIdCache,
+    pub(crate) element_id_stack: ElementIdStack,
     pub(crate) retained_state: crate::fast::retained::RetainedState,
     pub(crate) composition: crate::fast::composition::WindowComposition,
     pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
@@ -2121,8 +2168,7 @@ impl Window {
             layout_engine: Some(TaffyLayoutEngine::new()),
             fast_layout: crate::fast::layout_key::WindowLayout::default(),
             root: None,
-            element_id_stack: SmallVec::default(),
-            global_ids: crate::fast::global_id::GlobalIdCache::default(),
+            element_id_stack: ElementIdStack::default(),
             retained_state: crate::fast::retained::RetainedState::new(cx),
             composition: crate::fast::composition::WindowComposition::default(),
             text_style_stack: crate::fast::text_style::TextStyleStack::default(),
@@ -3101,7 +3147,7 @@ impl Window {
         f: impl FnOnce(&GlobalElementId, &mut Self) -> R,
     ) -> R {
         self.with_id(element_id, |this| {
-            let global_id = crate::fast::global_id::current(this);
+            let global_id = this.element_id_stack.global_id();
 
             f(&global_id, this)
         })
@@ -3494,7 +3540,6 @@ impl Window {
         self.layout_engine.as_mut().unwrap().clear();
         crate::fast::layout_key::WindowLayout::end_frame(&mut self.fast_layout);
         self.text_system().finish_frame();
-        crate::fast::global_id::GlobalIdCache::finish_frame(&mut self.global_ids);
         crate::fast::retained::finish_retained_frame(self);
         self.next_frame.finish(&mut self.rendered_frame);
 
