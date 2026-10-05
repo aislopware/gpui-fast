@@ -20,6 +20,7 @@ pub(crate) mod dependencies;
 pub(crate) mod dispatch;
 pub(crate) mod edge_fade;
 pub(crate) mod element;
+pub(crate) mod fling;
 pub(crate) mod focus;
 pub(crate) mod focus_tooltip;
 pub mod gesture;

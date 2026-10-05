@@ -1298,7 +1298,7 @@ pub struct Window {
     #[cfg(feature = "profiler")]
     window_profiler: profiler::WindowProfiler,
     last_input_modality: InputModality,
-    touch_gestures: TouchGestureRecognizer,
+    pub(crate) touch_gestures: TouchGestureRecognizer,
     touch_prediction_enabled: bool,
     long_press_timer: Option<Task<()>>,
     long_press_capture: Option<EntityId>,
@@ -5979,12 +5979,16 @@ impl Window {
         }
     }
 
-    fn dispatch_recognized_touch_gesture(&mut self, gesture: RecognizedTouchGesture, cx: &mut App) {
+    pub(crate) fn dispatch_recognized_touch_gesture(
+        &mut self,
+        gesture: RecognizedTouchGesture,
+        cx: &mut App,
+    ) {
         match gesture {
             RecognizedTouchGesture::Scroll(scroll_wheel) => {
                 self.mouse_position = scroll_wheel.position;
                 cx.propagate_event = true;
-                self.dispatch_mouse_event(&scroll_wheel, cx);
+                crate::fast::fling::dispatch_scroll(self, &scroll_wheel, cx);
             }
             RecognizedTouchGesture::Tap { down, up } => {
                 self.mouse_position = up.position;
@@ -6050,17 +6054,10 @@ impl Window {
     }
 
     fn schedule_touch_momentum_tick(&mut self) {
-        self.on_next_frame(|window, cx| {
-            if let Some(gesture) = window.touch_gestures.tick_momentum() {
-                window.dispatch_recognized_touch_gesture(gesture, cx);
-            }
-            if window.touch_gestures.has_momentum() {
-                window.schedule_touch_momentum_tick();
-            }
-        });
+        crate::fast::fling::schedule_tick(self);
     }
 
-    fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
+    pub(crate) fn dispatch_mouse_event(&mut self, event: &dyn Any, cx: &mut App) {
         let hit_test = self.rendered_frame.hit_test(self.mouse_position());
         if hit_test != self.mouse_hit_test {
             self.mouse_hit_test = hit_test;

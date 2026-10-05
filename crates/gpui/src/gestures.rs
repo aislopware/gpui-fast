@@ -490,8 +490,9 @@ const VELOCITY_MAX_SAMPLES: usize = 20;
 pub(crate) struct TouchGestureRecognizer {
     tuning: GestureTuning,
     state: TouchGestureState,
-    momentum: Option<Momentum>,
+    pub(crate) momentum: Option<Momentum>,
     last_tap: Option<CompletedTap>,
+    pub(crate) fast_fling: crate::fast::fling::Fling,
 }
 
 /// A semantic event recognized from raw touches, ready to dispatch through
@@ -560,10 +561,10 @@ struct CompletedTap {
 /// time — each tick evaluates it and emits the increment — so the fling is
 /// exactly frame-rate independent: a stalled frame simply resumes further
 /// along the same curve.
-struct Momentum {
+pub(crate) struct Momentum {
     /// Where the pan started; synthesized scroll events keep hit-testing
     /// there so momentum stays with the container the gesture began on.
-    position: Point<Pixels>,
+    pub(crate) position: Point<Pixels>,
     /// Unit vector of the release velocity.
     direction: Point<f32>,
     /// Release speed in pixels per second.
@@ -582,6 +583,7 @@ impl TouchGestureRecognizer {
             state: TouchGestureState::Idle,
             momentum: None,
             last_tap: None,
+            fast_fling: crate::fast::fling::Fling::default(),
         }
     }
 
@@ -600,7 +602,7 @@ impl TouchGestureRecognizer {
         let mut recognized = SmallVec::new();
         match event.phase {
             TouchPhase::Started => {
-                let caught_fling = if let Some(momentum) = self.momentum.take() {
+                let caught_fling = if let Some(momentum) = crate::fast::fling::catch(self, event) {
                     recognized.push(RecognizedTouchGesture::Scroll(
                         scroll_event(momentum.position, Point::default(), TouchPhase::Ended)
                             .fast_momentum(TouchPhase::Ended),
@@ -838,6 +840,7 @@ impl TouchGestureRecognizer {
                             } else {
                                 0.
                             };
+                            crate::fast::fling::replace(self, &mut recognized);
                             self.momentum = Some(Momentum {
                                 position: touch.start_position,
                                 direction,
@@ -1026,7 +1029,7 @@ impl TouchGestureRecognizer {
     }
 }
 
-fn scroll_event(
+pub(crate) fn scroll_event(
     position: Point<Pixels>,
     delta: Point<Pixels>,
     touch_phase: TouchPhase,

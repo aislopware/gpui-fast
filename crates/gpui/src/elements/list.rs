@@ -1681,11 +1681,13 @@ impl Element for List {
         let height = bounds.size.height;
         let scroll_top = prepaint.layout.scroll_top;
         let hitbox_id = prepaint.hitbox.id;
+        let fast_hitbox = prepaint.hitbox.clone();
         let mut accumulated_scroll_delta = ScrollDelta::default();
         window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && hitbox_id.should_handle_scroll(window) {
                 accumulated_scroll_delta = accumulated_scroll_delta.coalesce(event.delta);
                 let pixel_delta = accumulated_scroll_delta.pixel_delta(px(20.));
+                let fast_top = list_state.logical_scroll_top();
                 list_state.0.borrow_mut().scroll(
                     &scroll_top,
                     height,
@@ -1693,7 +1695,9 @@ impl Element for List {
                     current_view,
                     window,
                     cx,
-                )
+                );
+                let fast_new = list_state.logical_scroll_top();
+                crate::fast::fling::scrolled_list(window, &fast_hitbox, fast_top, fast_new);
             }
         });
 

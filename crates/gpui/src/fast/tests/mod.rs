@@ -9,6 +9,7 @@ mod edge_fade;
 mod element;
 mod element_bench;
 mod element_oracle;
+mod fling;
 mod focus;
 mod focus_notify;
 mod focus_tooltip;

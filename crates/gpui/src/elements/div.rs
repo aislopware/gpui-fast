@@ -3413,6 +3413,7 @@ impl Interactivity {
             let current_view = window.current_view();
             let subtrees = crate::fast::retained::enclosing_retained_subtrees(window);
             let fast_container = crate::fast::layers::invalidate::painted_container(window, self);
+            let fast_max = crate::fast::fling::scroll_max(self, hitbox.bounds, style, window);
             window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
                 if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
                     let mut scroll_offset = scroll_offset.borrow_mut();
@@ -3455,6 +3456,8 @@ impl Interactivity {
                     }
                     scroll_offset.y += delta_y;
                     scroll_offset.x += delta_x;
+                    let fast_offsets = (old_scroll_offset, *scroll_offset);
+                    crate::fast::fling::scrolled_by(window, &hitbox, fast_max, fast_offsets);
                     if *scroll_offset != old_scroll_offset {
                         crate::fast::retained::invalidate_retained_subtrees(window, &subtrees);
                         crate::fast::layers::invalidate::note_scrolled(window, &fast_container);
