@@ -125,11 +125,6 @@ few places where gpui-fast's differs from upstream's are listed here. Each is
 forced by what `fast/` keeps; anything not listed here is upstream's API
 unchanged, and a new entry needs as good a reason.
 
-- `GlobalElementId` carries the hash of its path next to the path
-  (`fast::global_id::PathHash`), so ids compare and hash in constant time.
-  It no longer implements `DerefMut`: changing the path in place would leave
-  the hash stale. `Default`, `PartialEq`, `Eq` and `Hash` are implemented in
-  `fast/global_id.rs` instead of derived, with upstream's meaning.
 - `ViewElement`'s `Element::RequestLayoutState` and `PrepaintState` are
   `fast::retained::ViewLayoutState` and `ViewPrepaintState`, opaque types, in
   place of `Option<AnyElement>`. `ViewElement` is `#[doc(hidden)]`, and the
@@ -185,6 +180,10 @@ commit our copy was taken from is `zed_commit` in `UPSTREAM`, and
    by keeping upstream's code and putting our hook back. The pull request must
    be merged with a merge commit, not squashed: the next sync's merge needs
    the vendor commits in `main`'s history.
+   Name our sync commit `chore: Sync GPUI upstream <zed-commit>`, using the
+   short target Zed commit, for example `chore: Sync GPUI upstream a1b71072e5`.
+   Do not start its title with `Merge`; replayed vendor commits keep their
+   original upstream messages.
 3. For every file we redirect with `#[path = "fast/..."]`, look at what
    upstream changed in the original (`git diff <old vendor commit> <new vendor
    commit> -- <file>`) and port it into our copy by hand. The merge won't

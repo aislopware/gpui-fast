@@ -9,12 +9,6 @@
 
 use std::sync::Arc;
 
-use cocoa::{
-    base::{NO, YES},
-    quartzcore::AutoresizingMask,
-};
-use metal::MTLPixelFormat;
-use objc::{msg_send, sel, sel_impl};
 use parking_lot::Mutex;
 
 use crate::metal_renderer::{Context, InstanceBufferPool, MetalRenderer, Renderer};
@@ -43,23 +37,6 @@ fn new_sharing_atlas(
 /// A window's `CAMetalLayer`, set up as `MetalRenderer::new` sets up its own.
 fn new_layer(device: &metal::Device, transparent: bool) -> metal::MetalLayer {
     let layer = metal::MetalLayer::new();
-    layer.set_device(device);
-    layer.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
-    // Support direct-to-display rendering if the window is not transparent
-    // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
-    layer.set_opaque(!transparent);
-    layer.set_maximum_drawable_count(3);
-    // Allow texture reading for visual tests (captures screenshots without ScreenCaptureKit)
-    #[cfg(any(test, feature = "test-support"))]
-    layer.set_framebuffer_only(false);
-    unsafe {
-        let _: () = msg_send![&*layer, setAllowsNextDrawableTimeout: NO];
-        let _: () = msg_send![&*layer, setNeedsDisplayOnBoundsChange: YES];
-        let _: () = msg_send![
-            &*layer,
-            setAutoresizingMask: AutoresizingMask::WIDTH_SIZABLE
-                | AutoresizingMask::HEIGHT_SIZABLE
-        ];
-    }
+    MetalRenderer::configure_layer(&layer, device, transparent);
     layer
 }

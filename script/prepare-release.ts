@@ -73,7 +73,7 @@ export function prepare(config: ReleaseConfig, version: string, dest = DEST): vo
       description: `${name}: GPUI with gpui-fast rendering and layout optimizations`,
       autoexamples: false, autobenches: false, autotests: false,
       authors: [...new Set([...(pkg.authors ?? []), "Longbridge"])],
-      include: ["/src/**", "/build.rs", "/Cargo.toml", "/README.md", "/LICENSE", "/NOTICE"],
+      include: ["/src/**", "/resources/**", "/build.rs", "/Cargo.toml", "/README.md", "/LICENSE", "/NOTICE"],
     });
     delete pkg.metadata;
     manifest.lib.name = name;

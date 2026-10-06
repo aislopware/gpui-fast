@@ -135,7 +135,11 @@ pub(crate) struct Gap {
 
 impl Gap {
     fn element_id(&self) -> ElementId {
-        self.global_id.0.last().cloned().expect("a view has an id")
+        self.global_id
+            .ids
+            .last()
+            .cloned()
+            .expect("a view has an id")
     }
 }
 
@@ -227,7 +231,7 @@ pub(crate) struct SplicedPrepaint {
 /// What the window inherits at some point of the element tree, set aside while
 /// a nested view is built where it was.
 struct Inherited {
-    element_id_stack: SmallVec<[ElementId; 32]>,
+    element_id_stack: crate::window::ElementIdStack,
     text_style_stack: TextStyleStack,
     content_mask_stack: Vec<ContentMask<Pixels>>,
     element_offset_stack: Vec<Point<Pixels>>,
@@ -245,12 +249,15 @@ impl Window {
         content_mask: ContentMask<Pixels>,
         opacity: f32,
     ) -> Inherited {
-        let parent_ids = &id.0[..id.0.len() - 1];
+        let parent_ids = &id.ids[..id.ids.len() - 1];
         Inherited {
-            element_id_stack: mem::replace(
-                &mut self.element_id_stack,
-                parent_ids.iter().cloned().collect(),
-            ),
+            element_id_stack: mem::replace(&mut self.element_id_stack, {
+                let mut stack = crate::window::ElementIdStack::default();
+                for id in parent_ids {
+                    stack.push(id.clone());
+                }
+                stack
+            }),
             text_style_stack: mem::replace(
                 &mut self.text_style_stack,
                 rebuild.text_style_stack.clone(),
@@ -415,7 +422,7 @@ impl Window {
         let root = nested.layout.as_ref()?.root;
         let global_id = nested.id.clone();
         let context = nested.context.clone();
-        let element_id = global_id.0.last().cloned()?;
+        let element_id = global_id.ids.last().cloned()?;
 
         let engine = self.layout_engine.as_ref().unwrap();
         let (changes, remeasures, transient) = (
@@ -902,7 +909,7 @@ fn copy_record(
 /// The entity of the view whose element has the id `id`.
 #[inline(always)]
 pub(crate) fn view_entity(id: &GlobalElementId) -> Option<EntityId> {
-    match id.0.last()? {
+    match id.ids.last()? {
         ElementId::View(entity) => Some(*entity),
         _ => None,
     }
