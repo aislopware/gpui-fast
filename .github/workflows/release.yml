@@ -123,6 +123,7 @@ jobs:
             target/release-workspace/*/NOTICE
             target/release-workspace/*/build.rs
             target/release-workspace/*/src
+            target/release-workspace/*/resources
             target/release-workspace/Cargo.toml
             target/release-workspace/Cargo.lock
             target/release-workspace/rust-toolchain.toml

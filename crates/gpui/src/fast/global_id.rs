@@ -1,65 +1,14 @@
-//! Global element ids that hash their path once, and the per-frame cache that hands the same id out again.
-//!
-//! Also here: the ids the inspector finds elements by, which are copies of
-//! the element id stack too.
+//! Reuse global element ids across frames using upstream's incremental path hash.
 
-use crate::{ElementId, GlobalElementId};
+use crate::GlobalElementId;
 use collections::FxHashMap;
-use std::{mem, sync::Arc};
-
-/// What a [`GlobalElementId`] hashes to: the hash of its path, worked out once.
-pub(crate) type PathHash = u64;
+use std::mem;
 
 /// The global id of the element id stack of `window`, handed out again from
 /// the [`GlobalIdCache`] when it was handed out this frame or the last.
 #[inline(always)]
 pub(crate) fn current(window: &mut crate::Window) -> GlobalElementId {
     window.global_ids.get(&window.element_id_stack)
-}
-
-/// A new global id for `path`, not handed out again.
-#[cfg(any(feature = "inspector", debug_assertions))]
-#[inline(always)]
-pub(crate) fn from_path(path: &[ElementId]) -> GlobalElementId {
-    GlobalElementId::new(Arc::from(path))
-}
-
-/// Element state is looked up by a [`GlobalElementId`] several times per
-/// element in every frame, and hashing its path of ids each time, names byte
-/// by byte, cost more than the lookups did. The path's hash is therefore worked
-/// out once, when the id is made, and is all the id hashes to.
-impl GlobalElementId {
-    pub(crate) fn new(path: Arc<[ElementId]>) -> Self {
-        let hash = Self::path_hash(&path);
-        GlobalElementId(path, hash)
-    }
-
-    fn path_hash(path: &[ElementId]) -> u64 {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = collections::FxHasher::default();
-        path.hash(&mut hasher);
-        hasher.finish()
-    }
-}
-
-impl Default for GlobalElementId {
-    fn default() -> Self {
-        GlobalElementId::new(Arc::from([]))
-    }
-}
-
-impl PartialEq for GlobalElementId {
-    fn eq(&self, other: &Self) -> bool {
-        self.1 == other.1 && self.0 == other.0
-    }
-}
-
-impl Eq for GlobalElementId {}
-
-impl std::hash::Hash for GlobalElementId {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.1);
-    }
 }
 
 /// The global ids handed out this frame and the last, by the hash of their
@@ -77,16 +26,16 @@ pub(crate) struct GlobalIdCache {
 impl GlobalIdCache {
     /// The global id of `path`: one handed out already if there is one, a
     /// new one otherwise.
-    pub(crate) fn get(&mut self, path: &[ElementId]) -> GlobalElementId {
-        let hash = GlobalElementId::path_hash(path);
+    pub(crate) fn get(&mut self, path: &crate::window::ElementIdStack) -> GlobalElementId {
+        let hash = path.hash();
         if let Some(id) = self.current.get(&hash)
-            && *id.0 == *path
+            && *id.ids == **path
         {
             return id.clone();
         }
         let id = match self.previous.get(&hash) {
-            Some(id) if *id.0 == *path => id.clone(),
-            _ => GlobalElementId(Arc::from(path), hash),
+            Some(id) if *id.ids == **path => id.clone(),
+            _ => path.global_id(),
         };
         self.current.insert(hash, id.clone());
         id
@@ -102,7 +51,8 @@ impl GlobalIdCache {
 
 #[cfg(test)]
 mod tests {
-    use super::{ElementId, GlobalElementId, GlobalIdCache};
+    use super::{GlobalElementId, GlobalIdCache};
+    use crate::ElementId;
     use std::hash::{BuildHasher, BuildHasherDefault};
     use std::sync::Arc;
 
@@ -112,7 +62,11 @@ mod tests {
     #[test]
     fn global_ids_compare_and_hash_by_path() {
         let path = |ids: &[&'static str]| {
-            GlobalElementId::new(ids.iter().map(|id| ElementId::from(*id)).collect())
+            GlobalElementId::new(
+                &ids.iter()
+                    .map(|id| ElementId::from(*id))
+                    .collect::<Vec<_>>(),
+            )
         };
         let hash = |id: &GlobalElementId| {
             BuildHasherDefault::<collections::FxHasher>::default().hash_one(id)
@@ -128,7 +82,7 @@ mod tests {
 
         // A path that happens to share another's hash is still a different id.
         let mut forged = c;
-        forged.1 = a.1;
+        forged.hash = a.hash;
         assert_ne!(a, forged);
 
         assert_eq!(GlobalElementId::default(), path(&[]));
@@ -140,20 +94,25 @@ mod tests {
     /// for it.
     #[test]
     fn global_ids_are_reused_while_their_path_is_in_use() {
-        let path = |ids: &[&'static str]| -> Vec<ElementId> {
-            ids.iter().map(|id| ElementId::from(*id)).collect()
+        let path = |ids: &[&'static str]| {
+            let mut stack = crate::window::ElementIdStack::default();
+            for id in ids {
+                stack.push(ElementId::from(*id));
+            }
+            stack
         };
         let row = path(&["root", "table", "row"]);
         let cell = path(&["root", "table", "cell"]);
         let mut cache = GlobalIdCache::default();
+        let hash = GlobalElementId::new(&row).hash;
 
         let first = cache.get(&row);
-        assert!(Arc::ptr_eq(&first.0, &cache.get(&row).0));
+        assert!(Arc::ptr_eq(&first.ids, &cache.get(&row).ids));
 
         cache.finish_frame();
         let next = cache.get(&row);
         assert!(
-            Arc::ptr_eq(&first.0, &next.0),
+            Arc::ptr_eq(&first.ids, &next.ids),
             "a path in use last frame keeps its id"
         );
 
@@ -161,15 +120,18 @@ mod tests {
         cache.finish_frame();
         let later = cache.get(&row);
         assert!(
-            !Arc::ptr_eq(&first.0, &later.0),
+            !Arc::ptr_eq(&first.ids, &later.ids),
             "a path unused for a frame is let go"
         );
         assert_eq!(first, later);
 
-        let hash = GlobalElementId::path_hash(&row);
-        cache
-            .current
-            .insert(hash, GlobalElementId(Arc::from(&*cell), hash));
-        assert_eq!(&*cache.get(&row).0, &*row);
+        cache.current.insert(
+            hash,
+            GlobalElementId {
+                ids: Arc::from(&*cell),
+                hash,
+            },
+        );
+        assert_eq!(&*cache.get(&row).ids, &*row);
     }
 }

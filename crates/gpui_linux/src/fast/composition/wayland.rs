@@ -568,7 +568,13 @@ pub(crate) fn draw_composed(window: &WaylandWindow, scene: ComposedScene<'_>) {
         return;
     };
 
-    if composition.renderers_need_recreation && !state.renderer.device_lost() {
+    if composition.renderers_need_recreation
+        && !state
+            .renderer
+            .as_ref()
+            .expect("the window has a renderer")
+            .device_lost()
+    {
         composition.renderers_need_recreation = false;
         let size = composition.size;
         let mut failed = false;
@@ -576,6 +582,8 @@ pub(crate) fn draw_composed(window: &WaylandWindow, scene: ComposedScene<'_>) {
             let renderer = surface.raw_window().and_then(|raw_window| {
                 state
                     .renderer
+                    .as_ref()
+                    .expect("the window has a renderer")
                     .new_sharing_atlas(&raw_window, WaylandGpuiSurface::surface_config(size))
             });
             match renderer {
@@ -712,10 +720,14 @@ pub(crate) fn set_composition_order(
         let mut subsurface = WaylandSubsurface::new(&state.globals, true)?;
         subsurface.set_size(composition.size, composition.scale);
         let renderer = raw_window(&subsurface.surface).and_then(|raw_window| {
-            state.renderer.new_sharing_atlas(
-                &raw_window,
-                WaylandGpuiSurface::surface_config(composition.size),
-            )
+            state
+                .renderer
+                .as_ref()
+                .expect("the window has a renderer")
+                .new_sharing_atlas(
+                    &raw_window,
+                    WaylandGpuiSurface::surface_config(composition.size),
+                )
         });
         let renderer = match renderer {
             Ok(renderer) => renderer,

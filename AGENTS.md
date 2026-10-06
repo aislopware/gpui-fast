@@ -19,3 +19,6 @@ before changing anything. In short:
 - **No new public API**, and `script/check-upstream` must pass.
 - **Changes reach `main` through pull requests** from a topic branch; never
   commit to `main` directly.
+- **Upstream sync commit titles use `chore: Sync GPUI upstream <zed-commit>`**,
+  for example `chore: Sync GPUI upstream a1b71072e5`. Do not start them with
+  `Merge`. Preserve replayed upstream commit messages and vendor history.

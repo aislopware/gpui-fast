@@ -1118,7 +1118,7 @@ fn list_id(window: &Window, version: &StateVersion) -> GlobalElementId {
         LIST_ID_NAME.into(),
         version.id() as u64,
     ));
-    GlobalElementId::new(path.into())
+    GlobalElementId::new(&path)
 }
 
 /// What the ids of the elements and views inside the scroll container `id`
