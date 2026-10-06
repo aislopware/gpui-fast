@@ -290,6 +290,10 @@ commit our copy was taken from is `zed_commit` in `UPSTREAM`, and
    by keeping upstream's code and putting our hook back. The pull request must
    be merged with a merge commit, not squashed: the next sync's merge needs
    the vendor commits in `main`'s history.
+   Name our sync commit `chore: Sync GPUI upstream <zed-commit>`, using the
+   short target Zed commit, for example `chore: Sync GPUI upstream a1b71072e5`.
+   Do not start its title with `Merge`; replayed vendor commits keep their
+   original upstream messages.
 3. For every file we redirect with `#[path = "fast/..."]`, look at what
    upstream changed in the original (`git diff <old vendor commit> <new vendor
    commit> -- <file>`) and port it into our copy by hand. The merge won't

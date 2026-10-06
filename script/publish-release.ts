@@ -51,9 +51,14 @@ export function validate(config: ReleaseConfig, dest = DEST): string {
     seen.add(pkg.name);
     const files = run([
       "cargo", "package", "--manifest-path", resolve(dest, crate, "Cargo.toml"), "--list", "--allow-dirty",
-    ], true).trim().split(/\r?\n/);
+    ], true).trim().split(/\r?\n/).map(file => file.replaceAll("\\", "/"));
     requireCondition(files.includes("LICENSE") && files.includes("README.md"), `${crate}: missing license or README`);
     requireCondition(!files.some(file => /^(examples|benches|tests)\//.test(file)), `${crate}: development files included in package`);
+    if (crate === "gpui") {
+      for (const resource of ["resources/windows/gpui.rc", "resources/windows/gpui.manifest.xml"]) {
+        requireCondition(files.includes(resource), `${crate}: missing Windows build resource ${resource}`);
+      }
+    }
   }
   requireCondition(versions.size === 1, "Release packages must have exactly one version");
   return [...versions][0];
