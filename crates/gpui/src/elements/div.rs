@@ -2492,6 +2492,7 @@ impl Interactivity {
         }
 
         if let Some(scroll_offset) = self.scroll_offset.as_ref() {
+            crate::fast::scroll::into_view(self.tracked_scroll_handle.as_ref(), bounds, style);
             let mut scroll_to_bottom = false;
             let mut tracked_scroll_handle = self
                 .tracked_scroll_handle
@@ -2499,12 +2500,6 @@ impl Interactivity {
                 .map(|handle| handle.0.borrow_mut());
             if let Some(mut scroll_handle_state) = tracked_scroll_handle.as_deref_mut() {
                 scroll_handle_state.overflow = style.overflow;
-                // The item asked for is brought into view against this frame's bounds and
-                // overflow, not the last frame's: a container that narrowed, or one drawn for
-                // the first time, would otherwise judge the item visible against its old width
-                // (or none) and drop the request.
-                scroll_handle_state.bounds = bounds;
-                scroll_handle_state.resolve_active_item();
                 scroll_to_bottom = mem::take(&mut scroll_handle_state.scroll_to_bottom);
             }
 
@@ -4278,7 +4273,7 @@ where
 }
 
 /// Represents an element that can be scrolled *to* in its parent element.
-/// Contrary to [ScrollHandle::scroll_to_item], an anchored element does not have to be an immediate child of the parent.
+/// Contrary to [ScrollHandle::scroll_to_active_item], an anchored element does not have to be an immediate child of the parent.
 #[derive(Clone)]
 pub struct ScrollAnchor {
     handle: ScrollHandle,
@@ -4309,66 +4304,13 @@ impl ScrollAnchor {
 pub(crate) struct ScrollHandleState {
     offset: Rc<RefCell<Point<Pixels>>>,
     ongoing_scroll: Rc<RefCell<OngoingScroll>>,
-    bounds: Bounds<Pixels>,
+    pub(crate) bounds: Bounds<Pixels>,
     max_offset: Point<Pixels>,
     child_bounds: Vec<Bounds<Pixels>>,
     scroll_to_bottom: bool,
-    overflow: Point<Overflow>,
+    pub(crate) overflow: Point<Overflow>,
     active_item: Option<ScrollActiveItem>,
     pub(crate) version: crate::fast::dependencies::StateVersion,
-}
-
-impl ScrollHandleState {
-    /// Scrolls the minimal amount to either ensure that the active item is fully visible or
-    /// is the top element of the view, as its strategy says, and forgets it once its bounds
-    /// are known.
-    fn resolve_active_item(&mut self) {
-        let state = self;
-
-        let Some(active_item) = state.active_item else {
-            return;
-        };
-
-        let active_item = match state.child_bounds.get(active_item.index) {
-            Some(bounds) => {
-                let mut scroll_offset = state.offset.borrow_mut();
-
-                match active_item.strategy {
-                    ScrollStrategy::FirstVisible => {
-                        if state.overflow.y == Overflow::Scroll {
-                            let child_height = bounds.size.height;
-                            let viewport_height = state.bounds.size.height;
-                            if child_height > viewport_height {
-                                scroll_offset.y = state.bounds.top() - bounds.top();
-                            } else if bounds.top() + scroll_offset.y < state.bounds.top() {
-                                scroll_offset.y = state.bounds.top() - bounds.top();
-                            } else if bounds.bottom() + scroll_offset.y > state.bounds.bottom() {
-                                scroll_offset.y = state.bounds.bottom() - bounds.bottom();
-                            }
-                        }
-                    }
-                    ScrollStrategy::Top => {
-                        scroll_offset.y = state.bounds.top() - bounds.top();
-                    }
-                }
-
-                if state.overflow.x == Overflow::Scroll {
-                    let child_width = bounds.size.width;
-                    let viewport_width = state.bounds.size.width;
-                    if child_width > viewport_width {
-                        scroll_offset.x = state.bounds.left() - bounds.left();
-                    } else if bounds.left() + scroll_offset.x < state.bounds.left() {
-                        scroll_offset.x = state.bounds.left() - bounds.left();
-                    } else if bounds.right() + scroll_offset.x > state.bounds.right() {
-                        scroll_offset.x = state.bounds.right() - bounds.right();
-                    }
-                }
-                None
-            }
-            None => Some(active_item),
-        };
-        state.active_item = active_item;
-    }
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -4489,9 +4431,52 @@ impl ScrollHandle {
     /// Scrolls the minimal amount to either ensure that the child is
     /// fully visible or the top element of the view depends on the
     /// scroll strategy
-    #[cfg(test)]
-    fn scroll_to_active_item(&self) {
-        self.0.borrow_mut().resolve_active_item();
+    pub(crate) fn scroll_to_active_item(&self) {
+        let mut state = self.0.borrow_mut();
+
+        let Some(active_item) = state.active_item else {
+            return;
+        };
+
+        let active_item = match state.child_bounds.get(active_item.index) {
+            Some(bounds) => {
+                let mut scroll_offset = state.offset.borrow_mut();
+
+                match active_item.strategy {
+                    ScrollStrategy::FirstVisible => {
+                        if state.overflow.y == Overflow::Scroll {
+                            let child_height = bounds.size.height;
+                            let viewport_height = state.bounds.size.height;
+                            if child_height > viewport_height {
+                                scroll_offset.y = state.bounds.top() - bounds.top();
+                            } else if bounds.top() + scroll_offset.y < state.bounds.top() {
+                                scroll_offset.y = state.bounds.top() - bounds.top();
+                            } else if bounds.bottom() + scroll_offset.y > state.bounds.bottom() {
+                                scroll_offset.y = state.bounds.bottom() - bounds.bottom();
+                            }
+                        }
+                    }
+                    ScrollStrategy::Top => {
+                        scroll_offset.y = state.bounds.top() - bounds.top();
+                    }
+                }
+
+                if state.overflow.x == Overflow::Scroll {
+                    let child_width = bounds.size.width;
+                    let viewport_width = state.bounds.size.width;
+                    if child_width > viewport_width {
+                        scroll_offset.x = state.bounds.left() - bounds.left();
+                    } else if bounds.left() + scroll_offset.x < state.bounds.left() {
+                        scroll_offset.x = state.bounds.left() - bounds.left();
+                    } else if bounds.right() + scroll_offset.x > state.bounds.right() {
+                        scroll_offset.x = state.bounds.right() - bounds.right();
+                    }
+                }
+                None
+            }
+            None => Some(active_item),
+        };
+        state.active_item = active_item;
     }
 
     /// Scrolls to the bottom.
@@ -4604,57 +4589,6 @@ mod tests {
                     ),
             )
         }
-    }
-
-    struct ScrollRowView {
-        width: Pixels,
-        handle: ScrollHandle,
-    }
-
-    impl Render for ScrollRowView {
-        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .id("row")
-                .w(self.width)
-                .h(px(20.))
-                .flex()
-                .overflow_x_scroll()
-                .track_scroll(&self.handle)
-                .children((0..4).map(|_| div().flex_none().w(px(60.)).h(px(20.))))
-        }
-    }
-
-    /// An item asked for in the frame a scroll container narrows is brought into view against
-    /// the container's new width, not the width of the frame before, which would judge the item
-    /// visible and drop the request.
-    #[gpui::test]
-    fn scroll_to_item_uses_the_frames_own_bounds(cx: &mut TestAppContext) {
-        let handle = ScrollHandle::new();
-        let window = cx.add_window({
-            let handle = handle.clone();
-            move |_, _| ScrollRowView {
-                width: px(240.),
-                handle,
-            }
-        });
-        let any = AnyWindowHandle::from(window);
-        cx.update_window(any, |_, window, cx| window.draw(cx).clear(cx))
-            .unwrap();
-        assert_eq!(handle.offset().x, px(0.), "every item fits at 240");
-
-        window
-            .update(cx, |view, _, _| {
-                view.width = px(100.);
-                view.handle.scroll_to_item(3);
-            })
-            .unwrap();
-        cx.update_window(any, |_, window, cx| window.draw(cx).clear(cx))
-            .unwrap();
-        assert_eq!(
-            handle.offset().x,
-            px(-140.),
-            "the last item's right edge on the row's"
-        );
     }
 
     #[gpui::test]

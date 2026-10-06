@@ -110,3 +110,63 @@ fn a_touch_catching_a_fling_ends_its_momentum_and_drives_its_own_scroll() {
         ]
     );
 }
+
+/// A scroll handle's item brought into view against the frame it is asked in.
+mod item_into_view {
+    use crate::{
+        AnyWindowHandle, AppContext, Context, InteractiveElement, IntoElement, ParentElement,
+        Pixels, Render, ScrollHandle, StatefulInteractiveElement, Styled, TestAppContext, Window,
+        div, px,
+    };
+
+    struct Row {
+        width: Pixels,
+        handle: ScrollHandle,
+    }
+
+    impl Render for Row {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("row")
+                .w(self.width)
+                .h(px(20.))
+                .flex()
+                .overflow_x_scroll()
+                .track_scroll(&self.handle)
+                .children((0..4).map(|_| div().flex_none().w(px(60.)).h(px(20.))))
+        }
+    }
+
+    /// An item asked for in the frame a scroll container narrows is brought into view against
+    /// the container's new width, not the width of the frame before, which would judge the
+    /// item visible and drop the request.
+    #[crate::test]
+    fn scroll_to_item_uses_the_frames_own_bounds(cx: &mut TestAppContext) {
+        let handle = ScrollHandle::new();
+        let window = cx.add_window({
+            let handle = handle.clone();
+            move |_, _| Row {
+                width: px(240.),
+                handle,
+            }
+        });
+        let any = AnyWindowHandle::from(window);
+        cx.update_window(any, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        assert_eq!(handle.offset().x, px(0.), "every item fits at 240");
+
+        window
+            .update(cx, |view, _, _| {
+                view.width = px(100.);
+                view.handle.scroll_to_item(3);
+            })
+            .unwrap();
+        cx.update_window(any, |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+        assert_eq!(
+            handle.offset().x,
+            px(-140.),
+            "the last item's right edge on the row's"
+        );
+    }
+}
