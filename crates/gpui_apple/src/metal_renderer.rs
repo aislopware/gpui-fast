@@ -190,11 +190,11 @@ pub struct MetalRenderer {
     #[allow(clippy::arc_with_non_send_sync)]
     pub(crate) instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
     sprite_atlas: Arc<MetalAtlas>,
-    core_video_texture_cache: core_video::metal_texture_cache::CVMetalTextureCache,
-    /// The textures the frame being encoded samples. CoreVideo may hand a texture's backing
-    /// buffer to a new picture once the `CVMetalTexture` is released, so they ride to the command
-    /// buffer's completion handler instead of dying with the draw call.
+    /// The textures the frame being encoded samples, held to its completion
+    /// (`fast::surfaces`). Before the cache, so they drop before it.
     surface_textures: Vec<CVMetalTexture>,
+    surfaces_in_flight: crate::fast::surfaces::SurfacesInFlight,
+    core_video_texture_cache: core_video::metal_texture_cache::CVMetalTextureCache,
     /// A surface was skipped and said so; later ones stay quiet.
     surface_skip_logged: bool,
     pub(crate) path_intermediate_texture: Option<metal::Texture>,
@@ -526,8 +526,9 @@ impl MetalRenderer {
             unit_vertices,
             instance_buffer_pool,
             sprite_atlas,
-            core_video_texture_cache,
             surface_textures: Vec::new(),
+            surfaces_in_flight: Default::default(),
+            core_video_texture_cache,
             surface_skip_logged: false,
             path_intermediate_texture: None,
             path_intermediate_msaa_texture: None,
@@ -729,6 +730,7 @@ impl MetalRenderer {
                 scene.surfaces.len(),
             )
         })?;
+        crate::fast::surfaces::SurfacesInFlight::release_finished(&mut self.surfaces_in_flight);
         // Housekeeping CoreVideo asks for periodically: textures no command buffer holds any
         // more give their buffers back.
         self.core_video_texture_cache.flush(0);
@@ -739,8 +741,12 @@ impl MetalRenderer {
             texture,
             viewport_size,
         );
-        let surface_textures = Cell::new(mem::take(&mut self.surface_textures));
+        let surface_textures = mem::take(&mut self.surface_textures);
         let command_buffer = command_buffer?;
+        let surfaces_done = crate::fast::surfaces::SurfacesInFlight::hold(
+            &mut self.surfaces_in_flight,
+            surface_textures,
+        );
 
         let instance_buffer_pool = self.instance_buffer_pool.clone();
         let instance_buffer = Cell::new(Some(writer.finish()));
@@ -748,8 +754,9 @@ impl MetalRenderer {
             if let Some(instance_buffer) = instance_buffer.take() {
                 instance_buffer_pool.lock().release(instance_buffer);
             }
-            // The GPU is done sampling this frame's surfaces.
-            drop(surface_textures.take());
+            if let Some(done) = &surfaces_done {
+                crate::fast::surfaces::FrameDone::set(done);
+            }
         });
         // SAFETY: Both pointee types are opaque views of the same Objective-C block pointer ABI.
         unsafe {
@@ -1903,6 +1910,57 @@ mod ycbcr_tests {
             "skipped, the clear colour shows"
         );
         assert!(renderer.surface_skip_logged);
+    }
+
+    /// A frame's surface textures outlive its completion handler and go on the render thread,
+    /// at the next frame, never on Metal's: releasing one touches its texture cache, which the
+    /// render thread flushes, and which a renderer dropped mid-frame takes with it.
+    #[test]
+    fn surface_textures_go_on_the_render_thread_once_their_frame_is_done() {
+        let red = surface(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange);
+        let bounds = Bounds::new(
+            point(px(0.), px(0.)),
+            size(px(SIDE as f32), px(SIDE as f32)),
+        )
+        .scale(1.0);
+        let target = size(DevicePixels(SIDE as i32), DevicePixels(SIDE as i32));
+        let mut scene = Scene::default();
+        scene.insert_primitive(PaintSurface {
+            order: 0,
+            bounds,
+            content_mask: ContentMask { bounds },
+            image_buffer: red,
+        });
+        scene.finish();
+        let mut renderer = MetalRenderer::new_headless(Default::default());
+        let descriptor = metal::TextureDescriptor::new();
+        descriptor.set_width(SIDE as u64);
+        descriptor.set_height(SIDE as u64);
+        descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
+        descriptor.set_usage(metal::MTLTextureUsage::RenderTarget);
+        let texture = renderer.device.new_texture(&descriptor);
+        renderer.update_path_intermediate_textures(target);
+        let frame = |renderer: &mut MetalRenderer| {
+            let frame = renderer.render_frame(&scene, &texture, target).unwrap();
+            frame.commit();
+            frame
+        };
+        for frame in (0..3).map(|_| frame(&mut renderer)).collect::<Vec<_>>() {
+            frame.wait_until_completed();
+        }
+        assert_eq!(
+            renderer.surfaces_in_flight.held(),
+            3,
+            "none released by Metal's handler"
+        );
+        let last = frame(&mut renderer);
+        assert_eq!(
+            renderer.surfaces_in_flight.held(),
+            1,
+            "the done ones go at the next frame"
+        );
+        drop(renderer);
+        last.wait_until_completed();
     }
 
     /// A 10-bit 4:4:4 surface, at video range and at full, renders columns that alternate red

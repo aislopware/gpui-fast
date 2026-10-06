@@ -12,4 +12,5 @@ pub mod font_weight;
 pub(crate) mod layers;
 pub(crate) mod occlusion;
 pub(crate) mod paths;
+pub(crate) mod surfaces;
 pub mod video_layer;
