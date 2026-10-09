@@ -883,6 +883,13 @@ gains `refresh_interval` from `maximumFramesPerSecond`; display changes are a no
 as on the web. `uniform_list` keeps the snapped offset hook and the held rows' indices
 inside upstream's f64 item placement.
 
+In the longbridge 883560c merge (#50, counting primitives into draw order): the fork's
+`fast/scene.rs` stays. Its `4105616` already sorts every kind as packed `u64` keys by an
+11-bit LSD radix sort (one counting pass while orderings stay under 2048, as #50's count
+does), sprites included rather than #50's `u128` comparison sort, leaves kinds in order
+alone, and reuses last frame's order when the keys repeat; `fast::scene::primitive` reads
+the `gathered` flags that sort keeps. Sprites stay keyed by ordering and texture, not tile.
+
 For our patches: `window.rs` (`paint_glyph_scaled` sits next to gpui-fast's
 `pub(crate) fn should_use_subpixel_rendering`), the root `Cargo.toml` (`gpui_ios` member
 and dependency) and `Cargo.lock`. `git am -3` needs the preimage blobs from the zed fork;
