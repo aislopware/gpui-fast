@@ -1,18 +1,17 @@
 use anyhow::anyhow;
-use cocoa::appkit::CGFloat;
 use collections::{HashMap, HashSet};
 use core_foundation::{
     array::{CFArray, CFArrayRef},
     attributed_string::CFMutableAttributedString,
-    base::{CFRange, CFType, TCFType},
+    base::{CFRange, TCFType},
     number::CFNumber,
     string::CFString,
 };
 use core_graphics::{
-    base::{CGGlyph, kCGImageAlphaPremultipliedLast},
+    base::{CGFloat, CGGlyph, kCGImageAlphaPremultipliedLast},
     color_space::CGColorSpace,
     context::{CGContext, CGTextDrawingMode},
-    display::CGPoint,
+    geometry::CGPoint,
 };
 use core_text::{
     font::CTFont,
@@ -35,9 +34,9 @@ use font_kit::{
 };
 use gpui::{
     Bounds, DevicePixels, Edges, Font, FontFallbacks, FontFeatures, FontId, FontMetrics, FontRun,
-    FontStyle, FontWeight, GlyphId, Hsla, LineLayout, Pixels, PlatformTextSystem,
-    RenderGlyphParams, Result, Rgba, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString,
-    Size, TextRenderingMode, point, px, size, swap_rgba_pa_to_bgra,
+    FontStyle, FontWeight, GlyphId, LineLayout, Pixels, PlatformTextSystem, RenderGlyphParams,
+    Result, SUBPIXEL_VARIANTS_X, ShapedGlyph, ShapedRun, SharedString, Size, TextRenderingMode,
+    point, px, size, swap_rgba_pa_to_bgra,
 };
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use pathfinder_geometry::{
@@ -46,15 +45,22 @@ use pathfinder_geometry::{
     vector::Vector2F,
 };
 use smallvec::SmallVec;
-use std::{borrow::Cow, char, convert::TryFrom, sync::Arc, sync::OnceLock};
+use std::{borrow::Cow, char, convert::TryFrom, sync::Arc};
+
+#[cfg(target_os = "macos")]
+use {
+    core_foundation::base::CFType,
+    gpui::{Hsla, Rgba},
+    std::sync::OnceLock,
+};
 
 use crate::open_type::apply_features_and_fallbacks;
 
 #[allow(non_upper_case_globals)]
 const kCGImageAlphaOnly: u32 = 7;
 
-/// macOS text system using CoreText for font shaping.
-pub struct MacTextSystem(RwLock<MacTextSystemState>);
+/// Apple text system using CoreText for font shaping.
+pub struct AppleTextSystem(RwLock<AppleTextSystemState>);
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct FontKey {
@@ -63,7 +69,7 @@ struct FontKey {
     font_fallbacks: Option<FontFallbacks>,
 }
 
-struct MacTextSystemState {
+struct AppleTextSystemState {
     memory_source: MemSource,
     system_source: SystemSource,
     fonts: Vec<FontKitFont>,
@@ -74,10 +80,10 @@ struct MacTextSystemState {
     sized_fonts: crate::fast::text_system::SizedFonts,
 }
 
-impl MacTextSystem {
-    /// Create a new MacTextSystem.
+impl AppleTextSystem {
+    /// Create a new AppleTextSystem.
     pub fn new() -> Self {
-        Self(RwLock::new(MacTextSystemState {
+        Self(RwLock::new(AppleTextSystemState {
             memory_source: MemSource::empty(),
             system_source: SystemSource::new(),
             fonts: Vec::new(),
@@ -90,13 +96,13 @@ impl MacTextSystem {
     }
 }
 
-impl Default for MacTextSystem {
+impl Default for AppleTextSystem {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl PlatformTextSystem for MacTextSystem {
+impl PlatformTextSystem for AppleTextSystem {
     fn add_fonts(&self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
         self.0.write().add_fonts(fonts)
     }
@@ -217,6 +223,7 @@ impl PlatformTextSystem for MacTextSystem {
         TextRenderingMode::Grayscale
     }
 
+    #[cfg(target_os = "macos")]
     fn glyph_dilation_for_color(&self, color: Hsla) -> u8 {
         // When font smoothing is enabled, CoreGraphics thickens glyph strokes by an amount that
         // depends on the foreground color's luminance. We replicate the logic used by CoreGraphics
@@ -231,6 +238,7 @@ impl PlatformTextSystem for MacTextSystem {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn font_smoothing_allowed_by_user() -> bool {
     static ALLOWED: OnceLock<bool> = OnceLock::new();
     *ALLOWED.get_or_init(|| {
@@ -254,7 +262,7 @@ fn font_smoothing_allowed_by_user() -> bool {
     })
 }
 
-impl MacTextSystemState {
+impl AppleTextSystemState {
     fn add_fonts(&mut self, fonts: Vec<Cow<'static, [u8]>>) -> Result<()> {
         let fonts = fonts
             .into_iter()
@@ -514,7 +522,7 @@ impl MacTextSystemState {
             cx.set_allows_font_subpixel_quantization(false);
             cx.set_should_subpixel_quantize_fonts(false);
 
-            if params.dilation > 0 {
+            if cfg!(target_os = "macos") && params.dilation > 0 {
                 let luminance = params.dilation as f64 * 0.25;
                 cx.set_should_smooth_fonts(true);
                 cx.set_gray_fill_color(luminance, 1.0);
@@ -779,11 +787,176 @@ mod lenient_font_attributes {
 
 #[cfg(test)]
 mod tests {
-    use crate::MacTextSystem;
+    use crate::AppleTextSystem;
+    use gpui::{FontFallbacks, FontFeatures, FontRun, GlyphId, PlatformTextSystem, font, px};
+    use std::sync::Arc;
+
+    #[test]
+    fn test_reload_family_with_features_and_fallbacks() {
+        let fonts = AppleTextSystem::new();
+        let mut font = font("Helvetica");
+        let original_id = fonts.font_id(&font).unwrap();
+        font.features = FontFeatures::disable_ligatures();
+        font.fallbacks = Some(FontFallbacks(Arc::new(vec!["Times".into()])));
+        let configured_id = fonts.font_id(&font).unwrap();
+        assert_ne!(original_id, configured_id);
+        assert_eq!(fonts.font_id(&font).unwrap(), configured_id);
+        assert!(fonts.glyph_for_char(configured_id, 'm').is_some());
+        let layout = fonts.layout_line(
+            "office",
+            px(16.),
+            &[FontRun {
+                font_id: configured_id,
+                len: 6,
+            }],
+        );
+        assert_eq!(layout.len, 6);
+        assert!(!layout.runs.is_empty());
+    }
+
+    #[test]
+    fn test_layout_line_bom_char() {
+        let fonts = AppleTextSystem::new();
+        let font_id = fonts.font_id(&font("Helvetica")).unwrap();
+        let line = "\u{feff}";
+        let mut style = FontRun {
+            font_id,
+            len: line.len(),
+        };
+
+        let layout = fonts.layout_line(line, px(16.), &[style]);
+        assert_eq!(layout.len, line.len());
+        assert!(layout.runs.is_empty());
+
+        let line = "a\u{feff}b";
+        style.len = line.len();
+        let layout = fonts.layout_line(line, px(16.), &[style]);
+        assert_eq!(layout.len, line.len());
+        assert_eq!(layout.runs.len(), 1);
+        assert_eq!(layout.runs[0].glyphs.len(), 2);
+        assert_eq!(layout.runs[0].glyphs[0].id, GlyphId(68u32)); // a
+        // There's no glyph for \u{feff}
+        assert_eq!(layout.runs[0].glyphs[1].id, GlyphId(69u32)); // b
+
+        let line = "\u{feff}ab";
+        let font_runs = &[
+            FontRun {
+                len: "\u{feff}".len(),
+                font_id,
+            },
+            FontRun {
+                len: "ab".len(),
+                font_id,
+            },
+        ];
+        let layout = fonts.layout_line(line, px(16.), font_runs);
+        assert_eq!(layout.len, line.len());
+        assert_eq!(layout.runs.len(), 1);
+        assert_eq!(layout.runs[0].glyphs.len(), 2);
+        // There's no glyph for \u{feff}
+        assert_eq!(layout.runs[0].glyphs[0].id, GlyphId(68u32)); // a
+        assert_eq!(layout.runs[0].glyphs[1].id, GlyphId(69u32)); // b
+    }
+
+    #[test]
+    fn test_layout_line_zwnj_insertion() {
+        let fonts = AppleTextSystem::new();
+        let font_id = fonts.font_id(&font("Helvetica")).unwrap();
+
+        let text = "hello world";
+        let font_runs = &[
+            FontRun { font_id, len: 5 }, // "hello"
+            FontRun { font_id, len: 6 }, // " world"
+        ];
+
+        let layout = fonts.layout_line(text, px(16.), font_runs);
+        assert_eq!(layout.len, text.len());
+
+        for run in &layout.runs {
+            for glyph in &run.glyphs {
+                assert!(
+                    glyph.index < text.len(),
+                    "Glyph index {} is out of bounds for text length {}",
+                    glyph.index,
+                    text.len()
+                );
+            }
+        }
+
+        // Test with different font runs - should not insert ZWNJ
+        let font_id2 = fonts.font_id(&font("Times")).unwrap_or(font_id);
+        let font_runs_different = &[
+            FontRun { font_id, len: 5 }, // "hello"
+            // " world"
+            FontRun {
+                font_id: font_id2,
+                len: 6,
+            },
+        ];
+
+        let layout2 = fonts.layout_line(text, px(16.), font_runs_different);
+        assert_eq!(layout2.len, text.len());
+
+        for run in &layout2.runs {
+            for glyph in &run.glyphs {
+                assert!(
+                    glyph.index < text.len(),
+                    "Glyph index {} is out of bounds for text length {}",
+                    glyph.index,
+                    text.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_layout_line_zwnj_edge_cases() {
+        let fonts = AppleTextSystem::new();
+        let font_id = fonts.font_id(&font("Helvetica")).unwrap();
+
+        let text = "hello";
+        let font_runs = &[FontRun { font_id, len: 5 }];
+        let layout = fonts.layout_line(text, px(16.), font_runs);
+        assert_eq!(layout.len, text.len());
+
+        let text = "abc";
+        let font_runs = &[
+            FontRun { font_id, len: 1 }, // "a"
+            FontRun { font_id, len: 1 }, // "b"
+            FontRun { font_id, len: 1 }, // "c"
+        ];
+        let layout = fonts.layout_line(text, px(16.), font_runs);
+        assert_eq!(layout.len, text.len());
+
+        for run in &layout.runs {
+            for glyph in &run.glyphs {
+                assert!(
+                    glyph.index < text.len(),
+                    "Glyph index {} is out of bounds for text length {}",
+                    glyph.index,
+                    text.len()
+                );
+            }
+        }
+
+        // Test with empty text
+        let text = "";
+        let font_runs = &[];
+        let layout = fonts.layout_line(text, px(16.), font_runs);
+        assert_eq!(layout.len, 0);
+        assert!(layout.runs.is_empty());
+    }
+}
+
+/// The glyph margins of zed #63469 (`glyph_raster_bounds`), checked against
+/// AppKit drawing the same glyph.
+#[cfg(all(test, target_os = "macos"))]
+mod appkit_ink_tests {
+    use crate::AppleTextSystem;
     use core_foundation::base::TCFType;
     use gpui::{
-        Bounds, DevicePixels, FontFeatures, FontRun, GlyphId, PlatformTextSystem,
-        RenderGlyphParams, Size, font, point, px,
+        Bounds, DevicePixels, FontFeatures, FontRun, PlatformTextSystem, RenderGlyphParams, Size,
+        font, point, px,
     };
     use objc2::{AnyThread, runtime::AnyObject};
     use objc2_app_kit::{
@@ -800,7 +973,7 @@ mod tests {
         pixels: Vec<u8>,
     }
 
-    fn system_zero_params(fonts: &MacTextSystem, font_size: f32) -> RenderGlyphParams {
+    fn system_zero_params(fonts: &AppleTextSystem, font_size: f32) -> RenderGlyphParams {
         let mut font = font(".SystemUIFont").bold();
         font.features = FontFeatures(Arc::new(vec![("tnum".into(), 1)]));
         let font_id = fonts.font_id(&font).unwrap();
@@ -820,7 +993,7 @@ mod tests {
     }
 
     fn assert_same_ink(
-        fonts: &MacTextSystem,
+        fonts: &AppleTextSystem,
         params: &RenderGlyphParams,
         bounds: Bounds<DevicePixels>,
         reference_bounds: Bounds<DevicePixels>,
@@ -886,7 +1059,7 @@ mod tests {
         }
     }
 
-    fn appkit_zero_ink(fonts: &MacTextSystem, params: &RenderGlyphParams) -> (String, InkMask) {
+    fn appkit_zero_ink(fonts: &AppleTextSystem, params: &RenderGlyphParams) -> (String, InkMask) {
         let native_font = fonts.0.read().fonts[params.font_id.0]
             .native_font()
             .clone_with_font_size(params.font_size.as_f32() as f64);
@@ -946,7 +1119,7 @@ mod tests {
 
     #[test]
     fn test_system_zero_raster_bounds_do_not_clip() {
-        let fonts = MacTextSystem::new();
+        let fonts = AppleTextSystem::new();
         let params = system_zero_params(&fonts, 48.);
         let bounds = fonts.glyph_raster_bounds(&params).unwrap();
         let reference_bounds = bounds.dilate(DevicePixels(8));
@@ -955,7 +1128,7 @@ mod tests {
 
     #[test]
     fn test_system_zero_matches_appkit() {
-        let fonts = MacTextSystem::new();
+        let fonts = AppleTextSystem::new();
         let params = system_zero_params(&fonts, 48.);
         let bounds = fonts.glyph_raster_bounds(&params).unwrap();
         let (Size { width, height }, pixels) = fonts.rasterize_glyph(&params, bounds).unwrap();
@@ -973,138 +1146,5 @@ mod tests {
         assert_eq!(gpui_font_name, appkit_font_name);
         assert_eq!((gpui.width, gpui.height), (appkit.width, appkit.height));
         assert_eq!(gpui.pixels, appkit.pixels);
-    }
-
-    #[test]
-    fn test_layout_line_bom_char() {
-        let fonts = MacTextSystem::new();
-        let font_id = fonts.font_id(&font("Helvetica")).unwrap();
-        let line = "\u{feff}";
-        let mut style = FontRun {
-            font_id,
-            len: line.len(),
-        };
-
-        let layout = fonts.layout_line(line, px(16.), &[style]);
-        assert_eq!(layout.len, line.len());
-        assert!(layout.runs.is_empty());
-
-        let line = "a\u{feff}b";
-        style.len = line.len();
-        let layout = fonts.layout_line(line, px(16.), &[style]);
-        assert_eq!(layout.len, line.len());
-        assert_eq!(layout.runs.len(), 1);
-        assert_eq!(layout.runs[0].glyphs.len(), 2);
-        assert_eq!(layout.runs[0].glyphs[0].id, GlyphId(68u32)); // a
-        // There's no glyph for \u{feff}
-        assert_eq!(layout.runs[0].glyphs[1].id, GlyphId(69u32)); // b
-
-        let line = "\u{feff}ab";
-        let font_runs = &[
-            FontRun {
-                len: "\u{feff}".len(),
-                font_id,
-            },
-            FontRun {
-                len: "ab".len(),
-                font_id,
-            },
-        ];
-        let layout = fonts.layout_line(line, px(16.), font_runs);
-        assert_eq!(layout.len, line.len());
-        assert_eq!(layout.runs.len(), 1);
-        assert_eq!(layout.runs[0].glyphs.len(), 2);
-        // There's no glyph for \u{feff}
-        assert_eq!(layout.runs[0].glyphs[0].id, GlyphId(68u32)); // a
-        assert_eq!(layout.runs[0].glyphs[1].id, GlyphId(69u32)); // b
-    }
-
-    #[test]
-    fn test_layout_line_zwnj_insertion() {
-        let fonts = MacTextSystem::new();
-        let font_id = fonts.font_id(&font("Helvetica")).unwrap();
-
-        let text = "hello world";
-        let font_runs = &[
-            FontRun { font_id, len: 5 }, // "hello"
-            FontRun { font_id, len: 6 }, // " world"
-        ];
-
-        let layout = fonts.layout_line(text, px(16.), font_runs);
-        assert_eq!(layout.len, text.len());
-
-        for run in &layout.runs {
-            for glyph in &run.glyphs {
-                assert!(
-                    glyph.index < text.len(),
-                    "Glyph index {} is out of bounds for text length {}",
-                    glyph.index,
-                    text.len()
-                );
-            }
-        }
-
-        // Test with different font runs - should not insert ZWNJ
-        let font_id2 = fonts.font_id(&font("Times")).unwrap_or(font_id);
-        let font_runs_different = &[
-            FontRun { font_id, len: 5 }, // "hello"
-            // " world"
-            FontRun {
-                font_id: font_id2,
-                len: 6,
-            },
-        ];
-
-        let layout2 = fonts.layout_line(text, px(16.), font_runs_different);
-        assert_eq!(layout2.len, text.len());
-
-        for run in &layout2.runs {
-            for glyph in &run.glyphs {
-                assert!(
-                    glyph.index < text.len(),
-                    "Glyph index {} is out of bounds for text length {}",
-                    glyph.index,
-                    text.len()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_layout_line_zwnj_edge_cases() {
-        let fonts = MacTextSystem::new();
-        let font_id = fonts.font_id(&font("Helvetica")).unwrap();
-
-        let text = "hello";
-        let font_runs = &[FontRun { font_id, len: 5 }];
-        let layout = fonts.layout_line(text, px(16.), font_runs);
-        assert_eq!(layout.len, text.len());
-
-        let text = "abc";
-        let font_runs = &[
-            FontRun { font_id, len: 1 }, // "a"
-            FontRun { font_id, len: 1 }, // "b"
-            FontRun { font_id, len: 1 }, // "c"
-        ];
-        let layout = fonts.layout_line(text, px(16.), font_runs);
-        assert_eq!(layout.len, text.len());
-
-        for run in &layout.runs {
-            for glyph in &run.glyphs {
-                assert!(
-                    glyph.index < text.len(),
-                    "Glyph index {} is out of bounds for text length {}",
-                    glyph.index,
-                    text.len()
-                );
-            }
-        }
-
-        // Test with empty text
-        let text = "";
-        let font_runs = &[];
-        let layout = fonts.layout_line(text, px(16.), font_runs);
-        assert_eq!(layout.len, 0);
-        assert!(layout.runs.is_empty());
     }
 }

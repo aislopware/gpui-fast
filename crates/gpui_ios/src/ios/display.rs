@@ -95,4 +95,11 @@ impl PlatformDisplay for IosDisplay {
             size: size(px(bounds.width as f32), px(bounds.height as f32)),
         }
     }
+
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        // SAFETY: `screen` is a live `UIScreen`; `maximumFramesPerSecond` is an `NSInteger`
+        // property (UIScreen.h).
+        let max_fps: isize = unsafe { msg_send![self.screen, maximumFramesPerSecond] };
+        gpui::refresh_interval_from_hz(max_fps as f64)
+    }
 }

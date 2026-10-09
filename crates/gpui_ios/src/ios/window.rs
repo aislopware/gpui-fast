@@ -2106,6 +2106,9 @@ impl PlatformWindow for IosWindow {
         *self.close_callback.borrow_mut() = Some(callback);
     }
 
+    // An iOS window stays on the screen its scene is on.
+    fn on_display_changed(&self, _callback: Box<dyn FnMut()>) {}
+
     fn on_appearance_changed(&self, callback: Box<dyn FnMut()>) {
         *self.appearance_changed_callback.borrow_mut() = Some(callback);
     }

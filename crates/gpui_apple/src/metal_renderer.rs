@@ -11,31 +11,25 @@ use gpui::{
 use image::RgbaImage;
 use objc2::runtime::AnyObject;
 
-use core_foundation::base::TCFType;
-use core_foundation::string::CFString;
-use core_video::{
-    buffer::TCVBuffer,
-    image_buffer::{
-        kCVImageBufferYCbCrMatrix_ITU_R_601_4, kCVImageBufferYCbCrMatrix_ITU_R_2020,
-        kCVImageBufferYCbCrMatrixKey,
-    },
-    metal_texture::{CVMetalTexture, CVMetalTextureGetTexture},
-    metal_texture_cache::CVMetalTextureCache,
-    pixel_buffer::{
-        CVPixelBuffer, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
-        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-        kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
-        kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
-        kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
-        kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
-        kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
-        kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange,
-    },
-};
 use foreign_types::{ForeignType, ForeignTypeRef};
 use metal::{
     CAMetalLayer, CommandQueue, MTLGPUFamily, MTLPixelFormat, MTLResourceOptions, NSRange,
     NSUInteger,
+};
+use objc2_core_foundation::{CFRetained, CFString};
+use objc2_core_video::{
+    CVMetalTexture, CVMetalTextureCache, CVMetalTextureGetTexture, CVPixelBuffer,
+    CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane, CVPixelBufferGetPixelFormatType,
+    CVPixelBufferGetWidth, CVPixelBufferGetWidthOfPlane, kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+    kCVImageBufferYCbCrMatrix_ITU_R_2020, kCVImageBufferYCbCrMatrixKey,
+    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+    kCVPixelFormatType_420YpCbCr10BiPlanarFullRange,
+    kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
+    kCVPixelFormatType_422YpCbCr10BiPlanarFullRange,
+    kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange,
+    kCVPixelFormatType_444YpCbCr10BiPlanarFullRange,
+    kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange, kCVReturnSuccess,
 };
 use parking_lot::Mutex;
 
@@ -192,9 +186,9 @@ pub struct MetalRenderer {
     sprite_atlas: Arc<MetalAtlas>,
     /// The textures the frame being encoded samples, held to its completion
     /// (`fast::surfaces`). Before the cache, so they drop before it.
-    surface_textures: Vec<CVMetalTexture>,
+    surface_textures: Vec<CFRetained<CVMetalTexture>>,
     surfaces_in_flight: crate::fast::surfaces::SurfacesInFlight,
-    core_video_texture_cache: core_video::metal_texture_cache::CVMetalTextureCache,
+    core_video_texture_cache: CFRetained<CVMetalTextureCache>,
     /// A surface was skipped and said so; later ones stay quiet.
     surface_skip_logged: bool,
     pub(crate) path_intermediate_texture: Option<metal::Texture>,
@@ -498,8 +492,25 @@ impl MetalRenderer {
         let command_queue = device.new_command_queue();
         let supports_shared_storage = cfg!(target_os = "ios") || is_apple_gpu;
         let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), supports_shared_storage));
-        let core_video_texture_cache =
-            CVMetalTextureCache::new(None, device.clone(), None).unwrap();
+        // metal and objc2-metal expose the same Objective-C device; the borrowed
+        // protocol object remains valid while `device` owns it.
+        let core_video_texture_cache = unsafe {
+            let mut cache = ptr::null_mut();
+            let status = CVMetalTextureCache::create(
+                None,
+                None,
+                &*device
+                    .as_ptr()
+                    .cast::<objc2::runtime::ProtocolObject<dyn objc2_metal::MTLDevice>>(),
+                None,
+                ptr::NonNull::from(&mut cache),
+            );
+            assert_eq!(
+                status, kCVReturnSuccess,
+                "failed to create CoreVideo Metal texture cache"
+            );
+            CFRetained::from_raw(ptr::NonNull::new(cache).expect("CoreVideo returned a null cache"))
+        };
 
         Self {
             device,
@@ -1484,37 +1495,47 @@ impl MetalRenderer {
         );
 
         for (index, surface) in surfaces.iter().enumerate() {
+            let image_buffer = &surface.image_buffer;
             let texture_size = size(
-                DevicePixels::from(surface.image_buffer.get_width() as i32),
-                DevicePixels::from(surface.image_buffer.get_height() as i32),
+                DevicePixels::from(CVPixelBufferGetWidth(image_buffer) as i32),
+                DevicePixels::from(CVPixelBufferGetHeight(image_buffer) as i32),
             );
 
-            let format = surface.image_buffer.get_pixel_format();
+            let format = CVPixelBufferGetPixelFormatType(image_buffer);
             let Some(layout) = SurfaceLayout::of(format) else {
                 self.skip_surface(format_args!(
                     "pixel format {format:#x} is not an 8- or 10-bit Y′CbCr bi-planar one"
                 ));
                 continue;
             };
-            let ycbcr_to_rgb = ycbcr_to_rgb(surface_matrix(&surface.image_buffer), layout);
+            let ycbcr_to_rgb = ycbcr_to_rgb(surface_matrix(image_buffer), layout);
             let (luma_format, chroma_format) = layout.depth.plane_formats();
 
-            // SAFETY: a `CVPixelBufferRef` is a `CVImageBufferRef` (CVPixelBuffer.h), and the
-            // surface holds the buffer alive for this call; the get rule retains it once more.
-            let image_buffer = unsafe {
-                core_video::image_buffer::CVImageBuffer::wrap_under_get_rule(
-                    surface.image_buffer.as_concrete_TypeRef(),
-                )
-            };
             let plane = |plane: usize, format: MTLPixelFormat| {
-                self.core_video_texture_cache.create_texture_from_image(
-                    &image_buffer,
-                    None,
-                    format,
-                    surface.image_buffer.get_width_of_plane(plane),
-                    surface.image_buffer.get_height_of_plane(plane),
-                    plane,
-                )
+                let mut texture = ptr::null_mut();
+                // SAFETY: the surface holds the buffer alive for this call, the cache is this
+                // renderer's, and `texture` is a valid out-pointer that CoreVideo fills with a
+                // +1 reference on success (CVMetalTextureCache.h, "Create" rule).
+                let status = unsafe {
+                    CVMetalTextureCache::create_texture_from_image(
+                        None,
+                        &self.core_video_texture_cache,
+                        image_buffer,
+                        None,
+                        objc2_metal::MTLPixelFormat(format as usize),
+                        CVPixelBufferGetWidthOfPlane(image_buffer, plane),
+                        CVPixelBufferGetHeightOfPlane(image_buffer, plane),
+                        plane,
+                        ptr::NonNull::from(&mut texture),
+                    )
+                };
+                match ptr::NonNull::new(texture) {
+                    // SAFETY: a texture CoreVideo created for us, owned from here.
+                    Some(texture) if status == kCVReturnSuccess => {
+                        Ok(unsafe { CFRetained::<CVMetalTexture>::from_raw(texture) })
+                    }
+                    _ => Err(status),
+                }
             };
             let (y_texture, cb_cr_texture) = match (plane(0, luma_format), plane(1, chroma_format))
             {
@@ -1533,12 +1554,18 @@ impl MetalRenderer {
                 &texture_size as *const Size<DevicePixels> as *const _,
             );
             command_encoder.set_fragment_texture(SurfaceInputIndex::YTexture as u64, unsafe {
-                let texture = CVMetalTextureGetTexture(y_texture.as_concrete_TypeRef());
-                Some(metal::TextureRef::from_ptr(texture as *mut _))
+                let texture = CVMetalTextureGetTexture(&y_texture)
+                    .expect("CoreVideo returned no Metal texture");
+                Some(metal::TextureRef::from_ptr(
+                    objc2::rc::Retained::as_ptr(&texture) as *mut _,
+                ))
             });
             command_encoder.set_fragment_texture(SurfaceInputIndex::CbCrTexture as u64, unsafe {
-                let texture = CVMetalTextureGetTexture(cb_cr_texture.as_concrete_TypeRef());
-                Some(metal::TextureRef::from_ptr(texture as *mut _))
+                let texture = CVMetalTextureGetTexture(&cb_cr_texture)
+                    .expect("CoreVideo returned no Metal texture");
+                Some(metal::TextureRef::from_ptr(
+                    objc2::rc::Retained::as_ptr(&texture) as *mut _,
+                ))
             });
             command_encoder.set_fragment_bytes(
                 SurfaceInputIndex::YCbCrToRgb as u64,
@@ -1569,18 +1596,24 @@ impl MetalRenderer {
 
 /// The Y′CbCr matrix a surface's buffer is tagged with. Untagged is BT.709, the HD default.
 fn surface_matrix(buffer: &CVPixelBuffer) -> YCbCrMatrix {
-    // SAFETY: the keys and values are CoreVideo's own constant strings, which live forever.
-    let tagged = |key| unsafe { CFString::wrap_under_get_rule(key) };
-    let Some(matrix) = buffer
-        .as_buffer()
-        .get_attachment(&tagged(unsafe { kCVImageBufferYCbCrMatrixKey }), None)
-        .and_then(|value| value.downcast::<CFString>())
+    // SAFETY: the keys and values are CoreVideo's own constant strings, which live forever, and
+    // a null attachment mode is allowed (CVBuffer.h).
+    let Some(matrix) =
+        (unsafe { buffer.attachment(kCVImageBufferYCbCrMatrixKey, ptr::null_mut()) })
+            .and_then(|value| value.downcast::<CFString>().ok())
     else {
         return YCbCrMatrix::Bt709;
     };
-    if matrix == tagged(unsafe { kCVImageBufferYCbCrMatrix_ITU_R_601_4 }) {
+    // SAFETY: as above.
+    let (bt601, bt2020) = unsafe {
+        (
+            kCVImageBufferYCbCrMatrix_ITU_R_601_4,
+            kCVImageBufferYCbCrMatrix_ITU_R_2020,
+        )
+    };
+    if *matrix == *bt601 {
         YCbCrMatrix::Bt601
-    } else if matrix == tagged(unsafe { kCVImageBufferYCbCrMatrix_ITU_R_2020 }) {
+    } else if *matrix == *bt2020 {
         YCbCrMatrix::Bt2020
     } else {
         YCbCrMatrix::Bt709
@@ -1813,7 +1846,7 @@ mod ycbcr_tests {
             order: 0,
             bounds,
             content_mask: ContentMask { bounds },
-            image_buffer,
+            image_buffer: crate::fast::video_layer::objc2_buffer(&image_buffer),
         });
         scene.finish();
         let target = size(DevicePixels(SIDE as i32), DevicePixels(SIDE as i32));
@@ -1929,7 +1962,7 @@ mod ycbcr_tests {
             order: 0,
             bounds,
             content_mask: ContentMask { bounds },
-            image_buffer: red,
+            image_buffer: crate::fast::video_layer::objc2_buffer(&red),
         });
         scene.finish();
         let mut renderer = MetalRenderer::new_headless(Default::default());
@@ -2474,5 +2507,81 @@ impl gpui::PlatformHeadlessRenderer for MetalHeadlessRenderer {
 
     fn sprite_atlas(&self) -> Arc<dyn gpui::PlatformAtlas> {
         self.renderer.sprite_atlas().clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use objc2_core_foundation::{CFDictionary, CFType};
+    use objc2_core_video::{
+        CVPixelBufferCreate, CVPixelBufferGetBaseAddressOfPlane,
+        CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
+        CVPixelBufferUnlockBaseAddress, kCVPixelBufferIOSurfacePropertiesKey,
+    };
+
+    #[test]
+    fn render_core_video_surface() {
+        let attributes = CFDictionary::from_slices(
+            &[unsafe { kCVPixelBufferIOSurfacePropertiesKey }],
+            &[&*CFDictionary::<CFType, CFType>::empty()],
+        );
+        let mut image_buffer = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                CVPixelBufferCreate(
+                    None,
+                    16,
+                    16,
+                    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                    Some(attributes.as_opaque()),
+                    ptr::NonNull::from(&mut image_buffer),
+                )
+            },
+            kCVReturnSuccess
+        );
+        let image_buffer =
+            unsafe { CFRetained::from_raw(ptr::NonNull::new(image_buffer).unwrap()) };
+        unsafe {
+            assert_eq!(
+                CVPixelBufferLockBaseAddress(&image_buffer, CVPixelBufferLockFlags::empty()),
+                kCVReturnSuccess
+            );
+            for plane in 0..2 {
+                let bytes = CVPixelBufferGetBaseAddressOfPlane(&image_buffer, plane).cast::<u8>();
+                let length = CVPixelBufferGetBytesPerRowOfPlane(&image_buffer, plane)
+                    * CVPixelBufferGetHeightOfPlane(&image_buffer, plane);
+                slice::from_raw_parts_mut(bytes, length).fill(128);
+            }
+            assert_eq!(
+                CVPixelBufferUnlockBaseAddress(&image_buffer, CVPixelBufferLockFlags::empty()),
+                kCVReturnSuccess
+            );
+        }
+
+        let bounds = Bounds {
+            origin: Point::default(),
+            size: size(ScaledPixels(16.0), ScaledPixels(16.0)),
+        };
+        let mut scene = Scene::default();
+        scene.insert_primitive(PaintSurface {
+            order: 0,
+            bounds,
+            content_mask: ContentMask { bounds },
+            image_buffer: image_buffer.clone(),
+        });
+        drop(image_buffer);
+        scene.finish();
+
+        let mut renderer = MetalRenderer::new_headless(Arc::new(Mutex::new(Default::default())));
+        let image = renderer
+            .render_scene_to_image(&scene, size(DevicePixels(16), DevicePixels(16)))
+            .unwrap();
+        for image::Rgba([red, green, blue, alpha]) in image.pixels() {
+            assert!(red.abs_diff(128) <= 2);
+            assert!(green.abs_diff(128) <= 2);
+            assert!(blue.abs_diff(128) <= 2);
+            assert_eq!(*alpha, 255);
+        }
     }
 }

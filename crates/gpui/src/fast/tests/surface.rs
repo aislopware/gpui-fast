@@ -9,11 +9,29 @@ use crate::{
     AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
     TestAppContext, Window, WindowHandle, div, px, surface,
 };
-use core_video::pixel_buffer::{CVPixelBuffer, kCVPixelFormatType_32BGRA};
-use std::{cell::Cell, rc::Rc, slice};
+use objc2_core_foundation::CFRetained;
+use objc2_core_video::{CVPixelBufferCreate, kCVPixelFormatType_32BGRA, kCVReturnSuccess};
+use std::{cell::Cell, ptr, rc::Rc, slice};
+
+type CVPixelBuffer = CFRetained<objc2_core_video::CVPixelBuffer>;
 
 fn buffer() -> CVPixelBuffer {
-    CVPixelBuffer::new(kCVPixelFormatType_32BGRA, 16, 16, None).expect("a 16x16 BGRA buffer")
+    let mut buffer = ptr::null_mut();
+    // SAFETY: `buffer` is a valid out-pointer CoreVideo fills with a +1 reference on success
+    // (CVPixelBuffer.h, "Create" rule).
+    let status = unsafe {
+        CVPixelBufferCreate(
+            None,
+            16,
+            16,
+            kCVPixelFormatType_32BGRA,
+            None,
+            ptr::NonNull::from(&mut buffer),
+        )
+    };
+    assert_eq!(status, kCVReturnSuccess, "a 16x16 BGRA buffer");
+    // SAFETY: a buffer CoreVideo created for us, owned from here.
+    unsafe { CFRetained::from_raw(ptr::NonNull::new(buffer).expect("a 16x16 BGRA buffer")) }
 }
 
 struct Picture {

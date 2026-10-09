@@ -3,10 +3,10 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::MacTextSystem;
     use gpui::{
         DevicePixels, Font, FontWeight, PlatformTextSystem, RenderGlyphParams, font, point, px,
     };
+    use gpui_apple::AppleTextSystem as MacTextSystem;
     use std::time::Instant;
 
     const SCALE: f32 = 2.;

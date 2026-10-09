@@ -287,10 +287,26 @@ impl VideoRenderer {
             order: 0,
             bounds,
             content_mask: ContentMask { bounds },
-            image_buffer: picture.clone(),
+            image_buffer: objc2_buffer(picture),
         });
         self.scene.finish();
         self.renderer.draw(&self.scene);
         Ok(())
+    }
+}
+
+/// `picture` as the `objc2-core-video` buffer a [`PaintSurface`] holds: the same
+/// CoreFoundation object, retained once more.
+pub fn objc2_buffer(
+    picture: &CVPixelBuffer,
+) -> objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer> {
+    use core_foundation::base::TCFType as _;
+    let raw = picture.as_concrete_TypeRef();
+    // SAFETY: both crates name the same `CVPixelBufferRef` (CVPixelBuffer.h); `picture` holds it
+    // alive for this call, and the get rule retains it for the returned handle.
+    unsafe {
+        objc2_core_foundation::CFRetained::retain(std::ptr::NonNull::new_unchecked(
+            raw.cast::<objc2_core_video::CVPixelBuffer>(),
+        ))
     }
 }

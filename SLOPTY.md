@@ -870,6 +870,19 @@ holder now checks that it draws as without layers, not that it demotes. The depe
 log keeps the fork's interned, sorted states, and #44's `dependencies_so_far` uses them.
 `drawn_alike` hashes `fast::scene::operations`, natives included.
 
+In the 679ad7c3 sync (zed #65058, #65059, #65288, #65351): zed moved the Mac's text system
+into `gpui_apple` as `AppleTextSystem`, so its patches (sized fonts, AppKit weights, the
+#63469 margin and its AppKit test) moved with it, and `fast::text_system`'s helpers and
+tests went to `gpui_apple/src/fast/text_system.rs`; `gpui_macos::text_system()` returns an
+`AppleTextSystem`. `gpui_ios` keeps its own text system for now. A `PaintSurface` now holds
+an `objc2-core-video` `CVPixelBuffer`, so the renderer's surface path (formats, matrices,
+textures held to their frame) runs on objc2; `fast::video_layer` still takes the
+`core-video` crate's buffers, as Slopty hands them, and `video_layer::objc2_buffer`
+converts one. Upstream's per-view profiler timing moves into `fast::retained`. `gpui_ios`
+gains `refresh_interval` from `maximumFramesPerSecond`; display changes are a no-op there,
+as on the web. `uniform_list` keeps the snapped offset hook and the held rows' indices
+inside upstream's f64 item placement.
+
 For our patches: `window.rs` (`paint_glyph_scaled` sits next to gpui-fast's
 `pub(crate) fn should_use_subpixel_rendering`), the root `Cargo.toml` (`gpui_ios` member
 and dependency) and `Cargo.lock`. `git am -3` needs the preimage blobs from the zed fork;

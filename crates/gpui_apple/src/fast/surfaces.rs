@@ -12,12 +12,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use core_video::metal_texture::CVMetalTexture;
+use objc2_core_foundation::CFRetained;
+use objc2_core_video::CVMetalTexture;
 
 /// Each frame's surface textures, until the GPU finished with that frame.
 #[derive(Default)]
 pub(crate) struct SurfacesInFlight {
-    frames: VecDeque<(Arc<FrameDone>, Vec<CVMetalTexture>)>,
+    frames: VecDeque<(Arc<FrameDone>, Vec<CFRetained<CVMetalTexture>>)>,
 }
 
 /// Set by a frame's completion handler: its textures may go.
@@ -34,7 +35,10 @@ impl FrameDone {
 impl SurfacesInFlight {
     /// Hold `textures` for the frame being committed, until the flag handed back is set; no
     /// flag for a frame that samples none.
-    pub(crate) fn hold(&mut self, textures: Vec<CVMetalTexture>) -> Option<Arc<FrameDone>> {
+    pub(crate) fn hold(
+        &mut self,
+        textures: Vec<CFRetained<CVMetalTexture>>,
+    ) -> Option<Arc<FrameDone>> {
         if textures.is_empty() {
             return None;
         }

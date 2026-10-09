@@ -1923,7 +1923,16 @@ pub(crate) fn request_view_layout<V: View>(
     window: &mut Window,
     cx: &mut App,
 ) -> (LayoutId, ViewLayoutState) {
+    #[cfg(feature = "profiler")]
+    let start = view.entity_id.map(|_| window.window_profiler.begin_view());
     let (layout_id, layout) = view.request_view_layout_inner(global_id, window, cx);
+    #[cfg(feature = "profiler")]
+    end_view_timing(
+        view,
+        start,
+        crate::profiler::ViewPhase::RequestLayout,
+        window,
+    );
     (layout_id, ViewLayoutState(layout, layout_id))
 }
 
@@ -1944,7 +1953,12 @@ pub(crate) fn prepaint_view<V: View>(
         .unwrap()
         .layout_phase(layout.1);
     let layout = mem::replace(&mut layout.0, ViewLayout::Taken);
-    ViewPrepaintState(view.prepaint_view_inner(global_id, (bounds, phase), layout, window, cx))
+    #[cfg(feature = "profiler")]
+    let start = view.entity_id.map(|_| window.window_profiler.begin_view());
+    let prepainted = view.prepaint_view_inner(global_id, (bounds, phase), layout, window, cx);
+    #[cfg(feature = "profiler")]
+    end_view_timing(view, start, crate::profiler::ViewPhase::Prepaint, window);
+    ViewPrepaintState(prepainted)
 }
 
 /// Paints the view as [`crate::Element::paint`] does.
@@ -1958,7 +1972,11 @@ pub(crate) fn paint_view<V: View>(
 ) {
     if let Some(entity_id) = view.entity_id {
         // Stateful path.
+        #[cfg(feature = "profiler")]
+        let start = window.window_profiler.begin_view();
         paint_entity_view(entity_id, global_id, &mut prepaint.0, window, cx);
+        #[cfg(feature = "profiler")]
+        end_view_timing(view, Some(start), crate::profiler::ViewPhase::Paint, window);
     } else {
         // Stateless path: just paint the element.
         paint_component(std::any::type_name::<V>(), &mut prepaint.0, window, cx);
@@ -2020,5 +2038,21 @@ impl HitboxId {
     pub(crate) fn hovered_now(self, window: &Window) -> bool {
         window.captured_hitbox == Some(self)
             || (!window.last_input_was_keyboard() && self.hit_test(window))
+    }
+}
+
+/// Ends the profiler's timing of `view`'s `phase`, begun at `start`, as
+/// upstream's `ViewElement` does for an entity's view.
+#[cfg(feature = "profiler")]
+fn end_view_timing<V: View>(
+    view: &ViewElement<V>,
+    start: Option<scheduler::Instant>,
+    phase: crate::profiler::ViewPhase,
+    window: &mut Window,
+) {
+    if let Some(start) = start {
+        window
+            .window_profiler
+            .end_view(start, view.view_type_name, phase);
     }
 }

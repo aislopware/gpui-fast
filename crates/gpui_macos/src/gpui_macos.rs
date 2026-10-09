@@ -24,12 +24,6 @@ pub mod metal_renderer {
     pub use gpui_apple::metal_renderer::MetalHeadlessRenderer;
 }
 
-#[cfg(feature = "font-kit")]
-mod open_type;
-
-#[cfg(feature = "font-kit")]
-mod text_system;
-
 mod platform;
 mod window;
 mod window_appearance;
@@ -52,12 +46,10 @@ pub(crate) use keyboard::*;
 pub(crate) use platform::*;
 pub(crate) use window::*;
 
-#[cfg(feature = "font-kit")]
-pub(crate) use text_system::*;
-
 pub use fast::composition::MacNativeHost;
 #[cfg(feature = "font-kit")]
 pub use fast::text_system::text_system;
+
 pub use platform::MacPlatform;
 
 trait BoolExt {

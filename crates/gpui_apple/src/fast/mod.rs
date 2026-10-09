@@ -13,4 +13,6 @@ pub(crate) mod layers;
 pub(crate) mod occlusion;
 pub(crate) mod paths;
 pub(crate) mod surfaces;
+#[cfg(feature = "font-kit")]
+pub(crate) mod text_system;
 pub mod video_layer;

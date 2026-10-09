@@ -245,6 +245,9 @@ impl Platform for IosPlatform {
         Some(Rc::new(IosDisplay::main()))
     }
 
+    // An iOS window stays on the screen its scene is on.
+    fn on_displays_changed(&self, _callback: Box<dyn FnMut()>) {}
+
     fn active_window(&self) -> Option<AnyWindowHandle> {
         super::window::active_window_handle()
     }

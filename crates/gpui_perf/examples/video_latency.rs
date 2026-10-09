@@ -384,14 +384,15 @@ mod macos {
                     this.child(native_view(host).flex_1().h_full())
                 })
                 .when(self.mode.surface(), |this| {
-                    this.child(
-                        div()
-                            .flex_1()
-                            .h_full()
-                            .when_some(self.picture.clone(), |this, picture| {
-                                this.child(surface(picture).size_full())
-                            }),
-                    )
+                    this.child(div().flex_1().h_full().when_some(
+                        self.picture.clone(),
+                        |this, picture| {
+                            this.child(
+                                surface(gpui_apple::fast::video_layer::objc2_buffer(&picture))
+                                    .size_full(),
+                            )
+                        },
+                    ))
                 })
         }
     }
