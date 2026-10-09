@@ -1757,9 +1757,20 @@ impl<V: View> ViewElement<V> {
                         && let Some(previous) = window.reusable_retained(global_id, cx)
                         && window.retained_context_matches(previous, bounds, phase)
                     {
-                        return ViewPrepaint::Reused(
-                            window.reuse_retained_prepaint(previous, false, cx),
+                        let rebuild = window.rebuild_here(
+                            &self.rebuild,
+                            self.cached_style.as_ref(),
+                            layout.as_ref().and_then(|layout| layout.parent_layout_key),
                         );
+                        let index = window.reuse_retained_prepaint(previous, false, cx);
+                        // Cached paint can survive a changed element path, but
+                        // its style node was requested again at the new path.
+                        // Keep that node and rebuild location, not the copied
+                        // ones which may be released at the end of this frame.
+                        let record = &mut window.next_frame.retained.records[index];
+                        record.layout = layout;
+                        record.rebuild = rebuild.map(Rc::new);
+                        return ViewPrepaint::Reused(index);
                     }
                     note_rendering(window, cx, entity_id);
                     crate::fast::layers::invalidate::note_rebuild(window, cx, global_id, entity_id);
