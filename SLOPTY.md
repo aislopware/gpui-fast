@@ -852,6 +852,24 @@ font generation moves into `fast::text::layout_text` and `shapes_as` compares it
 `LineLayoutCache::finish_frame` keeps our lock order (current frame, then previous) and
 the font-generation clear ahead of `carry_over_line_layouts`.
 
+In the longbridge 412191f merge (#41–#49): upstream's window composition for X11 and
+wgpu (#41, #42, #43, with the `linux_webview` example and its CI packages) is left out,
+as the fork keeps its own composition (`ed16b23`). Taffy 0.14 with `MeasuredTaffy` (#49)
+is taken. The splice (#46) keeps the fork's `splice_gaps`, which already rebuilds every
+out-of-date nested view and checks deferred draws by what they read
+(`deferred_out_of_date`), and its `kept_layout` carried into the record, in place of
+#46's deferred-draw cursor and `Splice::layout`. It takes #46's `layout_reaches` guard
+into `splice_gaps` and checks offset reads, the view's own, the gaps' and the deferred
+draws'. For what a list's holder writes as it is built (#44's `rendering_since` beside
+the fork's `a62f45e`), `with_own_rebuild` keeps the fork's ranges, the layout's writes
+and those since its prepaint began, and falls back on #44's `rendering_since` when the
+holder is built outside a retained rebuild. Both honour `note_rebuild`. Under #44 a
+holder that renders again for something it read is `OwnerChange::Rerendered`, which
+composites while the rows render again. The fork's test of a write from outside the
+holder now checks that it draws as without layers, not that it demotes. The dependency
+log keeps the fork's interned, sorted states, and #44's `dependencies_so_far` uses them.
+`drawn_alike` hashes `fast::scene::operations`, natives included.
+
 For our patches: `window.rs` (`paint_glyph_scaled` sits next to gpui-fast's
 `pub(crate) fn should_use_subpixel_rendering`), the root `Cargo.toml` (`gpui_ios` member
 and dependency) and `Cargo.lock`. `git am -3` needs the preimage blobs from the zed fork;

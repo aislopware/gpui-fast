@@ -36,7 +36,7 @@ export function dependency(key: string, input: any, workspace: Manifest, config:
   if ("path" in value) {
     delete value.path;
     Object.assign(value, config.crates.includes(key)
-      ? { package: fastName(key), version: "=" + version, path: "../" + key }
+      ? { package: fastName(key), version: "^" + version, path: "../" + key }
       : { package: snapshotName(key), version: "=" + config.snapshot_version });
   }
   if ("git" in value) {
@@ -78,6 +78,9 @@ export function prepare(config: ReleaseConfig, version: string, dest = DEST): vo
     delete pkg.metadata;
     manifest.lib.name = name;
     for (const field of ["lints", "example", "bench", "test", "dev-dependencies"]) delete manifest[field];
+    // Published crates have no workspace to inherit lints from; keep its rustc
+    // lints so upstream's cfgs, such as `rust_analyzer`, stay allowed.
+    manifest.lints = { rust: workspace.lints.rust };
     for (const group of [manifest, ...Object.values(manifest.target ?? {})] as Manifest[]) {
       delete group["dev-dependencies"];
       for (const section of ["dependencies", "build-dependencies"]) {

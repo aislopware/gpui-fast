@@ -326,6 +326,7 @@ impl Window {
         if layout.rem_size != self.rem_size()
             || layout.text_style != self.text_style()
             || cx.dependencies_changed(&record.own_dependencies, self.inside_notified_view())
+            || crate::fast::layers::invalidate::offset_read_changed(self, &record.own_dependencies)
             || !self.hovers_unchanged(&record.own_hovers)
         {
             return None;
@@ -437,12 +438,25 @@ impl Window {
                 .is_some_and(|entity| self.dirty_views.contains(&entity))
                 || self.retained_state.dirty_subtrees.contains(&nested.id)
                 || cx.dependencies_changed(&nested.dependencies, self.inside_notified_view())
+                || crate::fast::layers::invalidate::offset_read_changed(self, &nested.dependencies)
                 || !self.hovers_unchanged(&nested.hover_dependencies);
             if out_of_date {
                 if nested.rebuild.is_none()
                     || nested.layout.is_none()
                     || !matches!(nested.paint, PaintStatus::Painted { .. })
                 {
+                    return None;
+                }
+                // A splice skips the ancestor's prepaint. If that prepaint
+                // places a separate layout root (`prepaint_as_root`, a list's
+                // rows, a container query), rebuilding a gap under it would
+                // leave its new measurements outside the layout pass. Fall
+                // back before claiming nodes or building any gaps so the
+                // ancestor can lay out and place that root itself.
+                if !self.layout_engine.as_ref().unwrap().layout_reaches(
+                    records[previous].layout.as_ref()?.root,
+                    nested.layout.as_ref()?.root,
+                ) {
                     return None;
                 }
                 gaps.push(index);
@@ -495,6 +509,7 @@ impl Window {
             gaps.iter().map(|&gap| &records[gap].dependencies).collect();
         let rest = records[previous].dependencies.without(&gaps);
         cx.dependencies_changed(&rest, self.inside_notified_view())
+            || crate::fast::layers::invalidate::offset_read_changed(self, &rest)
             || rest
                 .entities
                 .iter()
@@ -1056,6 +1071,7 @@ fn copy_record(
         dependencies: record.dependencies.clone(),
         own_dependencies: record.own_dependencies.clone(),
         render_offset_reads: record.render_offset_reads.clone(),
+        render_dependencies: record.render_dependencies.clone(),
         hover_dependencies: record.hover_dependencies.clone(),
         own_hovers: record.own_hovers.clone(),
         layout_keys: record.layout_keys.clone(),
