@@ -441,7 +441,8 @@ pub(crate) fn offset_reads_len() -> usize {
 }
 
 /// The offsets read in `range` of the log, and those read in it outside the
-/// stretches in `nested`, which lie within it, in order.
+/// stretches in `nested`, which lie within it, in order, each at the version
+/// its state has now (see [`OffsetReads::settled`]).
 pub(crate) fn offset_reads_in<'a>(
     range: &Range<usize>,
     nested: impl Iterator<Item = &'a Range<usize>>,
@@ -450,7 +451,7 @@ pub(crate) fn offset_reads_in<'a>(
         return (OffsetReads::default(), OffsetReads::default());
     }
     OFFSET_READS.with_borrow(|log| {
-        let all = OffsetReads::of(&log.reads[range.clone()]);
+        let all = OffsetReads::of(&log.reads[range.clone()]).settled();
         let mut own = Vec::new();
         let mut cursor = range.start;
         for nested in nested {
@@ -462,7 +463,7 @@ pub(crate) fn offset_reads_in<'a>(
         if range.end > cursor {
             own.extend_from_slice(&log.reads[cursor..range.end]);
         }
-        (all, OffsetReads::of(&own))
+        (all, OffsetReads::of(&own).settled())
     })
 }
 
@@ -493,8 +494,9 @@ pub(crate) fn replay_offset_reads(reads: &OffsetReads) -> Range<usize> {
     })
 }
 
-/// The scroll offsets a retained subtree read, once each, at the earliest
-/// version read. Most subtrees read none, which takes no allocation.
+/// The scroll offsets a retained subtree read, once each, at the version
+/// their states had once it was built. Most subtrees read none, which takes
+/// no allocation.
 ///
 /// A state read more than one way counts as its offset read, unless every
 /// read only asked whether a list is at its end and got the same answer.
@@ -522,6 +524,35 @@ impl OffsetReads {
 
     fn iter(&self) -> impl Iterator<Item = &OffsetRead> {
         self.0.iter().flat_map(|reads| reads.iter())
+    }
+
+    /// The same reads, each at the version its state has now, as the
+    /// recording they were made in ends.
+    ///
+    /// What moved a state between its read and now is the subtree being
+    /// built: no wheel or other event runs while a frame is drawn. A view
+    /// that reads where its list is scrolled and then scrolls it as it
+    /// renders, to keep a selected row in view, wrote that offset itself,
+    /// as part of building itself, as with an entity it writes as it renders
+    /// (see [`crate::fast::retained::RetainedState::rendering_since`]).
+    /// Judged by the version it read, that write would make the view out of
+    /// date on the next frame and build it again, however clean.
+    fn settled(self) -> Self {
+        let Some(reads) = &self.0 else {
+            return self;
+        };
+        if reads.iter().all(|read| read.version.get() == read.read_at) {
+            return self;
+        }
+        OffsetReads(Some(
+            reads
+                .iter()
+                .map(|read| OffsetRead {
+                    read_at: read.version.get(),
+                    ..read.clone()
+                })
+                .collect(),
+        ))
     }
 
     /// Both sets of reads.

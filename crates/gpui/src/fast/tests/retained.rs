@@ -2803,3 +2803,93 @@ fn new_layout_nodes_in_a_spliced_gap_survive_idle_frames() {
     assert_eq!(outer_builds.get(), 1);
     assert_eq!(builds.get(), 3);
 }
+
+/// A view that keeps its list's first row in view: it reads where the list
+/// is scrolled and then scrolls it as it renders, as a sidebar keeping its
+/// selection in sight does.
+struct Revealing {
+    list: crate::ListState,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for Revealing {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        let _ = self.list.logical_scroll_top();
+        self.list.scroll_to_reveal_item(0);
+        crate::list(self.list.clone(), |ix, _, _| {
+            div()
+                .h(px(10.))
+                .child(format!("row {ix}"))
+                .into_any_element()
+        })
+        .w(px(50.))
+        .h(px(30.))
+    }
+}
+
+/// A [`Swatch`] beside a [`Revealing`].
+struct SwatchAndRevealing {
+    tinted: Entity<Swatch>,
+    revealing: Entity<Revealing>,
+}
+
+impl Render for SwatchAndRevealing {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(self.tinted.clone())
+            .child(self.revealing.clone())
+    }
+}
+
+/// A view that scrolled its own list as it rendered wrote that offset as
+/// part of building itself: a sibling's notification draws the view around
+/// both from last frame around the sibling, and the view is drawn from last
+/// frame too, not built again for having moved the offset it read.
+#[test]
+fn a_view_that_scrolls_its_own_list_as_it_renders_is_not_built_again_beside_a_notified_one() {
+    let mut cx = TestAppContext::single();
+    let tinted_builds = Rc::new(Cell::new(0));
+    let revealing_builds = Rc::new(Cell::new(0));
+    let window = cx.add_window({
+        let (tinted_builds, revealing_builds) = (tinted_builds.clone(), revealing_builds.clone());
+        move |_, cx| SwatchAndRevealing {
+            tinted: cx.new(|_| Swatch {
+                red: false,
+                builds: tinted_builds,
+            }),
+            revealing: cx.new(|_| Revealing {
+                list: crate::ListState::new(8, crate::ListAlignment::Top, px(0.)),
+                builds: revealing_builds,
+            }),
+        }
+    });
+    let tinted = window
+        .update(&mut cx, |view, _, _| view.tinted.clone())
+        .unwrap();
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap();
+    };
+    draw(&mut cx);
+    draw(&mut cx);
+    let built = revealing_builds.get();
+    for _ in 0..3 {
+        tinted.update(&mut cx, |tinted, cx| {
+            tinted.red = !tinted.red;
+            cx.notify();
+        });
+        draw(&mut cx);
+    }
+    assert!(
+        tinted_builds.get() >= 4,
+        "the notified view was built again"
+    );
+    assert_eq!(
+        revealing_builds.get(),
+        built,
+        "the view that scrolled its own list was drawn from last frame"
+    );
+}
