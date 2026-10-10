@@ -10,6 +10,7 @@ mod events;
 pub mod ffi;
 pub(crate) mod menus;
 mod platform;
+pub(crate) mod pointer;
 mod text_input;
 mod text_system;
 mod util;

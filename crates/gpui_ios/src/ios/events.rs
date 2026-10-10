@@ -23,6 +23,25 @@ pub fn touch_phase(touch: *mut AnyObject) -> UiTouchPhase {
     }
 }
 
+/// `UITouch.type` (`UITouchType`): direct, indirect, pencil or indirect pointer.
+pub fn touch_type(touch: *mut AnyObject) -> i64 {
+    // SAFETY: `UITouch.type` is a plain `NSInteger` property, read on the main thread that
+    // delivers the touch.
+    unsafe { msg_send![touch, type] }
+}
+
+/// `UIEvent.buttonMask` (`UIEventButtonMask`): the pointer's buttons held, 0 for a finger or
+/// with no event.
+pub fn button_mask(event: *mut AnyObject) -> usize {
+    if event.is_null() {
+        return 0;
+    }
+    // SAFETY: `UIEvent.buttonMask` (iOS 13.4+) is a plain `NSInteger` bit field, read on the
+    // main thread that delivers the event.
+    let mask: isize = unsafe { msg_send![event, buttonMask] };
+    mask.cast_unsigned()
+}
+
 /// Returns an identifier stable for the lifetime of this UIKit touch.
 pub fn touch_id(touch: *mut AnyObject) -> TouchId {
     TouchId(touch as usize as u64)

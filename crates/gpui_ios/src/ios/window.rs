@@ -328,6 +328,11 @@ fn register_metal_view_class() -> &'static AnyClass {
             handle_hover_gesture(this, recognizer);
         }
 
+        // `pointerInteraction:styleForRegion:`, as the delegate of the view's pointer
+        // interaction: the look the platform's cursor style set.
+        let style_for_region = super::pointer::style_for_region
+            as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject, *mut AnyObject) -> *mut AnyObject;
+
         /// Target of the view's scroll-only `UIPanGestureRecognizer` (two-finger scroll, wheel).
         extern "C" fn handle_scroll(this: *mut AnyObject, _sel: Sel, recognizer: *mut AnyObject) {
             handle_scroll_gesture(this, recognizer);
@@ -440,6 +445,10 @@ fn register_metal_view_class() -> &'static AnyClass {
                 sel!(handleScroll:),
                 handle_scroll as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
             );
+            if let Some(protocol) = objc2::runtime::AnyProtocol::get(c"UIPointerInteractionDelegate") {
+                decl.add_protocol(protocol);
+            }
+            decl.add_method(sel!(pointerInteraction:styleForRegion:), style_for_region);
             decl.add_method(
                 sel!(hitTest:withEvent:),
                 hit_test
@@ -1013,6 +1022,13 @@ pub(crate) struct IosWindow {
     repeat_generation: Cell<u64>,
     /// The scroll recognizer's last reported translation, for per-event deltas.
     scroll_translation: Cell<Point<f32>>,
+    /// The view's `UIPointerInteraction`, retained: the pointer's look over it.
+    pointer_interaction: *mut AnyObject,
+    /// Pointer touches held down, which go as mouse events of their button rather than as
+    /// touches, by touch, with each one's click.
+    pointer_presses: RefCell<Vec<(TouchId, crate::pointer::Click)>>,
+    /// The last pointer press, to count a double click on from it.
+    last_click: Cell<Option<crate::pointer::Click>>,
     pub(super) renderer: Mutex<MetalRenderer>,
     /// The view controller's view, holding the natives' containers and the Metal view.
     root_view: *mut AnyObject,
@@ -1103,6 +1119,8 @@ impl IosWindow {
             let _: () = msg_send![scroll, setAllowedScrollTypesMask: UI_SCROLL_TYPE_MASK_ALL];
             let _: () = msg_send![scroll, setMaximumNumberOfTouches: 0_usize];
             let _: () = msg_send![view, addGestureRecognizer: scroll];
+            // The pointer's look over the view follows GPUI's cursor style (`ios::pointer`).
+            let pointer_interaction = super::pointer::add_interaction(view);
 
             let root_view = super::composition::root_view(screen_bounds_cg, view);
             let _: () = msg_send![view_controller, setView: root_view];
@@ -1173,6 +1191,9 @@ impl IosWindow {
                 held_key: RefCell::new(None),
                 repeat_generation: Cell::new(0),
                 scroll_translation: Cell::new(Point::new(0.0, 0.0)),
+                pointer_interaction,
+                pointer_presses: RefCell::new(Vec::new()),
+                last_click: Cell::new(None),
                 renderer: Mutex::new(renderer),
                 root_view,
                 composition: super::composition::WindowComposition::new(root_view, view),
@@ -1280,6 +1301,22 @@ impl IosWindow {
     pub fn handle_touch(&self, touch: *mut AnyObject, event: *mut AnyObject) {
         let position = touch_location_in_view(touch, self.view);
         let phase = touch_phase(touch);
+        let id = touch_id(touch);
+        // A pointer touch's button is read as it begins and kept to its end: the event's mask
+        // is empty by the time the button is let go.
+        let button = if phase == UiTouchPhase::Began {
+            crate::pointer::pointer_button(touch_type(touch), button_mask(event))
+        } else {
+            self.pointer_presses
+                .borrow()
+                .iter()
+                .find(|(held, _)| *held == id)
+                .map(|(_, click)| click.button)
+        };
+        if let Some(button) = button {
+            self.deliver_pointer_press(id, phase, position, button);
+            return;
+        }
         let predicted_position = if phase == UiTouchPhase::Moved {
             predicted_touch_location(touch, event, self.view)
         } else {
@@ -1292,6 +1329,78 @@ impl IosWindow {
             predicted_position,
             touch_force(touch),
         );
+    }
+
+    /// Delivers one phase of a pointer touch that presses `button`: a mouse down as it begins,
+    /// counted on from the last press, moves with the button held, and the up as it ends or is
+    /// cancelled, as `NSEvent`s deliver a click.
+    pub(crate) fn deliver_pointer_press(
+        &self,
+        id: TouchId,
+        phase: UiTouchPhase,
+        position: Point<Pixels>,
+        button: gpui::MouseButton,
+    ) {
+        self.mouse_position.set(position);
+        let modifiers = self.modifiers.get();
+        let input = match phase {
+            UiTouchPhase::Began => {
+                let at = Instant::now();
+                let count =
+                    crate::pointer::click_count(self.last_click.get(), at, position, button);
+                let click = crate::pointer::Click {
+                    at,
+                    position,
+                    button,
+                    count,
+                };
+                self.last_click.set(Some(click));
+                let mut presses = self.pointer_presses.borrow_mut();
+                // UIKit reuses a touch's address; one it never ended is gone.
+                presses.retain(|(held, _)| *held != id);
+                presses.push((id, click));
+                drop(presses);
+                PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: count,
+                    first_mouse: false,
+                })
+            }
+            UiTouchPhase::Moved | UiTouchPhase::Stationary => {
+                PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position,
+                    pressed_button: Some(button),
+                    modifiers,
+                })
+            }
+            UiTouchPhase::Ended | UiTouchPhase::Cancelled => {
+                let mut presses = self.pointer_presses.borrow_mut();
+                let count = presses
+                    .iter()
+                    .find(|(held, _)| *held == id)
+                    .map_or(1, |(_, click)| click.count);
+                presses.retain(|(held, _)| *held != id);
+                drop(presses);
+                PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: count,
+                })
+            }
+        };
+        self.dispatch_input(input);
+    }
+
+    /// The pointer interaction asks its delegate for the pointer's style again.
+    pub(crate) fn invalidate_pointer(&self) {
+        // SAFETY: `UIPointerInteraction.invalidate`, on the main thread, on the interaction
+        // this window created and holds until its `Drop`.
+        unsafe {
+            let _: () = msg_send![self.pointer_interaction, invalidate];
+        }
     }
 
     /// Delivers one touch through GPUI's platform-neutral touch API (gpui core's recognizer
@@ -1362,6 +1471,14 @@ impl IosWindow {
                         None,
                         None,
                     );
+                }
+            }
+            DescribedInput::PointerClick { touch, secondary } => {
+                let mask = if secondary { 2 } else { 1 };
+                let pointer = crate::pointer::TOUCH_TYPE_INDIRECT_POINTER;
+                if let Some(button) = crate::pointer::pointer_button(pointer, mask) {
+                    let position = Point::new(px(touch.x), px(touch.y));
+                    self.deliver_pointer_press(TouchId(touch.id), touch.phase, position, button);
                 }
             }
             DescribedInput::Pinch(pinch) => self.deliver_pinch(pinch),
@@ -1902,6 +2019,8 @@ impl Drop for IosWindow {
             }
             let _: () = msg_send![self.text_input_view, removeFromSuperview];
             let _: () = msg_send![self.text_input_view, release];
+            let _: () = msg_send![self.view, removeInteraction: self.pointer_interaction];
+            let _: () = msg_send![self.pointer_interaction, release];
             super::composition::set_root_window(self.root_view, ptr::null());
             let _: () = msg_send![self.view, release];
             let _: () = msg_send![self.root_view, release];

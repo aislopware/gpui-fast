@@ -78,6 +78,18 @@ pub(crate) fn register_window(window: *const super::window::IosWindow) {
     }
 }
 
+/// Run `f` on every window open, oldest first. Main thread only.
+pub(crate) fn for_each_window(mut f: impl FnMut(&super::window::IosWindow)) {
+    // SAFETY: the list holds the stable addresses of the live windows, registered after each
+    // is boxed and unregistered in its `Drop`, and is only touched on the main thread.
+    let windows = unsafe { (*window_list().0.get()).clone() };
+    for window in windows {
+        if let Some(window) = unsafe { window.as_ref() } {
+            f(window);
+        }
+    }
+}
+
 pub(crate) fn unregister_window(window: *const super::window::IosWindow) {
     unsafe {
         (*window_list().0.get()).retain(|registered_window| *registered_window != window);

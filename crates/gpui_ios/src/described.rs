@@ -186,6 +186,14 @@ pub enum DescribedInput {
     Pinch(DescribedPinch),
     /// The rotation recognizer firing.
     Rotation(DescribedRotation),
+    /// One phase of a trackpad's or mouse's click: a `UITouchTypeIndirectPointer` touch, its
+    /// event's `buttonMask` holding the secondary button or not.
+    PointerClick {
+        /// The touch.
+        touch: DescribedTouch,
+        /// The secondary button (a two-finger click), else the primary.
+        secondary: bool,
+    },
     /// The text system's `insertText:` on the text input view.
     InsertText(String),
     /// The text system's `deleteBackward` on the text input view.

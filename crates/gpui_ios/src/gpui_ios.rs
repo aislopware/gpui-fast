@@ -15,6 +15,8 @@ pub mod hardware_keyboard;
 mod keyboard_inset;
 #[cfg(any(target_os = "ios", test))]
 mod menus;
+#[cfg(any(target_os = "ios", test))]
+pub mod pointer;
 
 #[cfg(target_os = "ios")]
 pub use ios::{IosPlatform, current_platform, text_system};
@@ -49,6 +51,13 @@ impl std::error::Error for InjectError {}
 #[cfg(all(target_os = "ios", feature = "test-support"))]
 pub fn inject(input: described::DescribedInput) -> Result<(), InjectError> {
     ios::ffi::inject(input)
+}
+
+/// The look the pointer takes over the windows now, as the last cursor style set it. Test
+/// builds only.
+#[cfg(all(target_os = "ios", feature = "test-support"))]
+pub fn pointer_look() -> pointer::PointerLook {
+    ios::pointer::look()
 }
 
 /// The identifiers of the application's menus (`dev.gpui.menu.<n>`, in the order given to
