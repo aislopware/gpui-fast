@@ -3,7 +3,10 @@
 fn main() {
     // Slopty: a build script's `cfg` is the host's, so the target decides. An Apple target is
     // then checked (clippy, rustdoc) from a Linux host too.
-    if matches!(std::env::var("CARGO_CFG_TARGET_OS").as_deref(), Ok("macos" | "ios")) {
+    if matches!(
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("macos" | "ios")
+    ) {
         apple_build::run();
     }
 }
