@@ -38,6 +38,7 @@ crates/gpui/src/styled.rs unmarked=1 # Slopty: the outline style's builder
 crates/gpui/src/subscription.rs unmarked=1 # Slopty: SubscriberSet::is_empty, for the presented-frame sink
 crates/gpui/src/window/a11y/debug.rs unmarked=1 # Slopty: the a11y tree for tests; element retention (longbridge #17) reads Div's fields from fast::element
 crates/gpui_apple/src/gpui_apple.rs unmarked=1 # Slopty: presentation pacing
+crates/gpui_apple/build.rs unmarked=2 # Slopty: the build script decides on the target (CARGO_CFG_TARGET_OS), not on the host's cfg, and a host without Xcode leaves an empty metallib, so an Apple target is checked (clippy, rustdoc) from Linux; a build script cannot call into fast/
 crates/gpui_linux/src/linux/platform.rs hunk=9 unmarked=2 # Slopty: CursorStyle::None; zed #63402: keypad digits named kp0 to kp9
 crates/gpui_linux/src/linux/wayland.rs unmarked=1 # Slopty: CursorStyle::None
 crates/gpui_web/src/platform.rs unmarked=1 # Slopty: CursorStyle::None

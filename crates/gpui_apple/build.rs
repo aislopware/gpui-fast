@@ -1,11 +1,16 @@
 #![allow(clippy::disallowed_methods, reason = "build scripts are exempt")]
 
 fn main() {
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    apple_build::run();
+    // Slopty: a build script's `cfg` is the host's, so the target decides. An Apple target is
+    // then checked (clippy, rustdoc) from a Linux host too.
+    if matches!(
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("macos" | "ios")
+    ) {
+        apple_build::run();
+    }
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
 mod apple_build {
     use std::{
         env,
@@ -146,6 +151,14 @@ mod apple_build {
         };
 
         let shader_path = "./src/shaders.metal";
+        // Slopty: a host without Xcode has no Metal compiler. A check never loads the library
+        // `metal_renderer.rs` includes, so it gets an empty one; a binary built so would not run.
+        if !cfg!(target_os = "macos") {
+            let metallib = PathBuf::from(env::var("OUT_DIR").unwrap()).join("shaders.metallib");
+            std::fs::write(metallib, []).unwrap();
+            println!("cargo::warning=no Metal compiler on this host: shaders.metallib is empty");
+            return;
+        }
         let air_output_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("shaders.air");
         let metallib_output_path =
             PathBuf::from(env::var("OUT_DIR").unwrap()).join("shaders.metallib");
