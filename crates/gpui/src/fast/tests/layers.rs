@@ -342,9 +342,6 @@ fn translation_moves_every_position_a_primitive_carries() {
     );
     let mut path = path.scale(1.);
     path.content_mask = mask;
-    for vertex in &mut path.vertices {
-        vertex.content_mask = mask;
-    }
     let bounds = path.bounds;
     let Primitive::Path(moved) = translate(path.into()) else {
         unreachable!()
@@ -365,7 +362,8 @@ fn translation_moves_every_position_a_primitive_carries() {
         moved
             .vertices
             .iter()
-            .all(|v| v.content_mask.bounds == moved_mask)
+            .all(|v| v.content_mask == ContentMask::default()),
+        "a vertex's own mask, which no renderer reads, is left as painted"
     );
     assert!(
         moved

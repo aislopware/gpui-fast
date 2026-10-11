@@ -54,12 +54,7 @@ fn clip_to(primitive: &mut Primitive, mask: &Bounds<ScaledPixels>) {
     let content_mask = match primitive {
         Primitive::Shadow(p) => &mut p.content_mask,
         Primitive::Quad(p) => &mut p.content_mask,
-        Primitive::Path(p) => {
-            for vertex in &mut p.vertices {
-                vertex.content_mask.bounds = vertex.content_mask.bounds.intersect(mask);
-            }
-            &mut p.content_mask
-        }
+        Primitive::Path(p) => &mut p.content_mask,
         Primitive::Underline(p) => &mut p.content_mask,
         Primitive::MonochromeSprite(p) => &mut p.content_mask,
         Primitive::SubpixelSprite(p) => &mut p.content_mask,
@@ -218,9 +213,16 @@ fn describe_unfaded(primitive: &Primitive) -> String {
     match primitive {
         Primitive::Shadow(p) => format!("{:?}", crate::Shadow { order: 0, ..*p }),
         Primitive::Quad(p) => format!("{:?}", Quad { order: 0, ..*p }),
+        // Only what a renderer reads of a vertex: its position and its curve coordinates.
         Primitive::Path(p) => format!(
             "path {:?} {:?} {:?} {:?}",
-            p.bounds, p.content_mask, p.color, p.vertices
+            p.bounds,
+            p.content_mask,
+            p.color,
+            p.vertices
+                .iter()
+                .map(|v| (v.xy_position, v.st_position))
+                .collect::<Vec<_>>()
         ),
         Primitive::Underline(p) => format!("{:?}", crate::Underline { order: 0, ..*p }),
         Primitive::MonochromeSprite(p) => format!(

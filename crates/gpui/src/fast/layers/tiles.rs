@@ -253,7 +253,6 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
                 hash_f32(vertex.xy_position.y.0, hasher);
                 hash_f32(vertex.st_position.x, hasher);
                 hash_f32(vertex.st_position.y, hasher);
-                hash_mask(&vertex.content_mask, tile, hasher);
             }
         }
         Primitive::Underline(underline) => {

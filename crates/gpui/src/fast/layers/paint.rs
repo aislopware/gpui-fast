@@ -699,12 +699,7 @@ fn clip_primitive(primitive: &mut Primitive, mask: &Bounds<ScaledPixels>) {
     match primitive {
         Primitive::Shadow(p) => clip(&mut p.content_mask),
         Primitive::Quad(p) => clip(&mut p.content_mask),
-        Primitive::Path(p) => {
-            clip(&mut p.content_mask);
-            for vertex in &mut p.vertices {
-                clip(&mut vertex.content_mask);
-            }
-        }
+        Primitive::Path(p) => clip(&mut p.content_mask),
         Primitive::Underline(p) => clip(&mut p.content_mask),
         Primitive::MonochromeSprite(p) => clip(&mut p.content_mask),
         Primitive::SubpixelSprite(p) => clip(&mut p.content_mask),

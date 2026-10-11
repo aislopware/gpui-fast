@@ -446,9 +446,9 @@ pub(crate) fn move_primitive(primitive: &mut Primitive, delta: Point<ScaledPixel
         Primitive::Path(path) => {
             mv(&mut path.bounds);
             mv(&mut path.content_mask.bounds);
+            // A vertex's own mask is never read: renderers clip a path by its bounds and mask.
             for vertex in &mut path.vertices {
                 vertex.xy_position = vertex.xy_position + delta;
-                mv(&mut vertex.content_mask.bounds);
             }
         }
         Primitive::Underline(underline) => {
