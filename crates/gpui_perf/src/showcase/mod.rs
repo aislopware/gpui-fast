@@ -462,13 +462,17 @@ fn step(
         }
     };
     drop(driver);
+    #[allow(
+        clippy::needless_update,
+        reason = "upstream GPUI's event has every field named here; ours has `momentum_phase` too"
+    )]
     window.dispatch_event(
         PlatformInput::ScrollWheel(ScrollWheelEvent {
             position: bounds.center(),
             delta: ScrollDelta::Pixels(point(px(0.), -delta)),
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
-            momentum_phase: None,
+            ..Default::default()
         }),
         cx,
     );

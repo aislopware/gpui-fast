@@ -67,12 +67,13 @@ jobs:
       - name: Check gpui_perf
         run: cargo check -p gpui_perf --all-targets
 
-      # The gpui-pre stand-ins GPUI Kit applications patch in (compat/): every
-      # feature a gpui-pre crate has must reach ours.
+      # The gpui-pre and gpui-fast stand-ins GPUI Kit applications patch in
+      # (compat/): every feature a crate they stand in for has must reach ours.
       - name: Check compat
         run: >-
           cargo check -p gpui-pre -p gpui-pre-platform -p gpui-pre-macros
-          -p gpui-pre-reqwest-client -p gpui-pre-sum-tree --all-features
+          -p gpui-pre-reqwest-client -p gpui-pre-sum-tree
+          -p gpui-fast -p gpui-fast-platform -p gpui-fast-web --all-features
 
   lint:
     name: Lint and upstream check
