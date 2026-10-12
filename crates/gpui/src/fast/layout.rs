@@ -676,7 +676,14 @@ impl TaffyLayoutEngine {
             .retained
             .get_mut(&key)
             .expect("a claimed key is always present");
-        if node.children.as_slice() == children {
+        // The children are as they were, and each is still this node's: a
+        // child whose node another parent took meanwhile was detached from
+        // this one as it was, and is listed again.
+        if node.children.as_slice() == children
+            && children
+                .iter()
+                .all(|child| self.taffy.parent((*child).into()) == Some(id.into()))
+        {
             return;
         }
         node.children.clear();

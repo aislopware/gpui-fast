@@ -374,6 +374,79 @@ fn a_node_adopted_from_another_parent_keeps_its_position() {
     );
 }
 
+/// What a [`ReparentedLabel`] shows in its view: a box holding a line.
+struct LabelView;
+
+impl Render for LabelView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().child("other")
+    }
+}
+
+/// A list row holding a box identified as the label view it otherwise
+/// draws, and text in that box, measured as a question's answer is.
+struct ReparentedLabel {
+    list: crate::ListState,
+    label: Entity<LabelView>,
+    in_view: bool,
+    text: Rc<RefCell<Option<crate::TextLayout>>>,
+}
+
+impl Render for ReparentedLabel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        crate::list(self.list.clone(), move |_, _, cx| {
+            let Some(view) = view.upgrade() else {
+                return div().into_any_element();
+            };
+            let this = view.read(cx);
+            let child = if this.in_view {
+                this.label.clone().into_any_element()
+            } else {
+                let text = crate::StyledText::new("main");
+                *this.text.borrow_mut() = Some(text.layout().clone());
+                div()
+                    .id(ElementId::View(this.label.entity_id()))
+                    .child(text)
+                    .into_any_element()
+            };
+            div().child(child).into_any_element()
+        })
+        .size_full()
+    }
+}
+
+/// Text in a box takes back, a frame after, the node the box's key gave
+/// the root of a view drawn in its place, while the box keeps its node,
+/// lingering as a list row's. That view's parent detached the node from
+/// the box as it took it, though the box's children are as they were: the
+/// box has to list it again, or the text is never measured, and is
+/// prepainted without a measurement.
+#[test]
+fn a_node_taken_back_by_a_lingering_parent_is_laid_out_under_it() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(|_, cx| ReparentedLabel {
+        list: crate::ListState::new(1, crate::ListAlignment::Top, px(0.)),
+        label: cx.new(|_| LabelView),
+        in_view: false,
+        text: Rc::default(),
+    });
+    draw_frame(&mut cx, window.into());
+    for frame in 0..4 {
+        change_and_draw(&mut cx, window, |view| view.in_view = !view.in_view);
+        change_and_draw(&mut cx, window, |view| view.in_view = !view.in_view);
+        let bounds = window
+            .update(&mut cx, |view, _, _| {
+                view.text.borrow().as_ref().map(crate::TextLayout::bounds)
+            })
+            .unwrap();
+        assert!(
+            bounds.is_some_and(|bounds| bounds.size.width > px(0.)),
+            "frame {frame}: the text is laid out in its box: {bounds:?}"
+        );
+    }
+}
+
 /// Rows of a uniform list five rows tall, scrolled to `scroll_top`.
 struct ScrolledRows {
     row_ids: Vec<u64>,
