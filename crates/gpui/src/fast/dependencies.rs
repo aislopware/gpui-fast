@@ -966,6 +966,20 @@ impl Writes {
     fn union(&self, other: &Self) -> Self {
         let mut own = self.own.clone();
         own.extend_from_slice(&other.own);
+        // Stretches that meet or overlap are one: a record unioned with what
+        // each frame that extends it wrote keeps a few stretches, not one a
+        // frame.
+        if own.len() > 1 {
+            own.sort_unstable();
+            let mut merged: SmallVec<[(u64, u64); 2]> = SmallVec::with_capacity(own.len());
+            for (began, finished) in own {
+                match merged.last_mut() {
+                    Some(last) if began <= last.1 => last.1 = last.1.max(finished),
+                    _ => merged.push((began, finished)),
+                }
+            }
+            own = merged;
+        }
         Writes {
             from: self.from.min(other.from),
             to: self.to.max(other.to),
@@ -1415,8 +1429,18 @@ impl RenderDependencies {
     pub(crate) fn union(&self, other: &Self) -> Self {
         let offset_reads = self.offset_reads.union(&other.offset_reads);
         if other.entities.is_empty() && other.globals.is_empty() && other.states.is_empty() {
+            // Nothing more was read, but what the subtree wrote while `other`
+            // was recorded is still its own: dropped, a write it made then
+            // would count as made from outside it, as a list's rows writing
+            // as the view holding them is prepainted would.
+            let writes = if other.writes.own.is_empty() {
+                self.writes.clone()
+            } else {
+                self.writes.union(&other.writes)
+            };
             return Self {
                 offset_reads,
+                writes,
                 ..self.clone()
             };
         }
