@@ -54,6 +54,7 @@ font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "94b0f281
 web-sys = "0.3"
 tendril = "0.5"
 spin = { version = "0.10", default-features = false, features = ["mutex", "spin_mutex", "lock_api"] }
+objc2-security = { version = "0.3.2", default-features = false, features = ["std", "SecBase", "SecItem"] }
 objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAMetalLayer"] }
 dispatch2 = { version = "0.3", default-features = false, features = ["std"] }
 bytemuck = "1"
@@ -69,7 +70,7 @@ gpui_macros = { path = "crates/gpui_macros" }
 gpui_platform = { path = "crates/gpui_platform", default-features = false }
 gpui_shared_string = { path = "crates/gpui_shared_string" }
 gpui_util = { path = "crates/gpui_util" }
-gpui_web = { path = "crates/gpui_web" }
+gpui_web = { path = "crates/gpui_web", default-features = false }
 gpui_wgpu = { path = "crates/gpui_wgpu" }
 gpui_windows = { path = "crates/gpui_windows", default-features = false }
 http_client = { path = "crates/http_client" }
@@ -214,7 +215,6 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
     "objc2-core-foundation",
     "std",
 ] }
-objc2-security = { version = "0.3.2", default-features = false, features = ["std", "SecBase", "SecItem"] }
 objc2-screen-capture-kit = { version = "=0.3.2", default-features = false, features = [
     "block2",
     "dispatch2",
@@ -416,9 +416,12 @@ nonminimal_bool = "allow"
 
 [patch.crates-io]
 async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
-async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+async-task = { git = "https://github.com/zed-industries/async-task.git", rev = "015845a19fc31752c02367567d3b8900a406f9da" }
 windows-capture = { git = "https://github.com/zed-industries/windows-capture.git", rev = "f0d6c1b6691db75461b732f6d5ff56eed002eeb9" }
 calloop = { git = "https://github.com/zed-industries/calloop" }
+# Avoid panicking when a failed EGL call reports EGL_SUCCESS.
+# https://github.com/timothee-haudebourg/khronos-egl/pull/37
+khronos-egl = { git = "https://github.com/zed-industries/khronos-egl", rev = "42214b36347b108fd9630ca6254b96dde59e04fe" }
 
 [profile.dev]
 split-debuginfo = "unpacked"

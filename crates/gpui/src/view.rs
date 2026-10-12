@@ -39,7 +39,7 @@ impl AnyView {
     /// [Context::notify] was called on the backing entity since it was rendered
     /// (or [Window::refresh] is called, which ignores caching).
     pub fn cached(self, style: StyleRefinement) -> ViewElement<AnyView> {
-        crate::fast::splice::cached(self.clone(), self, style)
+        self.into_element().cached(style)
     }
 
     /// Convert this to a weak handle.
