@@ -3722,6 +3722,7 @@ mod animation {
                     delta: crate::ScrollDelta::Pixels(crate::point(px(0.), px(dy))),
                     modifiers: Default::default(),
                     touch_phase: crate::TouchPhase::Moved,
+                    momentum_phase: None,
                 }),
                 cx,
             );
