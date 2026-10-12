@@ -624,51 +624,10 @@ Added in this fork:
 
 ### Candidates for longbridge
 
-Generic to gpui-fast, not to Slopty, and worth a pull request to longbridge/gpui-fast:
-
-- the zed bd747337 sync itself: `2db56fa` (`zed: import bd747337`) and its merge `acfc6db`,
-  including the font generation handling (`fast::text::refresh_if_fonts_changed`, a text
-  measurement carried over only within one font generation, and its test
-  `every_view_is_rendered_again_once_fonts_are_added`);
-- `4d0009e`, a view that asked for an animation frame built on the next frame drawn;
-- `1776aa2`, the retained-mode test of a surface's buffer (macOS; the surface element is
-  upstream's).
-- the splice fixes in `fast/splice.rs` (the commit after `4c13f16`), all in `fast/`:
-  - A view dirty because a nested view was notified was spliced with only the notified
-    views built again. A nested view that read a model updated without a notify (or a
-    global changed, or a state version bumped, or a hover) was copied from the last frame
-    and drawn stale, where upstream builds every view under the notified one. The gaps
-    are now the outermost nested records that are out of date by any of those, and a
-    view is spliced when it is not reusable, not only when it is in `dirty_views`.
-  - A deferred draw is copied with the view that deferred it, but the views it draws are
-    not nested in that view's record. `Window::deferred_out_of_date` refuses the splice
-    when anything the view read, less what the gaps read, changed or is dirty. The
-    oracle found this (seed 14, step 40) once the first fix spliced more often.
-  - A spliced record kept the `updates` and `generation` baselines of the frame it was
-    first built in, so the next frame found it changed by updates it had already been
-    checked against, and built the whole chain again. `RenderDependencies::checked_at`
-    moves the baselines up to where they stood when the splice was checked.
-  - Tests: `a_view_that_read_a_changed_model_is_built_again_beside_a_notified_one`
-    and `a_view_drawn_around_a_nested_view_built_again_is_reused_on_the_next_frame` in
-    `fast/tests/retained.rs`; each fails without its fix.
-  - longbridge#10 marks a view whose own reads changed dirty
-    (`mark_changed_retained_views_dirty`), which covers the first fix for entities,
-    globals and states, but not for hovers; the gap test stays as it is. `checked_at`
-    and `deferred_out_of_date` are still needed with #10.
-- what we added to longbridge#17 (above), the radix scene sort `4105616`, the decoration
-  runs `817e345` and the test window's IME record `dfb5ad0`; `2e199c6` is a candidate
-  for zed itself;
-- the element-state fixes made while merging longbridge#10 (above): a spliced view keeps
-  neither its gaps' element states nor last frame's whole layout.
-- the commit adding this file, which also lets `script/check-upstream` accept the patches
-  above (`script/upstream-allowlist`, the "Slopty's patches" section)
-- window composition's platform-neutral part (`crates/gpui/src/fast/composition/`, the
-  scene, present and hit-test hooks) and its macOS side: generic to any GPUI app that
-  embeds a web view or a video layer, and an alternative to zed#62379's overlay bands that
-  also orders GPUI content between natives;
-- the destination-alpha blend fix in `gpui_apple`'s pipelines (`OneMinusSourceAlpha`
-  instead of `One`): a non-opaque window's alpha is wrong without it, and an opaque one
-  renders bit-identically with it. Also a candidate for zed itself.
+Every patch the fork carries that longbridge lacks, each with a verdict (a fix longbridge
+wants, a performance change, a feature, or fork-only), a one-paragraph case and its test, is
+in [docs/upstream-candidates.md](docs/upstream-candidates.md). Nothing has been offered
+upstream: publishing is the person's call.
 
 `crates/gpui_ios` is ours, like `crates/gpui_perf` is gpui-fast's: it is a workspace member
 but not in `UPSTREAM`'s `tracked` list, so `script/check-upstream` does not look at it.
