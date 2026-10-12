@@ -568,10 +568,11 @@ impl App {
     /// Whether anything in `dependencies`, read by a cached view
     /// ([`crate::Entity::cached`]) or a view drawn inside one, changed in a
     /// way that draws the cached view again: one of the entities was
-    /// notified, or a global or a versioned state changed.
+    /// notified, or, `inside_notified`, updated outside drawing (see
+    /// [`App::dependencies_changed`]), or a global or a versioned state
+    /// changed.
     ///
-    /// An entity updated without being notified does not count, whether it
-    /// was updated outside drawing or written while the window drew (see
+    /// An entity written while the window drew does not count (see
     /// [`note_update`]). Upstream builds a cached view again only when it,
     /// or a view drawn in it, is notified, or it is drawn somewhere else: a
     /// view around it rendering again, and writing to what it reads as it
@@ -581,11 +582,24 @@ impl App {
     /// shows what was written; it never shows it in a cached view that was
     /// not notified. Drawing a cached view again for less than that never
     /// draws it from older reads than upstream would.
-    pub(crate) fn notified_dependencies_changed(&self, dependencies: &RenderDependencies) -> bool {
-        self.entities
-            .access_log
-            .changed_since(&dependencies.entities, dependencies.updates, false)
-            || self.globals_or_states_changed(dependencies)
+    ///
+    /// An entity updated outside drawing without being notified, under a
+    /// view that was notified, still counts, as it always has in this fork:
+    /// a listener that changes a model a cached view shows and notifies only
+    /// the view around it, as a workspace handing a dropped file to a tile's
+    /// composer does, is shown on the next frame rather than whenever the
+    /// cached view happens to be notified next. Upstream would show it late;
+    /// drawing it now is never older than upstream.
+    pub(crate) fn notified_dependencies_changed(
+        &self,
+        dependencies: &RenderDependencies,
+        inside_notified: bool,
+    ) -> bool {
+        self.entities.access_log.changed_since(
+            &dependencies.entities,
+            dependencies.updates,
+            inside_notified,
+        ) || self.globals_or_states_changed(dependencies)
     }
 
     fn globals_or_states_changed(&self, dependencies: &RenderDependencies) -> bool {

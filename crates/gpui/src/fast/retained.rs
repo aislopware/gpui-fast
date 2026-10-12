@@ -694,7 +694,7 @@ impl Window {
         let index = self.rendered_frame.retained.find(id)?;
         let record = &self.rendered_frame.retained.records[index];
         let changed = if cached {
-            cx.notified_dependencies_changed(&record.dependencies)
+            cx.notified_dependencies_changed(&record.dependencies, self.inside_notified_view())
         } else {
             cx.dependencies_changed(&record.dependencies, self.inside_notified_view())
         };
@@ -1275,30 +1275,36 @@ impl Window {
             let changed_alone = || {
                 crate::fast::layers::invalidate::offset_read_changed(self, &record.own_dependencies)
             };
-            if record.is_cached() {
-                // A cached view is drawn again for what is notified, not
-                // for what is only updated. See
-                // `App::notified_dependencies_changed`.
-                if cx.notified_dependencies_changed(&record.own_dependencies) || changed_alone() {
-                    changed.push(entity);
-                }
-                cached.push(index + record.nested);
-                continue;
-            }
             let inside_notified = !notified.is_empty()
                 && self
                     .rendered_frame
                     .dispatch_tree
                     .view_path_reversed(entity)
                     .any(|view| notified.contains(&view));
+            if record.is_cached() {
+                // A cached view is drawn again for what is notified, or
+                // updated outside drawing under a notified view, not for
+                // what is only written while the window draws. See
+                // `App::notified_dependencies_changed`.
+                if cx.notified_dependencies_changed(&record.own_dependencies, inside_notified)
+                    || changed_alone()
+                {
+                    changed.push(entity);
+                }
+                cached.push(index + record.nested);
+                continue;
+            }
             if !cx.dependencies_changed(&record.own_dependencies, inside_notified)
                 && !changed_alone()
             {
                 continue;
             }
-            // A view inside a cached view only updated is built again only
-            // if the cached view is, as upstream does.
-            if !cached.is_empty() && !cx.notified_dependencies_changed(&record.own_dependencies) {
+            // A view inside a cached view only written while the window
+            // drew is built again only if the cached view is, as upstream
+            // does.
+            if !cached.is_empty()
+                && !cx.notified_dependencies_changed(&record.own_dependencies, inside_notified)
+            {
                 continue;
             }
             changed.push(entity);

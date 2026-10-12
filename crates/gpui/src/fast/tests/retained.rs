@@ -3135,3 +3135,70 @@ fn a_view_written_inside_a_cached_view_is_rendered_again_with_it() {
         .unwrap();
     assert_eq!(red, backgrounds(&mut cx, window.into()));
 }
+
+/// The chips of a draft: a cached view whose names a listener on the view
+/// around it changes.
+struct Chips {
+    names: Vec<&'static str>,
+}
+
+impl Render for Chips {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().children(self.names.iter().map(|&name| {
+            div()
+                .id(name)
+                .debug_selector(move || name.to_owned())
+                .size(px(10.))
+        }))
+    }
+}
+
+/// A view drawing its [`Chips`] as a cached view, which takes a file
+/// dropped on it as a chip: it updates the chips without notifying them,
+/// and notifies itself, as a workspace hands a tile's composer a dropped
+/// file.
+struct ChipsHost {
+    chips: Entity<Chips>,
+}
+
+impl ChipsHost {
+    fn drop_file(&mut self, name: &'static str, cx: &mut Context<Self>) {
+        self.chips.update(cx, |chips, _| chips.names.push(name));
+        cx.notify();
+    }
+}
+
+impl Render for ChipsHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(300.)).child(
+            self.chips
+                .clone()
+                .cached(StyleRefinement::default().w(px(100.)).h(px(20.))),
+        )
+    }
+}
+
+/// A cached view a listener updates outside drawing, under a view it
+/// notifies, is built again on the next frame, and the element it adds is
+/// there: its debug bounds are recorded. Upstream would wait for the cached
+/// view's own notification; #48's rule for cached views did too, and a chip
+/// dropped on a composer never showed.
+#[crate::test]
+fn a_cached_view_updated_under_a_notified_view_shows_the_update(cx: &mut TestAppContext) {
+    let (host, cx) = cx.add_window_view(|_, cx| ChipsHost {
+        chips: cx.new(|_| Chips {
+            names: vec!["first"],
+        }),
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("first").is_some(), "the first chip");
+    assert!(cx.debug_bounds("dropped").is_none());
+
+    host.update_in(cx, |host, _, cx| host.drop_file("dropped", cx));
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("dropped").is_some(),
+        "the dropped file's chip is drawn on the next frame"
+    );
+    assert!(cx.debug_bounds("first").is_some(), "the first chip stays");
+}
