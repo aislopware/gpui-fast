@@ -477,6 +477,10 @@ Added in this fork:
   ancestors' content mask (`fast/a11y.rs`), and an a11y press skips a node with nothing
   showing. Upstream reported a node scrolled out of view at its layout bounds, so VoiceOver
   framed, and its activate pressed, whatever was drawn there instead.
+  Since longbridge#48 draws views and `div` scroll layers again while accessibility is active,
+  a layer painted afresh cuts the nodes of its content to its viewport once their stretch is
+  captured (they were prepainted under the painted region's mask), and a layer composited
+  cuts them again to the viewport where it shows (`fast::a11y::clip_to_viewport`, `carry`).
 - `1776aa2` test(gpui): a video surface shows the buffer its view holds, retained or not
 - `4d0009e` gpui: build a view that asked for an animation frame on the next frame drawn
 - the commit after `4c13f16`: a spliced view builds every nested view that is out of
@@ -690,7 +694,10 @@ Retained Mode draws a view from the last frame while nothing it read changed
 - **Presentation reports** (`Window::on_frame_presented`) are per window, reported by the
   renderer for every scene it presents, retained or not. Nothing to fix.
 - **Insets, input modality, a11y**: an insets change and an input modality change refresh
-  the window; accessibility turns retention off. Nothing is drawn stale.
+  the window. Accessibility no longer turns retention off (longbridge#48): a frame logs
+  what building its tree did and a stretch drawn again does it again (`fast/a11y.rs`).
+  Element retention (`fast/element.rs`) and list layers still stand aside while it is
+  active. Nothing is drawn stale.
 - **`request_animation_frame` from paint** (the terminal's cursor blink): it notifies
   the view for the next frame, which is then built again and asks again.
 - **`CursorStyle::None`, the outline style, `paint_glyph_scaled`**: painted into the frame's

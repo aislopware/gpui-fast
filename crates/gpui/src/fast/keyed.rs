@@ -230,8 +230,7 @@ impl Window {
         let end = self.paint_index();
         let stats = &mut self.layout_engine.as_mut().unwrap().retention.stats;
         stats.paints_keyed += 1;
-        let registered = start.fast_window_control_hitboxes_index
-            != end.fast_window_control_hitboxes_index
+        let registered = start.fast != end.fast
             || start.mouse_listeners_index != end.mouse_listeners_index
             || start.input_handlers_index != end.input_handlers_index
             || start.cursor_styles_index != end.cursor_styles_index

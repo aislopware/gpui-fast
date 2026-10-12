@@ -68,6 +68,8 @@ pub(crate) struct Painting {
     pub(crate) input: crate::fast::layers::input::PaintingInput,
     /// How the views prepainted inside the content were laid out.
     pub(crate) view_layouts: FxHashMap<GlobalElementId, crate::fast::layers::reuse::KeptLayout>,
+    /// What prepainting the content added to the accessibility tree.
+    pub(crate) a11y: Option<Rc<crate::fast::a11y::A11yStretch>>,
 }
 
 /// What a container's prepaint decided, for its paint to carry out.
@@ -163,11 +165,11 @@ fn begin_scrolling_children(
     let decision = policy::decide(window, cx, id, bounds, content_size, scroll_offset);
     let mut decision = crate::fast::layers::input::decide(window, id, decision);
     if decision == Decision::Composite
-        && window
-            .fast_layers
-            .layers
-            .get(id)
-            .is_none_or(|layer| layer.record.is_none())
+        && window.fast_layers.layers.get(id).is_none_or(|layer| {
+            layer.record.as_ref().is_none_or(|record| {
+                crate::fast::a11y::layer_needs_repaint(window, record.a11y.as_deref())
+            })
+        })
     {
         decision = Decision::Repaint;
     }
@@ -204,6 +206,7 @@ fn begin_scrolling_children(
                 dependencies: RenderDependencies::default(),
                 input: Default::default(),
                 view_layouts: FxHashMap::default(),
+                a11y: None,
             });
             // Culling works in the painted region, not in the viewport and
             // whatever clips it; the composite clips to those.
@@ -249,6 +252,8 @@ fn end_repainted_children(window: &mut Window, cx: &mut App) {
         return;
     };
     painting.prepaint_range.end = window.prepaint_index();
+    painting.a11y = crate::fast::a11y::capture(window, &painting.prepaint_range);
+    crate::fast::a11y::clip_to_viewport(window, &painting.prepaint_range, painting.viewport);
     if let Some(recording) = painting.recording.take() {
         painting.dependencies = cx.finish_recording_dependencies(recording).all;
     }
@@ -372,12 +377,12 @@ pub(crate) fn composite_at(
             let record = layer.record.take().expect("checked above");
             crate::fast::layers::policy::defer_unbaked(window, id);
             draw_into_frame(window, record.content.operations(), translation);
-            let viewport = window.snapped_content_mask().bounds;
-            insert_paths(
+            let viewports = viewports(window);
+            insert_overlay(
                 &mut window.next_frame.scene,
-                &record.paths,
+                &record.overlay,
                 translation,
-                viewport,
+                viewports,
             );
             return;
         }
@@ -388,7 +393,8 @@ pub(crate) fn composite_at(
 /// Composites the layer of the container `id` into the frame at
 /// `translation`, `dirtied` of its tiles new this frame: its tile quads
 /// over the viewport, the current content mask, and its [`LayerFrame`].
-/// Content holding paths is drawn into the frame instead.
+/// Content whose overlay cannot be drawn over its tiles
+/// ([`LayerRecord::has_paths`]) is drawn into the frame instead.
 pub(crate) fn insert_layer(
     window: &mut Window,
     id: &GlobalElementId,
@@ -407,12 +413,13 @@ pub(crate) fn insert_layer(
         draw_into_frame(window, content.operations(), translation);
         return;
     }
+    let viewports = viewports(window);
     insert_tile_quads(&mut window.next_frame.scene, layer, viewport, translation);
-    insert_paths(
+    insert_overlay(
         &mut window.next_frame.scene,
-        &record.paths,
+        &record.overlay,
         translation,
-        viewport,
+        viewports,
     );
     let stats = &mut window.layout_engine.as_mut().unwrap().retention.stats;
     stats.layer_frames_composited += 1;
@@ -495,93 +502,37 @@ pub(crate) fn insert_tile_quads(
     scene.layers.frames.push(frame);
 }
 
-/// Inserts into `scene` the `paths` a layer keeps apart from its tiles,
+/// Inserts into `scene` the overlay a layer keeps apart from its tiles,
 /// moved by `translation` and clipped to `viewport`, after its tile quads,
-/// so that they are drawn over them (see [`lift_paths`]).
-fn insert_paths(
+/// so that it is drawn over them (see `fast::layers::overlay`).
+fn insert_overlay(
     scene: &mut Scene,
-    paths: &[crate::Path<ScaledPixels>],
+    overlay: &[Primitive],
     translation: Point<ScaledPixels>,
-    viewport: Bounds<ScaledPixels>,
+    viewports: Viewports,
 ) {
-    for path in paths {
-        let mut primitive = translate_primitive(&Primitive::Path(path.clone()), translation);
-        clip_primitive(&mut primitive, &viewport);
+    for primitive in overlay {
+        let mut primitive = translate_primitive(primitive, translation);
+        clip_primitive(&mut primitive, viewports);
         scene.insert_primitive(primitive);
     }
 }
 
-/// `content`, a layer's content scene, split into the scene its tiles are
-/// rasterized from and the paths it painted, in drawing order, when nothing
-/// it draws after a path overlaps that path: the paths can then be drawn
-/// over the tiles, in the frame, and every pixel is drawn over in the order
-/// it would be without a layer. Paths are never rasterized into tiles (spec
-/// §5.6). `Err(content)` when something is drawn over a path.
-pub(crate) fn lift_paths(
-    content: Scene,
-) -> Result<(Scene, Rc<[crate::Path<ScaledPixels>]>), Box<Scene>> {
-    // A native is placed by the frame's scene, never by a tile, and content
-    // placing one is drawn into the frame as content with paths is.
-    if !content.composition.placements.is_empty() {
-        return Err(Box::new(content));
+/// The viewport content drawn into the frame is clipped to: the current
+/// content mask, snapped to device pixels as the frame snaps every
+/// primitive's but a path's, and on [`snap_path`]'s grid, as
+/// `Window::paint_path` takes it, for paths.
+#[derive(Clone, Copy)]
+struct Viewports {
+    snapped: Bounds<ScaledPixels>,
+    exact: Bounds<ScaledPixels>,
+}
+
+fn viewports(window: &Window) -> Viewports {
+    Viewports {
+        snapped: window.snapped_content_mask().bounds,
+        exact: snap_bounds(window.content_mask().bounds.scale(window.scale_factor())),
     }
-    if content.paths.is_empty() {
-        return Ok((content, Rc::from([])));
-    }
-    // Every primitive in the order the renderer draws them: by draw order,
-    // then by kind, as `BatchIterator` does, then as the scene sorted them.
-    let mut sequence: Vec<((u32, u8, usize), Bounds<ScaledPixels>, bool)> = Vec::new();
-    macro_rules! gather {
-        ($field:ident, $rank:expr) => {
-            sequence.extend(content.$field.iter().enumerate().map(|(ix, p)| {
-                (
-                    (p.order, $rank, ix),
-                    p.bounds.intersect(&p.content_mask.bounds),
-                    false,
-                )
-            }))
-        };
-    }
-    gather!(shadows, 0);
-    gather!(quads, 1);
-    gather!(underlines, 3);
-    gather!(monochrome_sprites, 4);
-    gather!(subpixel_sprites, 5);
-    gather!(polychrome_sprites, 6);
-    gather!(surfaces, 7);
-    // A path's antialiased edge may reach into the pixels around its bounds.
-    let edge = ScaledPixels(1.);
-    sequence.extend(content.paths.iter().enumerate().map(|(ix, p)| {
-        let clipped = p.bounds.intersect(&p.content_mask.bounds);
-        let reach = Bounds::from_corners(
-            clipped.origin - point(edge, edge),
-            clipped.bottom_right() + point(edge, edge),
-        );
-        ((p.order, 2, ix), reach, true)
-    }));
-    sequence.sort_by_key(|(key, _, _)| *key);
-    let mut paths_so_far: Vec<Bounds<ScaledPixels>> = Vec::new();
-    for (_, bounds, is_path) in &sequence {
-        if *is_path {
-            paths_so_far.push(*bounds);
-        } else if paths_so_far.iter().any(|path| path.intersects(bounds)) {
-            return Err(Box::new(content));
-        }
-    }
-    let paths: Rc<[crate::Path<ScaledPixels>]> = content.paths.iter().cloned().collect();
-    let mut rest = Scene::default();
-    for operation in crate::fast::scene::operations(&content) {
-        match operation {
-            Operation::Primitive(Primitive::Path(_)) => {}
-            Operation::Primitive(primitive) => rest.insert_primitive(primitive),
-            Operation::StartLayer(bounds) => rest.push_layer(bounds),
-            Operation::EndLayer => rest.pop_layer(),
-            // Content placing a native returned above.
-            Operation::Native(_) => {}
-        }
-    }
-    rest.finish();
-    Ok((rest, paths))
 }
 
 /// How finely [`snap_path`] places path vertices: 256 steps a device pixel,
@@ -600,30 +551,41 @@ pub(crate) fn snap_path(mut path: crate::Path<ScaledPixels>) -> crate::Path<Scal
     if !COMPILED {
         return path;
     }
+    for vertex in &mut path.vertices {
+        vertex.xy_position = snap_point(vertex.xy_position);
+    }
+    path.bounds = snap_bounds(path.bounds);
+    // Its mask too: a layer's overlay clips the path to the viewport where
+    // it is drawn, which must come out as the mask painted there.
+    path.content_mask.bounds = snap_bounds(path.content_mask.bounds);
+    path
+}
+
+/// `value` on the grid of [`PATH_GRID`] steps a device pixel.
+fn snap(value: ScaledPixels) -> ScaledPixels {
     // Adding and taking away 1.5 × 2^23 rounds an `f32` below 2^22 in
     // magnitude to a whole number, ties to even, which a shift by whole
     // pixels (a multiple of 256 steps) keeps; `floor` would call into libm.
     const ROUNDER: f32 = 12_582_912.;
-    let snap = |value: ScaledPixels| {
-        let steps = value.0 * PATH_GRID;
-        if steps.abs() < 4_194_304. {
-            ScaledPixels(((steps + ROUNDER) - ROUNDER) / PATH_GRID)
-        } else {
-            value
-        }
-    };
-    let snap_point = |point: Point<ScaledPixels>| Point {
+    let steps = value.0 * PATH_GRID;
+    if steps.abs() < 4_194_304. {
+        ScaledPixels(((steps + ROUNDER) - ROUNDER) / PATH_GRID)
+    } else {
+        value
+    }
+}
+
+fn snap_point(point: Point<ScaledPixels>) -> Point<ScaledPixels> {
+    Point {
         x: snap(point.x),
         y: snap(point.y),
-    };
-    for vertex in &mut path.vertices {
-        vertex.xy_position = snap_point(vertex.xy_position);
     }
-    path.bounds = Bounds::from_corners(
-        snap_point(path.bounds.origin),
-        snap_point(path.bounds.bottom_right()),
-    );
-    path
+}
+
+/// `bounds` with its corners on the grid of [`PATH_GRID`] steps a device
+/// pixel, as [`snap_path`] puts a path's.
+fn snap_bounds(bounds: Bounds<ScaledPixels>) -> Bounds<ScaledPixels> {
+    Bounds::from_corners(snap_point(bounds.origin), snap_point(bounds.bottom_right()))
 }
 
 /// Carries into `scene` the [`LayerFrame`]s of the tile quads that
@@ -662,7 +624,8 @@ pub(crate) fn draw_into_frame(
     operations: impl IntoIterator<Item = Operation>,
     delta: Point<ScaledPixels>,
 ) {
-    let viewport = window.snapped_content_mask().bounds;
+    let viewports = viewports(window);
+    let viewport = viewports.snapped;
     let outer = crate::fast::edge_fade::current(window);
     let fades = &mut window.fast_edge_fade;
     let scene = &mut window.next_frame.scene;
@@ -670,7 +633,7 @@ pub(crate) fn draw_into_frame(
         match operation {
             Operation::Primitive(primitive) => {
                 let mut primitive = translate_primitive(&primitive, delta);
-                clip_primitive(&mut primitive, &viewport);
+                clip_primitive(&mut primitive, viewports);
                 crate::fast::edge_fade::compose(fades, outer, &mut primitive);
                 scene.insert_primitive(primitive);
             }
@@ -691,8 +654,12 @@ pub(crate) fn draw_into_frame(
     }
 }
 
-/// Narrows every content mask `primitive` carries to `mask`.
-fn clip_primitive(primitive: &mut Primitive, mask: &Bounds<ScaledPixels>) {
+/// Narrows every content mask `primitive` carries to `viewports`.
+fn clip_primitive(primitive: &mut Primitive, viewports: Viewports) {
+    let mask = match primitive {
+        Primitive::Path(_) => &viewports.exact,
+        _ => &viewports.snapped,
+    };
     let clip = |content_mask: &mut ContentMask<ScaledPixels>| {
         content_mask.bounds = content_mask.bounds.intersect(mask);
     };
@@ -765,8 +732,8 @@ fn repaint(
         origin: region.origin + to_content,
         size: region.size,
     };
-    let (content, paths, has_paths) = match lift_paths(content) {
-        Ok((content, paths)) => (content, paths, own_fades),
+    let (content, overlay, has_paths) = match crate::fast::layers::overlay::lift(content) {
+        Ok((content, overlay)) => (content, overlay, own_fades),
         Err(content) => (*content, Rc::from([]), true),
     };
     let mut visible = painting.viewport.scale(scale_factor);
@@ -782,7 +749,7 @@ fn repaint(
     policy::note_work(
         window,
         &painting.id,
-        rendered_work as f32 / visible_work.max(1) as f32,
+        rendered_work as f32 / visible_work.max(1) as f32 * crate::fast::layers::work::REPAINT_COST,
     );
     let hashes = tile_hashes(&content, TILE_SIZE, region);
     if has_paths {
@@ -816,9 +783,10 @@ fn repaint(
         dependencies: painting.dependencies.union(&paint_dependencies),
         views,
         has_paths,
-        paths,
+        overlay,
         view_layouts: Rc::new(mem::take(&mut painting.view_layouts)),
         debug_moved: Point::default(),
+        a11y: painting.a11y.take(),
     });
     let dirtied = layer
         .record

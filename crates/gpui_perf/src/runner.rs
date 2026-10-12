@@ -142,6 +142,8 @@ pub struct PhaseAverages {
     pub paints_moved: f64,
     /// Scroll containers drawn from a scroll layer's cached tiles.
     pub layer_frames_composited: f64,
+    /// Of those, the frames whose content was painted into the layer again.
+    pub layer_frames_repainted: f64,
     /// Scroll layer tiles repaints changed.
     pub tiles_dirtied: f64,
     /// Scroll layers painted again before an input event.
@@ -175,6 +177,7 @@ impl PhaseAverages {
             paints_replayed: stats.paints_replayed as f64 / n,
             paints_moved: stats.paints_moved as f64 / n,
             layer_frames_composited: stats.layer_frames_composited as f64 / n,
+            layer_frames_repainted: stats.layer_frames_repainted as f64 / n,
             tiles_dirtied: stats.tiles_dirtied as f64 / n,
             layer_rebuilds_for_input: stats.layer_rebuilds_for_input as f64 / n,
         }
@@ -815,7 +818,7 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
         let _ = writeln!(out);
 
         type Row = (&'static str, fn(&RunReport) -> f64, usize);
-        let rows: [Row; 33] = [
+        let rows: [Row; 34] = [
             ("frame mean ms", |r| r.frame.mean_ms, 3),
             ("frame p50 ms", |r| r.frame.p50_ms, 3),
             ("frame p95 ms", |r| r.frame.p95_ms, 3),
@@ -846,6 +849,11 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
             (
                 "layer frames composited",
                 |r| r.phases.layer_frames_composited,
+                2,
+            ),
+            (
+                "layer frames repainted",
+                |r| r.phases.layer_frames_repainted,
                 2,
             ),
             ("tiles dirtied", |r| r.phases.tiles_dirtied, 2),
@@ -1076,14 +1084,20 @@ mod tests {
     /// view, and what it paints moves.
     #[test]
     fn scroll_scenarios_scroll_with_the_wheel() {
-        const NAMES: [&str; 7] = [
+        const NAMES: [&str; 13] = [
             "scroll-child-view",
             "scroll-same-view",
             "scroll-uniform-list",
             "scroll-list",
             "scroll-list-beside-input",
+            "scroll-list-tables",
             "chat-scroll",
             "chat-scroll-no-button",
+            "chat-scroll-plain",
+            "chat-scroll-animates",
+            "chat-scroll-trackpad",
+            "chat-scroll-allsum",
+            "chat-scroll-allsum-wheel",
         ];
         let options = Options::default();
         for name in NAMES {
@@ -1094,15 +1108,19 @@ mod tests {
             let scenario = fresh_scenario(index);
             let mut cx = new_context();
             let (window, root) = open(&mut cx, &*scenario, true, &options);
-            let mut painted = painted_quads(&mut cx, window);
             assert!(
-                painted.iter().any(|line| line.starts_with("monochrome")),
+                painted_quads(&mut cx, window)
+                    .iter()
+                    .any(|line| line.starts_with("monochrome")),
                 "{name}: no icon or text painted"
             );
+            // Composited tiles are listed where the layer holds them, so
+            // compare the content they composite.
+            let mut painted = painted_primitives(&mut cx, window);
             for n in 0..6 {
                 let sample = frame(&mut cx, window, &*scenario, &root, n);
                 assert!(!sample.forced, "{name}: frame {n} drew nothing by itself");
-                let now = painted_quads(&mut cx, window);
+                let now = painted_primitives(&mut cx, window);
                 assert_ne!(
                     now, painted,
                     "{name}: frame {n} painted what frame {n} - 1 did"

@@ -1413,7 +1413,7 @@ fn create_render_target_and_its_view(
 }
 
 #[inline]
-fn create_path_intermediate_texture(
+pub(crate) fn create_path_intermediate_texture(
     device: &ID3D11Device,
     width: u32,
     height: u32,
@@ -1446,7 +1446,7 @@ fn create_path_intermediate_texture(
 }
 
 #[inline]
-fn create_path_intermediate_msaa_texture_and_view(
+pub(crate) fn create_path_intermediate_msaa_texture_and_view(
     device: &ID3D11Device,
     width: u32,
     height: u32,

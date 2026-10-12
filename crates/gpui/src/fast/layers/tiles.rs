@@ -70,7 +70,7 @@ pub(crate) fn tile_hashes(
                 }
             }
             // Content placing a native is never composited from tiles (see
-            // `paint::lift_paths`).
+            // `overlay::lift`).
             Operation::Native(_) => {}
         }
     }

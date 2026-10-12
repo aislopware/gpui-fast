@@ -431,6 +431,7 @@ struct PrepaintAt {
     dispatch_tree: u32,
     accessed_element_states: u32,
     lines: LinesAt,
+    a11y: u32,
 }
 
 /// As [`PrepaintAt`], a place in each of a frame's paint lists.
@@ -446,6 +447,7 @@ struct PaintAt {
     accessed_element_states: u32,
     tab_handle: u32,
     lines: LinesAt,
+    a11y_actions: u32,
 }
 
 /// As [`PrepaintAt`], a place in each of a frame's line layout lists.
@@ -473,6 +475,7 @@ impl PrepaintAt {
             dispatch_tree_index,
             accessed_element_states_index,
             line_layout_index,
+            fast_a11y_index,
         } = to;
         PrepaintAt {
             hitboxes: offset(from.hitboxes_index, *hitboxes_index),
@@ -484,6 +487,7 @@ impl PrepaintAt {
                 *accessed_element_states_index,
             ),
             lines: LinesAt::between(&from.line_layout_index, line_layout_index),
+            a11y: offset(from.fast_a11y_index, *fast_a11y_index),
         }
     }
 
@@ -497,6 +501,7 @@ impl PrepaintAt {
             accessed_element_states_index: base.accessed_element_states_index
                 + self.accessed_element_states as usize,
             line_layout_index: self.lines.at(&base.line_layout_index),
+            fast_a11y_index: base.fast_a11y_index + self.a11y as usize,
         }
     }
 
@@ -508,6 +513,7 @@ impl PrepaintAt {
             dispatch_tree: self.dispatch_tree + other.dispatch_tree,
             accessed_element_states: self.accessed_element_states + other.accessed_element_states,
             lines: self.lines.plus(other.lines),
+            a11y: self.a11y + other.a11y,
         }
     }
 
@@ -519,6 +525,7 @@ impl PrepaintAt {
             dispatch_tree: self.dispatch_tree - other.dispatch_tree,
             accessed_element_states: self.accessed_element_states - other.accessed_element_states,
             lines: self.lines.minus(other.lines),
+            a11y: self.a11y - other.a11y,
         }
     }
 }
@@ -529,9 +536,9 @@ impl PaintAt {
         // Destructured, so that a field upstream adds can't be missed here.
         let PaintIndex {
             scene_index,
-            fast_window_control_hitboxes_index,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds_index,
+            fast,
             mouse_listeners_index,
             input_handlers_index,
             cursor_styles_index,
@@ -542,9 +549,10 @@ impl PaintAt {
         PaintAt {
             scene: offset(from.scene_index, *scene_index),
             window_control_hitboxes: offset(
-                from.fast_window_control_hitboxes_index,
-                *fast_window_control_hitboxes_index,
+                from.fast.window_control_hitboxes,
+                fast.window_control_hitboxes,
             ),
+            a11y_actions: offset(from.fast.a11y_actions, fast.a11y_actions),
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: offset(from.debug_bounds_index, *debug_bounds_index),
             mouse_listeners: offset(from.mouse_listeners_index, *mouse_listeners_index),
@@ -563,10 +571,13 @@ impl PaintAt {
     fn at(self, base: &PaintIndex) -> PaintIndex {
         PaintIndex {
             scene_index: base.scene_index + self.scene as usize,
-            fast_window_control_hitboxes_index: base.fast_window_control_hitboxes_index
-                + self.window_control_hitboxes as usize,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds_index: base.debug_bounds_index + self.debug_bounds as usize,
+            fast: crate::fast::retained::FastPaintIndex {
+                window_control_hitboxes: base.fast.window_control_hitboxes
+                    + self.window_control_hitboxes as usize,
+                a11y_actions: base.fast.a11y_actions + self.a11y_actions as usize,
+            },
             mouse_listeners_index: base.mouse_listeners_index + self.mouse_listeners as usize,
             input_handlers_index: base.input_handlers_index + self.input_handlers as usize,
             cursor_styles_index: base.cursor_styles_index + self.cursor_styles as usize,
@@ -581,6 +592,7 @@ impl PaintAt {
         PaintAt {
             scene: self.scene + other.scene,
             window_control_hitboxes: self.window_control_hitboxes + other.window_control_hitboxes,
+            a11y_actions: self.a11y_actions + other.a11y_actions,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: self.debug_bounds + other.debug_bounds,
             mouse_listeners: self.mouse_listeners + other.mouse_listeners,
@@ -596,6 +608,7 @@ impl PaintAt {
         PaintAt {
             scene: self.scene - other.scene,
             window_control_hitboxes: self.window_control_hitboxes - other.window_control_hitboxes,
+            a11y_actions: self.a11y_actions - other.a11y_actions,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: self.debug_bounds - other.debug_bounds,
             mouse_listeners: self.mouse_listeners - other.mouse_listeners,
@@ -2423,10 +2436,10 @@ fn can_move(
     let (from, to) = (&prepaint.start, &prepaint.end);
     let placed_in_prepaint = from.hitboxes_index != to.hitboxes_index
         || from.tooltips_index != to.tooltips_index
-        || from.deferred_draws_index != to.deferred_draws_index;
+        || from.deferred_draws_index != to.deferred_draws_index
+        || from.fast_a11y_index != to.fast_a11y_index;
     let (from, to) = (&paint.start, &paint.end);
-    let placed_in_paint = from.fast_window_control_hitboxes_index
-        != to.fast_window_control_hitboxes_index
+    let placed_in_paint = from.fast != to.fast
         || from.mouse_listeners_index != to.mouse_listeners_index
         || from.input_handlers_index != to.input_handlers_index
         || from.cursor_styles_index != to.cursor_styles_index

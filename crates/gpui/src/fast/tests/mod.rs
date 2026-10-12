@@ -1,6 +1,7 @@
 //! Tests of what gpui-fast adds, kept out of upstream files' test modules.
 
 mod a11y;
+mod a11y_bounds;
 mod cached_layout;
 mod cached_snapping;
 mod composition;
@@ -34,6 +35,7 @@ mod retained;
 mod retained_bench;
 mod scene_order;
 mod scroll;
+mod scroll_to_bottom;
 mod shift;
 mod splice;
 mod subscriptions;
@@ -46,3 +48,4 @@ mod text_shaping;
 mod text_smoothing;
 mod transition;
 mod value_transition;
+mod wheel_notifies;

@@ -1072,14 +1072,15 @@ pub(crate) struct PrepaintStateIndex {
     pub(crate) dispatch_tree_index: usize,
     pub(crate) accessed_element_states_index: usize,
     pub(crate) line_layout_index: LineLayoutIndex,
+    pub(crate) fast_a11y_index: usize,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct PaintIndex {
     pub(crate) scene_index: usize,
-    pub(crate) fast_window_control_hitboxes_index: usize,
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) debug_bounds_index: usize,
+    pub(crate) fast: crate::fast::retained::FastPaintIndex,
     pub(crate) mouse_listeners_index: usize,
     pub(crate) input_handlers_index: usize,
     pub(crate) cursor_styles_index: usize,
@@ -4113,10 +4114,12 @@ impl Window {
             dispatch_tree_index: self.next_frame.dispatch_tree.len(),
             accessed_element_states_index: self.next_frame.accessed_element_states.len(),
             line_layout_index: self.text_system.layout_index(),
+            fast_a11y_index: crate::fast::a11y::ops_index(self),
         }
     }
 
     pub(crate) fn reuse_prepaint(&mut self, range: Range<PrepaintStateIndex>) {
+        crate::fast::a11y::reuse_prepaint(self, &range);
         self.next_frame.hitboxes.extend(
             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
                 .iter()
@@ -4171,9 +4174,9 @@ impl Window {
     pub(crate) fn paint_index(&self) -> PaintIndex {
         PaintIndex {
             scene_index: self.next_frame.scene.len(),
-            fast_window_control_hitboxes_index: self.next_frame.window_control_hitboxes.len(),
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds_index: self.next_frame.debug_bounds_records.len(),
+            fast: crate::fast::retained::FastPaintIndex::new(self),
             mouse_listeners_index: self.next_frame.mouse_listeners.len(),
             input_handlers_index: self.next_frame.input_handlers.len(),
             cursor_styles_index: self.next_frame.cursor_styles.len(),
@@ -4184,7 +4187,7 @@ impl Window {
     }
 
     pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
-        crate::fast::retained::reuse_window_control_hitboxes(self, &range);
+        crate::fast::retained::reuse_paint_records(self, &range);
         // Cached elements still exist in the frame even when their paint methods don't run.
         #[cfg(any(test, feature = "test-support"))]
         for (selector, bounds) in &self.rendered_frame.debug_bounds_records
@@ -5951,6 +5954,7 @@ impl Window {
         } else if let Some(touch_event) = event.touch_event() {
             self.dispatch_touch_event(touch_event, cx);
         }
+        crate::fast::layers::wheel::end_dispatch(self, cx);
         if let PlatformInput::LongPress(long_press) = &event {
             match long_press.phase {
                 crate::TouchPhase::Started if !self.default_prevented => {
@@ -7260,6 +7264,7 @@ impl Window {
         action: accesskit::Action,
         listener: impl FnMut(Option<&accesskit::ActionData>, &mut Window, &mut App) + 'static,
     ) {
+        crate::fast::a11y::A11yLog::action(&mut self.a11y.nodes.fast, node_id, action);
         self.a11y
             .action_listeners
             .entry(node_id)

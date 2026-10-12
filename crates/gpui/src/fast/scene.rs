@@ -307,6 +307,7 @@ pub(crate) fn painted(previous: &Scene, at: PrimitiveAt) -> PaintedRef<'_> {
 
 /// A paint operation holding what it painted, as upstream's
 /// [`PaintOperation`] does, for code that walks a scene's painting in order.
+#[derive(Clone)]
 pub(crate) enum Operation {
     Primitive(Primitive),
     StartLayer(Bounds<ScaledPixels>),
