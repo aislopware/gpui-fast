@@ -3852,7 +3852,7 @@ impl Window {
         }
 
         crate::fast::stats::FramePhaseTimes::end_prepaint(&mut self.fast_layout.phase_times);
-        self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
+        self.mouse_hit_test = crate::fast::layers::hover_freeze::hit_test(self);
 
         // Now actually paint the elements.
         #[cfg(feature = "profiler")]
