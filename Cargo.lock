@@ -2673,6 +2673,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-fast"
+version = "0.1.7"
+dependencies = [
+ "gpui",
+]
+
+[[package]]
+name = "gpui-fast-platform"
+version = "0.1.7"
+dependencies = [
+ "gpui",
+ "gpui_platform",
+]
+
+[[package]]
+name = "gpui-fast-web"
+version = "0.1.7"
+dependencies = [
+ "gpui_web",
+]
+
+[[package]]
 name = "gpui-pre"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

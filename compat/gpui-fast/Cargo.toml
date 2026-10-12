@@ -1,0 +1,31 @@
+[package]
+name = "gpui-fast"
+version = "0.1.7"
+description = "gpui-fast's `gpui`, under the name and version of the GPUI Fast release GPUI Kit names for its `gpui-fast` feature."
+license = "Apache-2.0"
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "gpui"
+path = "lib.rs"
+doctest = false
+
+[features]
+default = ["gpui_fast/default"]
+bench = ["gpui_fast/bench"]
+bench-support = ["gpui_fast/bench-support"]
+font-kit = ["gpui_fast/font-kit"]
+inspector = ["gpui_fast/inspector"]
+leak-detection = ["gpui_fast/leak-detection"]
+profiler = ["gpui_fast/profiler"]
+screen-capture = ["gpui_fast/screen-capture"]
+stacker = ["gpui_fast/stacker"]
+test-support = ["gpui_fast/test-support"]
+wayland = ["gpui_fast/wayland"]
+windows-manifest = ["gpui_fast/windows-manifest"]
+windows-manifest-provided-by-host = ["gpui_fast/windows-manifest-provided-by-host"]
+x11 = ["gpui_fast/x11"]
+
+[dependencies]
+gpui_fast = { package = "gpui", path = "../../crates/gpui", default-features = false }
