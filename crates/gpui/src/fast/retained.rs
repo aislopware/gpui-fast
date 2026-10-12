@@ -36,6 +36,12 @@ pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
     window.fast_layout.phase_times.begin();
     crate::fast::focus::begin_frame(window, cx);
     crate::fast::layers::hover_freeze::begin_draw(window);
+    // Offsets code set since the last frame (a scrollbar, a `scroll_to_*`)
+    // are scrolls of their containers, which the views that read them are
+    // told of before any is drawn from last frame: a view that is not
+    // notified for it would otherwise be drawn as it was, the container
+    // with it, at its old offset.
+    window.fast_layers.scrolls.take_offsets_set();
     crate::fast::a11y::new_frame(window);
     window.mark_changed_retained_views_dirty(cx);
 }
@@ -1275,6 +1281,10 @@ impl Window {
             };
             let changed_alone = || {
                 crate::fast::layers::invalidate::offset_read_changed(self, &record.own_dependencies)
+                    || crate::fast::layers::invalidate::list_state_scrolled(
+                        self,
+                        &record.own_dependencies,
+                    )
             };
             let inside_notified = !notified.is_empty()
                 && self

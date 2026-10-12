@@ -4274,3 +4274,75 @@ mod page_switch {
         run(cx, true);
     }
 }
+
+/// A list's offset set by code that does not notify the view holding it (a
+/// scrollbar, a bounce), and then a frame: the list shows the offset set,
+/// and a wheel scrolls on from there, whether the list is on a layer or not.
+mod offset_set {
+    use super::{decision, draw, wheel};
+    use crate::fast::layers::policy::Decision;
+    use crate::{
+        AnyWindowHandle, Context, IntoElement, ListAlignment, ListState, Render, Styled as _,
+        TestAppContext, Window, div, point, px,
+    };
+    use std::{cell::Cell, rc::Rc};
+
+    /// A list of 30 rows of 40 px, 200 px tall, alone in the window. Its
+    /// renders are counted.
+    struct Page {
+        state: ListState,
+        renders: Rc<Cell<usize>>,
+    }
+
+    impl Render for Page {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.renders.set(self.renders.get() + 1);
+            crate::list(self.state.clone(), |_, _, _| {
+                div().h(px(40.)).into_any_element()
+            })
+            .w(px(200.))
+            .h(px(200.))
+        }
+    }
+
+    #[crate::test]
+    fn a_list_offset_set_without_a_notification_shows_and_scrolls_on(cx: &mut TestAppContext) {
+        let state = ListState::new(30, ListAlignment::Top, px(0.)).measure_all();
+        let renders = Rc::new(Cell::new(0));
+        let handle = cx.add_window({
+            let state = state.clone();
+            let renders = renders.clone();
+            move |_, _| Page { state, renders }
+        });
+        let window: AnyWindowHandle = handle.into();
+        draw(cx, window);
+        let offset = || state.scroll_px_offset_for_scrollbar().y;
+
+        state.set_offset_from_scrollbar(point(px(0.), px(-400.)));
+        let before = renders.get();
+        draw(cx, window);
+        assert_eq!(
+            renders.get(),
+            before + 1,
+            "the list is laid out at the offset set"
+        );
+        wheel(cx, window, -50.);
+        assert_eq!(
+            offset(),
+            px(-450.),
+            "the wheel scrolls on from the offset set"
+        );
+
+        // On a layer.
+        for _ in 0..4 {
+            wheel(cx, window, -10.);
+        }
+        if crate::fast::layers::COMPILED {
+            assert_eq!(decision(cx, window), Some(Decision::Composite));
+        }
+        state.set_offset_from_scrollbar(point(px(0.), px(-100.)));
+        draw(cx, window);
+        wheel(cx, window, -30.);
+        assert_eq!(offset(), px(-130.), "on a layer too");
+    }
+}

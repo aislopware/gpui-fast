@@ -648,6 +648,24 @@ pub(crate) fn offset_read_changed(window: &Window, dependencies: &RenderDependen
     })
 }
 
+/// Whether a list whose state `dependencies` include a read of was scrolled
+/// since the last frame by code setting its offset (a scrollbar, a bounce),
+/// which leaves the state's version alone for the list to be drawn from its
+/// layer (see [`list_offset_set`]). The view that laid the list out is built
+/// again for it, as if notified, for the list to show the offset set and
+/// its listeners to scroll from there.
+pub(crate) fn list_state_scrolled(window: &Window, dependencies: &RenderDependencies) -> bool {
+    if !COMPILED {
+        return false;
+    }
+    let scrolled = &window.fast_layers.scrolls.scrolled_sources;
+    !scrolled.is_empty()
+        && dependencies
+            .states
+            .iter()
+            .any(|(version, _)| scrolled.contains(&ScrollSource::of_state(version)))
+}
+
 /// `dependencies` without the version of the scroll state at `source`, if
 /// they hold it: a scroll of the container is what a layer is composited
 /// for, not a change.
