@@ -706,14 +706,23 @@ struct ForetoldHitTest {
 }
 
 impl ForetoldHitTest {
-    /// Takes in `hitbox`, the next one down.
-    fn visit(&mut self, hitbox: &Hitbox, position: Point<Pixels>) {
+    /// Takes in `hitbox`, the next one down, while hover holds `held` (see
+    /// [`crate::fast::layers::hover_freeze::holding`]).
+    fn visit(
+        &mut self,
+        hitbox: &Hitbox,
+        position: Point<Pixels>,
+        held: Option<&[(HitboxId, Bounds<Pixels>)]>,
+    ) {
         if self.blocked {
             return;
         }
         let bounds = hitbox.bounds.intersect(&hitbox.content_mask.bounds);
         if bounds.contains(&position) {
-            self.ids.push(hitbox.id);
+            if self.hover_count.is_some() || crate::fast::layers::hover_freeze::holds(held, hitbox)
+            {
+                self.ids.push(hitbox.id);
+            }
             if self.hover_count.is_none()
                 && hitbox.behavior == crate::HitboxBehavior::BlockMouseExceptScroll
             {
@@ -742,16 +751,14 @@ fn foretold_hit_test(
     translation: Point<ScaledPixels>,
     viewport: Bounds<Pixels>,
 ) -> ForetoldHitTest {
-    if crate::fast::layers::hover_freeze::frozen(window) {
-        return ForetoldHitTest::default();
-    }
+    let held = crate::fast::layers::hover_freeze::holding(window);
     let position = window.mouse_position;
     let scale_factor = window.scale_factor();
     let hitboxes = &window.rendered_frame.hitboxes;
     let rows_at = rows_at.start.min(hitboxes.len())..rows_at.end.min(hitboxes.len());
     let mut hit = ForetoldHitTest::default();
     for hitbox in hitboxes[rows_at.end..].iter().rev() {
-        hit.visit(hitbox, position);
+        hit.visit(hitbox, position, held);
     }
     for row in rows.values().rev() {
         let delta = row.delta(translation, scale_factor);
@@ -760,11 +767,11 @@ fn foretold_hit_test(
             .iter()
             .rev()
         {
-            hit.visit(hitbox, position);
+            hit.visit(hitbox, position, held);
         }
     }
     for hitbox in hitboxes[..rows_at.start].iter().rev() {
-        hit.visit(hitbox, position);
+        hit.visit(hitbox, position, held);
     }
     hit
 }

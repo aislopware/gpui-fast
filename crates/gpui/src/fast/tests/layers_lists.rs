@@ -2889,9 +2889,10 @@ mod rows {
     }
 
     /// While a wheel scrolls rows under a still pointer, hover is held
-    /// still: nothing is hovered, no row is rendered again for its hover,
-    /// and the list stays composited on every frame. A pointer that moves
-    /// hovers what is under it again at once.
+    /// still: no row is hovered, only what stays where it was (the list
+    /// itself), no row is rendered again for its hover, and the list stays
+    /// composited on every frame. A pointer that moves hovers what is under
+    /// it again at once.
     #[crate::test]
     fn hover_held_still_while_the_wheel_scrolls_renders_no_row_for_it(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -2913,8 +2914,22 @@ mod rows {
                     "uniform {uniform}, frame {frame}"
                 );
                 assert!(
-                    with_window(cx, window, |window, _| window.mouse_hit_test.ids.is_empty()),
-                    "uniform {uniform}, frame {frame}: nothing is hovered"
+                    with_window(cx, window, |window, _| {
+                        let hit_test = &window.mouse_hit_test;
+                        hit_test.ids[..hit_test.hover_hitbox_count]
+                            .iter()
+                            .all(|id| {
+                                window
+                                    .rendered_frame
+                                    .hitboxes
+                                    .iter()
+                                    .find(|hitbox| hitbox.id == *id)
+                                    .is_some_and(|hitbox| {
+                                        hitbox.bounds.size.height == px(VIEWPORT_HEIGHT)
+                                    })
+                            })
+                    }),
+                    "uniform {uniform}, frame {frame}: no row is hovered"
                 );
             }
             assert_eq!(
@@ -2942,6 +2957,144 @@ mod rows {
                 "uniform {uniform}: the moved pointer hovers the row under it"
             );
         }
+    }
+
+    /// A panel with a hover style around a view of rows: what a sidebar is.
+    struct HoverPanel {
+        rows: Entity<HoverRows>,
+        renders: Rc<RefCell<usize>>,
+    }
+
+    impl Render for HoverPanel {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use crate::InteractiveElement as _;
+            *self.renders.borrow_mut() += 1;
+            div()
+                .id("panel")
+                .size_full()
+                .bg(rgb(0xffffff))
+                .hover(|style| style.bg(rgb(0xf0f0f0)))
+                .child(self.rows.clone())
+        }
+    }
+
+    /// The rows of a [`HoverPanel`]: a list of rows with a hover style.
+    struct HoverRows {
+        state: ListState,
+    }
+
+    impl Render for HoverRows {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            crate::list(self.state.clone(), |ix, _, _| row(RowKind::Hover, ix))
+                .w(px(VIEWPORT_WIDTH))
+                .h(px(VIEWPORT_HEIGHT))
+        }
+    }
+
+    /// While a wheel scrolls rows under a still pointer, the panel around
+    /// them stays hovered and is not rendered again, and when the wheel
+    /// stops the row under the pointer is hovered again without the panel
+    /// being rendered either: hover is held still for what the wheel moves
+    /// only, and its end builds again only what hovers differently.
+    #[crate::test]
+    fn hover_held_still_keeps_the_hover_of_what_the_wheel_does_not_move(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let renders = Rc::new(RefCell::new(0));
+        let handle = cx.add_window({
+            let renders = renders.clone();
+            move |_, cx| HoverPanel {
+                rows: cx.new(|_| HoverRows {
+                    state: ListState::new(300, ListAlignment::Top, px(0.)).measure_all(),
+                }),
+                renders,
+            }
+        });
+        let window: AnyWindowHandle = handle.into();
+        open_at(cx, window, 1.);
+        with_window(cx, window, |window, cx| {
+            window.set_hover_freeze(true);
+            window.dispatch_event(
+                crate::PlatformInput::MouseMove(crate::MouseMoveEvent {
+                    position: crate::point(px(20.), px(20.)),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }),
+                cx,
+            );
+        });
+        draw(cx, window);
+        draw(cx, window);
+        let panel_hitbox = |cx: &mut TestAppContext| {
+            with_window(cx, window, |window, _| {
+                window
+                    .rendered_frame
+                    .hitboxes
+                    .iter()
+                    .find(|hitbox| hitbox.bounds.size.height > px(VIEWPORT_HEIGHT))
+                    .map(|hitbox| hitbox.id)
+                    .expect("the panel's hitbox")
+            })
+        };
+        let hovered = |cx: &mut TestAppContext, id: crate::HitboxId| {
+            with_window(cx, window, |window, _| id.hovered_now(window))
+        };
+        let panel = panel_hitbox(cx);
+        assert!(hovered(cx, panel), "the pointer hovers the panel");
+        let rendered = *renders.borrow();
+        let for_hover = crate::fast::layers::lists::rows_rendered_for_hover();
+
+        for frame in 0..20 {
+            wheel(cx, window, -7.);
+            assert!(hovered(cx, panel), "frame {frame}: the panel stays hovered");
+            assert_eq!(
+                panel_hitbox(cx),
+                panel,
+                "frame {frame}: drawn from last frame"
+            );
+        }
+        assert_eq!(
+            *renders.borrow(),
+            rendered,
+            "the panel is not rendered for the wheel"
+        );
+        let held = crate::fast::layers::lists::rows_rendered_for_hover();
+        assert!(
+            held - for_hover <= 1,
+            "only the row hovered when the wheel began is rendered for its hover: {}",
+            held - for_hover
+        );
+
+        assert!(
+            with_window(cx, window, |window, _| {
+                window.end_hover_freeze();
+                window.invalidator.is_dirty()
+            }),
+            "the end of the freeze draws the window"
+        );
+        draw(cx, window);
+        assert!(hovered(cx, panel), "the panel is still hovered");
+        assert!(
+            with_window(cx, window, |window, _| {
+                let hit_test = &window.mouse_hit_test;
+                hit_test.ids[..hit_test.hover_hitbox_count]
+                    .iter()
+                    .any(|id| {
+                        window
+                            .rendered_frame
+                            .hitboxes
+                            .iter()
+                            .any(|hitbox| hitbox.id == *id && hitbox.bounds.size.height == px(40.))
+                    })
+            }),
+            "the row under the pointer is hovered again"
+        );
+        assert_eq!(
+            *renders.borrow(),
+            rendered,
+            "the end of the freeze renders no view but what hovers differently"
+        );
     }
 
     /// A list whose rows take input (a hover style: a hitbox, a listener,

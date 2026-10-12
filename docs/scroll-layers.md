@@ -84,11 +84,15 @@ drawing as it does without layers, and how to verify and measure layers.
 
 While a wheel scrolls under a still pointer, hover is held still
 (`fast::layers::hover_freeze`): for 100 ms after a wheel event, as long as the
-pointer stays where the event was, nothing is hovered. Otherwise every frame of
-the scroll hovers another row, rendering the row it leaves and the row it
-enters again, and an animation a hover starts (a card fading in) keeps the
-list off its layer. When the wheel stops the window is drawn again and hover
-follows the pointer; a pointer that moves ends it at once. The crate's own
+pointer stays where the event was, of what was hovered when the wheel began
+only what has not moved stays hovered (the panel around the list, the list
+itself), and nothing the wheel brings under the pointer is. Otherwise every
+frame of the scroll hovers another row, rendering the row it leaves and the
+row it enters again, and an animation a hover starts (a card fading in) keeps
+the list off its layer; and clearing every hover instead would render the
+views around the list again for theirs. When the wheel stops the pointer is
+hit tested again and the window drawn, building again only what hovers
+differently, not refreshing it; a pointer that moves ends it at once. The crate's own
 tests, which scroll under a still pointer to test hover as rows move, turn it
 off (`Window::set_hover_freeze`).
 
