@@ -140,37 +140,3 @@ pub(crate) fn lift(content: Scene) -> Result<(Scene, Rc<[Primitive]>), Box<Scene
     rest.finish();
     Ok((rest, overlay.into()))
 }
-
-/// Where an overlay can change pixels: each of its primitives' [`reach`],
-/// and their union.
-pub(crate) struct OverlayReach {
-    union: Bounds<ScaledPixels>,
-    each: Vec<Bounds<ScaledPixels>>,
-}
-
-impl OverlayReach {
-    /// The reach of `overlay`, `None` when it is empty.
-    pub(crate) fn of(overlay: &[Primitive]) -> Option<Self> {
-        let each: Vec<Bounds<ScaledPixels>> = overlay.iter().map(reach).collect();
-        let union = each.iter().copied().reduce(|a, b| a.union(&b))?;
-        Some(Self { union, each })
-    }
-
-    /// Whether a part drawn after the overlay, as a later row of a list is,
-    /// that can draw within `bounds` (anywhere when `None`), may overlap it.
-    pub(crate) fn may_meet(&self, bounds: Option<Bounds<ScaledPixels>>) -> bool {
-        bounds.is_none_or(|bounds| bounds.intersects(&self.union))
-    }
-
-    /// Whether any of `later`, drawn after the overlay, overlaps it, so that
-    /// the tiles holding them would draw them under it rather than over it.
-    pub(crate) fn drawn_over(&self, later: impl IntoIterator<Item = Operation>) -> bool {
-        later.into_iter().any(|operation| match operation {
-            Operation::Primitive(primitive) => {
-                let reach = reach(&primitive);
-                self.union.intersects(&reach) && self.each.iter().any(|r| r.intersects(&reach))
-            }
-            _ => false,
-        })
-    }
-}

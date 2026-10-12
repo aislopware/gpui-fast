@@ -244,9 +244,6 @@ struct Row {
     /// Everything the row drew, the overlay included, when it has one: what
     /// drawing the row into the frame draws.
     whole: Option<Rc<Scene>>,
-    /// Whether the row placed a native or set fades of its own, which tiles
-    /// cannot hold: the layer's content is drawn into the frame.
-    has_paths: bool,
     /// The layer's translation when the row was painted: its hitboxes, and
     /// the positions its closures and element states hold, are window
     /// positions at it.
@@ -366,8 +363,9 @@ struct RowsFrame {
     /// What prepainting each row painted into the layer added to the frame.
     row_prepaints: Vec<RowPrepaint>,
     /// The row being prepainted, where it began, how many hitbox masks
-    /// the layer had noted then and where the log of the entities read was.
-    open_row: Option<(usize, PrepaintStateIndex, usize, usize)>,
+    /// the layer had noted then, where the log of the entities read was and
+    /// how many writes had been made.
+    open_row: Option<(usize, PrepaintStateIndex, usize, usize, u64)>,
     /// Where the log of the entities read stood when the recording of what
     /// the rows read began, and where in it the reads of the rows the layer
     /// keeps were told again. See [`finish_prepaint`].
@@ -401,6 +399,9 @@ struct RowLayout {
     row: usize,
     keys: Range<usize>,
     reads: Range<usize>,
+    /// The writes laying the row out made: the row's own. See
+    /// [`crate::fast::dependencies::Writes`].
+    writes: (u64, u64),
 }
 
 /// What prepainting a row added to the frame, and the masks of its hitboxes
@@ -417,6 +418,8 @@ struct RowPrepaint {
     /// entities.
     reads: Vec<Range<usize>>,
     entities: Rc<[EntityId]>,
+    /// The writes laying out and prepainting the row made: the row's own.
+    writes: Vec<(u64, u64)>,
 }
 
 /// A list's rows being painted.
@@ -455,6 +458,8 @@ struct RowPaint {
     /// Where in the log of the entities read what painting the row read
     /// lies.
     reads: Range<usize>,
+    /// The writes painting the row made: the row's own.
+    writes: (u64, u64),
 }
 
 /// What a `uniform_list` does with its rows this frame: nothing new, or
@@ -1321,7 +1326,13 @@ fn begin_row(window: &mut Window, list: Option<usize>, ix: usize) -> bool {
     if frame.open_row.is_some() {
         return false;
     }
-    frame.open_row = Some((ix, start, masks, reads_len()));
+    frame.open_row = Some((
+        ix,
+        start,
+        masks,
+        reads_len(),
+        crate::fast::dependencies::write_generation_now(),
+    ));
     true
 }
 
@@ -1342,7 +1353,7 @@ fn end_row(window: &mut Window, list: Option<usize>) {
     else {
         return;
     };
-    let Some((row, start, masks_start, reads_start)) = frame.open_row.take() else {
+    let Some((row, start, masks_start, reads_start, writes_start)) = frame.open_row.take() else {
         return;
     };
     let masks = all_masks
@@ -1382,6 +1393,16 @@ fn end_row(window: &mut Window, list: Option<usize>) {
         .map(|layout| layout.reads.clone())
         .collect();
     reads.push(reads_start..reads_len());
+    let mut writes: Vec<(u64, u64)> = frame
+        .row_layouts
+        .iter()
+        .filter(|layout| layout.row == row)
+        .map(|layout| layout.writes)
+        .collect();
+    writes.push((
+        writes_start,
+        crate::fast::dependencies::write_generation_now(),
+    ));
     frame.row_prepaints.push(RowPrepaint {
         row,
         range: start..end,
@@ -1389,6 +1410,7 @@ fn end_row(window: &mut Window, list: Option<usize>) {
         layout_keys,
         reads,
         entities: Rc::from([]),
+        writes,
     });
 }
 
@@ -1396,23 +1418,27 @@ fn end_row(window: &mut Window, list: Option<usize>) {
 /// its layer is about to claim, laid out outside any row's prepaint, start
 /// in the recording of them, and where what it is about to read starts in
 /// the log of the entities read. See [`note_row_layout`].
-pub(crate) fn row_layout_start(window: &mut Window) -> Option<(usize, usize)> {
+pub(crate) fn row_layout_start(window: &mut Window) -> Option<(usize, usize, u64)> {
     let id = window.fast_layers.painting.as_ref()?.id.clone();
     let frame = window.fast_layers.layers.get(&id)?.rows.frame.as_ref()?;
     if frame.paint.is_some() || frame.open_row.is_some() || frame.layout_keys.is_none() {
         return None;
     }
     let engine = window.layout_engine.as_ref().unwrap();
-    Some((engine.claimed_keys_since(0).len(), reads_len()))
+    Some((
+        engine.claimed_keys_since(0).len(),
+        reads_len(),
+        crate::fast::dependencies::write_generation_now(),
+    ))
 }
 
 /// Notes that laying out the row `row`, from `start` (see
 /// [`row_layout_start`]), claimed the layout keys recorded since and read
 /// the entities logged since: they are the row's, whichever row is
 /// prepainted next.
-pub(crate) fn note_row_layout(window: &mut Window, row: usize, start: Option<(usize, usize)>) {
+pub(crate) fn note_row_layout(window: &mut Window, row: usize, start: Option<(usize, usize, u64)>) {
     let rendered = RENDERED_ROW.take();
-    let Some((start, reads_start)) = start else {
+    let Some((start, reads_start, writes_start)) = start else {
         return;
     };
     let end = window
@@ -1441,6 +1467,10 @@ pub(crate) fn note_row_layout(window: &mut Window, row: usize, start: Option<(us
             row,
             keys: start..end,
             reads: reads_start..reads_len(),
+            writes: (
+                writes_start,
+                crate::fast::dependencies::write_generation_now(),
+            ),
         });
     }
 }
@@ -2412,7 +2442,7 @@ pub(crate) fn begin_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Gl
     let region = rows_region(frame);
     let has_rows = !frame.slots.is_empty();
     let background = if has_rows {
-        paint::bake_background(window)
+        Some(replayed_background(window))
     } else {
         None
     };
@@ -2537,6 +2567,7 @@ pub(crate) fn paint_row(
     let paint_start = window.paint_index();
     let fades_before = crate::fast::edge_fade::applied(window);
     let reads_start = reads_len();
+    let writes_start = crate::fast::dependencies::write_generation_now();
     set_current_row(window, &id, Some(row));
     {
         f(window, cx);
@@ -2555,6 +2586,10 @@ pub(crate) fn paint_row(
             hovers,
             fades,
             reads: reads_start..reads_len(),
+            writes: (
+                writes_start,
+                crate::fast::dependencies::write_generation_now(),
+            ),
         });
     }
 }
@@ -2614,7 +2649,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                     return;
                 }
                 // Rows are dropped: the content changes.
-                paint.background = paint::bake_background(window);
+                paint.background = Some(replayed_background(window));
             }
             // No row to paint: the layer holds nothing.
             Mode::Repaint => {
@@ -2764,16 +2799,8 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                 None => (row_operations, Rc::from([]), None),
             };
         let (tile_hashes, reach) = part_tile_hashes(&row_operations, paint::TILE_SIZE);
-        // Content placing a native is drawn into the frame (see
-        // `overlay::lift`). So is a row that set fades of its own, painted at
-        // the translation it is drawn at this frame, after which the layer is
-        // let go.
-        let has_paths = span.fades
-            || row_operations
-                .iter()
-                .any(|operation| matches!(operation, Operation::Native(_)));
         let scene = row_scene(row_operations);
-        let (prepaint, hitboxes, layout_keys, read) =
+        let (prepaint, hitboxes, layout_keys, read, prepaint_writes) =
             match row_prepaints.iter_mut().rev().find(|p| p.row == span.row) {
                 Some(prepainted) => {
                     let range = &prepainted.range;
@@ -2792,6 +2819,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                         hitboxes,
                         mem::take(&mut prepainted.layout_keys),
                         prepainted.entities.clone(),
+                        mem::take(&mut prepainted.writes),
                     )
                 }
                 None => {
@@ -2800,14 +2828,26 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                         "a row painted into a layer was not prepainted into it"
                     );
                     let end = frame.prepaint_range.end.clone();
-                    (end.clone()..end, Vec::new(), Vec::new(), Rc::from([]))
+                    (
+                        end.clone()..end,
+                        Vec::new(),
+                        Vec::new(),
+                        Rc::from([]),
+                        Vec::new(),
+                    )
                 }
             };
         let read = match row_paint_reads.get(&span.row) {
             Some(painted) => crate::fast::dependencies::merge_sorted(&read, painted),
             None => read,
         };
-        let dependencies = frame.dependencies.entities_only(read);
+        // What laying out, prepainting and painting the row wrote is the
+        // row's own, as what a view writes as it renders is: a chart's path
+        // cache in the row, written as it is drawn, does not change the row.
+        let dependencies = prepaint_writes.iter().chain([&span.writes]).fold(
+            frame.dependencies.entities_only(read),
+            |dependencies, (since, now)| dependencies.with_own_writes(*since, *now),
+        );
         let views = row_views
             .get(&span.row)
             .cloned()
@@ -2827,7 +2867,6 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                 tile_hashes,
                 overlay,
                 whole,
-                has_paths,
                 translation,
                 hitboxes,
                 hovers: span.hovers,
@@ -2855,9 +2894,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
             .keys()
             .all(|ix| match (rows.rows.get(ix), repainted_over.get(ix)) {
                 (Some(row), Some(before)) => {
-                    row.slot.size == before.slot.size
-                        && row.has_paths == before.has_paths
-                        && drawn_alike(row, before)
+                    row.slot.size == before.slot.size && drawn_alike(row, before)
                 }
                 _ => false,
             });
@@ -2887,29 +2924,10 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
     let work = (rendered_height / shown_height.max(1.))
         .max(rendered_operations as f32 / visible_operations.max(1) as f32);
 
-    // The content: the rows in order.
-    // A row's overlay is drawn over the tiles, so over every later row too:
-    // when a later row draws over it, the content is drawn into the frame.
-    let has_paths = rows.rows.values().any(|row| row.has_paths)
-        || rows.rows.values().enumerate().any(|(ix, row)| {
-            let Some(reach) = crate::fast::layers::overlay::OverlayReach::of(&row.overlay) else {
-                return false;
-            };
-            rows.rows.values().skip(ix + 1).any(|later| {
-                reach.may_meet(later.part.bounds)
-                    && reach.drawn_over(crate::fast::scene::operations(&later.part.scene))
-            })
-        });
-    let content = if has_paths {
-        LayerContent::from_parts(rows.rows.values().map(Row::whole_part))
-    } else {
-        LayerContent::from_parts(rows.rows.values().map(|row| row.part.clone()))
-    };
-    let overlay: Rc<[Primitive]> = rows
-        .rows
-        .values()
-        .flat_map(|row| row.overlay.iter().cloned())
-        .collect();
+    // The content: the rows in order, each with the paths it paints, which
+    // are replayed in order with the rest (see [`paint::replays`]): nothing
+    // is drawn over the content.
+    let content = LayerContent::from_parts(rows.rows.values().map(Row::whole_part));
     let mut region = Bounds {
         origin: viewport.origin + to_content,
         size: viewport.size,
@@ -2969,14 +2987,14 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
         hovers: Rc::from([]),
         dependencies,
         views,
-        has_paths,
-        overlay,
+        has_paths: false,
+        overlay: Rc::from([]),
         view_layouts: Rc::default(),
         debug_moved: Point::default(),
         a11y: None,
     });
     finish_records(window, id, &frame, records);
-    if frame.mode == Mode::Repaint && !has_paths {
+    if frame.mode == Mode::Repaint {
         window
             .layout_engine
             .as_mut()
@@ -3047,4 +3065,18 @@ fn clear_rows(window: &mut Window, id: &GlobalElementId, frame: &RowsFrame) {
         layer.rows.clear();
         layer.rows.visible = Some((frame_number, frame.visible.clone()));
     }
+}
+
+/// What a list's layer records as its background: what the frame painted
+/// under the list, or none to clear with. Its rows are replayed over what is
+/// under them (see [`paint::replays`]), not composited from tiles cleared
+/// with it, so a background that cannot be baked does not keep the list off
+/// its layer.
+fn replayed_background(window: &mut Window) -> Rgba {
+    paint::bake_background(window).unwrap_or(Rgba {
+        r: 0.,
+        g: 0.,
+        b: 0.,
+        a: 0.,
+    })
 }

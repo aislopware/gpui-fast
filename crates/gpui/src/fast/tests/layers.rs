@@ -2813,6 +2813,9 @@ mod policies {
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
     }
 
+    /// Content of a layer that starts asking for animation frames drops the
+    /// layer, and content asking for them is not painted into one: a
+    /// promotion waits until it stops.
     #[crate::test]
     fn an_animation_frame_requested_inside_the_content_makes_it_ineligible(
         cx: &mut TestAppContext,
@@ -2822,6 +2825,7 @@ mod policies {
         }
         let handle = page(cx, false);
         let window = handle.into();
+        promote(cx, window);
         // Asks for an animation frame from its prepaint, inside the scroll
         // container, without a view of its own.
         with_extra(cx, handle, || {
@@ -2832,7 +2836,6 @@ mod policies {
             .h(px(10.))
             .into_any_element()
         });
-        promote(cx, window);
         for _ in 0..4 {
             assert_eq!(scroll(cx, window, -5.), Some(Decision::Bypass));
             assert!(!has_record(cx, window));
