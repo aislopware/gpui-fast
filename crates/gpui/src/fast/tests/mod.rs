@@ -35,6 +35,7 @@ mod oracle;
 mod path_cache;
 mod retained;
 mod retained_bench;
+mod rounded_clip;
 mod scene_order;
 mod scroll;
 mod scroll_to_bottom;

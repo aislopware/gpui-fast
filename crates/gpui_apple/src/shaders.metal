@@ -45,6 +45,8 @@ struct EdgeFadeRamps {
   float4 edge;
   float4 rate;
   float4 start;
+  float4 clip;
+  float4 radii;
 };
 float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades);
 
@@ -1321,5 +1323,19 @@ float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades) {
   EdgeFadeRamps ramps = fades[slot];
   float4 ramp = saturate(ramps.start + ramps.rate * (position.xyxy - ramps.edge));
   ramp = ramp * ramp * (3. - 2. * ramp);
-  return ramp.x * ramp.y * ramp.z * ramp.w;
+  float alpha = ramp.x * ramp.y * ramp.z * ramp.w;
+  if (ramps.clip.z > ramps.clip.x) {
+    // The rounded clip (zui 361ff20): the signed distance from its edge,
+    // over a pixel's antialiased step; radii top left, top right, bottom
+    // right, bottom left.
+    float2 half_size = (ramps.clip.zw - ramps.clip.xy) * 0.5;
+    float2 p = position - (ramps.clip.xy + half_size);
+    float radius = p.x < 0. ? (p.y < 0. ? ramps.radii.x : ramps.radii.w)
+                            : (p.y < 0. ? ramps.radii.y : ramps.radii.z);
+    radius = min(radius, min(half_size.x, half_size.y));
+    float2 q = abs(p) - half_size + radius;
+    float distance = length(max(q, float2(0.))) + min(max(q.x, q.y), 0.) - radius;
+    alpha *= saturate(0.5 - distance);
+  }
+  return alpha;
 }

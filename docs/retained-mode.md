@@ -333,6 +333,19 @@ video included. The code is in `crates/gpui/src/fast/edge_fade.rs`.
   without tiles (docs/scroll-layers.md).
 - Metal draws fades. The wgpu and Direct3D renderers draw everything unfaded,
   and a `PaintSurface` is never faded.
+- `Window::with_rounded_clip(bounds, radius, f)` narrows the content mask to
+  `bounds` and cuts every primitive along the corners' arcs, per pixel, with
+  an antialiased edge (ported from zui `361ff20`). The clip is two more
+  fields of a fade's table entry (`EdgeFadeRamps::clip` and `radii`, a
+  radius per corner), so it takes the same index and the same shader path,
+  and everything above holds for it: views note it, a stretch moved moves a
+  clip set inside it, a layer's tiles take a clip around the container, and
+  content clipping of its own is drawn without tiles. Clips nest by the
+  innermost; fades nest edge by edge inside and around them. Like a fade,
+  it is called around both the prepaint and the paint of what it clips: a
+  view inside drawn again from last frame keeps the corners it was painted
+  in until what it was prepainted in changes. A radius of zero is the
+  content mask alone. Only Metal cuts the corners.
 
 ### Records per retained subtree
 

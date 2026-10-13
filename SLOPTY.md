@@ -637,6 +637,14 @@ Added in this fork:
   image's sprite atlas tiles in every window, out of reach (each image shown from bytes
   leaks its tiles; a large one a texture of its own); `evict` removes the cached load and
   drops the tiles, in the window being updated too (`evicting_an_image_frees_its_atlas_tiles`)
+- feat(gpui, gpui_apple): `Window::with_rounded_clip(bounds, radius, f)`, ported from zui
+  (`361ff20`, Apache-2.0) into the edge fade table: each entry also holds a rounded
+  rectangle (a radius per corner) that the fade's shader path cuts every primitive by, per
+  pixel, antialiased. Retention, moved stretches and scroll layers treat it as a fade
+  (`fast/tests/rounded_clip.rs`: incremental against from scratch while the card moves,
+  its rows slide and a nested view rebuilds; a clip around a layer composites, one inside
+  its content draws without tiles); Metal matches the CPU coverage to 0 levels on quads,
+  underlines and paths, clipped alone and inside a fade (`gpui_apple` `fast::edge_fade`)
 
 ### Candidates for longbridge
 

@@ -19,6 +19,8 @@ const EMPTY: [EdgeFadeRamps; 1] = [EdgeFadeRamps {
     edge: [0.; 4],
     rate: [0.; 4],
     start: [0.; 4],
+    clip: [0.; 4],
+    radii: [0.; 4],
 }];
 
 /// Writes `scene`'s table of fades into the frame's instances.
@@ -93,6 +95,36 @@ mod tests {
     /// be as bright as the fade at its centre says, to within the rounding
     /// of 8 bits.
     fn renders_faded(what: &str, draw: impl FnOnce(&mut Scene, u32, &MetalRenderer)) {
+        renders_in(what, ramps(), draw);
+    }
+
+    /// The rounded clip the tests draw in: corners of 12, 4, 20 and 0
+    /// device pixels around a rectangle inside the target.
+    fn clip() -> EdgeFadeRamps {
+        clipped(EdgeFadeRamps::NONE)
+    }
+
+    /// `ramps` clipping as [`clip`] does.
+    fn clipped(ramps: EdgeFadeRamps) -> EdgeFadeRamps {
+        ramps.rounded(
+            sp(6., 9., 50., 44.),
+            gpui::Corners {
+                top_left: ScaledPixels(12.),
+                top_right: ScaledPixels(4.),
+                bottom_right: ScaledPixels(20.),
+                bottom_left: ScaledPixels(0.),
+            },
+        )
+    }
+
+    /// Draws white in `ramps` over black, and requires every pixel to be as
+    /// bright as the ramps at its centre say, to within the rounding of 8
+    /// bits.
+    fn renders_in(
+        what: &str,
+        ramps: EdgeFadeRamps,
+        draw: impl FnOnce(&mut Scene, u32, &MetalRenderer),
+    ) {
         if metal::Device::system_default().is_none() {
             eprintln!("skipped: no Metal device");
             return;
@@ -104,7 +136,7 @@ mod tests {
             sp(0., 0., SIDE as f32, SIDE as f32),
             Hsla::from(rgba(0x000000ff)),
         ));
-        let fade = scene.add_edge_fade(ramps());
+        let fade = scene.add_edge_fade(ramps);
         draw(&mut scene, fade, &renderer);
         scene.finish();
         let pixels = renderer
@@ -114,7 +146,7 @@ mod tests {
         let mut worst = 0;
         for y in 4..SIDE as usize - 4 {
             for x in 4..SIDE as usize - 4 {
-                let alpha = ramps().alpha_at(point(
+                let alpha = ramps.alpha_at(point(
                     ScaledPixels(x as f32 + 0.5),
                     ScaledPixels(y as f32 + 0.5),
                 ));
@@ -250,6 +282,67 @@ mod tests {
             };
             scene.insert_faded_primitive(path.scale(1.), fade);
         });
+    }
+
+    #[test]
+    fn a_rounded_clip_cuts_a_quad_along_its_corners() {
+        assert!(clip().clips() && !clip().rate.iter().any(|rate| *rate != 0.));
+        renders_in("clipped quad", clip(), |scene, fade, _| {
+            scene.insert_faded_primitive(quad(sp(0., 0., SIDE as f32, SIDE as f32), white()), fade);
+        });
+    }
+
+    #[test]
+    fn a_rounded_clip_inside_a_fade_cuts_and_fades_each_kind() {
+        let both = clipped(ramps());
+        assert!(both.clips() && both.rate.iter().any(|rate| *rate != 0.));
+        renders_in("clipped faded quad", both, |scene, fade, _| {
+            let mut quad = quad(sp(0., 0., SIDE as f32, SIDE as f32), white());
+            quad.corner_radii = gpui::Corners::all(ScaledPixels(2.));
+            scene.insert_faded_primitive(quad, fade);
+        });
+        renders_in("clipped faded underline", both, |scene, fade, _| {
+            scene.insert_faded_primitive(
+                Underline {
+                    order: 0,
+                    pad: 0,
+                    bounds: sp(0., 0., SIDE as f32, SIDE as f32),
+                    content_mask: everywhere(),
+                    color: white(),
+                    thickness: ScaledPixels(SIDE as f32),
+                    wavy: false.into(),
+                },
+                fade,
+            );
+        });
+        renders_in("clipped faded path", both, |scene, fade, _| {
+            let side = px(SIDE as f32);
+            let mut path = Path::new(point(px(0.), px(0.)));
+            path.line_to(point(side, px(0.)));
+            path.line_to(point(side, side));
+            path.line_to(point(px(0.), side));
+            path.line_to(point(px(0.), px(0.)));
+            path.color = white().into();
+            path.content_mask = ContentMask {
+                bounds: Bounds::new(point(px(0.), px(0.)), size(side, side)),
+            };
+            scene.insert_faded_primitive(path.scale(1.), fade);
+        });
+    }
+
+    /// The clip's arcs are antialiased: a pixel the arc crosses is drawn in
+    /// part, one well inside whole, one past it not at all.
+    #[test]
+    fn a_rounded_clips_corner_is_antialiased() {
+        let clip = clip();
+        let at = |x: f32, y: f32| clip.coverage_at(point(ScaledPixels(x), ScaledPixels(y)));
+        assert_eq!(at(30., 30.), 1.);
+        assert_eq!(at(6.5, 9.5), 0.);
+        assert_eq!(at(6.5, 52.5), 1., "the square corner");
+        assert!((0..12).any(|i| {
+            let coverage = at(6. + i as f32 + 0.5, 9. + i as f32 + 0.5);
+            coverage > 0. && coverage < 1.
+        }));
     }
 
     /// No fade, or an index past the table's end, draws a primitive whole.

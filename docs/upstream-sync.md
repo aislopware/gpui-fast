@@ -290,6 +290,16 @@ unchanged, and a new entry needs as good a reason.
   (`evicting_an_image_frees_its_atlas_tiles` shows the leak and its fix).
   `evict` removes the load and drops the tiles; `peek_asset` reads a finished
   load without starting one.
+- `Window::with_rounded_clip` is new public API, with `EdgeFadeRamps`'s
+  `clip` and `radii` fields and its `rounded`, `clips` and `coverage_at`
+  (`fast/edge_fade.rs`; docs/retained-mode.md, "Edge fades"), ported from
+  zui (<https://github.com/zeronsh/zui> `361ff20`; Apache-2.0, by fate; the
+  notice is in the module's documentation). A content mask is a rectangle, so
+  content scrolling inside a rounded card shows past its corners; over an
+  opaque card a corner painted over it hides that, over glass nothing can.
+  The clip rides in the edge fade table each primitive already indexes, so it
+  adds no byte to a primitive and is drawn by the fade's shader path; an
+  entry grows from 48 to 80 bytes. Only Metal draws it.
 - The workspace pins Taffy 0.14 where upstream pins 0.13. Taffy 0.13 keeps
   one cached size per kind of constraint, so a node measured under two widths
   in one layout evicts one with the other, and the clean subtrees around a
