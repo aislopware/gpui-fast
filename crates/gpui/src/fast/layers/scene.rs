@@ -379,9 +379,10 @@ pub(crate) fn drawn_bounds(primitive: &Primitive) -> Bounds<ScaledPixels> {
                 ),
             }
         }
-        Primitive::MonochromeSprite(sprite) => {
-            transformed_bounds(sprite.bounds, &sprite.transformation)
-        }
+        Primitive::MonochromeSprite(sprite) => transformed_bounds(
+            crate::fast::glyph_blur::drawn_bounds(sprite),
+            &sprite.transformation,
+        ),
         Primitive::SubpixelSprite(sprite) => {
             transformed_bounds(sprite.bounds, &sprite.transformation)
         }

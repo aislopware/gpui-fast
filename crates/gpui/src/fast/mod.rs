@@ -26,6 +26,7 @@ pub(crate) mod fling;
 pub(crate) mod focus;
 pub(crate) mod focus_tooltip;
 pub mod gesture;
+pub(crate) mod glyph_blur;
 pub(crate) mod glyphs;
 pub(crate) mod headless_atlas;
 pub(crate) mod image_evict;

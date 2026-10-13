@@ -20,6 +20,7 @@ mod focus_tooltip;
 mod focus_while_drawing;
 mod gesture;
 mod global_id;
+mod glyph_blur;
 mod image_evict;
 mod image_mask;
 mod keyed;

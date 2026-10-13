@@ -652,6 +652,8 @@ struct MonochromeSpriteVertexOutput {
   float4 color [[flat]];
   float4 clip_distance;
   uint fade [[flat]];
+  float4 blur_tile [[flat]];
+  float blur [[flat]];
 };
 
 struct MonochromeSpriteFragmentInput {
@@ -660,7 +662,17 @@ struct MonochromeSpriteFragmentInput {
   float4 color [[flat]];
   float4 clip_distance;
   uint fade [[flat]];
+  float4 blur_tile [[flat]];
+  float blur [[flat]];
 };
+
+float glyph_blur_sigma(AtlasTile tile);
+void glyph_blur_widen(float2 unit_vertex, MonochromeSprite sprite, float sigma,
+                      constant Size_DevicePixels *viewport_size,
+                      constant Size_DevicePixels *atlas_size, thread float4 &device_position,
+                      thread float4 &clip_distance, thread float2 &tile_position);
+float glyph_blur_alpha(float2 tile_position, float4 tile, float sigma,
+                       texture2d<float> atlas_texture);
 
 vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
     uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
@@ -677,13 +689,21 @@ vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
   float4 clip_distance = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds,
                                                  sprite.content_mask.bounds, sprite.transformation);
   float2 tile_position = to_tile_position(unit_vertex, sprite.tile, atlas_size);
+  float sigma = glyph_blur_sigma(sprite.tile);
+  if (sigma > 0.) {
+    glyph_blur_widen(unit_vertex, sprite, sigma, viewport_size, atlas_size, device_position,
+                     clip_distance, tile_position);
+  }
   float4 color = hsla_to_rgba(sprite.color);
   return MonochromeSpriteVertexOutput{
       device_position,
       tile_position,
       color,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
-      sprite.pad};
+      sprite.pad,
+      float4(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y,
+             sprite.tile.bounds.size.width, sprite.tile.bounds.size.height),
+      sigma};
 }
 
 fragment float4 monochrome_sprite_fragment(
@@ -697,10 +717,11 @@ fragment float4 monochrome_sprite_fragment(
 
   constexpr sampler atlas_texture_sampler(mag_filter::linear,
                                           min_filter::linear);
-  float4 sample =
-      atlas_texture.sample(atlas_texture_sampler, input.tile_position);
+  float alpha = input.blur > 0.
+      ? glyph_blur_alpha(input.tile_position, input.blur_tile, input.blur, atlas_texture)
+      : atlas_texture.sample(atlas_texture_sampler, input.tile_position).a;
   float4 color = input.color;
-  color.a *= sample.a * edge_fade(input.position.xy, input.fade, fades);
+  color.a *= alpha * edge_fade(input.position.xy, input.fade, fades);
   return color;
 }
 
@@ -1419,4 +1440,69 @@ fragment float4 backdrop_blur_fragment(
   constexpr sampler source_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
   float2 uv = (input.position.xy - source_rect.xy) / source_rect.zw;
   return source.sample(source_sampler, uv) * backdrop_blur_coverage(input, blurs, fades);
+}
+
+// gpui-fast: blurred glyphs (gpui's fast/glyph_blur.rs; zui 0966d06). The blur's
+// standard deviation rides in the tile's padding as float bits; the quad is widened by
+// three of them a side, its margin addressing past the tile, and each pixel taps the tile
+// with the gaussian, taps outside it reading transparent and those inside clamped half a
+// texel in, so linear filtering never reads a neighbouring glyph.
+float glyph_blur_sigma(AtlasTile tile) {
+  float sigma = as_type<float>(tile.padding);
+  return isfinite(sigma) && sigma > 0. ? sigma : 0.;
+}
+
+void glyph_blur_widen(float2 unit_vertex, MonochromeSprite sprite, float sigma,
+                      constant Size_DevicePixels *viewport_size,
+                      constant Size_DevicePixels *atlas_size, thread float4 &device_position,
+                      thread float4 &clip_distance, thread float2 &tile_position) {
+  float pad = 3. * sigma;
+  Bounds_ScaledPixels bounds = sprite.bounds;
+  bounds.origin.x -= pad;
+  bounds.origin.y -= pad;
+  bounds.size.width += 2. * pad;
+  bounds.size.height += 2. * pad;
+  device_position =
+      to_device_position_transformed(unit_vertex, bounds, sprite.transformation, viewport_size);
+  clip_distance = distance_from_clip_rect_transformed(unit_vertex, bounds,
+                                                      sprite.content_mask.bounds,
+                                                      sprite.transformation);
+  float2 quad_size = float2(bounds.size.width, bounds.size.height);
+  float2 glyph_size = max(float2(sprite.bounds.size.width, sprite.bounds.size.height),
+                          float2(1e-6));
+  float2 tile_origin = float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y);
+  float2 tile_size = float2(sprite.tile.bounds.size.width, sprite.tile.bounds.size.height);
+  float2 tile_px = (unit_vertex * quad_size - pad) * (tile_size / glyph_size);
+  tile_position = (tile_origin + tile_px) /
+                  float2((float)atlas_size->width, (float)atlas_size->height);
+}
+
+float glyph_blur_alpha(float2 tile_position, float4 tile, float sigma,
+                       texture2d<float> atlas_texture) {
+  constexpr sampler atlas_texture_sampler(mag_filter::linear, min_filter::linear);
+  float2 atlas_dims = float2(atlas_texture.get_width(), atlas_texture.get_height());
+  float2 texel = 1. / atlas_dims;
+  float2 tile_min = tile.xy / atlas_dims;
+  float2 tile_max = tile_min + tile.zw / atlas_dims;
+  float2 tile_mid = 0.5 * (tile_min + tile_max);
+  float2 inset_min = min(tile_min + 0.5 * texel, tile_mid);
+  float2 inset_max = max(tile_max - 0.5 * texel, tile_mid);
+  int radius = min(int(ceil(3. * sigma)), 12);
+  float accum = 0.;
+  float total = 0.;
+  for (int y = -radius; y <= radius; y++) {
+    for (int x = -radius; x <= radius; x++) {
+      float2 offset = float2(x, y);
+      float weight = exp(-dot(offset, offset) / (2. * sigma * sigma));
+      float2 uv = tile_position + offset * texel;
+      float tap = 0.;
+      if (all(uv >= tile_min) && all(uv <= tile_max)) {
+        tap = atlas_texture.sample(atlas_texture_sampler, clamp(uv, inset_min, inset_max),
+                                   level(0)).a;
+      }
+      accum += weight * tap;
+      total += weight;
+    }
+  }
+  return accum / max(total, 1e-6);
 }

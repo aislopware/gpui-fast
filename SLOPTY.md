@@ -655,6 +655,13 @@ Added in this fork:
   pixels follow the gaussian to within a level, keep a non-opaque drawable's alpha, and
   leave holes and paths outside the region as drawn without it (`gpui_apple`
   `fast::backdrop`). Costs in docs/composition.md, "Backdrop blur"
+- feat(gpui, gpui_apple): `Window::paint_glyph_transformed(origin, font_id, glyph_id,
+  font_size, color, transformation, blur)`, ported from zui (`0966d06`, Apache-2.0;
+  `fast/glyph_blur.rs`): one glyph raster drawn through a composite-time transformation and
+  blurred by zui's gaussian taps, the blur riding in the tile's unused `padding` so no sprite
+  layout changes. Scroll layers count the widened quad, a stretch holding one is painted
+  again rather than moved (`fast/tests/glyph_blur.rs`); Metal matches the kernel to 0
+  levels and scales the halo with the glyph (`gpui_apple` `fast::glyph_blur`)
 - perf(gpui, gpui_apple): blurs share pass breaks. A blur joins the draw order of an earlier
   one of its radius when nothing between them is under its region, only its region goes in
   the bounds tree, and Metal ends the pass once per draw order, copying and blurring a group

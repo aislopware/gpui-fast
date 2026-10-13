@@ -690,7 +690,11 @@ impl Shift {
                     ..*underline
                 })
             }
-            PaintedRef::MonochromeSprite(sprite) if sprite.transformation == unit => {
+            // A blurred glyph draws past its bounds: painted afresh.
+            PaintedRef::MonochromeSprite(sprite)
+                if sprite.transformation == unit
+                    && crate::fast::glyph_blur::sigma(sprite) == 0. =>
+            {
                 let (bounds, content_mask) =
                     self.place(&sprite.bounds, &sprite.content_mask, last)?;
                 ShiftedOperation::MonochromeSprite(MonochromeSprite {

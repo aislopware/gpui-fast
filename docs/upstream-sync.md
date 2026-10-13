@@ -300,6 +300,14 @@ unchanged, and a new entry needs as good a reason.
   The clip rides in the edge fade table each primitive already indexes, so it
   adds no byte to a primitive and is drawn by the fade's shader path; an
   entry grows from 48 to 80 bytes. Only Metal draws it.
+- `Window::paint_glyph_transformed` is new public API (`fast/glyph_blur.rs`),
+  ported from zui (<https://github.com/zeronsh/zui> `0966d06`; Apache-2.0, by
+  Wing; the notice is in the module's documentation). zeron's rolling digits
+  scale and blur each glyph as it slides in, from one raster. The blur's
+  standard deviation rides in the sprite's `tile.padding`, as `f32` bits,
+  which no atlas sets, so `MonochromeSprite` keeps upstream's layout where
+  zui adds a field to it and to each renderer's mirror; only Metal blurs,
+  elsewhere the glyph is drawn sharp, transformed.
 - `Window::paint_image_fitted_masked` and `ImageAlphaMask` are new public
   API, with `EdgeFadeRamps`'s `mask`, `mask_shape` and `mask_bottom` and its
   `masks` and `mask_at` (`fast/image_mask.rs`; docs/retained-mode.md, "Edge
