@@ -67,6 +67,9 @@ pub struct SceneComposition {
     pub holes: Vec<Quad>,
     /// Every backdrop blur painted this frame (`fast::backdrop`).
     pub blurs: Vec<crate::fast::backdrop::BackdropBlur>,
+    /// The draw orders blurs were drawn at this frame, each with its blur
+    /// radius's bits: where a blur may join others (`fast::backdrop`).
+    pub(crate) waves: Vec<(DrawOrder, u32)>,
 }
 
 impl SceneComposition {
@@ -96,6 +99,7 @@ pub(crate) fn clear(scene: &mut Scene) {
     scene.composition.placements.clear();
     scene.composition.holes.clear();
     scene.composition.blurs.clear();
+    scene.composition.waves.clear();
 }
 
 /// Places a native again as the last frame placed it, as [`Scene::replay`] does.
@@ -111,9 +115,10 @@ pub enum ComposedBatch {
     /// Holes: `scene.natives().holes[range]`, drawn with a blend keeping
     /// `destination × (1 − source alpha)` in colour and alpha alike.
     Holes(Range<usize>),
-    /// A backdrop blur: `scene.composition.blurs[index]`, drawn over what
-    /// the batches before it drew (see `fast::backdrop`).
-    Blur(usize),
+    /// Backdrop blurs: `scene.backdrop_blurs()[range]`, of one draw order,
+    /// drawn over what the batches before them drew, after one copy of it
+    /// (see `fast::backdrop`).
+    Blurs(Range<usize>),
 }
 
 impl Scene {
@@ -226,6 +231,20 @@ impl<I: Iterator<Item = PrimitiveBatch>> ComposedBatches<'_, I> {
         }
     }
 
+    /// The blurs from the next of its draw order.
+    fn blurs(&mut self) -> ComposedBatch {
+        let blurs = &self.scene.composition.blurs;
+        let start = self.next_blur;
+        let order = blurs[start].order;
+        let end = start
+            + blurs[start..]
+                .iter()
+                .take_while(|blur| blur.order == order)
+                .count();
+        self.next_blur = end;
+        ComposedBatch::Blurs(start..end)
+    }
+
     /// The holes from the next, up to the next blur and those `goes_first`
     /// says are not drawn after `first_order`.
     fn holes(
@@ -263,8 +282,7 @@ impl<I: Iterator<Item = PrimitiveBatch>> Iterator for ComposedBatches<'_, I> {
             // blurs, in order.
             let (_, blur) = self.next_cut()?;
             if blur {
-                self.next_blur += 1;
-                return Some(ComposedBatch::Blur(self.next_blur - 1));
+                return Some(self.blurs());
             }
             return Some(self.holes(None, |_, _| false));
         };
@@ -292,8 +310,7 @@ impl<I: Iterator<Item = PrimitiveBatch>> Iterator for ComposedBatches<'_, I> {
         }
         self.pending = Some(batch);
         if blur {
-            self.next_blur += 1;
-            return Some(ComposedBatch::Blur(self.next_blur - 1));
+            return Some(self.blurs());
         }
         Some(self.holes(Some(first_order), goes_first))
     }

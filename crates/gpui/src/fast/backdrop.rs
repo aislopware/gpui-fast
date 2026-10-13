@@ -9,12 +9,24 @@
 //! it moves the rest of the layer above itself, and it is a paint operation
 //! of its own, so retention draws it again from last frame with the
 //! primitives around it. A renderer meets it in [`Scene::composed_batches`]
-//! as [`ComposedBatch::Blur`] between the primitive batches drawn below it
+//! as [`ComposedBatch::Blurs`] between the primitive batches drawn below it
 //! and those drawn over it: it copies what it drew so far under the region
 //! (and the blur's reach around it), blurs that, and draws it back clipped
 //! to the region's rounded corners, faded as an edge fade or rounded clip
 //! around it says, and as opaque as the element opacity it was painted
 //! with.
+//!
+//! Each blur ending the renderer's pass costs a store and a load of the
+//! whole drawable, so blurs of one radius share a pass break where they
+//! can: a blur joins the draw order of an earlier one (a wave) when that
+//! order is above everything its own region overlaps, so nothing between
+//! the two is drawn under its region. When the wave's order is below the
+//! blur's own, what was drawn between them inside the blur's reach but
+//! outside its region (another frosted surface's fill, three standard
+//! deviations off) is missing from the edge of its blur; nothing under its
+//! region ever is. Its region alone goes in the bounds tree, so what is
+//! painted after it beside its region is not lifted above it, and a column
+//! of frosted badges in a transcript is one wave rather than a chain.
 //!
 //! A scroll container's tiles hold content as it was drawn over the
 //! layer's own background, not over what the frame draws under it, so a
@@ -27,10 +39,13 @@
 //! `361ff20`; Apache-2.0, by Wing and the zui contributors; zui is a fork of
 //! Zed's GPUI). Changed from zui: the blur is a paint operation ordered as
 //! natives' holes are, not a list ordered by its paint layer with an
-//! invisible shadow to split batches; its edge is antialiased; it takes the
-//! edge fade and rounded clip around it and the element opacity.
+//! invisible shadow to split batches; it is ordered over everything it
+//! reads, so that rows a scroll layer draws as tiles and rows drawn into
+//! the frame are read alike; blurs share pass breaks, where zui ends the
+//! pass once per blur; its edge is antialiased; it takes the edge fade and
+//! rounded clip around it and the element opacity.
 //!
-//! [`ComposedBatch::Blur`]: crate::fast::composition::ComposedBatch::Blur
+//! [`ComposedBatch::Blurs`]: crate::fast::composition::ComposedBatch::Blurs
 
 use crate::{
     Bounds, ContentMask, Corners, DrawOrder, PaintOperation, Pixels, Point, ScaledPixels, Scene,
@@ -115,20 +130,46 @@ impl Window {
 
 impl Scene {
     /// The backdrop blurs of this scene, in draw order once it is finished:
-    /// what [`crate::fast::composition::ComposedBatch::Blur`] indexes.
+    /// what [`crate::fast::composition::ComposedBatch::Blurs`] indexes.
     pub fn backdrop_blurs(&self) -> &[BackdropBlur] {
         &self.composition.blurs
     }
 
     /// Places a backdrop blur: it takes the next draw order over what it
     /// reads from, its [`BackdropBlur::reach`], so that everything painted
-    /// before it there is drawn before it. Inside a paint layer, whose
-    /// primitives share one order, the rest of the layer is moved above it.
+    /// before it there is drawn before it; or joins blurs of its radius
+    /// drawn at an order between what its region overlaps and that, so
+    /// that they share one copy of what is under them (see the module).
+    /// Inside a paint layer, whose primitives share one order, the rest of
+    /// the layer is moved above it.
     pub fn insert_backdrop_blur(&mut self, mut blur: BackdropBlur) {
-        if blur.clipped_bounds().is_empty() || blur.opacity <= 0. {
+        let bounds = blur.clipped_bounds();
+        if bounds.is_empty() || blur.opacity <= 0. {
             return;
         }
-        blur.order = self.primitive_bounds.insert(blur.reach());
+        let radius = blur.blur_radius.0.to_bits();
+        let waves = &mut self.composition.waves;
+        blur.order =
+            self.primitive_bounds
+                .insert_reading(&blur.reach(), bounds, |natural, covered| {
+                    let same = || {
+                        waves
+                            .iter()
+                            .filter(|wave| wave.1 == radius)
+                            .map(|wave| wave.0)
+                    };
+                    // A wave at or past the natural order reads all this blur
+                    // reads; one below it but above all its region overlaps misses
+                    // only what was drawn after the wave around the region.
+                    let joined = same()
+                        .filter(|order| *order >= natural)
+                        .min()
+                        .or_else(|| same().filter(|order| *order > covered).max());
+                    joined.unwrap_or_else(|| {
+                        waves.push((natural, radius));
+                        natural
+                    })
+                });
         crate::fast::composition::scene::lift_open_layer(self);
         self.composition.blurs.push(blur);
         crate::fast::scene::push(self, PaintOperation::Backdrop(Box::new(blur)));

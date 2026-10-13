@@ -1,17 +1,18 @@
 //! Backdrop blur on Metal: gpui's `fast::backdrop`.
 //!
-//! A [`ComposedBatch::Blur`] ends the pass drawing the frame, copies the
-//! region the blur reads (what shows of it and three standard deviations
-//! around) out of the target into a scratch texture, blurs that with
-//! `MPSImageGaussianBlur` (a true gaussian; its edges clamp, so a blur at
-//! the window's edge does not darken), and begins the pass again, marking
-//! the holes' interiors as a pass restarted after paths does. It then draws
-//! the blurred backdrop back in two instanced draws over the region: one
-//! keeping `destination × (1 − k)` and one adding `blurred × k`, `k` being
-//! the region's antialiased rounded-rectangle coverage times its edge fade
-//! and opacity. The two leave colour and alpha exactly a mix of the two by
-//! `k`, which one draw can't when the drawable is not opaque (a window over
-//! vibrancy, or holes).
+//! A [`ComposedBatch::Blurs`] ends the pass drawing the frame once for all
+//! its blurs, copies the region they read (what shows of each and three
+//! standard deviations around; one bounding box for a group of nearby
+//! blurs of one radius) out of the target into a scratch texture, blurs
+//! that with `MPSImageGaussianBlur` (a true gaussian; its edges clamp, so a
+//! blur at the window's edge does not darken), and begins the pass again,
+//! marking the holes' interiors as a pass restarted after paths does. It
+//! then draws the blurred backdrop back in two instanced draws per group:
+//! one keeping `destination × (1 − k)` and one adding `blurred × k`, `k`
+//! being each region's antialiased rounded-rectangle coverage times its
+//! edge fade and opacity. The two leave colour and alpha exactly a mix of
+//! the two by `k`, which one draw can't when the drawable is not opaque (a
+//! window over vibrancy, or holes).
 //!
 //! What the blur reads is what GPUI drew: a native under a hole is not in
 //! the drawable, and shows through the blurred backdrop unblurred, under
@@ -29,9 +30,9 @@
 //! src/metal_renderer.rs` at `361ff20`; Apache-2.0, by Wing and the zui
 //! contributors).
 //!
-//! [`ComposedBatch::Blur`]: gpui::composition::ComposedBatch::Blur
+//! [`ComposedBatch::Blurs`]: gpui::composition::ComposedBatch::Blurs
 
-use std::mem;
+use std::{mem, ops::Range};
 
 use anyhow::Result;
 use gpui::{BackdropBlur, DevicePixels, Scene, Size};
@@ -286,34 +287,92 @@ pub(crate) struct Pass<'a> {
     pub(crate) viewport_size: Size<DevicePixels>,
 }
 
-/// Draws the blur `index` of `scene` over what `encoder`'s pass drew so far:
-/// ends the pass, blurs a copy of the region, and returns the pass begun
-/// again with the blurred backdrop drawn back. Returns `encoder` as it is
-/// when the blur shows nothing or Metal Performance Shaders can't run.
+/// Draws the blurs `range` of `scene`, of one draw order, over what
+/// `encoder`'s pass drew so far: ends the pass once, blurs a copy of the
+/// region each group of them reads, and returns the pass begun again with
+/// the blurred backdrop drawn back. Returns `encoder` as it is when the
+/// blurs show nothing or Metal Performance Shaders can't run.
+///
+/// A group is a run of blurs of one radius whose regions' bounding box is
+/// at most twice as large as the regions together: one copy and one
+/// gaussian serve it. Blurs of a draw order never overlap (`fast::backdrop`
+/// joins only those whose regions are apart), so each draws back over what
+/// the others left.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw<'a>(
     renderer: &mut MetalRenderer,
     scene: &Scene,
-    index: usize,
+    range: Range<usize>,
+    blurs: &InstanceBinding,
+    fades: &InstanceBinding,
+    pass: &Pass<'a>,
+    encoder: &'a RenderCommandEncoderRef,
+) -> &'a RenderCommandEncoderRef {
+    if !renderer.fast_backdrop.supported {
+        return encoder;
+    }
+    let all = scene.backdrop_blurs();
+    let (target_width, target_height) = (pass.texture.width(), pass.texture.height());
+    // The region a blur reads, in whole pixels inside the target.
+    let region = |blur: &BackdropBlur| {
+        let reach = blur.reach();
+        let x0 = (reach.origin.x.0.floor().max(0.) as u64).min(target_width);
+        let y0 = (reach.origin.y.0.floor().max(0.) as u64).min(target_height);
+        let x1 = ((reach.origin.x.0 + reach.size.width.0).ceil().max(0.) as u64).min(target_width);
+        let y1 =
+            ((reach.origin.y.0 + reach.size.height.0).ceil().max(0.) as u64).min(target_height);
+        (x0 < x1 && y0 < y1).then_some([x0, y0, x1, y1])
+    };
+    let area = |[x0, y0, x1, y1]: [u64; 4]| (x1 - x0) * (y1 - y0);
+    // Each group: its blurs, the bounding box of their regions, and their
+    // regions' areas together.
+    let mut groups: Vec<(Range<usize>, [u64; 4], u64)> = Vec::new();
+    for index in range {
+        let Some(own) = region(&all[index]) else {
+            continue;
+        };
+        if let Some((group, union, together)) = groups.last_mut()
+            && group.end == index
+            && all[group.start].blur_radius == all[index].blur_radius
+        {
+            let joined = [
+                union[0].min(own[0]),
+                union[1].min(own[1]),
+                union[2].max(own[2]),
+                union[3].max(own[3]),
+            ];
+            if area(joined) <= 2 * (*together + area(own)) {
+                *union = joined;
+                *together += area(own);
+                group.end = index + 1;
+                continue;
+            }
+        }
+        groups.push((index..index + 1, own, area(own)));
+    }
+    let mut encoder = encoder;
+    for (group, union, _) in groups {
+        let sigma = all[group.start].blur_radius.0.max(0.5);
+        encoder = draw_group(renderer, group, union, sigma, blurs, fades, pass, encoder);
+    }
+    encoder
+}
+
+/// Draws the blurs `group`, of standard deviation `sigma`, reading `union`
+/// of the target.
+#[allow(clippy::too_many_arguments)]
+fn draw_group<'a>(
+    renderer: &mut MetalRenderer,
+    group: Range<usize>,
+    [x0, y0, x1, y1]: [u64; 4],
+    sigma: f32,
     blurs: &InstanceBinding,
     fades: &InstanceBinding,
     pass: &Pass<'a>,
     encoder: &'a RenderCommandEncoderRef,
 ) -> &'a RenderCommandEncoderRef {
     use metal::foreign_types::ForeignTypeRef as _;
-    let blur: &BackdropBlur = &scene.backdrop_blurs()[index];
-    if !renderer.fast_backdrop.supported {
-        return encoder;
-    }
-    let sigma = blur.blur_radius.0.max(0.5);
-    let reach = blur.reach();
     let (target_width, target_height) = (pass.texture.width(), pass.texture.height());
-    let x0 = (reach.origin.x.0.floor().max(0.) as u64).min(target_width);
-    let y0 = (reach.origin.y.0.floor().max(0.) as u64).min(target_height);
-    let x1 = ((reach.origin.x.0 + reach.size.width.0).ceil().max(0.) as u64).min(target_width);
-    let y1 = ((reach.origin.y.0 + reach.size.height.0).ceil().max(0.) as u64).min(target_height);
-    if x1 <= x0 || y1 <= y0 {
-        return encoder;
-    }
     let device = renderer.device.clone();
     let Some(kernel) = renderer.fast_backdrop.kernel(&device, sigma) else {
         return encoder;
@@ -394,8 +453,8 @@ pub(crate) fn draw<'a>(
             metal::MTLPrimitiveType::Triangle,
             0,
             6,
-            1,
-            index as u64,
+            group.len() as u64,
+            group.start as u64,
         );
     }
     encoder
@@ -704,6 +763,62 @@ mod tests {
         // Inside the blur, over the step, blurred.
         let step = blurred.get_pixel(119, 85)[0];
         assert!((60..200).contains(&step), "{step}");
+    }
+
+    /// Two blurs apart, of one radius, joined in one draw order, are copied
+    /// and blurred as one group, and each draws as it does alone.
+    #[test]
+    fn blurs_drawn_from_one_copy_draw_as_each_alone() {
+        let Some(mut renderer) = renderer() else {
+            return;
+        };
+        let (a, b) = (sp(90., 10., 60., 40.), sp(90., 100., 60., 40.));
+        let build = |first: bool, second: bool| {
+            let mut scene = Scene::default();
+            halves(&mut scene);
+            if first {
+                scene.insert_backdrop_blur(blur(a, 4.));
+                scene.insert_primitive(quad(a, 0xff000040));
+            }
+            if second {
+                scene.insert_backdrop_blur(blur(b, 4.));
+                scene.insert_primitive(quad(b, 0x0000ff40));
+            }
+            scene
+        };
+        let mut both = build(true, true);
+        both.finish();
+        let blurs = both.backdrop_blurs();
+        assert_eq!(blurs[0].order, blurs[1].order, "the second joins the first");
+        let groups: Vec<_> = both
+            .composed_batches()
+            .filter(|batch| matches!(batch, gpui::composition::ComposedBatch::Blurs(_)))
+            .collect();
+        assert_eq!(groups.len(), 1);
+        let both = render(&mut renderer, &mut both);
+        let alone = [
+            render(&mut renderer, &mut build(true, false)),
+            render(&mut renderer, &mut build(false, true)),
+        ];
+        let mut worst = 0;
+        for (region, alone) in [a, b].into_iter().zip(&alone) {
+            for (x, y, pixel) in both.enumerate_pixels() {
+                let centre = point(ScaledPixels(x as f32 + 0.5), ScaledPixels(y as f32 + 0.5));
+                if region.contains(&centre) {
+                    for channel in 0..4 {
+                        let difference = (i32::from(pixel[channel])
+                            - i32::from(alone.get_pixel(x, y)[channel]))
+                        .abs();
+                        worst = worst.max(difference);
+                    }
+                }
+            }
+        }
+        eprintln!("grouped against alone: within {worst} of 255 levels");
+        assert!(worst <= 1, "{worst}");
+        // Blurred, not copied: across the step inside each region.
+        let step = both.get_pixel(119, 30)[1];
+        assert!((40..215).contains(&step), "{step}");
     }
 
     /// What a frosted popover over a list scrolling under it costs, against

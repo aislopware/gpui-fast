@@ -134,7 +134,7 @@ pub(crate) fn draw_primitives_to_texture(
                 );
                 continue;
             }
-            ComposedBatch::Blur(index) => {
+            ComposedBatch::Blurs(range) => {
                 let pass = super::backdrop::Pass {
                     command_buffer,
                     texture,
@@ -144,7 +144,7 @@ pub(crate) fn draw_primitives_to_texture(
                 let restarted = super::backdrop::draw(
                     renderer,
                     scene,
-                    index,
+                    range,
                     &instance_bindings.fast_blurs,
                     &instance_bindings.fades,
                     &pass,

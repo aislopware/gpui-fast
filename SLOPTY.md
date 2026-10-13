@@ -655,6 +655,13 @@ Added in this fork:
   pixels follow the gaussian to within a level, keep a non-opaque drawable's alpha, and
   leave holes and paths outside the region as drawn without it (`gpui_apple`
   `fast::backdrop`). Costs in docs/composition.md, "Backdrop blur"
+- perf(gpui, gpui_apple): blurs share pass breaks. A blur joins the draw order of an earlier
+  one of its radius when nothing between them is under its region, only its region goes in
+  the bounds tree, and Metal ends the pass once per draw order, copying and blurring a group
+  of nearby blurs at once (`ComposedBatch::Blurs`). Twenty frosted file badges over a
+  scrolling list: 836 µs encode and 3.24 ms GPU to 112 µs and 1.05 ms (opaque: 0.75 ms)
+  (`blurs_whose_regions_are_apart_share_one_copy`; grouped blurs draw as each alone to 0
+  levels, `blurs_drawn_from_one_copy_draw_as_each_alone`)
 - feat(gpui, gpui_apple): `Window::paint_image_fitted_masked(.., Some(ImageAlphaMask))`,
   ported from zui (`aa00941`, Apache-2.0; `fast/image_mask.rs`): a rounded rectangle
   feathered out of an image past a clearance, and a bottom fade, as zeron's new-thread hero

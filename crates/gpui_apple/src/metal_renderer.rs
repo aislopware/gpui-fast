@@ -956,7 +956,7 @@ impl MetalRenderer {
                     continue;
                 }
                 // Frames with blurs are drawn by fast::paths.
-                ComposedBatch::Blur(_) => continue,
+                ComposedBatch::Blurs(_) => continue,
             };
             match batch {
                 PrimitiveBatch::Shadows(range) => {

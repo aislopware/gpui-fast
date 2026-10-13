@@ -345,16 +345,21 @@ window build is the cost the layer removes.
 a `BackdropBlur` as a native's placement is placed: it takes the next draw order over the
 region it reads from (its bounds and three standard deviations around them), lifts the rest
 of an open paint layer above itself, and is a paint operation of its own
-(`PaintOperation::Backdrop`), replayed with the primitives around it. `composed_batches`
-yields `ComposedBatch::Blur(index)` after every batch of a lower order, splitting batches
-around it as it splits them around holes.
+(`PaintOperation::Backdrop`), replayed with the primitives around it. Blurs of one radius
+share a draw order where nothing between them is under the later one's region (a wave; see
+`fast/backdrop.rs` for what that leaves out at the edge of its blur), and only the region
+goes in the bounds tree, so a column of frosted badges is one wave. `composed_batches` yields
+`ComposedBatch::Blurs(range)`, the blurs of one order, after every batch of a lower order,
+splitting batches around them as it splits them around holes.
 
-On Metal (`gpui_apple/src/fast/backdrop.rs`) the renderer ends the render pass, copies what
-the drawable holds under the region and its reach into a scratch texture, blurs it with
+On Metal (`gpui_apple/src/fast/backdrop.rs`) the renderer ends the render pass once per
+`Blurs`, groups runs of blurs of one radius whose regions' bounding box is at most twice
+their regions together, copies what the drawable holds under each group's box into a scratch
+texture, blurs it with
 `MPSImageGaussianBlur` (clamped at its edges), and starts a new pass that loads the
 drawable. The pass is restarted as after a path batch: the bindings are forgotten, the
 holes' interiors are marked again in the stencil, and drawing goes on culling for the next
-hole. The blurred copy is drawn back in two draws, an erase (`dst × (1 − coverage)`) and an
+hole. Each group's blurred copy is drawn back in two instanced draws, an erase (`dst × (1 − coverage)`) and an
 add (`blurred × coverage`), so a drawable that is not opaque keeps its alpha; coverage is
 the rounded rectangle's antialiased edge, times the element opacity, times the edge fade or
 rounded clip around the blur. Drawables a blur reads are made readable
@@ -364,24 +369,24 @@ rounded clip around the blur. Drawables a blur reads are made readable
 
 Measured (`frosted_popover_frame_cost` in `gpui_apple/src/fast/backdrop.rs`, release, a
 3024 × 1964 drawable, a list scrolling 12 pixels a frame under it, σ 32 device pixels as
-zeron's σ 16 points at 2x; medians, on a machine running other builds):
+zeron's σ 16 points at 2x; medians of 300 frames; the machine was running other builds, so
+compare rows of one run, not runs):
 
-| Frame | encode | GPU |
+| Frame | one break per blur | waves and groups |
 | --- | --- | --- |
-| list alone | 16 µs | 0.39 ms |
-| opaque popover with `shadow_lg` | 16 µs | 0.64 ms |
-| frosted popover | 68 µs | 0.69 ms |
-| frosted popover, composer and tooltip | 213 µs | 1.61 ms |
-| the same three opaque | 24 µs | 0.89 ms |
-| 20 frosted file badges (busier machine) | 836 µs | 3.24 ms |
-| 20 opaque file badges (busier machine) | 19 µs | 0.75 ms |
+| list alone | 42 µs, 0.74 ms | 27 µs, 0.74 ms |
+| opaque popover with `shadow_lg` | 54 µs, 1.24 ms | 34 µs, 1.24 ms |
+| frosted popover | 190 µs, 1.26 ms | 120 µs, 1.26 ms |
+| frosted popover, composer and tooltip | 204 µs, 1.88 ms | 120 µs, 1.76 ms |
+| the same three opaque | 30 µs, 1.36 ms | 39 µs, 1.45 ms |
+| 20 frosted file badges | 836 µs, 3.24 ms | 112 µs, 1.05 ms |
+| 20 opaque file badges | 19 µs, 0.75 ms | 26 µs, 0.75 ms |
 
-Each blur costs about 50 µs of encoding, most of it in Metal Performance Shaders, and a
-pass break, which on Apple's tile-based GPUs stores and loads the whole drawable: about
-0.1 ms of GPU time at this size. zui pays the same per blur. A popover, composer or menu
-is well inside a 120 Hz frame; a transcript frosting every tool row's file badge pays per
-badge, since each badge's fill lies in the next badge's reach and so has to be drawn before
-it, and no two blurs can share a break.
+(encode, then GPU time.) A blur on its own costs about 50 µs of encoding, most of it in
+Metal Performance Shaders, and a pass break, which on Apple's tile-based GPUs stores and
+loads the whole drawable: about 0.1 ms of GPU time at this size. zui pays both per blur.
+With waves, twenty frosted badges, or a popover, composer and tooltip, cost one break and
+one gaussian: 0.3 ms of GPU time over their opaque branch.
 
 ## Limits and what is left
 

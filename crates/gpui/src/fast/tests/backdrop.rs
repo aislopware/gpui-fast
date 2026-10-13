@@ -135,7 +135,7 @@ fn a_blur_lies_between_what_it_covers_and_what_is_painted_over_it() {
         let batches: Vec<_> = scene.composed_batches().collect();
         let at = batches
             .iter()
-            .position(|batch| matches!(batch, ComposedBatch::Blur(0)))
+            .position(|batch| matches!(batch, ComposedBatch::Blurs(range) if range.contains(&0)))
             .expect("the blur is met");
         let quads_before: Vec<u32> = batches[..at]
             .iter()
@@ -162,7 +162,7 @@ fn a_blur_lies_between_what_it_covers_and_what_is_painted_over_it() {
         assert!(
             !scene
                 .composed_batches()
-                .any(|batch| matches!(batch, ComposedBatch::Blur(_)))
+                .any(|batch| matches!(batch, ComposedBatch::Blurs(_)))
         );
     });
 }
@@ -323,6 +323,15 @@ impl Render for Scrolled {
             .child(div().w(px(300.)).h(px(200.)).child(content))
             .when(!inside, |page| {
                 page.child(
+                    div()
+                        .absolute()
+                        .bottom(px(10.))
+                        .left(px(20.))
+                        .w(px(260.))
+                        .h(px(40.))
+                        .child(frosted(20., "composer")),
+                )
+                .child(
                     div()
                         .absolute()
                         .top(px(40.))
@@ -632,5 +641,63 @@ fn a_blur_painted_first_in_a_paint_layer_lies_under_the_rest_of_it() {
                 .iter()
                 .all(|sprite| sprite.order > blur.order)
         );
+    });
+}
+
+/// A transcript of tool rows, each a label and a frosted file badge.
+struct Badges;
+
+impl Render for Badges {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(hsla(0., 0., 0.95, 1.))
+            .children((0..10).map(|ix| {
+                div()
+                    .h(px(30.))
+                    .flex()
+                    .child(div().w(px(80.)).child(format!("Edit {ix}")))
+                    .child(div().w(px(90.)).h(px(22.)).child(frosted(16., "file.rs")))
+            }))
+    }
+}
+
+/// Frosted badges down a column, whose regions are apart, share one draw
+/// order, so a renderer copies what is under them once: one batch of ten
+/// blurs, after the rows and labels, before the badges' fills and text.
+#[test]
+fn blurs_whose_regions_are_apart_share_one_copy() {
+    let mut cx = text_cx();
+    let window = cx.add_window(|_, _| Badges);
+    with_window(&mut cx, window.into(), |window, cx| {
+        window.draw(cx).clear(cx);
+        let scene = &window.rendered_frame.scene;
+        let blurs = scene.backdrop_blurs();
+        assert_eq!(blurs.len(), 10);
+        assert!(blurs.iter().all(|blur| blur.order == blurs[0].order));
+        let batches: Vec<_> = scene
+            .composed_batches()
+            .filter_map(|batch| match batch {
+                ComposedBatch::Blurs(range) => Some(range),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(batches, vec![0..10]);
+        let order = blurs[0].order;
+        for blur in blurs {
+            let over = |quad: &&crate::Quad| quad.bounds == blur.bounds;
+            let fill = scene.quads.iter().find(over).expect("a badge's fill");
+            assert!(fill.order > order);
+        }
+        // The labels beside the badges, painted before them, are under them.
+        let labels = scene.monochrome_sprites.iter().filter(|sprite| {
+            !blurs
+                .iter()
+                .any(|blur| blur.bounds.intersects(&sprite.bounds))
+        });
+        assert!(labels.clone().count() > 0);
+        assert!(labels.clone().all(|sprite| sprite.order < order));
     });
 }

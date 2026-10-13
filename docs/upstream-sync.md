@@ -313,7 +313,7 @@ unchanged, and a new entry needs as good a reason.
   grows from 80 to 128 bytes. Only Metal draws it.
 - `Window::paint_backdrop_blur` is new public API, with `BackdropBlur`,
   `Scene::backdrop_blurs`, `Scene::insert_backdrop_blur` and
-  `ComposedBatch::Blur` (`fast/backdrop.rs`, `gpui_apple/src/fast/backdrop.rs`;
+  `ComposedBatch::Blurs` (`fast/backdrop.rs`, `gpui_apple/src/fast/backdrop.rs`;
   docs/composition.md, "Backdrop blur"), ported from zui
   (<https://github.com/zeronsh/zui> `361ff20`; Apache-2.0, by Wing and the zui
   contributors; the notice is in the module's documentation). A frosted

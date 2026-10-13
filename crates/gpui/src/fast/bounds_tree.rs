@@ -486,6 +486,53 @@ where
         ordering
     }
 
+    /// Inserts `bounds` for what draws there but reads from `reads` too, as
+    /// a backdrop blur does, at the ordering `choose` picks from the least
+    /// one above everything `reads` meets and the greatest of what `bounds`
+    /// meets. The ordering picked must be above the latter.
+    pub fn insert_reading(
+        &mut self,
+        reads: &Bounds<U>,
+        bounds: Bounds<U>,
+        choose: impl FnOnce(u32, u32) -> u32,
+    ) -> u32 {
+        let ordering = if self.replaying {
+            // Without the grid: searched among what was inserted so far.
+            let max = |query: &Bounds<U>| {
+                self.recorded
+                    .iter()
+                    .filter(|(other, _)| other.intersects(query))
+                    .map(|(_, ordering)| *ordering)
+                    .max()
+                    .unwrap_or(0)
+            };
+            let ordering = choose(max(reads) + 1, max(&bounds));
+            let previous = self.previous.get(self.cursor);
+            self.cursor += 1;
+            match previous {
+                Some((previous_bounds, previous_ordering)) => {
+                    if *previous_bounds != bounds {
+                        self.changed.push(previous_bounds);
+                        self.changed.push(&bounds);
+                    } else if *previous_ordering != ordering {
+                        self.changed.push(&bounds);
+                    }
+                }
+                None => self.changed.push(&bounds),
+            }
+            ordering
+        } else {
+            let ordering = choose(
+                self.find_max_ordering(reads) + 1,
+                self.find_max_ordering(&bounds),
+            );
+            self.add(&bounds, ordering);
+            ordering
+        };
+        self.recorded.push((bounds, ordering));
+        ordering
+    }
+
     /// Inserts `bounds` again, which last frame inserted as its entry
     /// `position`, for a primitive drawn again from last frame, and returns
     /// its ordering: last frame's, unless something it meets changed.

@@ -70,7 +70,11 @@ fn drawing_order(scene: &Scene) -> Vec<(char, u32)> {
                     .map(|shadow| ('s', shadow.order)),
             ),
             ComposedBatch::Primitives(other) => panic!("unexpected batch {other:?}"),
-            ComposedBatch::Blur(ix) => drawn.push(('b', scene.backdrop_blurs()[ix].order)),
+            ComposedBatch::Blurs(range) => drawn.extend(
+                scene.backdrop_blurs()[range]
+                    .iter()
+                    .map(|blur| ('b', blur.order)),
+            ),
         }
     }
     drawn
