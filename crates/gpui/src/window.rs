@@ -1308,7 +1308,6 @@ pub struct Window {
     long_press_capture: Option<EntityId>,
     pub(crate) refreshing: bool,
     pub(crate) activation_observers: SubscriberSet<(), AnyObserver>,
-    pub(crate) draw_observers: SubscriberSet<(), crate::fast::draw_timing::DrawObserver>,
     pub(crate) focus: Option<FocusId>,
     focus_enabled: bool,
     /// Incremented every time focus moves. Used to invalidate a
@@ -2240,7 +2239,6 @@ impl Window {
             long_press_capture: None,
             refreshing: false,
             activation_observers: SubscriberSet::new(),
-            draw_observers: SubscriberSet::new(),
             focus: None,
             focus_enabled: true,
             focus_generation: 0,
@@ -3527,7 +3525,7 @@ impl Window {
     /// the contents of the new [`Scene`], use [`Self::present`].
     #[profiling::function]
     pub fn draw(&mut self, cx: &mut App) -> ArenaClearNeeded {
-        let draw_started = std::time::Instant::now();
+        let draw_started = crate::fast::draw_timing::now();
         // Drain every draw in profiler builds so a previous frame's
         // first-invalidation timestamp can't be attributed to this one.
         #[cfg(feature = "profiler")]
@@ -3687,7 +3685,7 @@ impl Window {
             self.debug_frame_overlay.record_frame(draw_duration);
         }
 
-        self.drawn(draw_started, cx);
+        crate::fast::draw_timing::drawn(self, draw_started, cx);
 
         // Exit the scope to obtain the arena-clear token this draw owes; the
         // scope's teardown itself happens in `ElementArenaScope::drop`.

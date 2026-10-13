@@ -238,6 +238,13 @@ unchanged, and a new entry needs as good a reason.
   element with a tooltip pays one test in its paint and, with a focus
   handle, one focus question; `focus_tooltip_bench` in
   `fast/tests/focus_tooltip.rs` measures 100 such controls.
+- `Window::observe_draws(cx, callback)` is new public API
+  (`fast/draw_timing.rs`): after each draw of the window it hands the
+  callback when the draw began and how long render, layout, prepaint and
+  paint took. A host's frame-time probe drawn inside the window sees only
+  the views built again around it, so a frame that rebuilds one cached view
+  goes unseen; upstream's own window profiler keeps only histograms and
+  only behind its `profiler` feature.
 - `StateTransition` and `StatefulInteractiveElement::transition` are new
   public API (`fast/transition.rs`). Upstream swaps a hover, active, focus or
   drag-over style in the frame its state changes; a design system's pointer

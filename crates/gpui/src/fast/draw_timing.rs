@@ -10,48 +10,60 @@
 
 use std::time::{Duration, Instant};
 
-use crate::{App, Subscription, Window};
+use crate::{App, Global, Subscription, SubscriberSet, Window};
 
-/// One draw of a window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Drawn {
-    /// When the draw began.
-    pub started: Instant,
-    /// How long render, layout, prepaint and paint took.
-    pub took: Duration,
+/// Every window's draw observers, by the window's id.
+struct DrawObservers(SubscriberSet<u64, DrawObserver>);
+
+impl Default for DrawObservers {
+    fn default() -> Self {
+        Self(SubscriberSet::new())
+    }
 }
 
-/// A callback [`Window::observe_draws`] was handed.
-pub(crate) type DrawObserver = Box<dyn FnMut(Drawn, &mut App) -> bool + 'static>;
+impl Global for DrawObservers {}
+
+/// A callback [`Window::observe_draws`] was handed: when the draw began and
+/// how long it took.
+type DrawObserver = Box<dyn FnMut(Instant, Duration, &mut App) -> bool + 'static>;
 
 impl Window {
-    /// Calls `callback` after each draw of this window with how long it took,
-    /// until the subscription is dropped.
+    /// Calls `callback` after each draw of this window with when it began and
+    /// how long render, layout, prepaint and paint took, until the
+    /// subscription is dropped.
     pub fn observe_draws(
         &self,
-        mut callback: impl FnMut(Drawn, &mut App) + 'static,
+        cx: &mut App,
+        mut callback: impl FnMut(Instant, Duration, &mut App) + 'static,
     ) -> Subscription {
-        let (subscription, activate) = self.draw_observers.insert(
-            (),
-            Box::new(move |drawn, cx| {
-                callback(drawn, cx);
+        let observers = cx.default_global::<DrawObservers>().0.clone();
+        let (subscription, activate) = observers.insert(
+            self.handle.window_id().as_u64(),
+            Box::new(move |started, took, cx| {
+                callback(started, took, cx);
                 true
             }),
         );
         activate();
         subscription
     }
+}
 
-    /// Tells the observers the draw that began at `started` is done.
-    pub(crate) fn drawn(&self, started: Instant, cx: &mut App) {
-        let drawn = Drawn {
-            started,
-            took: started.elapsed(),
-        };
-        self.draw_observers
-            .clone()
-            .retain(&(), |observer| observer(drawn, cx));
-    }
+/// When a draw begins, on the wall clock: a draw's cost is real time even
+/// under a test's clock.
+pub(crate) fn now() -> Instant {
+    Instant::now()
+}
+
+/// Tells `window`'s observers the draw that began at `started` is done.
+pub(crate) fn drawn(window: &Window, started: Instant, cx: &mut App) {
+    let Some(observers) = cx.try_global::<DrawObservers>().map(|o| o.0.clone()) else {
+        return;
+    };
+    let took = started.elapsed();
+    observers.retain(&window.handle.window_id().as_u64(), |observer| {
+        observer(started, took, cx)
+    });
 }
 
 #[cfg(test)]
@@ -76,8 +88,10 @@ mod tests {
         let (_view, cx) = cx.add_window_view(|_, _| Empty);
         let seen = Rc::new(RefCell::new(Vec::new()));
         let kept = Rc::clone(&seen);
-        let subscription = cx.update(|window, _| {
-            window.observe_draws(move |drawn, _| kept.borrow_mut().push(drawn))
+        let subscription = cx.update(|window, cx| {
+            window.observe_draws(cx, move |started, took, _| {
+                kept.borrow_mut().push((started, took))
+            })
         });
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
@@ -85,7 +99,7 @@ mod tests {
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
         assert_eq!(seen.borrow().len(), 2);
-        assert!(seen.borrow()[0].started <= seen.borrow()[1].started);
+        assert!(seen.borrow()[0].0 <= seen.borrow()[1].0);
         drop(subscription);
         cx.update(|window, _| window.refresh());
         cx.run_until_parked();
