@@ -339,3 +339,10 @@ Generic, each with tests in its commit, and each a product question for upstream
 - Ports of Zed pull requests (`66bae85`, `057969e`, `da4e350`, `65891f9`, `1cc5051`):
   longbridge takes them from Zed.
 - `abd688f` and `1a933ba`: superseded by longbridge #56 (lists replay their rows).
+- Ports from zui (zeronsh/zui, Apache-2.0) for Slopty's copy of zeron's UI: `e3540f1` a
+  list's tail reservation; `4cc6457` rounded clips; `1cb5741` and `d7b5523` backdrop blur and
+  its shared pass breaks; `54e69ce` image alpha masks; `d763dcf` transformed and blurred
+  glyphs; `8ec4028` `Window::on_present`. They serve zeron's look in zui's API shapes.
+  `dc23ac0` (`ImageSource::evict`, `App::peek_asset`) fixes a leak longbridge shares: each
+  image shown from bytes keeps its atlas tiles after `remove_asset`. It could be offered as a
+  fix.
