@@ -33,6 +33,7 @@ mod line_breaks;
 mod list_tail;
 mod live_region;
 mod mask;
+mod misc;
 mod number_shaping;
 mod oracle;
 mod path_cache;

@@ -42,6 +42,7 @@ pub(crate) mod line_breaks;
 pub(crate) mod list_tail;
 pub(crate) mod live_region;
 pub(crate) mod mask;
+pub(crate) mod misc;
 pub(crate) mod number_shaping;
 pub(crate) mod path_cache;
 pub(crate) mod present;
