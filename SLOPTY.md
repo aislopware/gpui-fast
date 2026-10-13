@@ -632,6 +632,11 @@ Added in this fork:
   scroll layer counts the extra in its overscan and keeps the row
   (`a_list_with_a_reservation_scrolls_on_its_layer`: over 29 scrolled frames, 27 composited,
   the last row is rendered once, against twice when the layer measures it without the extra)
+- fix(gpui): `ImageSource::evict` and `App::peek_asset`, ported from zui (wingleeio/zed
+  `b687328`, Apache-2.0; `fast/image_evict.rs`). `remove_asset` alone leaves a decoded
+  image's sprite atlas tiles in every window, out of reach (each image shown from bytes
+  leaks its tiles; a large one a texture of its own); `evict` removes the cached load and
+  drops the tiles, in the window being updated too (`evicting_an_image_frees_its_atlas_tiles`)
 
 ### Candidates for longbridge
 

@@ -280,6 +280,16 @@ unchanged, and a new entry needs as good a reason.
   Unused, it is one comparison per row laid out and two calls per layout. A
   scroll layer keeps the last row and the space below it as one row
   (`fast/tests/list_tail.rs`).
+- `ImageSource::evict` and `App::peek_asset` are new public API
+  (`fast/image_evict.rs`), ported from zui, which carries wingleeio/zed
+  `b687328` (Apache-2.0, by Wing; the notice is kept at the top of the file).
+  `ImageSource::remove_asset` forgets an image's cached load, but its decoded
+  `RenderImage` lives inside that load, so its sprite atlas tiles stay in every
+  window with nothing able to hand them to `App::drop_image`: each image shown
+  from bytes leaks its tiles, and a large one a texture
+  (`evicting_an_image_frees_its_atlas_tiles` shows the leak and its fix).
+  `evict` removes the load and drops the tiles; `peek_asset` reads a finished
+  load without starting one.
 - The workspace pins Taffy 0.14 where upstream pins 0.13. Taffy 0.13 keeps
   one cached size per kind of constraint, so a node measured under two widths
   in one layout evicts one with the other, and the clean subtrees around a

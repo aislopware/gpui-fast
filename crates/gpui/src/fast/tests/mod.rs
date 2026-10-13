@@ -19,6 +19,7 @@ mod focus_tooltip;
 mod focus_while_drawing;
 mod gesture;
 mod global_id;
+mod image_evict;
 mod keyed;
 mod keypad;
 mod layers;
