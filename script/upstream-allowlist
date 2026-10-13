@@ -55,7 +55,7 @@ crates/gpui_platform/src/gpui_platform.rs unmarked=1 # Slopty: the iOS platform
 
 # Open zed pull requests ported ahead of zed (SLOPTY.md, "Ported from open zed pull
 # requests"). Each line goes when the zed import that brings the pull request lands.
-crates/gpui/src/gestures.rs hunk=54 added=106 removed=24 unmarked=9 # zed #64239: a touch that catches a fling picks its own axis; Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None in scroll_event; fast::fling's state, the catch and the replaced fling it decides, and the visibility bumps it needs
+crates/gpui/src/gestures.rs hunk=54 added=113 removed=29 unmarked=9 # longbridge #65: release velocity reconciled so a fling never reverses; zed #64239: a touch that catches a fling picks its own axis; Slopty: the momentum after a swipe told apart from a finger's and a wheel's scrolling (ScrollWheelEvent::momentum_phase), None in scroll_event; fast::fling's state, the catch and the replaced fling it decides, and the visibility bumps it needs
 crates/gpui_macos/Cargo.toml hunk=12 # zed #63469: AppKit features for the glyph raster test; Slopty: AppKit and CoreGraphics event features for the momentum test
 crates/gpui_apple/Cargo.toml hunk=12 # zed #63469: AppKit features for the glyph raster test, which moved here with the text system (zed #65058); fast::video_layer's core-video, the crate Slopty hands it buffers of
 crates/gpui_apple/src/text_system.rs hunk=201 added=226 unmarked=2 # zed #63469: a size-dependent left margin in glyph raster bounds, and its AppKit test (zed #65058 moved the file from gpui_macos)
