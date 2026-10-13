@@ -40,6 +40,7 @@ pub(crate) mod layout_bounds;
 pub(crate) mod layout_key;
 // longbridge #63's CJK punctuation predicates: only its wrap tests are kept,
 // run against `line_breaks` (UAX #14), which already keeps the punctuation in place.
+pub(crate) mod draw_timing;
 #[cfg(test)]
 pub(crate) mod line_break;
 pub(crate) mod line_breaks;
