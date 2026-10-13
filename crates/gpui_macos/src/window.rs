@@ -3985,6 +3985,7 @@ unsafe fn remove_layer_background(layer: id) {
 
         let filters: id = msg_send![layer, filters];
         if !filters.is_null() {
+            crate::fast::backdrop::widen_blur(layer, filters);
             // Remove the increased saturation.
             // The effect of a `CAFilter` or `CIFilter` is determined by its name, and the
             // `description` reflects its name and some parameters. Currently `NSVisualEffectView`

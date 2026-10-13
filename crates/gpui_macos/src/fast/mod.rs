@@ -7,6 +7,7 @@
 //! call to it. The logic itself — data structures, algorithms, bookkeeping,
 //! tests — is written here, one file per topic.
 
+pub(crate) mod backdrop;
 pub(crate) mod cursor;
 pub(crate) mod gesture;
 pub(crate) mod keypad;
