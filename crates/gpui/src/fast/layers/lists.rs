@@ -2278,7 +2278,10 @@ pub(crate) fn end_list(
                 );
                 let (_, height) = tops[&row];
                 let hidden = top + height <= viewport.top() || top >= viewport.bottom();
-                if hidden && (size.height.0 - height.0).abs() * scale_factor >= 0.01 {
+                // The last row's height includes the space a tail
+                // reservation leaves below it, which its layout does not.
+                let natural = crate::fast::list_tail::natural_height(state, row, height);
+                if hidden && (size.height.0 - natural.0).abs() * scale_factor >= 0.01 {
                     // The list's size for the row is out of date (it was
                     // measured at another scale, say), and the list corrects
                     // it when it shows the row: the layer does not hold a row

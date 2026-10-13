@@ -75,6 +75,7 @@ pub(crate) struct StateInner {
     pub(crate) pending_scroll: Option<PendingScroll>,
     pub(crate) follow_state: FollowState,
     pub(crate) version: crate::fast::dependencies::StateVersion,
+    pub(crate) fast_tail: crate::fast::list_tail::TailReservation,
 }
 
 /// Deferred scroll adjustment applied after the scroll-top item has been remeasured.
@@ -231,10 +232,10 @@ struct LayoutItemsResponse {
     item_layouts: VecDeque<ItemLayout>,
 }
 
-struct ItemLayout {
-    index: usize,
+pub(crate) struct ItemLayout {
+    pub(crate) index: usize,
     element: AnyElement,
-    size: Size<Pixels>,
+    pub(crate) size: Size<Pixels>,
 }
 
 /// Frame state used by the [List] element after layout.
@@ -264,14 +265,14 @@ impl ListItem {
         }
     }
 
-    fn size_hint(&self) -> Option<Size<Pixels>> {
+    pub(crate) fn size_hint(&self) -> Option<Size<Pixels>> {
         match self {
             ListItem::Measured { size, .. } => Some(*size),
             ListItem::Unmeasured { size_hint, .. } => *size_hint,
         }
     }
 
-    fn focus_handle(&self) -> Option<FocusHandle> {
+    pub(crate) fn focus_handle(&self) -> Option<FocusHandle> {
         match self {
             ListItem::Unmeasured { focus_handle, .. } | ListItem::Measured { focus_handle, .. } => {
                 focus_handle.clone()
@@ -328,6 +329,7 @@ impl ListState {
             pending_scroll: None,
             follow_state: FollowState::default(),
             version: crate::fast::dependencies::StateVersion::default(),
+            fast_tail: crate::fast::list_tail::TailReservation::default(),
         })));
         this.splice(0..0, item_count);
         this
@@ -419,6 +421,7 @@ impl ListState {
     }
 
     fn remeasure_items_with_scroll_anchor(&self, range: Range<usize>, scroll_anchor: ScrollAnchor) {
+        crate::fast::list_tail::clear_extra(self);
         let state = &mut *self.0.borrow_mut();
         crate::fast::dependencies::StateVersion::bump(&state.version);
 
@@ -520,6 +523,7 @@ impl ListState {
         old_range: Range<usize>,
         focus_handles: impl IntoIterator<Item = Option<FocusHandle>>,
     ) {
+        crate::fast::list_tail::clear_extra(self);
         let state = &mut *self.0.borrow_mut();
         crate::fast::dependencies::StateVersion::bump(&state.version);
 
@@ -1062,6 +1066,7 @@ impl StateInner {
         cx: &mut App,
     ) -> LayoutItemsResponse {
         let old_items = self.items.clone();
+        crate::fast::list_tail::begin_layout(self);
         let mut measured_items = VecDeque::new();
         let mut item_layouts = VecDeque::new();
         let mut rendered_height = padding.top;
@@ -1096,7 +1101,8 @@ impl StateInner {
             }
 
             // Use the previously cached height and focus handle if available
-            let mut size = item.size();
+            let mut size =
+                crate::fast::list_tail::natural_size(self, item, scroll_top.item_ix + ix);
 
             // If we're within the visible area or the height wasn't cached, render and measure the item's element
             if (visible_height < available_height || size.is_none())
@@ -1163,6 +1169,14 @@ impl StateInner {
                 focus_handle: item.focus_handle(),
             });
         }
+        rendered_height += crate::fast::list_tail::reserve(
+            self,
+            &old_items,
+            scroll_top.item_ix,
+            &mut measured_items,
+            &mut item_layouts,
+            available_height,
+        );
         rendered_height += padding.bottom;
 
         // Prepare to start walking upward from the item at the scroll top.
@@ -1201,6 +1215,14 @@ impl StateInner {
                     break;
                 }
             }
+            rendered_height += crate::fast::list_tail::reserve(
+                self,
+                &old_items,
+                cursor.start().0,
+                &mut measured_items,
+                &mut item_layouts,
+                available_height,
+            );
 
             scroll_top = ListOffset {
                 item_ix: cursor.start().0,

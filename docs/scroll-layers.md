@@ -66,6 +66,12 @@ drawing as it does without layers, and how to verify and measure layers.
     at its end, as a view keeping its list there calls on every render,
     changes nothing. Nor does `ScrollHandle::scroll_to_bottom` on a handle
     already at its bottom (`fast::layers::scroll_to_bottom`).
+  - A `list` holding a tail reservation (`ListState::set_tail_reservation`,
+    `fast::list_tail`) keeps the space below its last row in that row's
+    height, so the layer's overscan counts it as part of the row, and the
+    row, rendered into the overscan out of sight, is held and composited
+    like any other: the list takes the space off where it checks a row it
+    renders against the height it holds for it.
   - A scrollbar dragging a `list` (`ListState::set_offset_from_scrollbar`)
     scrolls it as a wheel does: the offset it sets is taken for a scroll, not
     for a change of the list, and the view holding the list, which the

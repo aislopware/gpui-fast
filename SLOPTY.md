@@ -621,6 +621,17 @@ Added in this fork:
   `FontWeight::MEDIUM` is SF Medium (`each_css_weight_reaches_its_own_face`: the system
   face and Avenir Next, each weight its own face, each inking more than the one below).
   Zed's issue #14175 is this
+- feat(gpui): a list's tail reservation, ported from zui (`fast/list_tail.rs`;
+  zeronsh/zui `8425850`, Apache-2.0). `ListState::set_tail_reservation(Some((row,
+  inset)))` keeps a viewport's height less `inset` from `row` through the last row, as
+  trailing space in the last row's box sized while the list lays its rows out, so a
+  transcript's new turn rests at the top with the answer streaming in below it and no gap
+  ever shows; `tail_reservation_filled` says when the rows have taken it up and
+  `offset_for_item` where a row begins in the list's tree. Unlike zui the last row is not
+  rendered again on every layout: its natural height is its height less the extra, and a
+  scroll layer counts the extra in its overscan and keeps the row
+  (`a_list_with_a_reservation_scrolls_on_its_layer`: over 29 scrolled frames, 27 composited,
+  the last row is rendered once, against twice when the layer measures it without the extra)
 
 ### Candidates for longbridge
 

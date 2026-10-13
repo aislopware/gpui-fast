@@ -268,6 +268,18 @@ unchanged, and a new entry needs as good a reason.
   notifies the view holding the value. No upstream code calls it, so it
   costs nothing unused; a hundred values at rest add about 0.02 ms to a
   frame (`value_transition_bench` in `fast/tests/value_transition.rs`).
+- `ListState::set_tail_reservation`, `ListState::offset_for_item` and
+  `ListState::tail_reservation_filled` are new public API (`fast/list_tail.rs`),
+  ported from zui (<https://github.com/zeronsh/zui> `8425850`; Apache-2.0, by
+  Wing; the notice is kept at the top of the file). A chat transcript that
+  scrolls the turn just sent to the top of its viewport needs a viewport's
+  height below it before the answer exists; padding written after paint shows
+  a gap for a frame and lets a scroll reach it, so the list sizes the space as
+  it lays its rows out, as trailing space in its last row's box that appended
+  rows take up. Slopty's transcript, copied from zeron, calls it as zeron does.
+  Unused, it is one comparison per row laid out and two calls per layout. A
+  scroll layer keeps the last row and the space below it as one row
+  (`fast/tests/list_tail.rs`).
 - The workspace pins Taffy 0.14 where upstream pins 0.13. Taffy 0.13 keeps
   one cached size per kind of constraint, so a node measured under two widths
   in one layout evicts one with the other, and the clean subtrees around a
