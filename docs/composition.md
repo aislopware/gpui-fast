@@ -339,8 +339,57 @@ window build is the cost the layer removes.
 - **`VideoLayer` draws with GPUI's renderer** (a `MetalRenderer` of its own drawing one
   surface primitive), so its colour handling is the surface element's by construction.
 
+## Backdrop blur
+
+`Window::paint_backdrop_blur(bounds, corner_radii, blur_radius)` (`fast/backdrop.rs`) places
+a `BackdropBlur` as a native's placement is placed: it takes the next draw order over the
+region it reads from (its bounds and three standard deviations around them), lifts the rest
+of an open paint layer above itself, and is a paint operation of its own
+(`PaintOperation::Backdrop`), replayed with the primitives around it. `composed_batches`
+yields `ComposedBatch::Blur(index)` after every batch of a lower order, splitting batches
+around it as it splits them around holes.
+
+On Metal (`gpui_apple/src/fast/backdrop.rs`) the renderer ends the render pass, copies what
+the drawable holds under the region and its reach into a scratch texture, blurs it with
+`MPSImageGaussianBlur` (clamped at its edges), and starts a new pass that loads the
+drawable. The pass is restarted as after a path batch: the bindings are forgotten, the
+holes' interiors are marked again in the stencil, and drawing goes on culling for the next
+hole. The blurred copy is drawn back in two draws, an erase (`dst × (1 − coverage)`) and an
+add (`blurred × coverage`), so a drawable that is not opaque keeps its alpha; coverage is
+the rounded rectangle's antialiased edge, times the element opacity, times the edge fade or
+rounded clip around the blur. Drawables a blur reads are made readable
+(`framebufferOnly = NO`) while blurs are drawn, and opaque-to-the-compositor again after
+600 frames without one. Scratch textures and kernels are kept for reuse, sized in steps of
+64 pixels within 32 MiB, and released after 120 frames without a blur.
+
+Measured (`frosted_popover_frame_cost` in `gpui_apple/src/fast/backdrop.rs`, release, a
+3024 × 1964 drawable, a list scrolling 12 pixels a frame under it, σ 32 device pixels as
+zeron's σ 16 points at 2x; medians, on a machine running other builds):
+
+| Frame | encode | GPU |
+| --- | --- | --- |
+| list alone | 16 µs | 0.39 ms |
+| opaque popover with `shadow_lg` | 16 µs | 0.64 ms |
+| frosted popover | 68 µs | 0.69 ms |
+| frosted popover, composer and tooltip | 213 µs | 1.61 ms |
+| the same three opaque | 24 µs | 0.89 ms |
+| 20 frosted file badges (busier machine) | 836 µs | 3.24 ms |
+| 20 opaque file badges (busier machine) | 19 µs | 0.75 ms |
+
+Each blur costs about 50 µs of encoding, most of it in Metal Performance Shaders, and a
+pass break, which on Apple's tile-based GPUs stores and loads the whole drawable: about
+0.1 ms of GPU time at this size. zui pays the same per blur. A popover, composer or menu
+is well inside a 120 Hz frame; a transcript frosting every tool row's file badge pays per
+badge, since each badge's fill lies in the next badge's reach and so has to be drawn before
+it, and no two blurs can share a break.
+
 ## Limits and what is left
 
+- **A blur over a native** blurs GPUI's content around the hole but not the native: the
+  native shows through the hole sharp. zui blurs natives with a private `CABackdropLayer`
+  per blur; that is not ported. A blur reading near a native ordered above it may read the
+  native's cleared interior as transparent.
+- **Blurs elsewhere**: the wgpu and Direct3D renderers draw no blur.
 - **Translucent natives** (`NativeHostOptions::opaque = false`) are drawn as if opaque:
   what GPUI painted under a native is cleared by its hole. A native faded by element
   opacity blends with what is *under the GPUI layer* (the window background), not with

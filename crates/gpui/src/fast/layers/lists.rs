@@ -1564,6 +1564,9 @@ fn drawn_alike(a: &Row, b: &Row) -> bool {
                     Operation::Native(placement) => {
                         *placement = translate_native(placement, to_row);
                     }
+                    Operation::Backdrop(blur) => {
+                        *blur = crate::fast::backdrop::translate(blur, to_row);
+                    }
                 }
                 operation
             })
@@ -1587,6 +1590,7 @@ fn row_scene(operations: Vec<Operation>) -> Scene {
             Operation::StartLayer(bounds) => scene.push_layer(bounds),
             Operation::EndLayer => scene.pop_layer(),
             Operation::Native(placement) => scene.insert_native(placement),
+            Operation::Backdrop(blur) => scene.insert_backdrop_blur(blur),
         }
     }
     scene
@@ -2800,6 +2804,9 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                 Operation::EndLayer => {}
                 Operation::Native(placement) => {
                     *placement = translate_native(placement, to_content);
+                }
+                Operation::Backdrop(blur) => {
+                    *blur = crate::fast::backdrop::translate(blur, to_content);
                 }
             }
         }

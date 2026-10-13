@@ -48,6 +48,13 @@ pub(crate) fn bake_operations(
                 }
                 continue;
             }
+            // A blur draws what is under it blurred: no colour of its own.
+            Operation::Backdrop(blur) => {
+                if blur.clipped_bounds().intersects(&viewport) {
+                    return None;
+                }
+                continue;
+            }
             Operation::StartLayer(_) | Operation::EndLayer => continue,
         };
         let visible = visible_bounds(&primitive);

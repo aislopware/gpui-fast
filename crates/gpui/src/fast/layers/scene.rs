@@ -128,8 +128,9 @@ impl LayerFrame {
                     scene.push_layer(translate_bounds(layer_bounds, delta))
                 }
                 Operation::EndLayer => scene.pop_layer(),
-                // Content placing a native is never composited from tiles.
-                Operation::Native(_) => {}
+                // Content placing a native or a blur is never composited
+                // from tiles.
+                Operation::Native(_) | Operation::Backdrop(_) => {}
             }
         }
         scene.finish();

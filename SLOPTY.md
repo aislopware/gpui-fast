@@ -645,6 +645,16 @@ Added in this fork:
   its rows slide and a nested view rebuilds; a clip around a layer composites, one inside
   its content draws without tiles); Metal matches the CPU coverage to 0 levels on quads,
   underlines and paths, clipped alone and inside a fade (`gpui_apple` `fast::edge_fade`)
+- feat(gpui, gpui_apple): `Window::paint_backdrop_blur(bounds, corner_radii, blur_radius)`,
+  ported from zui (`361ff20`, Apache-2.0; `fast/backdrop.rs`,
+  `gpui_apple/src/fast/backdrop.rs`): what the window drew under a region drawn back blurred
+  with Metal Performance Shaders, antialiased at its rounded corners, under the edge fade or
+  rounded clip around it and the element opacity. Ordered over everything it reads, as a
+  native's hole is ordered, so retention, paint layers and list layers carry it and a
+  scroll layer whose content blurs draws without tiles (`fast/tests/backdrop.rs`); the
+  pixels follow the gaussian to within a level, keep a non-opaque drawable's alpha, and
+  leave holes and paths outside the region as drawn without it (`gpui_apple`
+  `fast::backdrop`). Costs in docs/composition.md, "Backdrop blur"
 
 ### Candidates for longbridge
 

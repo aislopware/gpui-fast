@@ -254,6 +254,7 @@ pub(crate) fn replay(scene: &mut Scene, range: Range<usize>, previous: &Scene) {
             PaintOperation::Native(placement) => {
                 crate::fast::composition::scene::replay(scene, placement)
             }
+            PaintOperation::Backdrop(blur) => crate::fast::backdrop::replay(scene, blur),
         }
     }
     // Each operation is drawn again as one, so the keyed stretches inside
@@ -313,6 +314,7 @@ pub(crate) enum Operation {
     StartLayer(Bounds<ScaledPixels>),
     EndLayer,
     Native(crate::fast::composition::NativePlacement),
+    Backdrop(crate::fast::backdrop::BackdropBlur),
 }
 
 /// The paint operations of `scene`, finished or not, in painting order,
@@ -326,6 +328,7 @@ pub(crate) fn operations(scene: &Scene) -> impl Iterator<Item = Operation> + '_ 
             PaintOperation::StartLayer(bounds) => Operation::StartLayer(*bounds),
             PaintOperation::EndLayer => Operation::EndLayer,
             PaintOperation::Native(placement) => Operation::Native((**placement).clone()),
+            PaintOperation::Backdrop(blur) => Operation::Backdrop(**blur),
         })
 }
 
@@ -602,6 +605,9 @@ impl Scene {
                     placement.hitbox.is_some(),
                     placement.focus.is_some(),
                 )),
+                crate::PaintOperation::Backdrop(blur) => {
+                    lines.push(crate::fast::backdrop::describe(self, blur))
+                }
             }
         }
         // Two windows number their edge fades apart: a fade is told by its

@@ -72,6 +72,13 @@ drawing as it does without layers, and how to verify and measure layers.
     row, rendered into the overscan out of sight, is held and composited
     like any other: the list takes the space off where it checks a row it
     renders against the height it holds for it.
+  - Content painting a backdrop blur (`Window::paint_backdrop_blur`,
+    `fast::backdrop`) is drawn without its layer's tiles, which hold it over
+    the layer's own background rather than over what the frame draws under
+    the container. A `list`'s layer, which replays its rows into the frame,
+    replays their blurs with them and stays composited; a blur over a
+    container, as a frosted popover is, leaves the layer compositing and
+    blurs its tiles as they are drawn.
   - A scrollbar dragging a `list` (`ListState::set_offset_from_scrollbar`)
     scrolls it as a wheel does: the offset it sets is taken for a scroll, not
     for a change of the list, and the view holding the list, which the

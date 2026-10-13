@@ -176,6 +176,7 @@ pub struct MetalRenderer {
     /// Draws the holes natives cut: quads that clear what is under them.
     holes_pipeline_state: metal::RenderPipelineState,
     pub(crate) fast_occlusion: crate::fast::occlusion::Occlusion,
+    pub(crate) fast_backdrop: crate::fast::backdrop::Backdrop,
     underlines_pipeline_state: metal::RenderPipelineState,
     monochrome_sprites_pipeline_state: metal::RenderPipelineState,
     pub(crate) polychrome_sprites_pipeline_state: metal::RenderPipelineState,
@@ -489,6 +490,7 @@ impl MetalRenderer {
 
         let fast_occlusion =
             crate::fast::occlusion::Occlusion::new(&device, &library, target_format, is_apple_gpu);
+        let fast_backdrop = crate::fast::backdrop::Backdrop::new(&device, &library, target_format);
         let command_queue = device.new_command_queue();
         let supports_shared_storage = cfg!(target_os = "ios") || is_apple_gpu;
         let sprite_atlas = Arc::new(MetalAtlas::new(device.clone(), supports_shared_storage));
@@ -530,6 +532,7 @@ impl MetalRenderer {
             quads_pipeline_state,
             holes_pipeline_state,
             fast_occlusion,
+            fast_backdrop,
             underlines_pipeline_state,
             monochrome_sprites_pipeline_state,
             polychrome_sprites_pipeline_state,
@@ -674,6 +677,7 @@ impl MetalRenderer {
             (viewport_size.width.ceil() as i32).into(),
             (viewport_size.height.ceil() as i32).into(),
         );
+        crate::fast::backdrop::prepare_layer(self, &layer, scene);
         let drawable = if let Some(drawable) = layer.next_drawable() {
             drawable
         } else {
@@ -724,6 +728,7 @@ impl MetalRenderer {
         viewport_size: Size<DevicePixels>,
     ) -> Result<metal::CommandBuffer> {
         crate::fast::layers::raster::rasterize_tiles(self, scene);
+        crate::fast::backdrop::Backdrop::begin_frame(&mut self.fast_backdrop, scene);
         let mut writer = InstanceBufferWriter::new(
             &self.device,
             &self.instance_buffer_pool,
@@ -950,6 +955,8 @@ impl MetalRenderer {
                     self.draw_holes(range, instance_bindings, viewport_size, command_encoder);
                     continue;
                 }
+                // Frames with blurs are drawn by fast::paths.
+                ComposedBatch::Blur(_) => continue,
             };
             match batch {
                 PrimitiveBatch::Shadows(range) => {
@@ -2264,6 +2271,7 @@ pub(crate) struct InstanceBindings {
     pub(crate) polychrome_sprites: InstanceBinding,
     pub(crate) surfaces: InstanceBinding,
     pub(crate) fades: InstanceBinding,
+    pub(crate) fast_blurs: InstanceBinding,
 }
 
 pub(crate) fn write_instances(
@@ -2282,6 +2290,7 @@ pub(crate) fn write_instances(
             content_mask: surface.content_mask,
         }))?,
         fades: crate::fast::edge_fade::write(scene, writer)?,
+        fast_blurs: crate::fast::backdrop::write(scene, writer)?,
     })
 }
 

@@ -15,6 +15,7 @@
 //! root one by one, in `gpui.rs`.
 
 pub(crate) mod a11y;
+pub(crate) mod backdrop;
 pub mod composition;
 pub mod cursor;
 pub(crate) mod dependencies;

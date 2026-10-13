@@ -7,15 +7,23 @@
 use std::collections::HashMap;
 
 use crate::{
-    AtlasTextureId, AtlasTile, Bounds, LayerFrame, LayerKey, Point, PolychromeSprite, Quad,
-    ScaledPixels, Scene, TileCoord, TileId, Window, decode_layer_tile, fast::scene::Operation,
-    point, scene::Primitive,
+    AtlasTextureId, AtlasTile, BackdropBlur, Bounds, LayerFrame, LayerKey, Point, PolychromeSprite,
+    Quad, ScaledPixels, Scene, TileCoord, TileId, Window, decode_layer_tile,
+    fast::scene::Operation, point, scene::Primitive,
 };
 
 /// Every primitive `scene` draws, in the order the renderer draws them:
 /// by draw order, then by kind in the order batches of one draw order are
 /// drawn, then in the order they were inserted.
 fn drawing_sequence(scene: &Scene) -> Vec<Primitive> {
+    ordered_sequence(scene)
+        .into_iter()
+        .map(|(_, primitive)| primitive)
+        .collect()
+}
+
+/// [`drawing_sequence`], each primitive with its draw order.
+fn ordered_sequence(scene: &Scene) -> Vec<(u32, Primitive)> {
     let mut sequence: Vec<((u32, u8, usize), Primitive)> = Vec::new();
     macro_rules! gather {
         ($field:ident, $rank:expr, $variant:ident) => {
@@ -39,8 +47,40 @@ fn drawing_sequence(scene: &Scene) -> Vec<Primitive> {
     sequence.sort_by_key(|(key, _)| *key);
     sequence
         .into_iter()
-        .map(|(_, primitive)| primitive)
+        .map(|((order, ..), primitive)| (order, primitive))
         .collect()
+}
+
+/// What a scene draws, in drawing order: a primitive, or a backdrop blur
+/// between the primitives drawn under it and those drawn over it.
+enum Drawn {
+    Primitive(Primitive),
+    Blur(BackdropBlur),
+}
+
+impl Drawn {
+    /// Where it draws, or for a blur where it reads from too.
+    fn reach(&self) -> Bounds<ScaledPixels> {
+        match self {
+            Drawn::Primitive(primitive) => clipped(primitive),
+            Drawn::Blur(blur) => blur.reach(),
+        }
+    }
+
+    fn describe(&self, scene: &Scene) -> String {
+        match self {
+            Drawn::Primitive(primitive) => describe(primitive, scene),
+            Drawn::Blur(blur) => format!(
+                "backdrop blur {:?} {:?} {:?} {:?} {}{}",
+                blur.bounds,
+                blur.content_mask,
+                blur.corner_radii,
+                blur.blur_radius,
+                blur.opacity,
+                crate::fast::edge_fade::describe(scene, blur.fade),
+            ),
+        }
+    }
 }
 
 fn clipped(primitive: &Primitive) -> Bounds<ScaledPixels> {
@@ -92,8 +132,9 @@ fn expand_layer(
                 size: bounds.size,
             }),
             Operation::EndLayer => scratch.pop_layer(),
-            // Content placing a native is never composited from tiles.
-            Operation::Native(_) => {}
+            // Content placing a native or a blur is never composited from
+            // tiles.
+            Operation::Native(_) | Operation::Backdrop(_) => {}
         }
     }
     scratch.finish();
@@ -126,7 +167,7 @@ fn expand_layer(
 
 /// What `scene` draws, with every composited scroll layer's tiles replaced
 /// by the content they were rasterized from, in drawing order.
-fn expanded_sequence(scene: &Scene) -> Vec<Primitive> {
+fn expanded_sequence(scene: &Scene) -> Vec<Drawn> {
     let mut composited: HashMap<
         LayerKey,
         (
@@ -138,7 +179,11 @@ fn expanded_sequence(scene: &Scene) -> Vec<Primitive> {
     > = HashMap::new();
     let mut first_tiles: Vec<(usize, LayerKey)> = Vec::new();
     let mut sequence = Vec::new();
-    for primitive in drawing_sequence(scene) {
+    let mut blurs = scene.backdrop_blurs().iter().peekable();
+    for (order, primitive) in ordered_sequence(scene) {
+        while let Some(blur) = blurs.next_if(|blur| blur.order <= order) {
+            sequence.push(Drawn::Blur(*blur));
+        }
         if let Primitive::PolychromeSprite(sprite) = &primitive
             && let Some((key, tile)) =
                 decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id)
@@ -162,8 +207,9 @@ fn expanded_sequence(scene: &Scene) -> Vec<Primitive> {
             entry.2.push(tile);
             continue;
         }
-        sequence.push(primitive);
+        sequence.push(Drawn::Primitive(primitive));
     }
+    sequence.extend(blurs.map(|blur| Drawn::Blur(*blur)));
     for (at, key) in first_tiles.into_iter().rev() {
         let (translation, viewport, tiles, fade) = &composited[&key];
         let content = expand_layer(
@@ -173,7 +219,7 @@ fn expanded_sequence(scene: &Scene) -> Vec<Primitive> {
             tiles,
             *fade,
         );
-        sequence.splice(at..at, content);
+        sequence.splice(at..at, content.into_iter().map(Drawn::Primitive));
     }
     sequence
 }
@@ -263,7 +309,7 @@ fn describe_unfaded(primitive: &Primitive) -> String {
 /// draw primitives that do not overlap in.
 pub(crate) fn drawn(scene: &Scene) -> Vec<String> {
     let sequence = expanded_sequence(scene);
-    let clips: Vec<Bounds<ScaledPixels>> = sequence.iter().map(clipped).collect();
+    let clips: Vec<Bounds<ScaledPixels>> = sequence.iter().map(Drawn::reach).collect();
     let mut depths: Vec<u32> = Vec::with_capacity(sequence.len());
     for (ix, clip) in clips.iter().enumerate() {
         let mut depth = 0;
@@ -276,7 +322,7 @@ pub(crate) fn drawn(scene: &Scene) -> Vec<String> {
     }
     let mut lines: Vec<(u32, String)> = depths
         .into_iter()
-        .zip(sequence.iter().map(|primitive| describe(primitive, scene)))
+        .zip(sequence.iter().map(|drawn| drawn.describe(scene)))
         .collect();
     lines.sort();
     lines
@@ -286,9 +332,9 @@ pub(crate) fn drawn(scene: &Scene) -> Vec<String> {
 }
 
 impl Window {
-    /// What the last frame drew, one line per primitive, each composited
-    /// scroll layer's tiles replaced by the content they were rasterized
-    /// from, in a canonical drawing order that does not depend on draw order
+    /// What the last frame drew, one line per primitive and backdrop blur,
+    /// each composited scroll layer's tiles replaced by the content they were
+    /// rasterized from, in a canonical drawing order that does not depend on draw order
     /// numbers or atlas placement. Two windows drawing the same pixels
     /// return the same lines, with or without scroll layers.
     ///

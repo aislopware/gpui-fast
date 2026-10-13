@@ -67,7 +67,7 @@ pub(crate) fn draw_primitives_to_texture(
     texture: &metal::TextureRef,
     viewport_size: Size<DevicePixels>,
 ) -> Result<Option<metal::CommandBuffer>> {
-    if scene.paths.is_empty() && binds::upstream_loop() {
+    if scene.paths.is_empty() && scene.backdrop_blurs().is_empty() && binds::upstream_loop() {
         return Ok(None);
     }
     // Planning walks every batch, sprites one by one; a frame without paths
@@ -132,6 +132,39 @@ pub(crate) fn draw_primitives_to_texture(
                     command_encoder,
                     &mut binds,
                 );
+                continue;
+            }
+            ComposedBatch::Blur(index) => {
+                let pass = super::backdrop::Pass {
+                    command_buffer,
+                    texture,
+                    stencil: &stencil,
+                    viewport_size,
+                };
+                let restarted = super::backdrop::draw(
+                    renderer,
+                    scene,
+                    index,
+                    &instance_bindings.fast_blurs,
+                    &instance_bindings.fades,
+                    &pass,
+                    command_encoder,
+                );
+                if !std::ptr::eq(restarted, command_encoder) {
+                    command_encoder = restarted;
+                    binds.forget();
+                    if let Some(interiors) = &interiors {
+                        interiors.begin_pass(
+                            renderer,
+                            viewport_size,
+                            command_encoder,
+                            &mut binds,
+                            false,
+                        );
+                        Interiors::before(command_encoder, holes_drawn);
+                        culling_for = holes_drawn;
+                    }
+                }
                 continue;
             }
         };

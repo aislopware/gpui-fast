@@ -1339,3 +1339,68 @@ float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades) {
   }
   return alpha;
 }
+
+// gpui-fast: backdrop blur (gpui's fast/backdrop.rs, BackdropBlur; gpui_apple's
+// fast/backdrop.rs). Two draws over the region: one keeping destination × (1 − k),
+// one adding the blurred backdrop × k, k being the antialiased rounded rectangle's
+// coverage times the edge fade and the opacity.
+struct BackdropBlur {
+  uint order;
+  uint fade;
+  Bounds_ScaledPixels bounds;
+  ContentMask_ScaledPixels content_mask;
+  Corners_ScaledPixels corner_radii;
+  float blur_radius;
+  float opacity;
+};
+
+struct BackdropBlurVertexOutput {
+  uint blur_id [[flat]];
+  float4 position [[position]];
+  float clip_distance [[clip_distance]][4];
+};
+
+struct BackdropBlurFragmentInput {
+  uint blur_id [[flat]];
+  float4 position [[position]];
+};
+
+vertex BackdropBlurVertexOutput backdrop_blur_vertex(
+    uint unit_vertex_id [[vertex_id]], uint blur_id [[instance_id]],
+    constant float2 *unit_vertices [[buffer(0)]],
+    constant BackdropBlur *blurs [[buffer(1)]],
+    constant Size_DevicePixels *viewport_size [[buffer(2)]]) {
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  BackdropBlur blur = blurs[blur_id];
+  float4 device_position = to_device_position(unit_vertex, blur.bounds, viewport_size);
+  float4 clip_distance =
+      distance_from_clip_rect(unit_vertex, blur.bounds, blur.content_mask.bounds);
+  return BackdropBlurVertexOutput{
+      blur_id,
+      device_position,
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+}
+
+float backdrop_blur_coverage(BackdropBlurFragmentInput input, constant BackdropBlur *blurs,
+                             constant EdgeFadeRamps *fades) {
+  BackdropBlur blur = blurs[input.blur_id];
+  float distance = quad_sdf(input.position.xy, blur.bounds, blur.corner_radii);
+  return saturate(0.5 - distance) * blur.opacity *
+         edge_fade(input.position.xy, blur.fade, fades);
+}
+
+fragment float4 backdrop_blur_erase_fragment(
+    BackdropBlurFragmentInput input [[stage_in]], constant BackdropBlur *blurs [[buffer(1)]],
+    constant EdgeFadeRamps *fades [[buffer(EDGE_FADE_BUFFER)]]) {
+  return float4(0., 0., 0., backdrop_blur_coverage(input, blurs, fades));
+}
+
+fragment float4 backdrop_blur_fragment(
+    BackdropBlurFragmentInput input [[stage_in]], constant BackdropBlur *blurs [[buffer(1)]],
+    constant float4 &source_rect [[buffer(3)]],
+    texture2d<float> source [[texture(0)]],
+    constant EdgeFadeRamps *fades [[buffer(EDGE_FADE_BUFFER)]]) {
+  constexpr sampler source_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
+  float2 uv = (input.position.xy - source_rect.xy) / source_rect.zw;
+  return source.sample(source_sampler, uv) * backdrop_blur_coverage(input, blurs, fades);
+}

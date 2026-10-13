@@ -680,6 +680,12 @@ pub(crate) fn draw_into_frame(
                 placement.content_mask.bounds = placement.content_mask.bounds.intersect(&viewport);
                 scene.insert_native(placement);
             }
+            Operation::Backdrop(blur) => {
+                let mut blur = crate::fast::backdrop::translate(&blur, delta);
+                blur.content_mask.bounds = blur.content_mask.bounds.intersect(&viewport);
+                blur.fade = crate::fast::edge_fade::compose_index(fades, outer, blur.fade);
+                scene.insert_backdrop_blur(blur);
+            }
         }
     }
 }
@@ -947,6 +953,9 @@ fn translated_scene(scene: &Scene, delta: Point<ScaledPixels>) -> Scene {
             Operation::EndLayer => translated.pop_layer(),
             Operation::Native(placement) => {
                 translated.insert_native(translate_native(&placement, delta))
+            }
+            Operation::Backdrop(blur) => {
+                translated.insert_backdrop_blur(crate::fast::backdrop::translate(&blur, delta))
             }
         }
     }

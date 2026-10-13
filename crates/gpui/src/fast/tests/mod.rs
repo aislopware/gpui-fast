@@ -2,6 +2,7 @@
 
 mod a11y;
 mod a11y_bounds;
+mod backdrop;
 mod cached_layout;
 mod cached_snapping;
 mod composition;

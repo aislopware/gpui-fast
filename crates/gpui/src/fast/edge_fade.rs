@@ -428,6 +428,13 @@ impl PaintNotes {
         let mut refade = Refade::new(shift, &mut window.fast_edge_fade);
         let scene = &mut window.next_frame.scene;
         map_since(scene, &self.starts, &mut |fade| refade.map(fade));
+        // A blur's paint operation, which retention draws again from, holds
+        // a copy of it.
+        for operation in &mut scene.paint_operations[self.operations..] {
+            if let crate::PaintOperation::Backdrop(blur) = operation {
+                blur.fade = refade.map(blur.fade);
+            }
+        }
         crate::fast::keyed::refade(
             &mut scene.fast_painted.keyed,
             self.operations..scene.paint_operations.len(),
@@ -600,8 +607,8 @@ pub(crate) fn current(window: &Window) -> u32 {
 }
 
 /// The kinds of primitive that take a fade: all but surfaces, which the
-/// system's video path composites.
-const KINDS: usize = 7;
+/// system's video path composites; and backdrop blurs.
+const KINDS: usize = 8;
 
 /// A fade painting entered in a scene, and how long each list of
 /// primitives that takes a fade was as it did.
@@ -669,6 +676,7 @@ fn lengths(scene: &Scene) -> [u32; KINDS] {
         scene.monochrome_sprites.len(),
         scene.subpixel_sprites.len(),
         scene.polychrome_sprites.len(),
+        scene.composition.blurs.len(),
     ]
     .map(|len| len as u32)
 }
@@ -697,6 +705,7 @@ fn map_since(scene: &mut Scene, starts: &[u32; KINDS], map: &mut impl FnMut(u32)
         monochrome,
         subpixel,
         polychrome,
+        blurs,
     ] = *starts;
     each(&mut scene.shadows, shadows, map, |shadow| &mut shadow.pad);
     each(&mut scene.quads, quads, map, |quad| {
@@ -714,6 +723,9 @@ fn map_since(scene: &mut Scene, starts: &[u32; KINDS], map: &mut impl FnMut(u32)
     });
     each(&mut scene.polychrome_sprites, polychrome, map, |sprite| {
         &mut sprite.pad
+    });
+    each(&mut scene.composition.blurs, blurs, map, |blur| {
+        &mut blur.fade
     });
 }
 
@@ -762,6 +774,22 @@ pub(crate) fn compose(fades: &mut WindowFades, outer: u32, primitive: &mut Primi
     let around = fades.ramps(outer).copied().unwrap_or(EdgeFadeRamps::NONE);
     let own = fades.ramps(*slot).copied().unwrap_or(EdgeFadeRamps::NONE);
     *slot = fades.intern(&around.within(&own));
+}
+
+/// The fade a blur (or anything else holding an index of its own) is drawn
+/// in when the fade `outer`, around a scroll layer drawn now, is laid over
+/// the fade `own` it was painted in, as [`compose`] lays it over a
+/// primitive's.
+pub(crate) fn compose_index(fades: &mut WindowFades, outer: u32, own: u32) -> u32 {
+    if outer == NONE {
+        return own;
+    }
+    if own == NONE {
+        return outer;
+    }
+    let around = fades.ramps(outer).copied().unwrap_or(EdgeFadeRamps::NONE);
+    let own = fades.ramps(own).copied().unwrap_or(EdgeFadeRamps::NONE);
+    fades.intern(&around.within(&own))
 }
 
 /// The ramps of an edge fade, and its rounded clip, in device pixels, as
@@ -1201,6 +1229,11 @@ pub(crate) fn mark_scene(scene: &Scene, mark: &mut impl FnMut(u32)) {
     scene.monochrome_sprites.iter().for_each(|p| mark(p.pad));
     scene.subpixel_sprites.iter().for_each(|p| mark(p.pad));
     scene.polychrome_sprites.iter().for_each(|p| mark(p.pad));
+    scene
+        .composition
+        .blurs
+        .iter()
+        .for_each(|blur| mark(blur.fade));
 }
 
 /// How the fades of a stretch drawn again moved change: those of the

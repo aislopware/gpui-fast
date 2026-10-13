@@ -300,6 +300,17 @@ unchanged, and a new entry needs as good a reason.
   The clip rides in the edge fade table each primitive already indexes, so it
   adds no byte to a primitive and is drawn by the fade's shader path; an
   entry grows from 48 to 80 bytes. Only Metal draws it.
+- `Window::paint_backdrop_blur` is new public API, with `BackdropBlur`,
+  `Scene::backdrop_blurs`, `Scene::insert_backdrop_blur` and
+  `ComposedBatch::Blur` (`fast/backdrop.rs`, `gpui_apple/src/fast/backdrop.rs`;
+  docs/composition.md, "Backdrop blur"), ported from zui
+  (<https://github.com/zeronsh/zui> `361ff20`; Apache-2.0, by Wing and the zui
+  contributors; the notice is in the module's documentation). A frosted
+  popover, menu or composer shows the content behind it blurred; a translucent
+  fill alone shows it sharp. The blur is a paint operation ordered as a
+  native's hole is, so retention, paint layers and list layers carry it; a
+  scroll container whose content blurs draws without its tiles. Only Metal
+  draws it, with Metal Performance Shaders; elsewhere nothing is drawn.
 - The workspace pins Taffy 0.14 where upstream pins 0.13. Taffy 0.13 keeps
   one cached size per kind of constraint, so a node measured under two widths
   in one layout evicts one with the other, and the clean subtrees around a
