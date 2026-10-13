@@ -47,6 +47,9 @@ struct EdgeFadeRamps {
   float4 start;
   float4 clip;
   float4 radii;
+  float4 mask;
+  float4 mask_shape;
+  float4 mask_bottom;
 };
 float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades);
 
@@ -1336,6 +1339,19 @@ float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades) {
     float2 q = abs(p) - half_size + radius;
     float distance = length(max(q, float2(0.))) + min(max(q.x, q.y), 0.) - radius;
     alpha *= saturate(0.5 - distance);
+  }
+  if (ramps.mask_shape.y > 0.) {
+    // The image alpha mask (zui aa00941): smoothstep out of a rounded
+    // rectangle past its clearance, and a bottom fade.
+    float2 half_size = (ramps.mask.zw - ramps.mask.xy) * 0.5;
+    float radius = ramps.mask_shape.x;
+    float2 q = abs(position - (ramps.mask.xy + half_size)) - half_size + radius;
+    float distance = length(max(q, float2(0.))) + min(max(q.x, q.y), 0.) - radius;
+    float mask = smoothstep(0., ramps.mask_shape.y, distance - ramps.mask_shape.z);
+    if (ramps.mask_shape.w > 0.) {
+      mask = min(mask, smoothstep(0., ramps.mask_shape.w, ramps.mask_bottom.x - position.y));
+    }
+    alpha *= mask;
   }
   return alpha;
 }

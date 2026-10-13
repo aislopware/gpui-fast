@@ -300,6 +300,17 @@ unchanged, and a new entry needs as good a reason.
   The clip rides in the edge fade table each primitive already indexes, so it
   adds no byte to a primitive and is drawn by the fade's shader path; an
   entry grows from 48 to 80 bytes. Only Metal draws it.
+- `Window::paint_image_fitted_masked` and `ImageAlphaMask` are new public
+  API, with `EdgeFadeRamps`'s `mask`, `mask_shape` and `mask_bottom` and its
+  `masks` and `mask_at` (`fast/image_mask.rs`; docs/retained-mode.md, "Edge
+  fades"), ported from zui (<https://github.com/zeronsh/zui> `aa00941`;
+  Apache-2.0, by Gaël Cado; the notice is in the module's documentation).
+  zeron's new-thread hero clears the space around the composer laid over it
+  by feathering a rounded rectangle out of the wallpaper, which a quad
+  painted over it can't do over glass, and moves the cutout every frame the
+  composer grows without rasterizing the image again. The mask rides in the
+  fade table, not in 40 more bytes on every image sprite as in zui; an entry
+  grows from 80 to 128 bytes. Only Metal draws it.
 - `Window::paint_backdrop_blur` is new public API, with `BackdropBlur`,
   `Scene::backdrop_blurs`, `Scene::insert_backdrop_blur` and
   `ComposedBatch::Blur` (`fast/backdrop.rs`, `gpui_apple/src/fast/backdrop.rs`;

@@ -29,6 +29,7 @@ pub mod gesture;
 pub(crate) mod glyphs;
 pub(crate) mod headless_atlas;
 pub(crate) mod image_evict;
+pub(crate) mod image_mask;
 pub(crate) mod interactivity;
 pub(crate) mod keyed;
 pub(crate) mod keypad;

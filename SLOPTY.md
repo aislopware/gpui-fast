@@ -655,6 +655,13 @@ Added in this fork:
   pixels follow the gaussian to within a level, keep a non-opaque drawable's alpha, and
   leave holes and paths outside the region as drawn without it (`gpui_apple`
   `fast::backdrop`). Costs in docs/composition.md, "Backdrop blur"
+- feat(gpui, gpui_apple): `Window::paint_image_fitted_masked(.., Some(ImageAlphaMask))`,
+  ported from zui (`aa00941`, Apache-2.0; `fast/image_mask.rs`): a rounded rectangle
+  feathered out of an image past a clearance, and a bottom fade, as zeron's new-thread hero
+  clears the composer's space. The mask rides in the edge fade table (an entry grows from
+  80 to 128 bytes, no byte added to a sprite); moving it reuses the image's tile, retention
+  draws it as from scratch (`fast/tests/image_mask.rs`); Metal matches the CPU mask to 0
+  levels, alone and inside a fade and a rounded clip (`gpui_apple` `fast::edge_fade`)
 
 ### Candidates for longbridge
 

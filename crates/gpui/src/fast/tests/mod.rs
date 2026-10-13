@@ -21,6 +21,7 @@ mod focus_while_drawing;
 mod gesture;
 mod global_id;
 mod image_evict;
+mod image_mask;
 mod keyed;
 mod keypad;
 mod layers;

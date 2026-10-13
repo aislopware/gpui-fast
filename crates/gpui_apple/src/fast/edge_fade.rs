@@ -21,6 +21,9 @@ const EMPTY: [EdgeFadeRamps; 1] = [EdgeFadeRamps {
     start: [0.; 4],
     clip: [0.; 4],
     radii: [0.; 4],
+    mask: [0.; 4],
+    mask_shape: [0.; 4],
+    mask_bottom: [0.; 4],
 }];
 
 /// Writes `scene`'s table of fades into the frame's instances.
@@ -345,6 +348,72 @@ mod tests {
         }));
     }
 
+    /// The image alpha mask the tests draw in: a rounded rectangle inside
+    /// the target feathered out over 12 device pixels past a clearance of 2,
+    /// and the lower part faded over 30.
+    fn masked(mut ramps: EdgeFadeRamps) -> EdgeFadeRamps {
+        ramps.mask = [16., 20., 46., 40.];
+        ramps.mask_shape = [6., 12., 2., 30.];
+        ramps.mask_bottom = [60., 0., 0., 0.];
+        ramps
+    }
+
+    /// An image drawn with an alpha mask (`gpui::ImageAlphaMask`) is as
+    /// strong at each pixel as the mask says, alone and inside a fade and a
+    /// rounded clip; a mask of no feather masks nothing.
+    #[test]
+    fn an_image_alpha_mask_feathers_the_image() {
+        let image = |scene: &mut Scene, fade: u32, renderer: &MetalRenderer| {
+            let tile = renderer
+                .sprite_atlas()
+                .get_or_insert_with(
+                    AtlasKey::Image(RenderImageParams {
+                        image_id: ImageId(7_778),
+                        frame_index: 0,
+                    }),
+                    &mut || {
+                        Ok(Some((
+                            size(DevicePixels(SIDE), DevicePixels(SIDE)),
+                            Cow::Owned(vec![255; (SIDE * SIDE * 4) as usize]),
+                        )))
+                    },
+                )
+                .expect("image uploaded")
+                .expect("image tile");
+            scene.insert_faded_primitive(
+                PolychromeSprite {
+                    order: 0,
+                    pad: 0,
+                    grayscale: false.into(),
+                    opacity: 1.,
+                    bounds: sp(0., 0., SIDE as f32, SIDE as f32),
+                    content_mask: everywhere(),
+                    corner_radii: Default::default(),
+                    tile,
+                },
+                fade,
+            );
+        };
+        let mask = masked(EdgeFadeRamps::NONE);
+        assert!(mask.masks() && mask.fades() && !mask.clips());
+        let at = |x: f32, y: f32| mask.mask_at(point(ScaledPixels(x), ScaledPixels(y)));
+        assert_eq!(at(30., 30.), 0., "inside the exclusion");
+        assert_eq!(at(31., 21.), 0., "inside the clearance");
+        // 8 of the feather's 12 out: smoothstep of 2/3.
+        assert!((at(31., 10.) - 20. / 27.).abs() < 1e-5, "{}", at(31., 10.));
+        assert_eq!(at(31., 2.), 1., "past the feather");
+        assert_eq!(at(2., 60.5), 0., "past the bottom fade");
+        renders_in("masked image", mask, image);
+        renders_in(
+            "masked image in a fade and a clip",
+            masked(clipped(ramps())),
+            image,
+        );
+        let mut unmasked = mask;
+        unmasked.mask_shape[1] = 0.;
+        assert!(!unmasked.fades());
+    }
+
     /// No fade, or an index past the table's end, draws a primitive whole.
     #[test]
     fn an_unfaded_or_unknown_index_draws_whole() {
@@ -365,6 +434,115 @@ mod tests {
                 .expect("scene rendered")
                 .into_raw();
             assert!(pixels.chunks(4).all(|pixel| pixel[0] == 255), "fade {fade}");
+        }
+    }
+
+    /// What a window-sized image costs the GPU masked as zeron's hero is,
+    /// against unmasked: a 3024 x 1964 target, medians of 300 frames.
+    ///
+    /// `cargo test -p gpui_apple --release --lib image_mask_gpu_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn image_mask_gpu_cost() {
+        use std::time::Duration;
+
+        const W: i32 = 3024;
+        const H: i32 = 1964;
+        if metal::Device::system_default().is_none() {
+            return;
+        }
+        let mut renderer =
+            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())));
+        let tile = renderer
+            .sprite_atlas()
+            .get_or_insert_with(
+                AtlasKey::Image(RenderImageParams {
+                    image_id: ImageId(7_779),
+                    frame_index: 0,
+                }),
+                &mut || {
+                    Ok(Some((
+                        size(DevicePixels(1024), DevicePixels(1024)),
+                        Cow::Owned(vec![200; 1024 * 1024 * 4]),
+                    )))
+                },
+            )
+            .expect("image uploaded")
+            .expect("image tile");
+        let target = {
+            let descriptor = metal::TextureDescriptor::new();
+            descriptor.set_width(W as u64);
+            descriptor.set_height(H as u64);
+            descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
+            descriptor.set_usage(
+                metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
+            );
+            descriptor.set_storage_mode(metal::MTLStorageMode::Private);
+            renderer.device.new_texture(&descriptor)
+        };
+        let mut ramps = EdgeFadeRamps::NONE;
+        ramps.mask = [400., 1400., 2600., 1800.];
+        ramps.mask_shape = [48., 560., 16., 1964.];
+        ramps.mask_bottom = [1964., 0., 0., 0.];
+        let faded = EdgeFadeRamps::new(
+            sp(0., 0., W as f32, H as f32),
+            Edges::all(ScaledPixels(64.)),
+            Edges::all(1.),
+        );
+        for (name, ramps) in [
+            ("unmasked", None),
+            ("edges faded", Some(faded)),
+            ("masked", Some(ramps)),
+        ] {
+            let mut gpu = Vec::new();
+            for frame in 0..330 {
+                let mut scene = Scene::default();
+                let fade = ramps.map_or(0, |ramps| scene.add_edge_fade(ramps));
+                let mask = ContentMask {
+                    bounds: sp(0., 0., W as f32, H as f32),
+                };
+                scene.insert_faded_primitive(
+                    PolychromeSprite {
+                        order: 0,
+                        pad: 0,
+                        grayscale: false.into(),
+                        opacity: 1.,
+                        bounds: mask.bounds,
+                        content_mask: mask,
+                        corner_radii: Default::default(),
+                        tile,
+                    },
+                    fade,
+                );
+                scene.finish();
+                let sample = objc2::rc::autoreleasepool(|_| {
+                    let buffer = renderer
+                        .render_frame(&scene, &target, size(DevicePixels(W), DevicePixels(H)))
+                        .expect("frame encoded");
+                    buffer.commit();
+                    buffer.wait_until_completed();
+                    // SAFETY: `GPUStartTime` and `GPUEndTime` are `MTLCommandBuffer`
+                    // properties, read after the buffer completed.
+                    let (start, end): (f64, f64) = unsafe {
+                        let buffer: &objc2::runtime::AnyObject =
+                            &*foreign_types::ForeignType::as_ptr(&buffer).cast();
+                        (
+                            objc2::msg_send![buffer, GPUStartTime],
+                            objc2::msg_send![buffer, GPUEndTime],
+                        )
+                    };
+                    Duration::from_secs_f64((end - start).max(0.))
+                });
+                if frame >= 30 {
+                    gpu.push(sample);
+                }
+            }
+            gpu.sort();
+            eprintln!(
+                "{name}: gpu median {:?} p95 {:?}",
+                gpu[gpu.len() / 2],
+                gpu[gpu.len() * 95 / 100]
+            );
         }
     }
 }

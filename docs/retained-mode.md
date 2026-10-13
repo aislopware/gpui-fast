@@ -346,6 +346,16 @@ video included. The code is in `crates/gpui/src/fast/edge_fade.rs`.
   view inside drawn again from last frame keeps the corners it was painted
   in until what it was prepainted in changes. A radius of zero is the
   content mask alone. Only Metal cuts the corners.
+- `Window::paint_image_fitted_masked(.., Some(ImageAlphaMask))` paints an
+  image with a rounded rectangle feathered out of it and its lower part
+  faded (ported from zui `aa00941`). The mask is three more fields of the
+  image sprite's fade entry (`EdgeFadeRamps::mask`, `mask_shape`,
+  `mask_bottom`), applied by the same shader path; moving it changes the
+  entry, never the image's atlas tile. Its rectangle is in window
+  coordinates, often another element's bounds: a view painting a masked
+  image and drawn again from last frame keeps the mask it was painted with,
+  so whatever the mask follows must notify that view. A stretch moved moves
+  the mask with the image.
 
 ### Records per retained subtree
 

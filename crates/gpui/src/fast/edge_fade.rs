@@ -528,17 +528,27 @@ impl Window {
                 window.cover_bounds(bounds),
                 Corners::all(radius.scale(window.scale_factor())),
             );
-            let inner = entered_ramps(window, &ramps);
-            if inner == NONE {
-                return f(window);
-            }
-            window.fast_edge_fade.applied += 1;
-            enter(&mut window.next_frame.scene, inner);
-            let result = f(window);
-            leave(&mut window.next_frame.scene);
-            result
+            with_ramps(window, &ramps, f)
         })
     }
+}
+
+/// Runs `f` with what it paints drawn in `ramps`, inside the fade painting
+/// is in now.
+pub(crate) fn with_ramps<R>(
+    window: &mut Window,
+    ramps: &EdgeFadeRamps,
+    f: impl FnOnce(&mut Window) -> R,
+) -> R {
+    let inner = entered_ramps(window, ramps);
+    if inner == NONE {
+        return f(window);
+    }
+    window.fast_edge_fade.applied += 1;
+    enter(&mut window.next_frame.scene, inner);
+    let result = f(window);
+    leave(&mut window.next_frame.scene);
+    result
 }
 
 impl Scene {
@@ -805,6 +815,13 @@ pub(crate) fn compose_index(fades: &mut WindowFades, outer: u32, own: u32) -> u3
 /// the rounded rectangle `clip` with corners `radii`: `0.5 − d`, clamped to
 /// 0..1, for `d` the pixel centre's signed distance from its edge. With
 /// `clip`'s right at or left of its left, nothing is clipped.
+///
+/// And by the image alpha mask, when `mask_shape`'s feather is above 0
+/// ([`crate::ImageAlphaMask`]): smoothstep from 0 to the feather of `d − c`,
+/// for `d` the signed distance from the rounded rectangle `mask` with
+/// radius `mask_shape[0]` and `c` the clearance `mask_shape[2]`; the lesser
+/// of that and, when `mask_shape[3]` is above 0, smoothstep from 0 to it of
+/// `mask_bottom[0] − y`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub struct EdgeFadeRamps {
@@ -820,6 +837,13 @@ pub struct EdgeFadeRamps {
     /// The rounded clip's corner radii: top left, top right, bottom right,
     /// bottom left.
     pub radii: [f32; 4],
+    /// The image alpha mask's excluded rectangle: left, top, right, bottom.
+    pub mask: [f32; 4],
+    /// The image alpha mask's radius, feather, clearance and bottom
+    /// feather; a feather of 0 masks nothing.
+    pub mask_shape: [f32; 4],
+    /// Where the image alpha mask's bottom fade ends, then three zeros.
+    pub mask_bottom: [f32; 4],
 }
 
 impl Default for EdgeFadeRamps {
@@ -836,11 +860,19 @@ impl EdgeFadeRamps {
         start: [1.; 4],
         clip: [0.; 4],
         radii: [0.; 4],
+        mask: [0.; 4],
+        mask_shape: [0.; 4],
+        mask_bottom: [0.; 4],
     };
 
-    /// Whether any edge fades, or the clip cuts anything.
+    /// Whether any edge fades, the clip cuts anything, or the mask masks.
     pub fn fades(&self) -> bool {
-        self.rate.iter().any(|rate| *rate != 0.) || self.clips()
+        self.rate.iter().any(|rate| *rate != 0.) || self.clips() || self.masks()
+    }
+
+    /// Whether these ramps hold an image alpha mask.
+    pub fn masks(&self) -> bool {
+        self.mask_shape[1] > 0.
     }
 
     /// Whether these ramps clip to a rounded rectangle.
@@ -950,6 +982,11 @@ impl EdgeFadeRamps {
             ramps.clip = inner.clip;
             ramps.radii = inner.radii;
         }
+        if inner.masks() {
+            ramps.mask = inner.mask;
+            ramps.mask_shape = inner.mask_shape;
+            ramps.mask_bottom = inner.mask_bottom;
+        }
         ramps
     }
 
@@ -978,6 +1015,18 @@ impl EdgeFadeRamps {
                 *side += if slot % 2 == 0 { delta.x.0 } else { delta.y.0 };
             }
         }
+        if (self.mask, self.mask_shape, self.mask_bottom)
+            == (old.mask, old.mask_shape, old.mask_bottom)
+        {
+            ramps.mask = new.mask;
+            ramps.mask_shape = new.mask_shape;
+            ramps.mask_bottom = new.mask_bottom;
+        } else if self.masks() {
+            for (slot, side) in ramps.mask.iter_mut().enumerate() {
+                *side += if slot % 2 == 0 { delta.x.0 } else { delta.y.0 };
+            }
+            ramps.mask_bottom[0] += delta.y.0;
+        }
         ramps
     }
 
@@ -991,7 +1040,31 @@ impl EdgeFadeRamps {
                 smoothstep((start + rate * (coordinate - edge)).clamp(0., 1.))
             })
             .product();
-        faded * self.coverage_at(point)
+        faded * self.coverage_at(point) * self.mask_at(point)
+    }
+
+    /// How strongly the image alpha mask draws a pixel centred at `point`,
+    /// as the renderers work it out: 1 without a mask.
+    pub fn mask_at(&self, point: Point<ScaledPixels>) -> f32 {
+        if !self.masks() {
+            return 1.;
+        }
+        let [left, top, right, bottom] = self.mask;
+        let [radius, feather, clearance, bottom_feather] = self.mask_shape;
+        let half = ((right - left) * 0.5, (bottom - top) * 0.5);
+        let center = (left + half.0, top + half.1);
+        let q = (
+            (point.x.0 - center.0).abs() - half.0 + radius,
+            (point.y.0 - center.1).abs() - half.1 + radius,
+        );
+        let outside = (q.0.max(0.).powi(2) + q.1.max(0.).powi(2)).sqrt();
+        let distance = outside + q.0.max(q.1).min(0.) - radius;
+        let step = |edge: f32, x: f32| smoothstep((x / edge).clamp(0., 1.));
+        let mut alpha = step(feather, distance - clearance);
+        if bottom_feather > 0. {
+            alpha = alpha.min(step(bottom_feather, self.mask_bottom[0] - point.y.0));
+        }
+        alpha
     }
 
     /// How much of a pixel centred at `point` the rounded clip leaves, as
@@ -1018,8 +1091,8 @@ impl EdgeFadeRamps {
 
     /// The bits these ramps are told apart by, with no edge that does not
     /// fade, nor a clip that clips nothing, making a difference.
-    fn key(&self) -> [u32; 20] {
-        let mut key = [0; 20];
+    fn key(&self) -> [u32; 29] {
+        let mut key = [0; 29];
         for slot in 0..4 {
             if self.rate[slot] != 0. {
                 key[slot] = self.edge[slot].to_bits();
@@ -1030,6 +1103,13 @@ impl EdgeFadeRamps {
                 key[12 + slot] = self.clip[slot].to_bits();
                 key[16 + slot] = self.radii[slot].to_bits();
             }
+            if self.masks() {
+                key[20 + slot] = self.mask[slot].to_bits();
+                key[24 + slot] = self.mask_shape[slot].to_bits();
+            }
+        }
+        if self.masks() {
+            key[28] = self.mask_bottom[0].to_bits();
         }
         key
     }
@@ -1046,6 +1126,11 @@ impl EdgeFadeRamps {
         if self.clips() {
             ramps.clip = self.clip;
             ramps.radii = self.radii;
+        }
+        if self.masks() {
+            ramps.mask = self.mask;
+            ramps.mask_shape = self.mask_shape;
+            ramps.mask_bottom = [self.mask_bottom[0], 0., 0., 0.];
         }
         ramps
     }
@@ -1075,7 +1160,7 @@ pub(crate) struct WindowFades {
     /// kept past its slot's sweep is told from the slot's next fade.
     generations: Vec<u16>,
     /// The index of each fade held, by its [`EdgeFadeRamps::key`].
-    ids: FxHashMap<[u32; 20], u32>,
+    ids: FxHashMap<[u32; 29], u32>,
     /// The slots swept free, reused before the table grows.
     free: Vec<u32>,
     /// Fades added since the table was last swept.
