@@ -448,6 +448,7 @@ struct PaintAt {
     tab_handle: u32,
     lines: LinesAt,
     a11y_actions: u32,
+    present: u32,
 }
 
 /// As [`PrepaintAt`], a place in each of a frame's line layout lists.
@@ -553,6 +554,7 @@ impl PaintAt {
                 fast.window_control_hitboxes,
             ),
             a11y_actions: offset(from.fast.a11y_actions, fast.a11y_actions),
+            present: offset(from.fast.present, fast.present),
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: offset(from.debug_bounds_index, *debug_bounds_index),
             mouse_listeners: offset(from.mouse_listeners_index, *mouse_listeners_index),
@@ -577,6 +579,7 @@ impl PaintAt {
                 window_control_hitboxes: base.fast.window_control_hitboxes
                     + self.window_control_hitboxes as usize,
                 a11y_actions: base.fast.a11y_actions + self.a11y_actions as usize,
+                present: base.fast.present + self.present as usize,
             },
             mouse_listeners_index: base.mouse_listeners_index + self.mouse_listeners as usize,
             input_handlers_index: base.input_handlers_index + self.input_handlers as usize,
@@ -593,6 +596,7 @@ impl PaintAt {
             scene: self.scene + other.scene,
             window_control_hitboxes: self.window_control_hitboxes + other.window_control_hitboxes,
             a11y_actions: self.a11y_actions + other.a11y_actions,
+            present: self.present + other.present,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: self.debug_bounds + other.debug_bounds,
             mouse_listeners: self.mouse_listeners + other.mouse_listeners,
@@ -609,6 +613,7 @@ impl PaintAt {
             scene: self.scene - other.scene,
             window_control_hitboxes: self.window_control_hitboxes - other.window_control_hitboxes,
             a11y_actions: self.a11y_actions - other.a11y_actions,
+            present: self.present - other.present,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: self.debug_bounds - other.debug_bounds,
             mouse_listeners: self.mouse_listeners - other.mouse_listeners,

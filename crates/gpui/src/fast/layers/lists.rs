@@ -2582,7 +2582,7 @@ pub(crate) fn paint_row(
     window.take_hover_reads();
     let hovers_start = window.retained_state.hover_dependencies.len();
     let paint_start = window.paint_index();
-    let fades_before = crate::fast::edge_fade::applied(window);
+    let fades_before = crate::fast::present::uncarried(window);
     let reads_start = reads_len();
     let writes_start = crate::fast::dependencies::write_generation_now();
     set_current_row(window, &id, Some(row));
@@ -2590,7 +2590,7 @@ pub(crate) fn paint_row(
         f(window, cx);
     }
     set_current_row(window, &id, None);
-    let fades = crate::fast::edge_fade::applied(window) != fades_before;
+    let fades = crate::fast::present::uncarried(window) != fades_before;
     let paint_end = window.paint_index();
     let end = window.next_frame.scene.paint_operations.len();
     window.take_hover_reads();

@@ -655,6 +655,11 @@ Added in this fork:
   pixels follow the gaussian to within a level, keep a non-opaque drawable's alpha, and
   leave holes and paths outside the region as drawn without it (`gpui_apple`
   `fast::backdrop`). Costs in docs/composition.md, "Backdrop blur"
+- feat(gpui): `Window::on_present(callback)`, zui's API (`fast/present.rs`): run as the
+  painted frame is presented, again when a subtree is drawn from last frame, never from a
+  moved stretch or scroll tiles (`fast/tests/present.rs`: only on present, in paint order,
+  again for a reused view, with the bounds a moved view is drawn at; a scrolling column
+  handing one draws without tiles, and loses its callbacks when made to composite)
 - feat(gpui, gpui_apple): `Window::paint_glyph_transformed(origin, font_id, glyph_id,
   font_size, color, transformation, blur)`, ported from zui (`0966d06`, Apache-2.0;
   `fast/glyph_blur.rs`): one glyph raster drawn through a composite-time transformation and

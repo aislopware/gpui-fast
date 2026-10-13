@@ -44,6 +44,7 @@ pub(crate) mod live_region;
 pub(crate) mod mask;
 pub(crate) mod number_shaping;
 pub(crate) mod path_cache;
+pub(crate) mod present;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod render_at;
 pub(crate) mod retained;

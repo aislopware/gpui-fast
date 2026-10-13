@@ -36,6 +36,7 @@ mod mask;
 mod number_shaping;
 mod oracle;
 mod path_cache;
+mod present;
 mod retained;
 mod retained_bench;
 mod rounded_clip;

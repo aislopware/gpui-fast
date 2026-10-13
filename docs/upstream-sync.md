@@ -300,6 +300,15 @@ unchanged, and a new entry needs as good a reason.
   The clip rides in the edge fade table each primitive already indexes, so it
   adds no byte to a primitive and is drawn by the fade's shader path; an
   entry grows from 48 to 80 bytes. Only Metal draws it.
+- `Window::on_present` is new public API (`fast/present.rs`), in zui's shape
+  (<https://github.com/zeronsh/zui>; Apache-2.0, by Wing and the zui
+  contributors): a callback run each time the frame painted reaches the
+  screen, for a native child view placed by hand. A subtree drawn again from
+  last frame hands its callbacks again; a stretch handing one is painted
+  again rather than moved, and scroll content handing one is drawn without
+  tiles. zui's `Window::enable_scene_overlay`, a second GPUI surface over
+  native children, is not carried: natives go under the one layer with
+  holes (docs/composition.md), through `Window::create_native_host`.
 - `Window::paint_glyph_transformed` is new public API (`fast/glyph_blur.rs`),
   ported from zui (<https://github.com/zeronsh/zui> `0966d06`; Apache-2.0, by
   Wing; the notice is in the module's documentation). zeron's rolling digits

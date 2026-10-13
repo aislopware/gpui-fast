@@ -735,14 +735,15 @@ fn repaint(
     let hovers_start = window.retained_state.hover_dependencies.len();
     let recording = cx.begin_recording_dependencies();
     window.fast_layers.painting = Some(painting);
-    let fades_before = crate::fast::edge_fade::applied(window);
+    let fades_before = crate::fast::present::uncarried(window);
 
     f(window, cx);
 
     // Fades the content set of its own move with what it painted, which its
-    // tiles can't carry: it is drawn into the frame, as content with paths
-    // is, and the layer let go.
-    let own_fades = crate::fast::edge_fade::applied(window) != fades_before;
+    // tiles can't carry, and callbacks it hands the present hold where it
+    // painted: it is drawn into the frame, as content with paths is, and the
+    // layer let go.
+    let own_fades = crate::fast::present::uncarried(window) != fades_before;
 
     let mut painting = window
         .fast_layers

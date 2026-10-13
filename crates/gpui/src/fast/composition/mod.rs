@@ -345,6 +345,7 @@ impl Window {
 /// Hands `window`'s rendered frame to the platform: with its natives once a
 /// host exists, exactly as before otherwise.
 pub(crate) fn present_scene(window: &mut Window) {
+    crate::fast::present::run(window);
     if !window.composition.active {
         window.platform_window.draw(&window.rendered_frame.scene);
         return;

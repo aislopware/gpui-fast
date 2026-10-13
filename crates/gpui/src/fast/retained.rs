@@ -75,6 +75,8 @@ pub(crate) struct RetainedSubtrees {
     /// The elements drawn this frame that can be drawn again from it. See
     /// [`crate::fast::element`].
     pub(crate) elements: crate::fast::element::ElementRecords,
+    /// What `Window::on_present` was handed while painting, in order.
+    pub(crate) present: Vec<crate::fast::present::OnPresent>,
 }
 
 pub(crate) struct RetainedSubtree {
@@ -501,6 +503,7 @@ impl PaintIndex {
                     + to.fast.window_control_hitboxes,
                 a11y_actions: self.fast.a11y_actions - from.fast.a11y_actions
                     + to.fast.a11y_actions,
+                present: self.fast.present - from.fast.present + to.fast.present,
             },
             mouse_listeners_index: self.mouse_listeners_index - from.mouse_listeners_index
                 + to.mouse_listeners_index,
@@ -526,6 +529,7 @@ impl RetainedSubtrees {
         self.open.clear();
         self.reused_any = false;
         self.elements.clear();
+        self.present.clear();
     }
 
     /// Whether any subtree was drawn from last frame.
@@ -1359,6 +1363,7 @@ pub(crate) fn note_animation_frame_request(window: &Window, entity: EntityId) {
 pub(crate) struct FastPaintIndex {
     pub(crate) window_control_hitboxes: usize,
     pub(crate) a11y_actions: usize,
+    pub(crate) present: usize,
 }
 
 impl FastPaintIndex {
@@ -1367,6 +1372,7 @@ impl FastPaintIndex {
         FastPaintIndex {
             window_control_hitboxes: window.next_frame.window_control_hitboxes.len(),
             a11y_actions: crate::fast::a11y::actions_index(window),
+            present: window.next_frame.retained.present.len(),
         }
     }
 }
@@ -1384,6 +1390,7 @@ pub(crate) fn reuse_paint_records(window: &mut Window, range: &Range<PaintIndex>
             .cloned(),
     );
     crate::fast::a11y::reuse_paint(window, range);
+    crate::fast::present::reuse_paint(window, range);
 }
 
 /// The retained subtrees around the element being painted, for a listener
