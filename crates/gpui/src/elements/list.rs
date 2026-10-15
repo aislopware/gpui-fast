@@ -593,7 +593,10 @@ impl ListState {
 
         let start_pixel_offset = cursor.start().height + current_offset.offset_in_item;
         let new_pixel_offset = (start_pixel_offset + distance).max(px(0.));
-        if new_pixel_offset > start_pixel_offset {
+        // scroll_to can anchor an item below the viewport top with a negative
+        // offset_in_item, so even a positive distance may land before the
+        // cursor: compare against its position before a forward-only seek.
+        if new_pixel_offset >= cursor.start().height {
             cursor.seek_forward(&Height(new_pixel_offset), Bias::Right);
         } else {
             cursor.seek(&Height(new_pixel_offset), Bias::Right);
