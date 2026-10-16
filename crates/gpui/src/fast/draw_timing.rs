@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::{App, Global, Subscription, SubscriberSet, Window};
+use crate::{App, Global, SubscriberSet, Subscription, Window};
 
 /// Every window's draw observers, by the window's id.
 struct DrawObservers(SubscriberSet<u64, DrawObserver>);

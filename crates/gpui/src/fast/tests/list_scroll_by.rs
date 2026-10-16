@@ -12,9 +12,11 @@ struct Rows(ListState);
 
 impl Render for Rows {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        list(self.0.clone(), |_, _, _| div().h(px(20.)).w_full().into_any())
-            .w_full()
-            .h_full()
+        list(self.0.clone(), |_, _, _| {
+            div().h(px(20.)).w_full().into_any()
+        })
+        .w_full()
+        .h_full()
     }
 }
 
