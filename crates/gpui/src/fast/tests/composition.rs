@@ -900,6 +900,7 @@ impl Render for Described {
             .size_full()
             .child(
                 native_view(&self.plain)
+                    .id("plot")
                     .absolute()
                     .top(px(10.))
                     .left(px(20.))
@@ -920,10 +921,10 @@ impl Render for Described {
     }
 }
 
-/// A native is a node of the accessibility tree where it is placed, so
-/// assistive technologies and tests find it among GPUI's own: a group named
-/// for its host, with no id, role or label of its element's needed; an
-/// element's own id, role and label win.
+/// A native with an id is a node of the accessibility tree where it is placed,
+/// so assistive technologies and tests find it among GPUI's own: a group named
+/// for its host, with no role or label of its element's needed; an element's
+/// own role and label win.
 #[test]
 fn a_native_is_a_node_of_the_accessibility_tree_where_it_shows() {
     let mut cx = TestAppContext::single();
