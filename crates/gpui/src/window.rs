@@ -3862,6 +3862,7 @@ impl Window {
         } else {
             tooltip_element = self.prepaint_tooltip(cx);
         }
+        crate::fast::focus_tooltip::note_drawn(self, cx, tooltip_element.is_some());
 
         crate::fast::stats::FramePhaseTimes::end_prepaint(&mut self.fast_layout.phase_times);
         self.mouse_hit_test = crate::fast::layers::hover_freeze::hit_test(self);
@@ -4283,6 +4284,14 @@ impl Window {
             hitbox_id: None,
             style,
         })
+    }
+
+    /// Sets where the hover tooltips of this window's elements sit when an
+    /// element names no placement of its own
+    /// ([`crate::StatefulInteractiveElement::tooltip_placement`]); the
+    /// pointer by default.
+    pub fn set_tooltip_placement(&mut self, placement: crate::TooltipPlacement) {
+        self.fast_focus_tooltip.placement = placement;
     }
 
     /// Sets a tooltip to be rendered for the upcoming frame. This method should only be called

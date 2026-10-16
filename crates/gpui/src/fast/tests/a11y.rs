@@ -452,3 +452,49 @@ fn scroll_page_frames(cx: &mut TestAppContext, placed: bool) -> u64 {
     }
     composited
 }
+
+/// Two buttons, the second disabled.
+struct Buttons;
+
+impl Render for Buttons {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(
+                div()
+                    .id("on")
+                    .role(Role::Button)
+                    .aria_label("Send")
+                    .size(px(20.)),
+            )
+            .child(
+                div()
+                    .id("off")
+                    .role(Role::Button)
+                    .aria_label("Stop")
+                    .aria_disabled(true)
+                    .size(px(20.)),
+            )
+    }
+}
+
+/// A disabled control says so to assistive technology, and only it does.
+#[crate::test]
+fn a_disabled_control_says_so(cx: &mut TestAppContext) {
+    let window = cx.add_window(|_, _| Buttons);
+    cx.update_window(window.into(), |_, window, cx| {
+        crate::fast::a11y::set_active_flag(&window.a11y, true);
+        window.draw(cx).clear(cx);
+        let tree = crate::fast::a11y::last_tree(window).expect("accessibility is active");
+        let disabled = |label: &str| {
+            tree.nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .map(|(_, node)| node.is_disabled())
+                .expect("the button is a node")
+        };
+        assert!(!disabled("Send"));
+        assert!(disabled("Stop"));
+    })
+    .unwrap();
+}

@@ -116,6 +116,7 @@ pub use executor::*;
 pub use fast::composition;
 pub use fast::cursor::{CURSOR_IMAGE_MAX_SIDE, CursorImage, CursorImageId};
 pub use fast::edge_fade::{EdgeFade, EdgeFadeElement, EdgeFadeRamps, edge_fade};
+pub use fast::focus_tooltip::{TOOLTIP_WARM_FOR, TooltipPlacement};
 pub use fast::gesture::{
     InteractiveGestures, PlatformGesture, RotateEvent, SmartMagnifyEvent, SwipeEvent,
 };

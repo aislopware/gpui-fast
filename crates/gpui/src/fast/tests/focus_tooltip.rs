@@ -315,6 +315,70 @@ fn a_control_focused_with_the_pointer_shows_nothing() {
     assert_eq!(s.tooltip(), None);
 }
 
+/// Anchored, a hover's tooltip sits centred below the control, not at the
+/// pointer, and above it at the window's foot.
+#[test]
+fn an_anchored_hover_tooltip_sits_under_its_control() {
+    let mut s = setup();
+    s.cx.update_window(s.window, |_, window, _| {
+        window.set_tooltip_placement(crate::TooltipPlacement::Below)
+    })
+    .unwrap();
+    s.move_mouse(135., 65.);
+    s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
+    assert_eq!(s.tooltip_at(), Some((90., 74.)));
+
+    s.move_mouse(5., 5.);
+    s.wait(Duration::from_secs(1));
+    let viewport =
+        s.cx.update_window(s.window, |_, window, _| window.viewport_size())
+            .unwrap();
+    let top = viewport.height.as_f32() - 30.;
+    s.move_mouse(110., top + 5.);
+    s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
+    assert_eq!(s.tooltip_at(), Some((90., top - 4. - 16.)));
+}
+
+/// At the pointer by default: just below and right of it.
+#[test]
+fn a_hover_tooltip_sits_at_the_pointer_by_default() {
+    let mut s = setup();
+    s.move_mouse(135., 65.);
+    s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
+    assert_eq!(s.tooltip_at(), Some((136., 66.)));
+}
+
+/// Once one tooltip showed, the next shows at once while the window is warm,
+/// and waits its delay again once it cooled.
+#[test]
+fn the_next_tooltip_shows_at_once_while_warm() {
+    let mut s = setup();
+    s.move_mouse(110., 55.);
+    s.wait(ALMOST);
+    assert_eq!(s.tooltip(), None, "cold: the first waits its delay");
+    s.wait(Duration::from_millis(1));
+    assert!(s.tooltip().is_some());
+
+    s.move_mouse(210., 55.);
+    s.wait(Duration::ZERO);
+    assert_eq!(s.tooltip_at(), Some((211., 56.)), "warm: the next at once");
+
+    s.move_mouse(5., 5.);
+    assert_eq!(s.tooltip(), None);
+    s.wait(crate::TOOLTIP_WARM_FOR - Duration::from_millis(100));
+    s.move_mouse(110., 55.);
+    s.wait(Duration::ZERO);
+    assert!(s.tooltip().is_some(), "still warm soon after one hid");
+
+    s.move_mouse(5., 5.);
+    s.wait(crate::TOOLTIP_WARM_FOR);
+    s.move_mouse(110., 55.);
+    s.wait(ALMOST);
+    assert_eq!(s.tooltip(), None, "cooled: the delay again");
+    s.wait(Duration::from_millis(1));
+    assert!(s.tooltip().is_some());
+}
+
 /// A list of rows, each a control with a tooltip and a focus handle.
 struct List {
     rows: Vec<FocusHandle>,

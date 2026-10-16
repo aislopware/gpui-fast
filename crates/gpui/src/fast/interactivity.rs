@@ -41,6 +41,7 @@ static NO_ARIA: AriaProperties = AriaProperties {
     description: None,
     keyshortcuts: None,
     selected: None,
+    disabled: false,
     expanded: None,
     toggled: None,
     numeric_value: None,

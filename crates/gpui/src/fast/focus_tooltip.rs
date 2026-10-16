@@ -17,11 +17,24 @@
 //!
 //! An element without a tooltip, or without a focus handle, never reaches
 //! this module beyond one test in its paint.
+//!
+//! The module also places hover tooltips and warms them up:
+//!
+//! - An element, or the window for all its elements, can anchor a hover
+//!   tooltip to the element rather than to the pointer
+//!   ([`TooltipPlacement`]): centred below it or above it, 4 px off,
+//!   flipping where the window has no room, so the pointer never covers the
+//!   text it asked for.
+//! - Once a tooltip has shown, the next one shows at once while a tooltip is
+//!   still up or hid less than [`TOOLTIP_WARM_FOR`] ago, as Base UI's and
+//!   Radix's provider delays do: running the pointer along a toolbar reads
+//!   each button without waiting each time.
 
 use crate::{
     ActiveTooltip, AnyTooltip, AnyView, App, Bounds, EntityId, FocusHandle, Pixels, Subscription,
     TooltipId, Window, point, px,
 };
+use scheduler::Instant;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -44,10 +57,54 @@ pub(crate) struct FocusTooltip {
     escape: RefCell<Option<Subscription>>,
 }
 
-/// Where the tooltip a focus shows is anchored, kept by the window.
+/// Where a hover tooltip sits ([`crate::StatefulInteractiveElement::tooltip_placement`],
+/// [`Window::set_tooltip_placement`]). A tooltip a focus shows always sits below its element.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TooltipPlacement {
+    /// Just below and right of the pointer, as upstream places it.
+    #[default]
+    Pointer,
+    /// Centred below its element, or above it where the window has no room below.
+    Below,
+    /// Centred above its element, or below it where the window has no room above.
+    Above,
+}
+
+/// How soon after a tooltip hides the next one skips its delay.
+pub const TOOLTIP_WARM_FOR: Duration = Duration::from_millis(400);
+
+/// Where the tooltip shown this frame is anchored, how the window places hover tooltips, and
+/// when one last showed, kept by the window.
 #[derive(Default)]
 pub(crate) struct WindowFocusTooltip {
-    anchor: Option<(TooltipId, Bounds<Pixels>)>,
+    anchor: Option<(TooltipId, Bounds<Pixels>, TooltipPlacement)>,
+    /// The placement of a hover tooltip whose element names none.
+    pub(crate) placement: TooltipPlacement,
+    /// A tooltip was drawn in the last frame.
+    showing: bool,
+    /// When the last tooltip stopped being drawn.
+    hidden_at: Option<Instant>,
+}
+
+/// The delay a hover tooltip waits now: none while the window is warm (a tooltip is up or hid
+/// less than [`TOOLTIP_WARM_FOR`] ago), else `delay`.
+pub(crate) fn warm_delay(window: &Window, cx: &App, delay: Duration) -> Duration {
+    let state = &window.fast_focus_tooltip;
+    let warm = state.showing
+        || state
+            .hidden_at
+            .is_some_and(|at| cx.background_executor().now() < at + TOOLTIP_WARM_FOR);
+    if warm { Duration::ZERO } else { delay }
+}
+
+/// Notes whether the frame being drawn shows a tooltip, so the window knows when the last one
+/// hid ([`warm_delay`]).
+pub(crate) fn note_drawn(window: &mut Window, cx: &App, drawn: bool) {
+    let state = &mut window.fast_focus_tooltip;
+    if state.showing && !drawn {
+        state.hidden_at = Some(cx.background_executor().now());
+    }
+    state.showing = drawn;
 }
 
 type Active = Rc<RefCell<Option<ActiveTooltip>>>;
@@ -192,27 +249,39 @@ fn show(
     window.refresh();
 }
 
-/// Anchors the tooltip the element's focus shows to the element's `bounds`
-/// this frame: the prepaint hook of an element with an active tooltip.
+/// Anchors the tooltip the element shows to the element's `bounds` this
+/// frame: below it for its focus, else where `placement` (or the window's)
+/// says for a hover: the prepaint hook of an element with an active tooltip.
 pub(crate) fn anchor(
     state: &Option<Rc<FocusTooltip>>,
     active: &Active,
     id: Option<TooltipId>,
     bounds: Bounds<Pixels>,
+    placement: Option<TooltipPlacement>,
     window: &mut Window,
 ) {
-    if let (Some(state), Some(id)) = (state.as_deref(), id)
-        && is_shown(state, active)
+    let Some(id) = id else {
+        return;
+    };
+    if state
+        .as_deref()
+        .is_some_and(|state| is_shown(state, active))
     {
-        window.fast_focus_tooltip.anchor = Some((id, bounds));
+        window.fast_focus_tooltip.anchor = Some((id, bounds, TooltipPlacement::Below));
+        return;
+    }
+    let placement = placement.unwrap_or(window.fast_focus_tooltip.placement);
+    if placement != TooltipPlacement::Pointer {
+        window.fast_focus_tooltip.anchor = Some((id, bounds, placement));
     }
 }
 
-/// Places the tooltip `id` centred below the element its focus showed it
-/// for, or above it where the window has no room below, keeping it inside
-/// the window. Any other tooltip keeps the place upstream gave it.
+/// Places the tooltip `id` centred on the element it was anchored to, below
+/// or above it as anchored, on the other side where the window has no room,
+/// keeping it inside the window. A tooltip at the pointer keeps the place
+/// upstream gave it.
 pub(crate) fn place(window: &Window, id: TooltipId, tooltip: &mut Bounds<Pixels>) {
-    let Some((anchor_id, anchor)) = window.fast_focus_tooltip.anchor else {
+    let Some((anchor_id, anchor, placement)) = window.fast_focus_tooltip.anchor else {
         return;
     };
     if anchor_id != id {
@@ -224,10 +293,14 @@ pub(crate) fn place(window: &Window, id: TooltipId, tooltip: &mut Bounds<Pixels>
         .min(viewport.width - size.width)
         .max(Pixels::ZERO);
     let below = anchor.bottom() + GAP;
-    let y = if below + size.height <= viewport.height {
-        below
-    } else {
-        (anchor.top() - GAP - size.height).max(Pixels::ZERO)
+    let above = anchor.top() - GAP - size.height;
+    let fits_below = below + size.height <= viewport.height;
+    let fits_above = above >= Pixels::ZERO;
+    let y = match placement {
+        TooltipPlacement::Above if !fits_above && fits_below => below,
+        TooltipPlacement::Above => above.max(Pixels::ZERO),
+        _ if fits_below => below,
+        _ => above.max(Pixels::ZERO),
     };
     tooltip.origin = point(x, y);
 }

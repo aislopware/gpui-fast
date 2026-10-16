@@ -1226,6 +1226,7 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         hover_listener_mode: _,
         tooltip_builder,
         tooltip_show_delay: _,
+        tooltip_placement: _,
         window_control,
         hitbox_behavior,
         tab_index,

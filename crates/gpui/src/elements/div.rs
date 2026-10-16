@@ -736,6 +736,13 @@ impl Interactivity {
         self.tooltip_show_delay = Some(delay);
     }
 
+    /// Where this element's hover tooltip sits, over the window's
+    /// ([`Window::set_tooltip_placement`]).
+    /// The imperative API equivalent to [`StatefulInteractiveElement::tooltip_placement`].
+    pub fn tooltip_placement(&mut self, placement: crate::TooltipPlacement) {
+        self.tooltip_placement = Some(placement);
+    }
+
     /// Block the mouse from all interactions with elements behind this element's hitbox. Typically
     /// `block_mouse_except_scroll` should be preferred.
     ///
@@ -1397,6 +1404,13 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         self
     }
 
+    /// Set whether this element is disabled: drawn and named but not to be
+    /// used, as a dimmed button is.
+    fn aria_disabled(mut self, disabled: bool) -> Self {
+        self.interactivity().aria.disabled = disabled;
+        self
+    }
+
     /// Set the expanded state for this element.
     fn aria_expanded(mut self, expanded: bool) -> Self {
         self.interactivity().aria.expanded = Some(expanded);
@@ -1721,6 +1735,18 @@ pub trait StatefulInteractiveElement: InteractiveElement {
         Self: Sized,
     {
         self.interactivity().tooltip_show_delay(delay);
+        self
+    }
+
+    /// Sets where this element's hover tooltip sits: at the pointer, or
+    /// anchored centred below or above the element. Elements that name none
+    /// take the window's ([`Window::set_tooltip_placement`]).
+    /// The fluent API equivalent to [`Interactivity::tooltip_placement`].
+    fn tooltip_placement(mut self, placement: crate::TooltipPlacement) -> Self
+    where
+        Self: Sized,
+    {
+        self.interactivity().tooltip_placement(placement);
         self
     }
 }
@@ -2136,6 +2162,7 @@ pub(crate) struct AriaProperties {
     pub(crate) description: Option<SharedString>,
     pub(crate) keyshortcuts: Option<SharedString>,
     pub(crate) selected: Option<bool>,
+    pub(crate) disabled: bool,
     pub(crate) expanded: Option<bool>,
     pub(crate) toggled: Option<accesskit::Toggled>,
     pub(crate) numeric_value: Option<f64>,
@@ -2217,6 +2244,7 @@ pub struct Interactivity {
     pub(crate) hover_listener_mode: HoverListenerMode,
     pub(crate) tooltip_builder: crate::fast::interactivity::Rare<TooltipBuilder>,
     pub(crate) tooltip_show_delay: Option<Duration>,
+    pub(crate) tooltip_placement: Option<crate::TooltipPlacement>,
     pub(crate) window_control: Option<WindowControlArea>,
     pub(crate) hitbox_behavior: HitboxBehavior,
     pub(crate) tab_index: Option<isize>,
@@ -2413,6 +2441,7 @@ impl Interactivity {
                                 active_tooltip,
                                 self.tooltip_id,
                                 bounds,
+                                self.tooltip_placement,
                                 window,
                             );
                         } else {
@@ -3622,6 +3651,9 @@ impl Interactivity {
         if let Some(selected) = self.aria.selected {
             node.set_selected(selected);
         }
+        if self.aria.disabled {
+            node.set_disabled();
+        }
         if let Some(expanded) = self.aria.expanded {
             node.set_expanded(expanded);
         }
@@ -3962,6 +3994,7 @@ fn handle_tooltip_mouse_move(
             active_tooltip.borrow_mut().take();
         }
         Action::ScheduleShow => {
+            let show_delay = crate::fast::focus_tooltip::warm_delay(window, cx, show_delay);
             let delayed_show_task = window.spawn(cx, {
                 let weak_active_tooltip = Rc::downgrade(active_tooltip);
                 let build_tooltip = build_tooltip.clone();
