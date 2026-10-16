@@ -314,7 +314,10 @@ Generic, each with tests in its commit, and each a product question for upstream
   picture.
 - `c5f0200`: an outline style, a ring drawn clear of the element.
 - `9c128c2` and `602eef5`: an element's colours eased into and out of its states.
-- `e828ae7`: an element's tooltip shown to keyboard focus too.
+- `e828ae7`: an element's tooltip shown to keyboard focus too. `9e1f84c`: a hover tooltip
+  anchored centred below or above its element rather than at the pointer
+  (`TooltipPlacement`), the next tooltip shown at once within 400 ms of the last (a delay
+  group), and `aria_disabled`.
 - `198c79f` and `5fdd4f3`: an element as an accessibility live region.
 - `d797f55`, `a03d04e` and `d216a97`: content faded per pixel toward a region's edges.
 - `67c4d96`, `c54b1ea` and `35e1e61`: `Window::paint_mask`, a caller's mask at exact device
