@@ -4286,14 +4286,6 @@ impl Window {
         })
     }
 
-    /// Sets where the hover tooltips of this window's elements sit when an
-    /// element names no placement of its own
-    /// ([`crate::StatefulInteractiveElement::tooltip_placement`]); the
-    /// pointer by default.
-    pub fn set_tooltip_placement(&mut self, placement: crate::TooltipPlacement) {
-        self.fast_focus_tooltip.placement = placement;
-    }
-
     /// Sets a tooltip to be rendered for the upcoming frame. This method should only be called
     /// during the paint phase of element drawing.
     pub fn set_tooltip(&mut self, tooltip: AnyTooltip) -> TooltipId {

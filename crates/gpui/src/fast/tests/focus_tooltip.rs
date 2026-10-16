@@ -24,12 +24,14 @@ impl Render for Tip {
     }
 }
 
-/// Three 40×20 controls with tooltips: `a` and `b` side by side near the
-/// top, `c` at the window's foot. Escape is bound to `Cancel` around them.
+/// Four 40×20 controls with tooltips: `a` and `b` side by side near the
+/// top, `c` at the window's foot, `edge` flush with the window's right edge.
+/// Escape is bound to `Cancel` around them.
 struct Controls {
     a: FocusHandle,
     b: FocusHandle,
     c: FocusHandle,
+    edge: FocusHandle,
     cancels: Rc<Cell<usize>>,
 }
 
@@ -54,6 +56,7 @@ impl Render for Controls {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let cancels = self.cancels.clone();
         let foot = window.viewport_size().height - px(30.);
+        let right = window.viewport_size().width - px(40.);
         div()
             .key_context("Controls")
             .size_full()
@@ -61,6 +64,7 @@ impl Render for Controls {
             .child(control("a", &self.a, px(100.), px(50.)))
             .child(control("b", &self.b, px(200.), px(50.)))
             .child(control("c", &self.c, px(100.), foot))
+            .child(control("edge", &self.edge, right, px(50.)))
     }
 }
 
@@ -93,12 +97,19 @@ fn setup() -> Setup {
     let mut cx = TestAppContext::single();
     cx.update(|cx| cx.bind_keys([KeyBinding::new("escape", Cancel, Some("Controls"))]));
     let (a, b, c) = cx.update(|cx| (cx.focus_handle(), cx.focus_handle(), cx.focus_handle()));
+    let edge = cx.update(|cx| cx.focus_handle());
     let cancels = Rc::new(Cell::new(0));
     let window = cx
         .add_window({
             let (a, b, c, cancels) = (a.clone(), b.clone(), c.clone(), cancels.clone());
             move |_, cx| Host {
-                controls: cx.new(|_| Controls { a, b, c, cancels }),
+                controls: cx.new(|_| Controls {
+                    a,
+                    b,
+                    c,
+                    edge,
+                    cancels,
+                }),
             }
         })
         .into();
@@ -337,6 +348,24 @@ fn an_anchored_hover_tooltip_sits_under_its_control() {
     s.move_mouse(110., top + 5.);
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
     assert_eq!(s.tooltip_at(), Some((90., top - 4. - 16.)));
+}
+
+/// Anchored to a control flush with the window's edge, the tooltip stops
+/// short of the edge rather than touching it.
+#[test]
+fn an_anchored_tooltip_keeps_off_the_windows_edge() {
+    let mut s = setup();
+    s.cx.update_window(s.window, |_, window, _| {
+        window.set_tooltip_placement(crate::TooltipPlacement::Below)
+    })
+    .unwrap();
+    let width =
+        s.cx.update_window(s.window, |_, window, _| window.viewport_size().width)
+            .unwrap()
+            .as_f32();
+    s.move_mouse(width - 20., 60.);
+    s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
+    assert_eq!(s.tooltip_at(), Some((width - 60. - 8., 74.)));
 }
 
 /// At the pointer by default: just below and right of it.

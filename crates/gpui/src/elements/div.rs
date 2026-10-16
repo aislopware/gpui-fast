@@ -736,13 +736,6 @@ impl Interactivity {
         self.tooltip_show_delay = Some(delay);
     }
 
-    /// Where this element's hover tooltip sits, over the window's
-    /// ([`Window::set_tooltip_placement`]).
-    /// The imperative API equivalent to [`StatefulInteractiveElement::tooltip_placement`].
-    pub fn tooltip_placement(&mut self, placement: crate::TooltipPlacement) {
-        self.tooltip_placement = Some(placement);
-    }
-
     /// Block the mouse from all interactions with elements behind this element's hitbox. Typically
     /// `block_mouse_except_scroll` should be preferred.
     ///
@@ -1742,7 +1735,7 @@ pub trait StatefulInteractiveElement: InteractiveElement {
     /// anchored centred below or above the element. Elements that name none
     /// take the window's ([`Window::set_tooltip_placement`]).
     /// The fluent API equivalent to [`Interactivity::tooltip_placement`].
-    fn tooltip_placement(mut self, placement: crate::TooltipPlacement) -> Self
+    fn tooltip_placement(mut self, placement: crate::fast::focus_tooltip::TooltipPlacement) -> Self
     where
         Self: Sized,
     {
@@ -2244,7 +2237,7 @@ pub struct Interactivity {
     pub(crate) hover_listener_mode: HoverListenerMode,
     pub(crate) tooltip_builder: crate::fast::interactivity::Rare<TooltipBuilder>,
     pub(crate) tooltip_show_delay: Option<Duration>,
-    pub(crate) tooltip_placement: Option<crate::TooltipPlacement>,
+    pub(crate) tooltip_placement: Option<crate::fast::focus_tooltip::TooltipPlacement>,
     pub(crate) window_control: Option<WindowControlArea>,
     pub(crate) hitbox_behavior: HitboxBehavior,
     pub(crate) tab_index: Option<isize>,

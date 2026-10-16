@@ -23,16 +23,16 @@
 //! - An element, or the window for all its elements, can anchor a hover
 //!   tooltip to the element rather than to the pointer
 //!   ([`TooltipPlacement`]): centred below it or above it, 4 px off,
-//!   flipping where the window has no room, so the pointer never covers the
-//!   text it asked for.
+//!   flipping where the window has no room and kept 8 px inside it, so the
+//!   pointer never covers the text it asked for.
 //! - Once a tooltip has shown, the next one shows at once while a tooltip is
 //!   still up or hid less than [`TOOLTIP_WARM_FOR`] ago, as Base UI's and
 //!   Radix's provider delays do: running the pointer along a toolbar reads
 //!   each button without waiting each time.
 
 use crate::{
-    ActiveTooltip, AnyTooltip, AnyView, App, Bounds, EntityId, FocusHandle, Pixels, Subscription,
-    TooltipId, Window, point, px,
+    ActiveTooltip, AnyTooltip, AnyView, App, Bounds, EntityId, FocusHandle, Interactivity, Pixels,
+    Subscription, TooltipId, Window, point, px,
 };
 use scheduler::Instant;
 use std::{
@@ -43,6 +43,10 @@ use std::{
 
 /// The space between an element and the tooltip its focus shows.
 const GAP: Pixels = px(4.);
+/// The least space an anchored tooltip keeps from the window's edges, so a
+/// control in a corner never has its tooltip flush against the frame
+/// (Floating UI's `shift` padding).
+const EDGE: Pixels = px(8.);
 
 /// What an element's tooltip needs to follow its focus, kept in its element
 /// state.
@@ -72,6 +76,25 @@ pub enum TooltipPlacement {
 
 /// How soon after a tooltip hides the next one skips its delay.
 pub const TOOLTIP_WARM_FOR: Duration = Duration::from_millis(400);
+
+impl Window {
+    /// Sets where the hover tooltips of this window's elements sit when an
+    /// element names no placement of its own
+    /// ([`crate::StatefulInteractiveElement::tooltip_placement`]); the
+    /// pointer by default.
+    pub fn set_tooltip_placement(&mut self, placement: TooltipPlacement) {
+        self.fast_focus_tooltip.placement = placement;
+    }
+}
+
+impl Interactivity {
+    /// Where this element's hover tooltip sits, over the window's
+    /// ([`Window::set_tooltip_placement`]).
+    /// The imperative API equivalent to [`crate::StatefulInteractiveElement::tooltip_placement`].
+    pub fn tooltip_placement(&mut self, placement: TooltipPlacement) {
+        self.tooltip_placement = Some(placement);
+    }
+}
 
 /// Where the tooltip shown this frame is anchored, how the window places hover tooltips, and
 /// when one last showed, kept by the window.
@@ -278,8 +301,8 @@ pub(crate) fn anchor(
 
 /// Places the tooltip `id` centred on the element it was anchored to, below
 /// or above it as anchored, on the other side where the window has no room,
-/// keeping it inside the window. A tooltip at the pointer keeps the place
-/// upstream gave it.
+/// keeping it [`EDGE`] inside the window. A tooltip at the pointer keeps the
+/// place upstream gave it.
 pub(crate) fn place(window: &Window, id: TooltipId, tooltip: &mut Bounds<Pixels>) {
     let Some((anchor_id, anchor, placement)) = window.fast_focus_tooltip.anchor else {
         return;
@@ -290,17 +313,17 @@ pub(crate) fn place(window: &Window, id: TooltipId, tooltip: &mut Bounds<Pixels>
     let viewport = window.viewport_size();
     let size = tooltip.size;
     let x = (anchor.center().x - size.width / 2.)
-        .min(viewport.width - size.width)
-        .max(Pixels::ZERO);
+        .min(viewport.width - size.width - EDGE)
+        .max(EDGE);
     let below = anchor.bottom() + GAP;
     let above = anchor.top() - GAP - size.height;
-    let fits_below = below + size.height <= viewport.height;
-    let fits_above = above >= Pixels::ZERO;
+    let fits_below = below + size.height <= viewport.height - EDGE;
+    let fits_above = above >= EDGE;
     let y = match placement {
         TooltipPlacement::Above if !fits_above && fits_below => below,
-        TooltipPlacement::Above => above.max(Pixels::ZERO),
+        TooltipPlacement::Above => above.max(EDGE),
         _ if fits_below => below,
-        _ => above.max(Pixels::ZERO),
+        _ => above.max(EDGE),
     };
     tooltip.origin = point(x, y);
 }

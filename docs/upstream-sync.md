@@ -250,6 +250,19 @@ unchanged, and a new entry needs as good a reason.
   element with a tooltip pays one test in its paint and, with a focus
   handle, one focus question; `focus_tooltip_bench` in
   `fast/tests/focus_tooltip.rs` measures 100 such controls.
+- `TooltipPlacement`, `StatefulInteractiveElement::tooltip_placement`,
+  `Interactivity::tooltip_placement`, `Window::set_tooltip_placement` and
+  `TOOLTIP_WARM_FOR` are new public API (`fast/focus_tooltip.rs`). Upstream
+  hangs a hover tooltip 1 px from the pointer, so the arrow covers its first
+  words, and makes every tooltip wait its full delay. An element, or the
+  window for all its elements, can anchor the tooltip centred below or above
+  the element instead, flipping where the window has no room and kept 8 px
+  inside it, as the focus tooltip sits; the pointer stays the default. Once
+  one has shown, the next shows at once while one is up or hid under 400 ms
+  ago (Base UI's and Radix's delay groups).
+- `StatefulInteractiveElement::aria_disabled` is new public API: upstream
+  has no way to say a control is disabled, so a dimmed button read as
+  usable to assistive tech.
 - `Window::observe_draws(cx, callback)` is new public API
   (`fast/draw_timing.rs`): after each draw of the window it hands the
   callback when the draw began and how long render, layout, prepaint and
