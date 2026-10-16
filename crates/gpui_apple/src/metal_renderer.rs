@@ -1974,7 +1974,15 @@ mod ycbcr_tests {
             frame.commit();
             frame
         };
-        for frame in (0..3).map(|_| frame(&mut renderer)).collect::<Vec<_>>() {
+        // All three are encoded before any is committed: a frame done before the next one is
+        // encoded would rightly go at that one, and the count would race the GPU.
+        let frames = (0..3)
+            .map(|_| renderer.render_frame(&scene, &texture, target).unwrap())
+            .collect::<Vec<_>>();
+        for frame in &frames {
+            frame.commit();
+        }
+        for frame in frames {
             frame.wait_until_completed();
         }
         assert_eq!(
