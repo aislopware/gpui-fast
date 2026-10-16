@@ -611,6 +611,7 @@ impl TextSystem {
 #[derive(Deref)]
 pub struct WindowTextSystem {
     pub(crate) line_layout_cache: LineLayoutCache,
+    pub(crate) fast_inline_boxes: crate::fast::inline_boxes::Pending,
     #[deref]
     text_system: Arc<TextSystem>,
 }
@@ -623,6 +624,7 @@ impl WindowTextSystem {
                 text_system.platform_text_system.clone(),
                 text_system.font_generation.clone(),
             ),
+            fast_inline_boxes: crate::fast::inline_boxes::Pending::default(),
             text_system,
         }
     }
@@ -832,6 +834,13 @@ impl WindowTextSystem {
                 font_size,
                 &font_runs,
                 wrap_width,
+                max_wrap_lines.map(|max| max.saturating_sub(wrapped_lines)),
+            );
+            let layout = crate::fast::inline_boxes::lay_out_boxes(
+                self,
+                layout,
+                &line_text,
+                line_start,
                 max_wrap_lines.map(|max| max.saturating_sub(wrapped_lines)),
             );
             wrapped_lines += layout.wrap_boundaries.len();

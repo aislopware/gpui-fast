@@ -393,6 +393,7 @@ pub struct StyledText {
     runs: Option<Vec<TextRun>>,
     delayed_highlights: Option<Vec<(Range<usize>, HighlightStyle)>>,
     delayed_font_family_overrides: Option<Vec<(Range<usize>, SharedString)>>,
+    pub(crate) fast_inline_boxes: Vec<crate::fast::inline_boxes::InlineBox>,
     layout: TextLayout,
 }
 
@@ -404,6 +405,7 @@ impl StyledText {
             runs: None,
             delayed_highlights: None,
             delayed_font_family_overrides: None,
+            fast_inline_boxes: Vec::new(),
             layout: TextLayout::default(),
         }
     }
@@ -571,7 +573,14 @@ impl Element for StyledText {
             Self::apply_font_family_overrides(runs, overrides);
         }
 
-        let layout_id = self.layout.layout(self.text.clone(), runs, window, cx);
+        let layout_id = crate::fast::inline_boxes::layout(
+            &self.layout,
+            self.text.clone(),
+            runs,
+            &mut self.fast_inline_boxes,
+            window,
+            cx,
+        );
         (layout_id, ())
     }
 
