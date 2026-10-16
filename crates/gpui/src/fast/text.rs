@@ -1,6 +1,7 @@
 //! Where a reused range of shaped lines falls in a new frame, text measurements
 //! carried from one frame to the next, and shaping statistics.
 
+use crate::fast::inline_boxes::InlineBox;
 use crate::fast::layout::Adopted;
 use crate::{
     App, AvailableSpace, DecorationRun, FontRun, FrameCache, Hsla, LayoutId, LineLayout,
@@ -37,6 +38,9 @@ pub(crate) struct TextMeasureInputs {
     /// run in the text style: that run is only made when the text has to be
     /// shaped, rather than copying the style's font into every element.
     runs: Vec<TextRun>,
+    /// The boxes laid out in place of ranges of the text
+    /// ([`crate::StyledText::with_inline_boxes`]), in order and apart.
+    boxes: Vec<InlineBox>,
     /// The text style in effect, shared with the window's text style stack
     /// and every other element under the same refinements.
     text_style: Rc<TextStyle>,
@@ -140,6 +144,7 @@ impl TextMeasureInputs {
             && self.font_size == other.font_size
             && self.line_height == other.line_height
             && self.font_generation == other.font_generation
+            && self.boxes == other.boxes
             && style.white_space == other_style.white_space
             && style.line_clamp == other_style.line_clamp
             && style.text_overflow == other_style.text_overflow
@@ -203,6 +208,19 @@ pub(crate) fn layout_text(
     window: &mut Window,
     cx: &mut App,
 ) -> LayoutId {
+    layout_text_with_boxes(layout, text, runs, Vec::new(), window, cx)
+}
+
+/// [`layout_text`], with boxes laid out in place of ranges of the text
+/// ([`crate::StyledText::with_inline_boxes`]).
+pub(crate) fn layout_text_with_boxes(
+    layout: &TextLayout,
+    text: SharedString,
+    runs: Option<Vec<TextRun>>,
+    boxes: Vec<InlineBox>,
+    window: &mut Window,
+    cx: &mut App,
+) -> LayoutId {
     let text_style = crate::fast::text_style::text_style(window);
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let line_height = window.pixel_snap(
@@ -213,6 +231,7 @@ pub(crate) fn layout_text(
     let inputs = TextMeasureInputs {
         text,
         runs: runs.unwrap_or_default(),
+        boxes,
         text_style,
         font_size,
         line_height,
@@ -287,6 +306,7 @@ fn measure_text(
     let TextMeasureInputs {
         text,
         runs: _,
+        boxes,
         text_style,
         font_size,
         line_height,
@@ -394,11 +414,18 @@ fn measure_text(
     };
     let len = text.len();
 
-    let Some(lines) = window
-        .text_system()
-        .shape_text(text, font_size, &runs, wrap_width, text_style.line_clamp)
-        .log_err()
-    else {
+    // Truncation shapes a rewritten text, which the boxes' ranges no longer fit.
+    let boxes: &[InlineBox] = if truncate_width.is_some() { &[] } else { boxes };
+    let Some(lines) = crate::fast::inline_boxes::shape_text(
+        window.text_system(),
+        text,
+        font_size,
+        &runs,
+        wrap_width,
+        text_style.line_clamp,
+        boxes,
+    )
+    .log_err() else {
         if keep_wrapped {
             return Size::default();
         }
@@ -1130,6 +1157,7 @@ mod tests {
             let inputs = TextMeasureInputs {
                 text: "the quick brown fox jumps over the lazy dog".into(),
                 runs: Vec::new(),
+                boxes: Vec::new(),
                 text_style,
                 font_size,
                 line_height,

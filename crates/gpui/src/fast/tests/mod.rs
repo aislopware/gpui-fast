@@ -23,6 +23,7 @@ mod global_id;
 mod glyph_blur;
 mod image_evict;
 mod image_mask;
+mod inline_boxes;
 mod keyed;
 mod keypad;
 mod layers;

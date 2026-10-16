@@ -187,6 +187,18 @@ unchanged, and a new entry needs as good a reason.
   needs none, so a test that shapes and rasterises real glyphs (Slopty's terminal
   paint oracle) takes it from here. Windows' and Linux's text systems need their
   platform's devices and still come from a headless platform.
+- `InlineBox`, `StyledText::with_inline_boxes`, `LineLayout::with_inline_boxes`,
+  `WrappedLineLayout::glyph_position_for_index` and `TextLayout::baseline_for_index` are new
+  public API (`fast/inline_boxes.rs`). Upstream's text runs are glyphs only, so a formula, an
+  image or a chip inside a paragraph could only be drawn as text or break the paragraph into
+  pieces that wrap apart. A box stands for a range of the text: the text keeps its bytes, so
+  selection, copying and assistive technologies read them, while the line lays one unbroken box
+  of the box's width out there (its glyphs give way to one blank glyph, the glyphs after it
+  move), keeping its height and baseline, and never wrapping inside it. The text is shaped as
+  it is without boxes, from the line layout cache, and the boxes laid out over that shape, so
+  nothing changes for text without boxes. The caller paints each box at the baseline point of
+  its range's start (`fast/tests/inline_boxes.rs`). Slopty sets TeX formulas inside a line of
+  a reply this way.
 - `Window::paint_mask`, `RenderMaskParams` and `AtlasKey::Mask` are new public API
   (`fast/mask.rs`). Upstream's monochrome sprites are glyphs and SVGs, and an SVG is
   rasterised at twice the device size and halved by the sampler. Slopty's icons are the
