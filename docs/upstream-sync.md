@@ -360,6 +360,20 @@ When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what
 differs.
 
+### gpui_ios
+
+`crates/gpui_ios` is gpui-fast's own iOS backend under an upstream path. It began as
+zed#63068's August draft and has grown by 31 commits since. These deliver hardware keys and
+Return as key events, VoiceOver through the accessibility tree, edit menus, native composition
+(`ios/composition.rs`), the pointer, pinch, frame pacing, keyboard insets and `render_to_image`.
+They also add the UIKit-boundary input a host's tests drive (`inject`, `described`). zed merged
+#63068 on 2026-10-14 as a rewrite on typed objc2 with Rust-owned scene delegates, and it has
+none of these. Since gpui_platform depends on it, the zed import tracks the crate and the
+vendor commit holds zed's copy. The merge keeps ours, and `script/upstream-allowlist` exempts
+the directory. What zed's backend does better is ported into ours as it comes. Its core API
+(window insets, `TextInputStateChange`, `request_virtual_keyboard`, the input handler's
+`focus_id`, `AppLifecyclePhase::Disconnected`) is upstream's, unchanged.
+
 ## Syncing with upstream
 
 Upstream is [zed-industries/zed](https://github.com/zed-industries/zed). The

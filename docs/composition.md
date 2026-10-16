@@ -31,10 +31,10 @@ exactly as if GPUI had drawn it there, and everything painted after the placemen
 top of the hole and so on top of the native: popovers, menus, toasts, the drag preview,
 focus rings, a remote pointer. There is one GPUI layer and no overlay layer per native.
 
-- **The blend fix.** GPUI's pipelines blended destination alpha with `One`, which is right
-  only for an opaque drawable. The non-path pipelines and the path sprite pipeline now use
-  `OneMinusSourceAlpha` for destination alpha ("over"), so alpha stays coverage where GPUI
-  paints over a hole. For an opaque drawable the result is bit-identical (tested).
+- **The blend.** The non-path pipelines and the path sprite pipeline blend destination
+  alpha with `OneMinusSourceAlpha` ("over"), so alpha stays coverage where GPUI paints over a
+  hole. This fork carried that change until upstream made it too (zed#65571, for translucent
+  windows), when its comparison test against the additive blend went with it.
 - **Ties.** A hole is ordered as the native's own quad would be: after shadows of the same
   order (shadows draw beyond their bounds-tree bounds, about three blur radii), before any
   other primitive of the same order.

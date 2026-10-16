@@ -131,6 +131,7 @@ pub(crate) fn stamp_changes(window: &Window, cx: &App) {
     let handles = cx.focus_handles.read();
     let alive = |id: FocusId| {
         handles
+            .handles
             .get(id)
             .is_some_and(|focus| focus.ref_count.load(std::sync::atomic::Ordering::SeqCst) > 0)
     };
@@ -155,6 +156,7 @@ fn ask(id: FocusId, question: Question, window: &Window, cx: &App) -> bool {
     let focused = window.focus.filter(|focused| {
         cx.focus_handles
             .read()
+            .handles
             .get(*focused)
             .is_some_and(|focus| focus.ref_count.load(std::sync::atomic::Ordering::SeqCst) > 0)
     });

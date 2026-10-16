@@ -56,6 +56,22 @@ pub(crate) fn draw_outside_frames(window: &mut Window) {
     window.refreshing = true;
 }
 
+/// Notes the input handler the platform hands back as a frame begins. It is
+/// put back where the last frame painted one, for a subtree drawn again from
+/// last frame to install it again. That is right while it is the handler the
+/// last frame installed, which a platform holds between frames. One for
+/// another field than the field the last frame gave text input to was not
+/// painted where it goes back, so nothing is drawn from last frame and the
+/// focused field paints its own handler.
+#[inline(always)]
+pub(crate) fn restore_input_handler(window: &mut Window, handler: &crate::PlatformInputHandler) {
+    let focus = handler.focus_id();
+    if focus.is_some() && window.focused_text_input.is_some() && focus != window.focused_text_input
+    {
+        window.refreshing = true;
+    }
+}
+
 /// The retained subtrees being prepainted right now, for something deferred
 /// from them to be counted as theirs.
 #[inline(always)]

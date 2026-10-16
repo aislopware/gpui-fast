@@ -126,17 +126,6 @@ impl InstanceBufferPool {
     }
 }
 
-/// How the drawing pipelines blend alpha: "over", so the drawable's alpha is the coverage of
-/// what was drawn, and a native under a hole shows through exactly as much as GPUI left
-/// uncovered. An opaque drawable's alpha stays 1 either way.
-fn destination_alpha_blend_factor() -> metal::MTLBlendFactor {
-    #[cfg(test)]
-    if composition_tests::LEGACY_ALPHA_BLEND.get() {
-        return metal::MTLBlendFactor::One;
-    }
-    metal::MTLBlendFactor::OneMinusSourceAlpha
-}
-
 /// The pixel format of the drawables the renderer draws into.
 pub(crate) fn drawable_pixel_format() -> MTLPixelFormat {
     #[cfg(test)]
@@ -2140,7 +2129,7 @@ fn build_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::SourceAlpha);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(destination_alpha_blend_factor());
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     descriptor.set_stencil_attachment_pixel_format(crate::fast::occlusion::STENCIL_FORMAT);
     device
@@ -2209,7 +2198,7 @@ fn build_path_sprite_pipeline_state(
     color_attachment.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
     color_attachment.set_destination_rgb_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
-    color_attachment.set_destination_alpha_blend_factor(destination_alpha_blend_factor());
+    color_attachment.set_destination_alpha_blend_factor(metal::MTLBlendFactor::OneMinusSourceAlpha);
 
     descriptor.set_stencil_attachment_pixel_format(crate::fast::occlusion::STENCIL_FORMAT);
     device

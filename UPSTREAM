@@ -3,11 +3,11 @@
 
 # The repository and commit the upstream directories below were imported from.
 zed_repository = "https://github.com/zed-industries/zed"
-zed_commit = "a63db9fd901bedf1e0b52acfc1f60f30e5495449"
+zed_commit = "28d0a3547f16b9609b301b48ab363bfca649c864"
 
 # Our commit holding that import unchanged: `git show <import_commit>:<path>`
 # is upstream's version of <path> without needing a zed checkout.
-import_commit = "afb8194b8d04e69278cb2f3d8874615f135877a7"
+import_commit = "caf9ae41f75c441fba1d84a9722dfde366bd01ff"
 
 # Directories that are copies of zed's directories at the same paths. Every
 # other directory (crates/gpui_perf, docs, script) is gpui-fast's own.
@@ -16,6 +16,7 @@ tracked = [
     "crates/collections",
     "crates/gpui",
     "crates/gpui_apple",
+    "crates/gpui_ios",
     "crates/gpui_linux",
     "crates/gpui_macos",
     "crates/gpui_macros",

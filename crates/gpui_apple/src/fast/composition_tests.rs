@@ -19,9 +19,6 @@ use metal::MTLPixelFormat;
 use super::{InstanceBufferPool, MetalRenderer};
 
 thread_local! {
-    /// Set while a renderer is built with the additive alpha blend GPUI had before
-    /// composition, to compare against.
-    pub(super) static LEGACY_ALPHA_BLEND: Cell<bool> = const { Cell::new(false) };
     /// Set while a renderer is built to draw into another format than the drawables'.
     pub(super) static DRAWABLE_PIXEL_FORMAT: Cell<Option<MTLPixelFormat>> =
         const { Cell::new(None) };
@@ -518,28 +515,6 @@ fn in_the_drawable_format_holes_differ_from_one_pass_by_rounding_alone() {
         beyond_one_step * 10_000 < channels,
         "{beyond_one_step} of {channels} channels more than one step apart"
     );
-}
-
-#[test]
-fn an_opaque_scene_renders_the_same_as_with_the_additive_alpha_blend() {
-    let mut renderer = renderer();
-    LEGACY_ALPHA_BLEND.set(true);
-    let mut legacy = self::renderer();
-    LEGACY_ALPHA_BLEND.set(false);
-    for seed in 0..100 {
-        let operations: Vec<Operation> = random_scene(seed)
-            .into_iter()
-            .filter(|operation| !matches!(operation, Operation::Native(..)))
-            .collect();
-        let scene = build(&operations, true);
-        let now = render(&mut renderer, &scene);
-        let before = render(&mut legacy, &scene);
-        assert!(
-            now.as_raw() == before.as_raw(),
-            "seed {seed}: the blend change moved pixels of an opaque scene"
-        );
-        assert!(now.pixels().all(|pixel| pixel[3] == 255));
-    }
 }
 
 /// What a palette over a native costs the GPU, composed as this fork composes (one drawable:
