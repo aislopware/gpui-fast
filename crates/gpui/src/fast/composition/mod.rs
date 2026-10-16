@@ -78,6 +78,9 @@ impl Default for NativeHostOptions {
 pub struct NativeHost {
     id: NativeId,
     interactive: bool,
+    /// What assistive technologies call the native, where its element names
+    /// it nothing itself.
+    label: Option<SharedString>,
     platform: Rc<dyn PlatformNativeHost>,
 }
 
@@ -219,6 +222,7 @@ impl Window {
                 .detach();
         });
         let interactive = options.interactive;
+        let label = options.label.clone();
         let platform = self.platform_window.create_native_host(NativeHostParams {
             id,
             options,
@@ -229,6 +233,7 @@ impl Window {
         Ok(NativeHost {
             id,
             interactive,
+            label,
             platform,
         })
     }

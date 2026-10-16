@@ -885,3 +885,94 @@ fn a_native_hosted_in_a_deferred_draw_stacks_with_its_dialog() {
     })
     .unwrap();
 }
+
+struct Described {
+    plain: NativeHost,
+    named: NativeHost,
+}
+
+impl Render for Described {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("root")
+            .role(accesskit::Role::Group)
+            .relative()
+            .size_full()
+            .child(
+                native_view(&self.plain)
+                    .id("plot")
+                    .absolute()
+                    .top(px(10.))
+                    .left(px(20.))
+                    .w(px(100.))
+                    .h(px(50.)),
+            )
+            .child(
+                native_view(&self.named)
+                    .id("card")
+                    .role(accesskit::Role::Document)
+                    .aria_label("Page: chart")
+                    .absolute()
+                    .top(px(100.))
+                    .left(px(20.))
+                    .w(px(100.))
+                    .h(px(50.)),
+            )
+    }
+}
+
+/// A native with an id is a node of the accessibility tree where it is placed,
+/// so assistive technologies and tests find it among GPUI's own: a group named
+/// for its host, with no role or label of its element's needed; an element's
+/// own role and label win.
+#[test]
+fn a_native_is_a_node_of_the_accessibility_tree_where_it_shows() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(|window, cx| {
+        let labelled = |label: &str| NativeHostOptions {
+            label: Some(label.to_owned().into()),
+            ..NativeHostOptions::default()
+        };
+        Described {
+            plain: window
+                .create_native_host(labelled("Page: plot"), cx)
+                .expect("the test platform composes natives"),
+            named: window
+                .create_native_host(labelled("unused"), cx)
+                .expect("the test platform composes natives"),
+        }
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.set_a11y_active(true);
+        window.draw_and_present(cx);
+    })
+    .unwrap();
+    cx.update_window(window.into(), |_, window, _| {
+        let scale = f64::from(window.scale_factor());
+        let tree = window.a11y_tree().expect("a tree after an active frame");
+        let node = |label: &str| {
+            tree.nodes
+                .iter()
+                .map(|(_, node)| node)
+                .find(|node| node.label() == Some(label))
+                .unwrap_or_else(|| panic!("a node named {label}"))
+        };
+        let plain = node("Page: plot");
+        assert_eq!(plain.role(), accesskit::Role::Group);
+        let bounds = plain.bounds().expect("bounds");
+        assert_eq!(
+            (bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+            (20. * scale, 10. * scale, 120. * scale, 60. * scale),
+            "where the native shows"
+        );
+        let named = node("Page: chart");
+        assert_eq!(named.role(), accesskit::Role::Document);
+        assert!(
+            tree.nodes
+                .iter()
+                .all(|(_, node)| node.label() != Some("unused")),
+            "the element's own label wins"
+        );
+    })
+    .unwrap();
+}
