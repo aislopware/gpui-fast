@@ -379,6 +379,8 @@ mod tests {
             test_window.text_input_state_changes(),
             vec![TextInputStateChange::FocusGained]
         );
+        cx.update_window(window, |_, window, _| assert!(window.text_input_focused()))
+            .unwrap();
 
         // Redrawing without a change forwards nothing.
         draw(cx);
@@ -421,6 +423,33 @@ mod tests {
                 TextInputStateChange::FocusLost
             ]
         );
+        cx.update_window(window, |_, window, _| assert!(!window.text_input_focused()))
+            .unwrap();
+    }
+
+    /// A focused element that takes no text (a button pressed, a pane) is no text field: the
+    /// window says none is focused, the field it took the focus from included.
+    #[gpui::test]
+    fn a_focused_element_without_a_text_input_is_no_text_field(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, cx| ConfigurationTestView {
+            focus_handle: cx.focus_handle(),
+            configuration: TextInputConfiguration::default(),
+            accepts_text_input: true,
+        });
+        let view = window.root(cx).unwrap();
+        let window = AnyWindowHandle::from(window);
+        cx.update_window(window, |_, window, cx| {
+            let field = view.read(cx).focus_handle.clone();
+            window.focus(&field, cx);
+            window.draw(cx).clear(cx);
+            assert!(window.text_input_focused(), "the field");
+            let button = cx.focus_handle();
+            window.focus(&button, cx);
+            assert!(!window.text_input_focused(), "a button, before any frame");
+            window.draw(cx).clear(cx);
+            assert!(!window.text_input_focused(), "a button");
+        })
+        .unwrap();
     }
 
     #[gpui::test]
@@ -506,6 +535,80 @@ mod tests {
                 TextInputStateChange::FocusLost,
             ]
         );
+    }
+
+    /// A view that asks whether a text field is focused, drawn from its last frame otherwise,
+    /// learns it once the frame that found the field focused is drawn, and learns it went once
+    /// the focus moves to a button.
+    #[gpui::test]
+    fn a_view_asking_for_the_text_field_is_told_as_it_changes(cx: &mut TestAppContext) {
+        let field = cx.new(|cx| ConfigurationTestView {
+            focus_handle: cx.focus_handle(),
+            configuration: TextInputConfiguration::default(),
+            accepts_text_input: true,
+        });
+        let seen = std::rc::Rc::new(std::cell::Cell::new(None));
+        let reader = cx.new(|_| TextFieldReader { seen: seen.clone() });
+        let window = cx.add_window({
+            let field = field.clone();
+            move |_, _| ReaderHost { field, reader }
+        });
+        let window = AnyWindowHandle::from(window);
+        let field_focus = field.read_with(cx, |field, _| field.focus_handle.clone());
+        let frames = |cx: &mut TestAppContext| {
+            for _ in 0..3 {
+                cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+                    .unwrap();
+            }
+        };
+        frames(cx);
+        assert_eq!(seen.get(), Some(false), "nothing focused");
+        cx.update_window(window, |_, window, cx| window.focus(&field_focus, cx))
+            .unwrap();
+        frames(cx);
+        assert_eq!(seen.get(), Some(true), "the field");
+        let _button = cx
+            .update_window(window, |_, window, cx| {
+                let button = cx.focus_handle();
+                window.focus(&button, cx);
+                button
+            })
+            .unwrap();
+        frames(cx);
+        assert_eq!(seen.get(), Some(false), "a button");
+    }
+
+    struct TextFieldReader {
+        seen: std::rc::Rc<std::cell::Cell<Option<bool>>>,
+    }
+
+    impl Render for TextFieldReader {
+        fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            self.seen.set(Some(window.text_input_focused()));
+            div().size_full()
+        }
+    }
+
+    struct ReaderHost {
+        field: crate::Entity<ConfigurationTestView>,
+        reader: crate::Entity<TextFieldReader>,
+    }
+
+    impl Render for ReaderHost {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(
+                    self.field
+                        .clone()
+                        .cached(crate::StyleRefinement::default().size_full()),
+                )
+                .child(
+                    self.reader
+                        .clone()
+                        .cached(crate::StyleRefinement::default().size_full()),
+                )
+        }
     }
 
     struct ConfigurationTestView {

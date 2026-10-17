@@ -167,6 +167,8 @@ pub(crate) mod ambient {
     pub(crate) struct Keys;
     /// Which element has the focus: [`crate::Window::focused`].
     pub(crate) struct Focus;
+    /// Whether the focused element takes text: [`crate::Window::text_input_focused`].
+    pub(crate) struct TextInput;
 }
 
 /// A window's handle on the app's dependency recording, so that reading the
