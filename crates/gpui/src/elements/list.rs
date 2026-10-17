@@ -1092,6 +1092,14 @@ impl StateInner {
             }),
             AvailableSpace::MinContent,
         );
+        crate::fast::list_tail::lay_out_above(
+            &old_items,
+            &mut scroll_top,
+            available_item_space,
+            render_item,
+            window,
+            cx,
+        );
 
         let mut cursor = old_items.cursor::<Count>(());
 
