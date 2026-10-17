@@ -6,6 +6,7 @@ mod animation_end;
 mod backdrop;
 mod cached_layout;
 mod cached_snapping;
+mod check_retained;
 mod composition;
 mod cursor;
 mod dependencies;

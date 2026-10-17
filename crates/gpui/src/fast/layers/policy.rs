@@ -166,6 +166,9 @@ pub(crate) fn decide(
     content_size: Size<Pixels>,
     scroll_offset: Point<Pixels>,
 ) -> Decision {
+    if let Some(decision) = crate::fast::check_retained::scratch_decision(window, id) {
+        return decision;
+    }
     #[cfg(any(test, feature = "test-support"))]
     if let Some(decision) = window.fast_layers.forced_decision {
         return decision;
@@ -416,6 +419,11 @@ pub(crate) fn note_unchanged_repaint(window: &mut Window, id: &GlobalElementId) 
 /// work of drawing its visible content directly; overscan and rows rebuilt
 /// for hover count too. The next prepaint can fall back before doing more.
 pub(crate) fn note_work(window: &mut Window, id: &GlobalElementId, work: f32) {
+    // A frame drawn again from scratch to check the one before it does
+    // that frame's work again, which is not the layer's.
+    if crate::fast::check_retained::scratch(window) {
+        return;
+    }
     let frame = window.fast_layers.frame;
     if let Some(layer) = window.fast_layers.layers.get_mut(id) {
         layer.policy.work.note(frame, work);

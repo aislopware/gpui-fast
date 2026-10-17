@@ -217,7 +217,9 @@ impl Window {
             && !crate::fast::layers::paint::inside_layer(self)
             && let Some(previous) = self.rendered_frame.scene.fast_painted.keyed.find(key)
         {
+            let start = self.next_frame.scene.paint_operations.len();
             if self.draw_keyed_again(&previous, context) {
+                crate::fast::check_retained::note_keyed(self, key, start);
                 return;
             }
         }

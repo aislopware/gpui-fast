@@ -159,7 +159,7 @@ pub(crate) fn active(window: &Window, cx: &App) -> bool {
     COMPILED
         && window.fast_layers.enabled
         && window.retained_state.view_retention
-        && !window.refreshing
+        && (!window.refreshing || crate::fast::check_retained::scratch(window))
         && !cx.has_active_drag()
         && !crate::fast::a11y::stale(&window.a11y)
         && !window.is_inspector_picking(cx)

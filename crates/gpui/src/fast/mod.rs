@@ -16,6 +16,7 @@
 
 pub(crate) mod a11y;
 pub(crate) mod backdrop;
+pub mod check_retained;
 pub mod composition;
 pub mod cursor;
 pub(crate) mod dependencies;

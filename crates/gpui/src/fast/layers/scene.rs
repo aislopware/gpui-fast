@@ -322,7 +322,7 @@ impl LayerContent {
     }
 
     /// The scenes of the content's parts, in order.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn part_scenes(&self) -> impl Iterator<Item = &Rc<Scene>> {
         self.parts.iter().map(|part| &part.scene)
     }
@@ -330,6 +330,19 @@ impl LayerContent {
     /// Whether `self` and `other` are the same content, shared.
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.parts, &other.parts)
+    }
+
+    /// The scenes of the parts that can draw over `bounds`, in drawing
+    /// order, as [`Self::operations_over`] takes them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn part_scenes_over(
+        &self,
+        bounds: Bounds<ScaledPixels>,
+    ) -> impl Iterator<Item = &Rc<Scene>> + '_ {
+        self.parts
+            .iter()
+            .filter(move |part| part.bounds.is_none_or(|part| part.intersects(&bounds)))
+            .map(|part| &part.scene)
     }
 
     /// Every paint operation of the content, in drawing order.

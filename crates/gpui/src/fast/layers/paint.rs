@@ -422,12 +422,16 @@ pub(crate) fn insert_layer(
     };
     if layer.rows.list {
         let content = record.content.clone();
+        let key = layer.key;
         let viewport = viewports(window).snapped;
         let in_content = Bounds {
             origin: viewport.origin - translation,
             size: viewport.size,
         };
-        draw_into_frame(window, content.operations_over(in_content), translation);
+        if !crate::fast::check_retained::replay_rows(window, key, &content, in_content, translation)
+        {
+            draw_into_frame(window, content.operations_over(in_content), translation);
+        }
         let stats = &mut window.layout_engine.as_mut().unwrap().retention.stats;
         stats.layer_frames_composited += 1;
         policy::note_work(window, id, 0.);
