@@ -949,6 +949,13 @@ and 314 µs (1024 px) against 300 µs and 329 µs for 64 rectangular ones, the s
 two windows' quads, whose fade indices may differ, so its snapshot drops the index
 (`edge_fade::without_fade`).
 
+In the 56934ec0 sync (zed #65738, hot reload through Subsecond behind `hot-reload`): zed's
+`view.rs` now renders every view through `render_view`, which patches the render function when
+hot reload is on. The fork's forwarding bodies in `view.rs` stay, `render_view` is
+`pub(crate)`, and `fast::retained` renders through it in all five places it builds a view, so
+a retained view picks up a patched render too. The root `Cargo.toml` gains zed's
+`async-tungstenite` workspace dependency, which `hot-reload` needs.
+
 For our patches: `window.rs` (`paint_glyph_scaled` sits next to gpui-fast's
 `pub(crate) fn should_use_subpixel_rendering`), the root `Cargo.toml` (`gpui_ios` member
 and dependency) and `Cargo.lock`. `git am -3` needs the preimage blobs from the zed fork;

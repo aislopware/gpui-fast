@@ -21,8 +21,7 @@ use crate::fast::splice::{Prebuilt, Rebuild, Splice, SplicedPrepaint};
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, ElementId, EntityId, GlobalElementId,
-    HitboxId, IntoElement, LayoutId, Pixels, Point, Size, Style, TextStyle, View, ViewElement,
-    Window,
+    HitboxId, LayoutId, Pixels, Point, Size, Style, TextStyle, View, ViewElement, Window,
 };
 use collections::{FxHashMap, FxHashSet};
 use refineable::Refineable;
@@ -1715,12 +1714,8 @@ impl<V: View> ViewElement<V> {
                             window, cx, global_id, entity_id,
                         );
                         let mut recording = window.begin_retained_layout(cx);
-                        let mut element = self
-                            .view
-                            .take()
-                            .unwrap()
-                            .render(window, cx)
-                            .into_any_element();
+                        let mut element =
+                            crate::view::render_view(self.view.take().unwrap(), window, cx);
                         note_rendered(window, cx, entity_id, start);
                         recording.rendered(cx);
                         let layout_id = element.request_layout(window, cx);
@@ -1734,12 +1729,8 @@ impl<V: View> ViewElement<V> {
                         )
                     }
                     _ => {
-                        let mut element = self
-                            .view
-                            .take()
-                            .unwrap()
-                            .render(window, cx)
-                            .into_any_element();
+                        let mut element =
+                            crate::view::render_view(self.view.take().unwrap(), window, cx);
                         let layout_id = element.request_layout(window, cx);
                         (
                             layout_id,
@@ -1756,12 +1747,8 @@ impl<V: View> ViewElement<V> {
             window.with_id(
                 ElementId::Name(std::any::type_name::<V>().into()),
                 |window| {
-                    let mut element = self
-                        .view
-                        .take()
-                        .unwrap()
-                        .render(window, cx)
-                        .into_any_element();
+                    let mut element =
+                        crate::view::render_view(self.view.take().unwrap(), window, cx);
                     let layout_id = element.request_layout(window, cx);
                     (
                         layout_id,
@@ -1900,12 +1887,8 @@ impl<V: View> ViewElement<V> {
                     let start = note_rendering(window, cx, entity_id);
                     crate::fast::layers::invalidate::note_rebuild(window, cx, global_id, entity_id);
                     let recording = window.begin_retained(global_id, None, cx);
-                    let mut element = self
-                        .view
-                        .take()
-                        .unwrap()
-                        .render(window, cx)
-                        .into_any_element();
+                    let mut element =
+                        crate::view::render_view(self.view.take().unwrap(), window, cx);
                     note_rendered(window, cx, entity_id, start);
                     let render = recording.rendered(cx);
                     let root = element.request_layout(window, cx);
@@ -1992,7 +1975,7 @@ impl<V: View> ViewElement<V> {
         let start = entity_id.map(|entity_id| note_rendering(window, cx, entity_id));
         let view = self.view.take().unwrap();
         let (mut element, layout_id) = window.with_layout_key_of_prepainting_element(|window| {
-            let mut element = view.render(window, cx).into_any_element();
+            let mut element = crate::view::render_view(view, window, cx);
             if let (Some(entity_id), Some(start)) = (entity_id, start) {
                 note_rendered(window, cx, entity_id, start);
             }
