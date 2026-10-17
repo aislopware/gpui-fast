@@ -2184,13 +2184,13 @@ fn paint_component(
 }
 
 impl HitboxId {
-    /// Whether the hitbox is hovered, as [`HitboxId::is_hovered`] answers,
-    /// without noting that it was asked.
+    /// Whether the hitbox is hovered, as [`HitboxId::is_hovered`] answers
+    /// while a frame is drawn, without noting that it was asked.
     pub(crate) fn hovered_now(self, window: &Window) -> bool {
         if window.captured_hitbox == Some(self) {
             return true;
         }
-        if crate::fast::layers::hover_freeze::hides_hover(window, self) {
+        if crate::fast::layers::hover_freeze::hides_drawn_hover(window, self) {
             return false;
         }
         self.hit_test(window)
