@@ -2187,8 +2187,13 @@ impl HitboxId {
     /// Whether the hitbox is hovered, as [`HitboxId::is_hovered`] answers,
     /// without noting that it was asked.
     pub(crate) fn hovered_now(self, window: &Window) -> bool {
-        window.captured_hitbox == Some(self)
-            || (!window.last_input_was_keyboard() && self.hit_test(window))
+        if window.captured_hitbox == Some(self) {
+            return true;
+        }
+        if crate::fast::layers::hover_freeze::hides_hover(window, self) {
+            return false;
+        }
+        self.hit_test(window)
     }
 }
 

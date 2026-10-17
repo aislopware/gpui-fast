@@ -103,9 +103,12 @@ itself), and nothing the wheel brings under the pointer is. Otherwise every
 frame of the scroll hovers another row, rendering the row it leaves and the
 row it enters again, and an animation a hover starts (a card fading in) keeps
 the list off its layer; and clearing every hover instead would render the
-views around the list again for theirs. When the wheel stops the pointer is
-hit tested again and the window drawn, building again only what hovers
-differently, not refreshing it; a pointer that moves ends it at once. The crate's own
+views around the list again for theirs. Only drawing is held: the hit test
+stays the geometry under the pointer, so the cursor follows it and a click
+right after the wheel reaches its handler, and `is_hovered` answers from what
+hover holds only while a frame is drawn. When the wheel stops the window is
+drawn again, building again only what hovers differently, not refreshing it;
+a pointer that moves ends it at once. The crate's own
 tests, which scroll under a still pointer to test hover as rows move, turn it
 off (`Window::set_hover_freeze`).
 

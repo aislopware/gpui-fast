@@ -8,21 +8,25 @@
 //! costs without layers.
 //!
 //! So for [`HOVER_FREEZE`] after a wheel event, while the pointer stays where
-//! the event was, hover is held still: of what was hovered when the wheel
-//! began, what has stayed where it was (the panel around the list, the list
-//! itself) stays hovered, and nothing else is, neither what the wheel moves
-//! away nor what it brings under the pointer. The frame's hit test, and the
-//! one a list foretells for its rows, hold only those. Nothing outside the
-//! scrolled content is drawn again for its hover. When the wheel stops the
-//! pointer is hit tested again and the window drawn, and what hovers
-//! differently then is built again, nothing more. A pointer that moves ends
-//! the freeze at once.
+//! the event was, hover styling is held still: of what was hovered when the
+//! wheel began, what has stayed where it was (the panel around the list, the
+//! list itself) stays hovered while a frame is drawn, and nothing else is,
+//! neither what the wheel moves away nor what it brings under the pointer.
+//! [`crate::HitboxId::is_hovered`] answers so while drawing, and the hit test a
+//! list foretells for its rows holds only those. Nothing outside the scrolled
+//! content is drawn again for its hover. Only drawing is held: the frame's hit
+//! test stays the geometry under the pointer, so the cursor follows it, and
+//! events dispatched between frames read it, so a click at the spot the wheel
+//! scrolled under reaches its handler. When the wheel stops the window is
+//! drawn again, and what hovers differently then is built again, nothing
+//! more. A pointer that moves ends the freeze at once.
 
-use std::time::{Duration, Instant};
+use scheduler::Instant;
+use std::time::Duration;
 
 use smallvec::SmallVec;
 
-use crate::{App, Bounds, HitTest, Hitbox, HitboxBehavior, HitboxId, Pixels, Point, Window};
+use crate::{App, Bounds, Hitbox, HitboxBehavior, HitboxId, Pixels, Point, Window};
 
 /// How long after the last wheel event hover stays held still.
 pub(crate) const HOVER_FREEZE: Duration = Duration::from_millis(100);
@@ -36,6 +40,9 @@ pub(crate) struct HoverFreeze {
     /// What was hovered when the wheel began: what of it stays where it was
     /// stays hovered while hover is held still.
     held: Held,
+    /// Of what is held, what the frame being drawn finds hovered where it was
+    /// held: while hover is held still, what reads as hovered while drawing.
+    pub(crate) drawn: SmallVec<[HitboxId; 8]>,
     /// Off in the crate's own tests, which scroll under a still pointer to
     /// test what hover does as rows move; see [`Window::set_hover_freeze`].
     enabled: bool,
@@ -46,6 +53,7 @@ impl Default for HoverFreeze {
         Self {
             last_wheel: None,
             held: Held::new(),
+            drawn: SmallVec::new(),
             enabled: !cfg!(test),
         }
     }
@@ -93,7 +101,7 @@ pub(crate) fn note_wheel(window: &mut Window, cx: &mut App) {
 /// not refreshed, which would build every view again.
 fn thaw(window: &mut Window) {
     window.fast_layers.hover_freeze.held.clear();
-    window.mouse_hit_test = window.rendered_frame.hit_test(window.mouse_position);
+    window.fast_layers.hover_freeze.drawn.clear();
     if window.invalidator.not_drawing() {
         window.invalidator.set_dirty(true);
     }
@@ -124,45 +132,47 @@ pub(crate) fn holds(held: Option<&[(HitboxId, Bounds<Pixels>)]>, hitbox: &Hitbox
     held.is_none_or(|held| held.contains(&(hitbox.id, hitbox.bounds)))
 }
 
-/// Narrows the last frame's hit test as a frame begins to be drawn while
-/// hover is held still, so that what is rendered counts as hovered only
-/// what hover holds.
+/// Takes in, as a frame begins to be drawn, what of the last frame's
+/// hitboxes hover holds while it is held still.
 pub(crate) fn begin_draw(window: &mut Window) {
+    let drawn = held_hovered(window, &window.rendered_frame.hitboxes);
+    window.fast_layers.hover_freeze.drawn = drawn;
+}
+
+/// Takes in, between the prepaint of the frame being drawn and its paint,
+/// what of its hitboxes hover holds while it is held still.
+pub(crate) fn begin_paint(window: &mut Window) {
+    let drawn = held_hovered(window, &window.next_frame.hitboxes);
+    window.fast_layers.hover_freeze.drawn = drawn;
+}
+
+/// The hovered hitboxes of `hitboxes` under the pointer that hover holds
+/// where they were held, none while hover is not held still.
+fn held_hovered(window: &Window, hitboxes: &[Hitbox]) -> SmallVec<[HitboxId; 8]> {
+    let mut ids = SmallVec::new();
     if let Some(held) = holding(window) {
-        let hit_test = held_hit_test(&window.rendered_frame.hitboxes, window.mouse_position, held);
-        window.mouse_hit_test = hit_test;
+        under_pointer(hitboxes, window.mouse_position, |hitbox, hovered| {
+            if hovered && holds(Some(held), hitbox) {
+                ids.push(hitbox.id);
+            }
+        });
     }
+    ids
 }
 
-/// The hit test of the frame being drawn, taken between its prepaint and its
-/// paint: of the hovered hitboxes, only what hover holds while it is held
-/// still.
-pub(crate) fn hit_test(window: &Window) -> HitTest {
-    match holding(window) {
-        Some(held) => held_hit_test(&window.next_frame.hitboxes, window.mouse_position, held),
-        None => window.next_frame.hit_test(window.mouse_position),
-    }
-}
-
-/// The hit test of `hitboxes` at `position`, as [`crate::Frame::hit_test`]
-/// makes it, but for a hovered hitbox that `held` does not hold.
-fn held_hit_test(
-    hitboxes: &[Hitbox],
-    position: Point<Pixels>,
-    held: &[(HitboxId, Bounds<Pixels>)],
-) -> HitTest {
-    let mut hit_test = HitTest::default();
-    let mut hover_hitbox_count = None;
-    under_pointer(hitboxes, position, |hitbox, hovered| {
-        if !hovered {
-            hover_hitbox_count.get_or_insert(hit_test.ids.len());
-            hit_test.ids.push(hitbox.id);
-        } else if holds(Some(held), hitbox) {
-            hit_test.ids.push(hitbox.id);
-        }
-    });
-    hit_test.hover_hitbox_count = hover_hitbox_count.unwrap_or(hit_test.ids.len());
-    hit_test
+/// Whether hover reads as nothing for `hitbox`, which the pointer has not
+/// captured, for [`crate::HitboxId::is_hovered`] and what a retained subtree
+/// records of it: after keyboard input, as upstream has it, and while a frame
+/// is drawn with hover held still, unless hover holds it where it was.
+///
+/// Event dispatch is not drawing. A mouse listener asks `is_hovered` before it
+/// runs, so holding hover there too would drop a click made under a still
+/// pointer right after the wheel.
+pub(crate) fn hides_hover(window: &Window, hitbox: HitboxId) -> bool {
+    window.last_input_was_keyboard()
+        || (!window.invalidator.not_drawing()
+            && frozen(window)
+            && !window.fast_layers.hover_freeze.drawn.contains(&hitbox))
 }
 
 /// Visits the hitboxes of `hitboxes` under `position`, topmost first, as
@@ -197,6 +207,7 @@ impl Window {
         self.fast_layers.hover_freeze.enabled = enabled;
         self.fast_layers.hover_freeze.last_wheel = None;
         self.fast_layers.hover_freeze.held.clear();
+        self.fast_layers.hover_freeze.drawn.clear();
     }
 
     /// Ends holding hover still as the wheel stopping does, for the crate's

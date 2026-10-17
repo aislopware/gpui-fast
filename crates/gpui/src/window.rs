@@ -797,7 +797,7 @@ impl HitboxId {
         if window.captured_hitbox == Some(self) {
             return true;
         }
-        if window.last_input_was_keyboard() {
+        if crate::fast::layers::hover_freeze::hides_hover(window, self) {
             return false;
         }
         self.hit_test(window)
@@ -1292,7 +1292,7 @@ pub struct Window {
     appearance: WindowAppearance,
     pub(crate) appearance_observers: SubscriberSet<(), AnyObserver>,
     pub(crate) button_layout_observers: SubscriberSet<(), AnyObserver>,
-    active: Rc<Cell<bool>>,
+    pub(crate) active: Rc<Cell<bool>>,
     visibility: WindowVisibility,
     pub(crate) visibility_observers:
         SubscriberSet<(), Box<dyn FnMut(WindowVisibility, &mut Window, &mut App) -> bool>>,
@@ -3865,7 +3865,8 @@ impl Window {
         crate::fast::focus_tooltip::note_drawn(self, cx, tooltip_element.is_some());
 
         crate::fast::stats::FramePhaseTimes::end_prepaint(&mut self.fast_layout.phase_times);
-        self.mouse_hit_test = crate::fast::layers::hover_freeze::hit_test(self);
+        self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
+        crate::fast::layers::hover_freeze::begin_paint(self);
 
         // Now actually paint the elements.
         #[cfg(feature = "profiler")]
