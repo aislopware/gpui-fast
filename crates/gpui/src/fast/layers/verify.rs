@@ -83,6 +83,24 @@ impl Drawn {
     }
 }
 
+/// Whether `primitive` leaves every pixel under it as it was: its colour, and its border's
+/// where it has one, wholly transparent.
+fn draws_nothing(primitive: &Primitive) -> bool {
+    match primitive {
+        Primitive::Shadow(p) => p.color.is_transparent(),
+        Primitive::Quad(p) => {
+            p.background.is_transparent()
+                && (p.border_color.is_transparent() || p.border_widths == Default::default())
+        }
+        Primitive::Path(p) => p.color.is_transparent(),
+        Primitive::Underline(p) => p.color.is_transparent(),
+        Primitive::MonochromeSprite(p) => p.color.is_transparent(),
+        Primitive::SubpixelSprite(p) => p.color.is_transparent(),
+        Primitive::PolychromeSprite(p) => p.opacity <= 0.,
+        Primitive::Surface(_) => false,
+    }
+}
+
 fn clipped(primitive: &Primitive) -> Bounds<ScaledPixels> {
     primitive
         .bounds()
@@ -308,7 +326,11 @@ fn describe_unfaded(primitive: &Primitive) -> String {
 /// depths, however they number their draw orders and whatever order they
 /// draw primitives that do not overlap in.
 pub(crate) fn drawn(scene: &Scene) -> Vec<String> {
-    let sequence = expanded_sequence(scene);
+    let mut sequence = expanded_sequence(scene);
+    // What draws no pixel is no part of what a scene shows: text or an icon faded to nothing,
+    // painted by one frame and skipped by another, draws the same pixels.
+    sequence
+        .retain(|drawn| !matches!(drawn, Drawn::Primitive(primitive) if draws_nothing(primitive)));
     let clips: Vec<Bounds<ScaledPixels>> = sequence.iter().map(Drawn::reach).collect();
     let mut depths: Vec<u32> = Vec::with_capacity(sequence.len());
     for (ix, clip) in clips.iter().enumerate() {

@@ -24,6 +24,7 @@ mod glyph_blur;
 mod image_evict;
 mod image_mask;
 mod inline_boxes;
+mod invisible;
 mod keyed;
 mod keypad;
 mod layers;
