@@ -627,10 +627,7 @@ impl TransformationMatrix {
     /// Clockwise rotation in radians around the origin
     pub fn rotate(self, angle: Radians) -> Self {
         self.compose(Self {
-            rotation_scale: [
-                [angle.0.cos(), -angle.0.sin()],
-                [angle.0.sin(), angle.0.cos()],
-            ],
+            rotation_scale: crate::fast::scene::rotation(angle.0),
             translation: [0.0, 0.0],
         })
     }
