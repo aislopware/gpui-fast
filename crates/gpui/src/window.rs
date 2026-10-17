@@ -2495,6 +2495,21 @@ impl Window {
             .and_then(|id| FocusHandle::for_id(id, &cx.focus_handles))
     }
 
+    /// Whether the focused element is a text field the last frame registered: one whose input
+    /// handler accepts text, for which the platform shows its soft keyboard. A focused button or
+    /// pane is not one, so a layout that makes room for the keyboard can let it go.
+    ///
+    /// The answer is the last frame's: a view that reads it is built again when the focus moves
+    /// and once a frame has found the focused element to take text or not.
+    pub fn text_input_focused(&self) -> bool {
+        crate::fast::focus::read_focused(self);
+        self.retained_state
+            .ambient_reads
+            .note::<crate::fast::dependencies::ambient::TextInput>();
+        self.focused_text_input
+            .is_some_and(|id| self.focus == Some(id))
+    }
+
     /// While focus-lost listeners are being dispatched, returns the closest ancestor of the
     /// previously focused element that can still receive focus, making it a suitable target
     /// for focus restoration. Returns `None` at all other times, or when no such ancestor exists.
@@ -3620,6 +3635,11 @@ impl Window {
                 } else {
                     TextInputStateChange::FocusLost
                 });
+        }
+        if previous != focused_text_input {
+            // The views that asked whether a text field is focused saw the last frame's answer.
+            cx.ambient_changed::<crate::fast::dependencies::ambient::TextInput>();
+            self.invalidator.set_dirty(true);
         }
 
         self.layout_engine.as_mut().unwrap().clear();
