@@ -1260,6 +1260,7 @@ pub struct Window {
     pub(crate) fast_text_smoothing: crate::fast::text_smoothing::WindowTextSmoothing,
     pub(crate) fast_edge_fade: crate::fast::edge_fade::WindowFades,
     pub(crate) fast_layers: crate::fast::layers::WindowLayers,
+    pub(crate) fast_frame_time: crate::fast::frame_time::FrameTime,
     pub(crate) fast_focus_tooltip: crate::fast::focus_tooltip::WindowFocusTooltip,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
@@ -2201,6 +2202,7 @@ impl Window {
             fast_text_smoothing: crate::fast::text_smoothing::WindowTextSmoothing::new(cx),
             fast_edge_fade: crate::fast::edge_fade::WindowFades::default(),
             fast_layers: crate::fast::layers::WindowLayers::default(),
+            fast_frame_time: crate::fast::frame_time::FrameTime::default(),
             fast_focus_tooltip: crate::fast::focus_tooltip::WindowFocusTooltip::default(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
@@ -2493,21 +2495,6 @@ impl Window {
         crate::fast::focus::read_focused(self);
         self.focus
             .and_then(|id| FocusHandle::for_id(id, &cx.focus_handles))
-    }
-
-    /// Whether the focused element is a text field the last frame registered: one whose input
-    /// handler accepts text, for which the platform shows its soft keyboard. A focused button or
-    /// pane is not one, so a layout that makes room for the keyboard can let it go.
-    ///
-    /// The answer is the last frame's: a view that reads it is built again when the focus moves
-    /// and once a frame has found the focused element to take text or not.
-    pub fn text_input_focused(&self) -> bool {
-        crate::fast::focus::read_focused(self);
-        self.retained_state
-            .ambient_reads
-            .note::<crate::fast::dependencies::ambient::TextInput>();
-        self.focused_text_input
-            .is_some_and(|id| self.focus == Some(id))
     }
 
     /// While focus-lost listeners are being dispatched, returns the closest ancestor of the
@@ -3568,6 +3555,7 @@ impl Window {
             self.refresh();
         }
         crate::fast::text::refresh_if_fonts_changed(self);
+        crate::fast::frame_time::begin_frame(self, cx);
         self.invalidate_entities();
         cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
@@ -3636,11 +3624,7 @@ impl Window {
                     TextInputStateChange::FocusLost
                 });
         }
-        if previous != focused_text_input {
-            // The views that asked whether a text field is focused saw the last frame's answer.
-            cx.ambient_changed::<crate::fast::dependencies::ambient::TextInput>();
-            self.invalidator.set_dirty(true);
-        }
+        crate::fast::focus::text_input_found(self, previous != focused_text_input, cx);
 
         self.layout_engine.as_mut().unwrap().clear();
         crate::fast::layout_key::WindowLayout::end_frame(&mut self.fast_layout);
@@ -3719,6 +3703,7 @@ impl Window {
         }
 
         crate::fast::draw_timing::drawn(self, draw_started, cx);
+        crate::fast::frame_time::end_frame();
 
         // Exit the scope to obtain the arena-clear token this draw owes; the
         // scope's teardown itself happens in `ElementArenaScope::drop`.

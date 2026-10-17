@@ -206,3 +206,31 @@ fn note(id: FocusId, question: Question, answer: bool, window: &Window) {
     }
     reads.note_state(version);
 }
+
+/// Ends the frame's search for the focused text field: when the field it
+/// found, or found missing, is not the last frame's, the views that asked
+/// whether a text field is focused saw the last frame's answer, and are built
+/// again in the next.
+pub(crate) fn text_input_found(window: &Window, changed: bool, cx: &mut App) {
+    if changed {
+        cx.ambient_changed::<ambient::TextInput>();
+        window.invalidator.set_dirty(true);
+    }
+}
+
+impl Window {
+    /// Whether the focused element is a text field the last frame registered: one whose input
+    /// handler accepts text, for which the platform shows its soft keyboard. A focused button or
+    /// pane is not one, so a layout that makes room for the keyboard can let it go.
+    ///
+    /// The answer is the last frame's: a view that reads it is built again when the focus moves
+    /// and once a frame has found the focused element to take text or not.
+    pub fn text_input_focused(&self) -> bool {
+        read_focused(self);
+        self.retained_state
+            .ambient_reads
+            .note::<ambient::TextInput>();
+        self.focused_text_input
+            .is_some_and(|id| self.focus == Some(id))
+    }
+}

@@ -2,6 +2,7 @@
 
 mod a11y;
 mod a11y_bounds;
+mod animation_end;
 mod backdrop;
 mod cached_layout;
 mod cached_snapping;
@@ -55,6 +56,7 @@ mod surface;
 mod tab_stop;
 mod test_window;
 mod text;
+mod text_input_focused;
 mod text_shaping;
 mod text_smoothing;
 mod transition;
