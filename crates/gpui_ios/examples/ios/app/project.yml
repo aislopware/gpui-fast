@@ -42,8 +42,11 @@ targets:
       - sdk: CoreText.framework
       - sdk: Foundation.framework
       - sdk: Metal.framework
+      - sdk: MetalPerformanceShaders.framework
       - sdk: QuartzCore.framework
       - sdk: SafariServices.framework
       - sdk: Security.framework
       - sdk: SystemConfiguration.framework
       - sdk: UIKit.framework
+      - sdk: WebKit.framework
+      - sdk: IOKit.framework
