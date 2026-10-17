@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use smallvec::SmallVec;
 
-use crate::{App, Bounds, Hitbox, HitboxBehavior, HitboxId, Pixels, Point, Window};
+use crate::{App, Bounds, EntityId, Hitbox, HitboxBehavior, HitboxId, Pixels, Point, Window};
 
 /// How long after the last wheel event hover stays held still.
 pub(crate) const HOVER_FREEZE: Duration = Duration::from_millis(100);
@@ -89,9 +89,9 @@ pub(crate) fn note_wheel(window: &mut Window, cx: &mut App) {
             cx.background_executor()
                 .timer(HOVER_FREEZE + Duration::from_millis(10))
                 .await;
-            cx.update(|window, _| {
+            cx.update(|window, cx| {
                 if !frozen(window) {
-                    thaw(window);
+                    thaw(window, cx);
                 }
             })
             .ok();
@@ -103,10 +103,27 @@ pub(crate) fn note_wheel(window: &mut Window, cx: &mut App) {
 /// and marks the window to be drawn. The views whose hovers differ from what
 /// they were drawn by are built again, as after a pointer move; the window is
 /// not refreshed, which would build every view again.
-fn thaw(window: &mut Window) {
+///
+/// The rows a list's layer kept through the wheel were painted by the hover
+/// held, and a frame the layer composites paints none of them: the view
+/// holding a list whose rows hover differently now is built again, which
+/// renders those rows again, and only those.
+fn thaw(window: &mut Window, cx: &mut App) {
     window.fast_layers.hover_freeze.held.clear();
     window.fast_layers.hover_freeze.drawn.clear();
     window.fast_layers.hover_freeze.drawing_held = false;
+    let owners: SmallVec<[EntityId; 2]> = window
+        .fast_layers
+        .layers
+        .values()
+        .filter(|layer| {
+            layer.rows.list && crate::fast::layers::lists::rows_hover_changed(window, layer)
+        })
+        .filter_map(|layer| layer.policy.owner())
+        .collect();
+    for owner in owners {
+        cx.notify(owner);
+    }
     if window.invalidator.not_drawing() {
         window.invalidator.set_dirty(true);
     }
@@ -241,8 +258,8 @@ impl Window {
     /// Ends holding hover still as the wheel stopping does, for the crate's
     /// tests, whose clock does not run.
     #[cfg(test)]
-    pub(crate) fn end_hover_freeze(&mut self) {
+    pub(crate) fn end_hover_freeze(&mut self, cx: &mut App) {
         self.fast_layers.hover_freeze.last_wheel = None;
-        thaw(self);
+        thaw(self, cx);
     }
 }

@@ -2574,6 +2574,19 @@ pub(crate) fn begin_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Gl
     check_hovers(window, id);
 }
 
+/// Whether a row the layer `layer` holds was painted by a hover that the
+/// last frame's hit test finds changed. A frame the layer composites
+/// paints none of its rows, so a hover held still while a wheel scrolled
+/// them is checked once the wheel stops (see
+/// [`crate::fast::layers::hover_freeze`]).
+pub(crate) fn rows_hover_changed(window: &Window, layer: &crate::fast::layers::Layer) -> bool {
+    layer
+        .rows
+        .rows
+        .values()
+        .any(|row| !window.hovers_unchanged(&row.hovers))
+}
+
 /// Asks for another frame if a row the layer of the list `id` keeps this
 /// frame was painted by a hover that the frame's hit test, made after its
 /// prepaint, finds changed: its hover was foretold from where the rows move
