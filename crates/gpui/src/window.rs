@@ -3707,7 +3707,7 @@ impl Window {
 
         // Exit the scope to obtain the arena-clear token this draw owes; the
         // scope's teardown itself happens in `ElementArenaScope::drop`.
-        arena_scope.exit(&cx.element_arena)
+        crate::fast::check_retained::after_draw(self, cx, arena_scope.exit(&cx.element_arena))
     }
 
     fn record_entities_accessed(&mut self, cx: &mut App) {

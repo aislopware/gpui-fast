@@ -42,6 +42,13 @@ use std::{mem, ops::Range, rc::Rc};
 #[derive(Default)]
 pub(crate) struct RebuildHandle(Option<AnyView>);
 
+impl RebuildHandle {
+    /// The type of the view it holds, if it holds one.
+    pub(crate) fn view_type_name(&self) -> Option<&'static str> {
+        self.0.as_ref().map(|view| view.view_type_name)
+    }
+}
+
 /// `view` drawn as a cached view laid out at `style`, as
 /// [`AnyView::cached`](crate::AnyView::cached) and
 /// [`Entity::cached`](crate::Entity::cached) draw it, kept as `any` so that it
@@ -1086,6 +1093,7 @@ fn copy_record(
         rebuild: record.rebuild.clone(),
         // Its elements' records are not carried through a splice.
         element_records: 0..0,
+        drawn_again: true,
     }
 }
 

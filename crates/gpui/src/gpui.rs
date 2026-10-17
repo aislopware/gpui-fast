@@ -115,6 +115,7 @@ pub use debug_overlay::*;
 pub use element::*;
 pub use elements::*;
 pub use executor::*;
+pub use fast::check_retained::RetainedCheck;
 pub use fast::composition;
 pub use fast::cursor::{CURSOR_IMAGE_MAX_SIDE, CursorImage, CursorImageId};
 pub use fast::edge_fade::{EdgeFade, EdgeFadeElement, EdgeFadeRamps, edge_fade};

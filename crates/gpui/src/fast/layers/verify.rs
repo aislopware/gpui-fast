@@ -377,3 +377,92 @@ impl Window {
         drawn(&self.rendered_frame.scene)
     }
 }
+
+/// Where a primitive a scene draws comes from: a paint operation of the
+/// scene's own, by its index in painting order, or a part of a composited
+/// layer's content, by the scene of that part (see
+/// [`crate::fast::layers::scene::LayerContent`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Source {
+    Operation(usize),
+    Layer(LayerKey, *const Scene),
+}
+
+/// A primitive or backdrop blur a scene draws, as [`drawn`] describes it
+/// but without its depth, where it comes from and where it draws.
+pub(crate) struct Sourced {
+    pub(crate) text: String,
+    pub(crate) source: Source,
+    pub(crate) reach: Bounds<ScaledPixels>,
+}
+
+/// What `scene` draws, as [`drawn`] gives it, each primitive without its
+/// depth but with where it comes from, in no particular order: every paint
+/// operation of the scene's own, and for each composited layer the content
+/// its tiles were rasterized from, part by part.
+pub(crate) fn sourced(scene: &Scene) -> Vec<Sourced> {
+    let mut composited: Vec<(LayerKey, Point<ScaledPixels>, Bounds<ScaledPixels>, u32)> =
+        Vec::new();
+    let mut out = Vec::new();
+    for (index, operation) in crate::fast::scene::operations(scene).enumerate() {
+        let drawn = match operation {
+            Operation::Primitive(Primitive::PolychromeSprite(sprite))
+                if decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id).is_some() =>
+            {
+                let (key, tile) = decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id)
+                    .expect("checked above");
+                if !composited.iter().any(|(k, ..)| *k == key) {
+                    let origin = layer_frame(scene, key).tile_bounds(tile).origin;
+                    let translation = point(
+                        sprite.bounds.origin.x - origin.x,
+                        sprite.bounds.origin.y - origin.y,
+                    );
+                    composited.push((key, translation, sprite.content_mask.bounds, sprite.pad));
+                }
+                continue;
+            }
+            Operation::Primitive(primitive) => Drawn::Primitive(primitive, None),
+            Operation::Backdrop(blur) => Drawn::Blur(blur),
+            Operation::StartLayer(_) | Operation::EndLayer | Operation::Native(_) => continue,
+        };
+        push_sourced(&mut out, scene, drawn, Source::Operation(index));
+    }
+    for (key, translation, viewport, fade) in composited {
+        let layer = layer_frame(scene, key);
+        for part in layer.content.scenes() {
+            for operation in crate::fast::scene::operations(part) {
+                let Operation::Primitive(primitive) = operation else {
+                    continue;
+                };
+                let mut primitive =
+                    crate::fast::layers::scene::translate_primitive(&primitive, translation);
+                clip_to(&mut primitive, &viewport);
+                let own = crate::fast::edge_fade::fade_of(&primitive);
+                let moved = crate::fast::edge_fade::moved_fade(scene, fade, own, translation);
+                crate::fast::edge_fade::stamp_with(fade, &mut primitive);
+                push_sourced(
+                    &mut out,
+                    scene,
+                    Drawn::Primitive(primitive, moved),
+                    Source::Layer(key, part as *const Scene),
+                );
+            }
+        }
+    }
+    out
+}
+
+fn push_sourced(out: &mut Vec<Sourced>, scene: &Scene, drawn: Drawn, source: Source) {
+    if matches!(&drawn, Drawn::Primitive(primitive, _) if draws_nothing(primitive)) {
+        return;
+    }
+    let reach = drawn.reach();
+    if reach.size.width.0 <= 0. || reach.size.height.0 <= 0. {
+        return;
+    }
+    out.push(Sourced {
+        text: drawn.describe(scene),
+        source,
+        reach,
+    });
+}

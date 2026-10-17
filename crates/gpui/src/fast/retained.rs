@@ -136,6 +136,11 @@ pub(crate) struct RetainedSubtree {
     /// [`crate::fast::element::ElementRecords`], carried along when it is
     /// drawn again from last frame.
     pub(crate) element_records: Range<u32>,
+    /// Whether this frame drew it from last frame's record rather than
+    /// building it: copied with a view drawn again, or spliced around the
+    /// views nested in it that were built. See [`crate::fast::check_retained`].
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+    pub(crate) drawn_again: bool,
 }
 
 impl RetainedSubtree {
@@ -352,6 +357,8 @@ pub(crate) struct RetainedState {
     /// handed the elements it built, rather than what they wrote as they
     /// were laid out. See [`note_rendered`].
     pub(crate) render_writes: FxHashMap<EntityId, Range<u64>>,
+    /// The retained check's state. See [`crate::fast::check_retained`].
+    pub(crate) check: crate::fast::check_retained::CheckState,
 }
 
 impl RetainedState {
@@ -380,6 +387,7 @@ impl RetainedState {
             content_mask_pushes: 0,
             rendering_since: FxHashMap::default(),
             render_writes: FxHashMap::default(),
+            check: crate::fast::check_retained::CheckState::new(),
         }
     }
 
@@ -963,6 +971,7 @@ impl Window {
                 layout: record.layout.clone(),
                 rebuild: record.rebuild.clone(),
                 element_records: carry_elements(&record.element_records),
+                drawn_again: true,
             });
         }
         anchor
@@ -1077,6 +1086,7 @@ impl Window {
                 layout: None,
                 rebuild: None,
                 element_records: 0..0,
+                drawn_again: false,
             });
             retained.open.push(index);
             index
@@ -1673,6 +1683,9 @@ impl<V: View> ViewElement<V> {
         cx: &mut App,
     ) -> (LayoutId, ViewLayout) {
         if let Some(entity_id) = self.entity_id {
+            let name = self.rebuild.view_type_name();
+            let name = name.unwrap_or_else(std::any::type_name::<V>);
+            crate::fast::check_retained::note_view(window, entity_id, name);
             // Stateful path: create a reactive boundary.
             window.with_rendered_view(entity_id, |window| {
                 let caching_disabled = window.is_inspector_picking(cx);
