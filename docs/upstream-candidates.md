@@ -326,6 +326,8 @@ Generic, each with tests in its commit, and each a product question for upstream
 - `28d2801`: a window drawn offscreen at another display scale.
 - `38cbd2b`: when each frame reaches the display (`Window::on_frame_presented`).
 - `2dd0ff6`: the platform's text system without the platform.
+- `d550137`: the clipboard on a pasteboard the application names, not always the general one
+  (`gpui_platform::set_clipboard_pasteboard`; macOS and iOS).
 - `5d79996`: the accessibility tree exposed to tests. `dfb5ad0`: the test window records
   where the platform is asked to put the input method. `1776aa2`: a retained-mode test that
   a video surface shows the buffer its view holds.
