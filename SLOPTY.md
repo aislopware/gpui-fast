@@ -916,6 +916,39 @@ does), sprites included rather than #50's `u128` comparison sort, leaves kinds i
 alone, and reuses last frame's order when the keys repeat; `fast::scene::primitive` reads
 the `gathered` flags that sort keeps. Sprites stay keyed by ordering and texture, not tile.
 
+In the longbridge 1db7f80 merge (#76, rounded overflow clipping, and #77, its command palette
+fixture and the `content_mask` example): #76's behaviour is taken, its transport is not. An
+element clipping its overflow on both axes with rounded corners cuts its children along its
+padding edge, every ancestor's edge kept where it is (no radius inherited, zed#37480), the
+corners quarter ellipses where the borders differ, and an empty padding edge hides them. #76
+records each clip as a scope in the paint operations and has Metal, WGPU and Direct3D draw a
+scope's primitives as a group of their own; this fork already cuts primitives per pixel through
+the table of edge fades (`Window::with_rounded_clip`), which retention, moving and scroll
+layers carry, and its scene holds places in the primitive lists, not primitives, so a scene
+rebuilt around groups would break drawing a stretch again. So `fast::rounded_clip` keeps #76's
+`Shape::for_style` and its two hooks (style.rs around the children's paint, and the prepaint
+hook in `Interactivity::prepaint`, so that retention notes the clip), and enters the shape as a
+clip in that table. An entry now holds the innermost clip and the one around it it does not lie
+inside (a clip inside another makes that one redundant; of three none inside another, the
+innermost and the outermost are kept), with vertical radii beside the horizontal ones; nesting
+had been innermost-wins. Fades and clips set inside a scroll layer's content no longer keep the
+layer from compositing: they move into content space with the content
+(`edge_fade::Relocation`), the content carries a copy of the table (`carry_table`), each tile's
+scene gets its own moved into the tile's space (`TileFades`), and what is drawn of the content
+into the frame (lists, overlays) moves them back; only callbacks handed to the present still
+do (`present::uncarried`). Left out with the transport: `fast::rounded_clip_scene`,
+`PaintOperation::FastRoundedClip` and its arms, the Metal group encoder and shader injection,
+WGPU's and Direct3D's clip stacks (WGPU stays zed's; Windows draws no fades, as before) and the
+X11 occluders (#30's composition). #76's pixel fixtures run on Metal unchanged but for two
+lines: the scroll-tile fixture copies the window's table into its content, and a view inside a
+clip that changes is built again (as in a content mask that changes) rather than drawn again,
+so the retained fixture counts three renders, not one. `gpui_apple`'s
+`rounded_overflow_mask_cost`, debug build, mac-studio: 64 rounded clips 310 µs (128 px target)
+and 314 µs (1024 px) against 300 µs and 329 µs for 64 rectangular ones, the same within noise;
+#76 reports about 0.7 ms on Metal for its groups. Upstream's randomized element tree compares
+two windows' quads, whose fade indices may differ, so its snapshot drops the index
+(`edge_fade::without_fade`).
+
 For our patches: `window.rs` (`paint_glyph_scaled` sits next to gpui-fast's
 `pub(crate) fn should_use_subpixel_rendering`), the root `Cargo.toml` (`gpui_ios` member
 and dependency) and `Cargo.lock`. `git am -3` needs the preimage blobs from the zed fork;

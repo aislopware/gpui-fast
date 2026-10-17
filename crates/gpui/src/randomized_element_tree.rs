@@ -1475,7 +1475,7 @@ mod tests {
                 border_style: quad.border_style,
                 bounds: quad.bounds,
                 content_mask: quad.content_mask,
-                background: quad.background,
+                background: crate::fast::edge_fade::without_fade(quad.background),
                 border_color: quad.border_color,
                 corner_radii: quad.corner_radii,
                 border_widths: quad.border_widths,

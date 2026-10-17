@@ -472,10 +472,10 @@ struct RowPaint {
     operations: Range<usize>,
     paint: Range<PaintIndex>,
     hovers: Vec<(HitboxId, bool)>,
-    /// Whether the row set edge fades of its own, which move with what it
-    /// painted where the layer's tiles can't carry them (see
-    /// [`crate::fast::edge_fade`]).
-    fades: bool,
+    /// Whether the row handed the present callbacks, which hold where it
+    /// painted where the layer can't carry them (see
+    /// [`crate::fast::present::uncarried`]).
+    uncarried: bool,
     /// Where in the log of the entities read what painting the row read
     /// lies.
     reads: Range<usize>,
@@ -2680,7 +2680,7 @@ pub(crate) fn paint_row(
     window.take_hover_reads();
     let hovers_start = window.retained_state.hover_dependencies.len();
     let paint_start = window.paint_index();
-    let fades_before = crate::fast::present::uncarried(window);
+    let uncarried_before = crate::fast::present::uncarried(window);
     let reads_start = reads_len();
     let writes_start = crate::fast::dependencies::write_generation_now();
     set_current_row(window, &id, Some(row));
@@ -2688,7 +2688,7 @@ pub(crate) fn paint_row(
         f(window, cx);
     }
     set_current_row(window, &id, None);
-    let fades = crate::fast::present::uncarried(window) != fades_before;
+    let uncarried = crate::fast::present::uncarried(window) != uncarried_before;
     let paint_end = window.paint_index();
     let end = window.next_frame.scene.paint_operations.len();
     window.take_hover_reads();
@@ -2699,7 +2699,7 @@ pub(crate) fn paint_row(
             operations: start..end,
             paint: paint_start..paint_end,
             hovers,
-            fades,
+            uncarried,
             reads: reads_start..reads_len(),
             writes: (
                 writes_start,
@@ -2880,7 +2880,10 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
     }
     let mut operations: Vec<Option<Operation>> =
         crate::fast::scene::operations(&painted).map(Some).collect();
-    let own_fades = paint.spans.iter().any(|span| span.fades);
+    let uncarried = paint.spans.iter().any(|span| span.uncarried);
+    // Rows hold the fades they were painted in moved into content space, as
+    // their primitives are.
+    let mut relocation = crate::fast::edge_fade::Relocation::new(to_content);
     for span in paint.spans {
         let Some(slot) = frame.slots.get(&span.row) else {
             continue;
@@ -2897,7 +2900,10 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
             .collect();
         for operation in &mut row_operations {
             match operation {
-                Operation::Primitive(primitive) => move_primitive(primitive, to_content),
+                Operation::Primitive(primitive) => {
+                    move_primitive(primitive, to_content);
+                    relocation.primitive(&mut window.fast_edge_fade, primitive);
+                }
                 Operation::StartLayer(bounds) => bounds.origin = bounds.origin + to_content,
                 Operation::EndLayer => {}
                 Operation::Native(placement) => {
@@ -2905,6 +2911,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                 }
                 Operation::Backdrop(blur) => {
                     *blur = crate::fast::backdrop::translate(blur, to_content);
+                    blur.fade = relocation.index(&mut window.fast_edge_fade, blur.fade);
                 }
             }
         }
@@ -3134,7 +3141,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
     };
     policy::note_work(window, id, work);
     paint::insert_layer(window, id, translation, dirtied);
-    if own_fades {
+    if uncarried {
         clear_rows(window, id, &frame);
         policy::defer_unbaked(window, id);
     }

@@ -630,7 +630,7 @@ impl MetalRenderer {
         crate::fast::layers::TileCache::clear(&mut self.fast_layers);
     }
 
-    fn update_path_intermediate_textures(&mut self, size: Size<DevicePixels>) {
+    pub(crate) fn update_path_intermediate_textures(&mut self, size: Size<DevicePixels>) {
         // We are uncertain when this happens, but sometimes size can be 0 here. Most likely before
         // the layout pass on window creation. Zero-sized texture creation causes SIGABRT.
         // https://github.com/zed-industries/zed/issues/36229

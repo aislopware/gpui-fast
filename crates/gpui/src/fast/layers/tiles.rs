@@ -220,6 +220,9 @@ fn tile_rect(tile_size: u32) -> Bounds<ScaledPixels> {
 /// decides its pixels in the tile to `hasher`: all but its draw order and
 /// ids, which the scene assigns, with its masks clipped to the tile.
 fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
+    // The fade and clip it is drawn in, kept in content space: one changed
+    // changes the index, interned by what it holds.
+    hasher.write_u32(crate::fast::edge_fade::index_of(primitive));
     match primitive {
         Primitive::Shadow(shadow) => {
             hasher.write_u8(0);

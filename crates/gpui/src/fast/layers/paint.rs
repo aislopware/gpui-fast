@@ -395,12 +395,7 @@ pub(crate) fn composite_at(
             crate::fast::layers::policy::defer_unbaked(window, id);
             draw_into_frame(window, record.content.operations(), translation);
             let viewports = viewports(window);
-            insert_overlay(
-                &mut window.next_frame.scene,
-                &record.overlay,
-                translation,
-                viewports,
-            );
+            insert_overlay(window, &record.overlay, translation, viewports);
             return;
         }
     }
@@ -444,13 +439,9 @@ pub(crate) fn insert_layer(
         return;
     }
     let viewports = viewports(window);
+    let overlay = record.overlay.clone();
     insert_tile_quads(&mut window.next_frame.scene, layer, viewport, translation);
-    insert_overlay(
-        &mut window.next_frame.scene,
-        &record.overlay,
-        translation,
-        viewports,
-    );
+    insert_overlay(window, &overlay, translation, viewports);
     let stats = &mut window.layout_engine.as_mut().unwrap().retention.stats;
     stats.layer_frames_composited += 1;
     stats.tiles_dirtied += dirtied as u64;
@@ -536,15 +527,20 @@ pub(crate) fn insert_tile_quads(
 /// moved by `translation` and clipped to `viewport`, after its tile quads,
 /// so that it is drawn over them (see `fast::layers::overlay`).
 fn insert_overlay(
-    scene: &mut Scene,
+    window: &mut Window,
     overlay: &[Primitive],
     translation: Point<ScaledPixels>,
     viewports: Viewports,
 ) {
+    let outer = crate::fast::edge_fade::current(window);
+    let fades = &mut window.fast_edge_fade;
+    let mut relocation = crate::fast::edge_fade::Relocation::new(translation);
     for primitive in overlay {
         let mut primitive = translate_primitive(primitive, translation);
         clip_primitive(&mut primitive, viewports);
-        scene.insert_primitive(primitive);
+        relocation.primitive(fades, &mut primitive);
+        crate::fast::edge_fade::compose(fades, outer, &mut primitive);
+        window.next_frame.scene.insert_primitive(primitive);
     }
 }
 
@@ -659,11 +655,14 @@ pub(crate) fn draw_into_frame(
     let outer = crate::fast::edge_fade::current(window);
     let fades = &mut window.fast_edge_fade;
     let scene = &mut window.next_frame.scene;
+    // Content kept in content space holds its fades there.
+    let mut relocation = crate::fast::edge_fade::Relocation::new(delta);
     for operation in operations {
         match operation {
             Operation::Primitive(primitive) => {
                 let mut primitive = translate_primitive(&primitive, delta);
                 clip_primitive(&mut primitive, viewports);
+                relocation.primitive(fades, &mut primitive);
                 crate::fast::edge_fade::compose(fades, outer, &mut primitive);
                 scene.insert_primitive(primitive);
             }
@@ -683,7 +682,8 @@ pub(crate) fn draw_into_frame(
             Operation::Backdrop(blur) => {
                 let mut blur = crate::fast::backdrop::translate(&blur, delta);
                 blur.content_mask.bounds = blur.content_mask.bounds.intersect(&viewport);
-                blur.fade = crate::fast::edge_fade::compose_index(fades, outer, blur.fade);
+                let fade = relocation.index(fades, blur.fade);
+                blur.fade = crate::fast::edge_fade::compose_index(fades, outer, fade);
                 scene.insert_backdrop_blur(blur);
             }
         }
@@ -735,15 +735,15 @@ fn repaint(
     let hovers_start = window.retained_state.hover_dependencies.len();
     let recording = cx.begin_recording_dependencies();
     window.fast_layers.painting = Some(painting);
-    let fades_before = crate::fast::present::uncarried(window);
+    let uncarried_before = crate::fast::present::uncarried(window);
 
     f(window, cx);
 
-    // Fades the content set of its own move with what it painted, which its
-    // tiles can't carry, and callbacks it hands the present hold where it
-    // painted: it is drawn into the frame, as content with paths is, and the
-    // layer let go.
-    let own_fades = crate::fast::present::uncarried(window) != fades_before;
+    // Callbacks the content hands the present hold where it painted, which
+    // its tiles can't carry: it is drawn into the frame, as content with
+    // paths is, and the layer let go. The fades and rounded clips it set of
+    // its own move into content space with it.
+    let uncarried = crate::fast::present::uncarried(window) != uncarried_before;
 
     let mut painting = window
         .fast_layers
@@ -763,16 +763,17 @@ fn repaint(
         ScaledPixels(-translation.x.0),
         ScaledPixels(-translation.y.0),
     );
-    let content = translated_scene(&painting.scene, to_content);
+    let content = translated_scene(&painting.scene, to_content, &mut window.fast_edge_fade);
     let region = painting.painted_region.scale(scale_factor);
     let region = Bounds {
         origin: region.origin + to_content,
         size: region.size,
     };
-    let (content, overlay, has_paths) = match crate::fast::layers::overlay::lift(content) {
-        Ok((content, overlay)) => (content, overlay, own_fades),
+    let (mut content, overlay, has_paths) = match crate::fast::layers::overlay::lift(content) {
+        Ok((content, overlay)) => (content, overlay, uncarried),
         Err(content) => (*content, Rc::from([]), true),
     };
+    crate::fast::edge_fade::carry_table(&window.fast_edge_fade, &mut content);
     let mut visible = painting.viewport.scale(scale_factor);
     visible.origin += to_content;
     let mut rendered_work = 0;
@@ -840,7 +841,7 @@ fn repaint(
             .layer_frames_repainted += 1;
         insert_layer(window, &painting.id, translation, dirtied);
     }
-    if own_fades {
+    if uncarried {
         policy::defer_unbaked(window, &painting.id);
     }
 }
@@ -939,13 +940,21 @@ pub(crate) fn translation(window: &Window, scroll_offset: Point<Pixels>) -> Poin
     )
 }
 
-/// `scene` moved by `delta`, finished.
-fn translated_scene(scene: &Scene, delta: Point<ScaledPixels>) -> Scene {
+/// `scene` moved by `delta`, finished, with the fades its primitives were
+/// painted in moved too.
+fn translated_scene(
+    scene: &Scene,
+    delta: Point<ScaledPixels>,
+    fades: &mut crate::fast::edge_fade::WindowFades,
+) -> Scene {
     let mut translated = Scene::default();
+    let mut relocation = crate::fast::edge_fade::Relocation::new(delta);
     for operation in crate::fast::scene::operations(scene) {
         match operation {
             Operation::Primitive(primitive) => {
-                translated.insert_primitive(translate_primitive(&primitive, delta))
+                let mut primitive = translate_primitive(&primitive, delta);
+                relocation.primitive(fades, &mut primitive);
+                translated.insert_primitive(primitive)
             }
             Operation::StartLayer(bounds) => translated.push_layer(Bounds {
                 origin: bounds.origin + delta,
@@ -956,7 +965,9 @@ fn translated_scene(scene: &Scene, delta: Point<ScaledPixels>) -> Scene {
                 translated.insert_native(translate_native(&placement, delta))
             }
             Operation::Backdrop(blur) => {
-                translated.insert_backdrop_blur(crate::fast::backdrop::translate(&blur, delta))
+                let mut blur = crate::fast::backdrop::translate(&blur, delta);
+                blur.fade = relocation.index(fades, blur.fade);
+                translated.insert_backdrop_blur(blur)
             }
         }
     }

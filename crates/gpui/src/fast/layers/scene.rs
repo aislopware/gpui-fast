@@ -117,22 +117,31 @@ impl LayerFrame {
             ScaledPixels(-bounds.origin.y.0),
         );
         let mut scene = Scene::default();
-        for operation in self.content.operations_over(bounds) {
-            match operation {
-                Operation::Primitive(primitive) => {
-                    if visible_bounds(&primitive).intersects(&bounds) {
-                        scene.insert_primitive(translate_primitive(&primitive, delta));
+        let mut fades = crate::fast::edge_fade::TileFades::new(delta);
+        let parts = self.content.parts.iter().enumerate();
+        for (index, part) in
+            parts.filter(|(_, part)| part.bounds.is_none_or(|b| b.intersects(&bounds)))
+        {
+            for operation in crate::fast::scene::operations(&part.scene) {
+                match operation {
+                    Operation::Primitive(primitive) => {
+                        if visible_bounds(&primitive).intersects(&bounds) {
+                            let mut primitive = translate_primitive(&primitive, delta);
+                            fades.primitive(index, &part.scene, &mut primitive);
+                            scene.insert_primitive(primitive);
+                        }
                     }
+                    Operation::StartLayer(layer_bounds) => {
+                        scene.push_layer(translate_bounds(layer_bounds, delta))
+                    }
+                    Operation::EndLayer => scene.pop_layer(),
+                    // Content placing a native or a blur is never composited
+                    // from tiles.
+                    Operation::Native(_) | Operation::Backdrop(_) => {}
                 }
-                Operation::StartLayer(layer_bounds) => {
-                    scene.push_layer(translate_bounds(layer_bounds, delta))
-                }
-                Operation::EndLayer => scene.pop_layer(),
-                // Content placing a native or a blur is never composited
-                // from tiles.
-                Operation::Native(_) | Operation::Backdrop(_) => {}
             }
         }
+        fades.finish(&mut scene);
         scene.finish();
         scene
     }
@@ -162,7 +171,11 @@ impl LayerFrame {
         let mut scenes: Vec<Scene> = tiles.iter().map(|_| Scene::default()).collect();
         let mut reaches = vec![false; tiles.len()];
         let mut base: DrawOrder = 0;
-        for part in self.content.parts.iter() {
+        let mut fades: Vec<crate::fast::edge_fade::TileFades> = tiles
+            .iter()
+            .map(|tile| crate::fast::edge_fade::TileFades::new(delta(*tile)))
+            .collect();
+        for (index, part) in self.content.parts.iter().enumerate() {
             let mut any = false;
             for (slot, tile) in tiles.iter().enumerate() {
                 reaches[slot] = part
@@ -188,11 +201,9 @@ impl LayerFrame {
                     if let Some(&slot) = slots.get(&tile)
                         && reaches[slot]
                     {
-                        push_ordered(
-                            &mut scenes[slot],
-                            translate_primitive(&primitive, delta(tile)),
-                            order,
-                        );
+                        let mut primitive = translate_primitive(&primitive, delta(tile));
+                        fades[slot].primitive(index, &part.scene, &mut primitive);
+                        push_ordered(&mut scenes[slot], primitive, order);
                     }
                 }
             }
@@ -200,7 +211,8 @@ impl LayerFrame {
                 base = last + 1;
             }
         }
-        for scene in &mut scenes {
+        for (scene, fades) in scenes.iter_mut().zip(fades) {
+            fades.finish(scene);
             scene.finish();
         }
         scenes

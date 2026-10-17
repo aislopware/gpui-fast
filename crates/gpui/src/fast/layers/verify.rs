@@ -54,7 +54,10 @@ fn ordered_sequence(scene: &Scene) -> Vec<(u32, Primitive)> {
 /// What a scene draws, in drawing order: a primitive, or a backdrop blur
 /// between the primitives drawn under it and those drawn over it.
 enum Drawn {
-    Primitive(Primitive),
+    /// A primitive, and for one of a layer's content with a fade of its
+    /// own the fade it is drawn in, moved and composed (see
+    /// [`crate::fast::edge_fade::moved_fade`]).
+    Primitive(Primitive, Option<crate::EdgeFadeRamps>),
     Blur(BackdropBlur),
 }
 
@@ -62,14 +65,23 @@ impl Drawn {
     /// Where it draws, or for a blur where it reads from too.
     fn reach(&self) -> Bounds<ScaledPixels> {
         match self {
-            Drawn::Primitive(primitive) => clipped(primitive),
+            Drawn::Primitive(primitive, _) => clipped(primitive),
             Drawn::Blur(blur) => blur.reach(),
         }
     }
 
     fn describe(&self, scene: &Scene) -> String {
         match self {
-            Drawn::Primitive(primitive) => describe(primitive, scene),
+            Drawn::Primitive(primitive, None) => describe(primitive, scene),
+            Drawn::Primitive(primitive, Some(fade)) => {
+                let mut primitive = primitive.clone();
+                crate::fast::edge_fade::unfade(&mut primitive);
+                format!(
+                    "{}{}",
+                    describe_unfaded(&primitive),
+                    crate::fast::edge_fade::describe_ramps(fade)
+                )
+            }
             Drawn::Blur(blur) => format!(
                 "backdrop blur {:?} {:?} {:?} {:?} {}{}",
                 blur.bounds,
@@ -131,7 +143,6 @@ fn expand_layer(
     translation: Point<ScaledPixels>,
     viewport: &Bounds<ScaledPixels>,
     composited: &[TileCoord],
-    fade: u32,
 ) -> Vec<Primitive> {
     let mut scratch = Scene::default();
     for operation in layer.content.operations() {
@@ -140,9 +151,6 @@ fn expand_layer(
                 let mut moved =
                     crate::fast::layers::scene::translate_primitive(&primitive, translation);
                 clip_to(&mut moved, viewport);
-                // The edge fade the tiles were composited in fades their
-                // content.
-                crate::fast::edge_fade::stamp_with(fade, &mut moved);
                 scratch.insert_primitive(moved);
             }
             Operation::StartLayer(bounds) => scratch.push_layer(Bounds {
@@ -225,19 +233,21 @@ fn expanded_sequence(scene: &Scene) -> Vec<Drawn> {
             entry.2.push(tile);
             continue;
         }
-        sequence.push(Drawn::Primitive(primitive));
+        sequence.push(Drawn::Primitive(primitive, None));
     }
     sequence.extend(blurs.map(|blur| Drawn::Blur(*blur)));
     for (at, key) in first_tiles.into_iter().rev() {
         let (translation, viewport, tiles, fade) = &composited[&key];
-        let content = expand_layer(
-            layer_frame(scene, key),
-            *translation,
-            viewport,
-            tiles,
-            *fade,
-        );
-        sequence.splice(at..at, content.into_iter().map(Drawn::Primitive));
+        let content = expand_layer(layer_frame(scene, key), *translation, viewport, tiles);
+        // The edge fade the tiles were composited in fades their content,
+        // around any fade it set of its own, which moves with it.
+        let content = content.into_iter().map(|mut primitive| {
+            let own = crate::fast::edge_fade::fade_of(&primitive);
+            let moved = crate::fast::edge_fade::moved_fade(scene, *fade, own, *translation);
+            crate::fast::edge_fade::stamp_with(*fade, &mut primitive);
+            Drawn::Primitive(primitive, moved)
+        });
+        sequence.splice(at..at, content);
     }
     sequence
 }
@@ -329,8 +339,9 @@ pub(crate) fn drawn(scene: &Scene) -> Vec<String> {
     let mut sequence = expanded_sequence(scene);
     // What draws no pixel is no part of what a scene shows: text or an icon faded to nothing,
     // painted by one frame and skipped by another, draws the same pixels.
-    sequence
-        .retain(|drawn| !matches!(drawn, Drawn::Primitive(primitive) if draws_nothing(primitive)));
+    sequence.retain(
+        |drawn| !matches!(drawn, Drawn::Primitive(primitive, _) if draws_nothing(primitive)),
+    );
     let clips: Vec<Bounds<ScaledPixels>> = sequence.iter().map(Drawn::reach).collect();
     let mut depths: Vec<u32> = Vec::with_capacity(sequence.len());
     for (ix, clip) in clips.iter().enumerate() {

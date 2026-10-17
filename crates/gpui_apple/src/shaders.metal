@@ -50,6 +50,10 @@ struct EdgeFadeRamps {
   float4 mask;
   float4 mask_shape;
   float4 mask_bottom;
+  float4 radii_y;
+  float4 outer_clip;
+  float4 outer_radii;
+  float4 outer_radii_y;
 };
 float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades);
 
@@ -1335,6 +1339,33 @@ float4 fill_color(Background background,
   return color;
 }
 
+// gpui-fast: the signed distance of `position` from the edge of the rounded
+// rectangle `rect` (left, top, right, bottom) with corners of `rx` across and
+// `ry` down (top left, top right, bottom right, bottom left), negative inside
+// (gpui's fast/edge_fade.rs, Clip::distance): exact for a circular corner,
+// and for a quarter ellipse its implicit function over its gradient's length.
+float rounded_clip_distance(float2 position, float4 rect, float4 rx, float4 ry) {
+  float2 half_size = (rect.zw - rect.xy) * 0.5;
+  float2 p = position - (rect.xy + half_size);
+  float2 radius = p.x < 0. ? (p.y < 0. ? float2(rx.x, ry.x) : float2(rx.w, ry.w))
+                           : (p.y < 0. ? float2(rx.y, ry.y) : float2(rx.z, ry.z));
+  if (radius.x == radius.y) {
+    float r = min(radius.x, min(half_size.x, half_size.y));
+    float2 q = abs(p) - half_size + r;
+    return length(max(q, float2(0.))) + min(max(q.x, q.y), 0.) - r;
+  }
+  radius = min(radius, half_size);
+  float2 q = abs(p) - half_size + radius;
+  if (q.x > 0. && q.y > 0. && radius.x > 0. && radius.y > 0.) {
+    float2 u = q / radius;
+    float len = length(u);
+    float gradient = length(u / radius) / max(len, 0.000001);
+    return (len - 1.) / max(gradient, 0.000001);
+  }
+  float2 outside = abs(p) - half_size;
+  return max(outside.x, outside.y);
+}
+
 // gpui-fast: how strongly a pixel centred at `position` is drawn under the
 // fade `fade` indexes (gpui's fast/edge_fade.rs): each edge's ramp, linear
 // in the coordinate along its axis, clamped and eased with smoothstep, the
@@ -1349,17 +1380,17 @@ float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades) {
   ramp = ramp * ramp * (3. - 2. * ramp);
   float alpha = ramp.x * ramp.y * ramp.z * ramp.w;
   if (ramps.clip.z > ramps.clip.x) {
-    // The rounded clip (zui 361ff20): the signed distance from its edge,
-    // over a pixel's antialiased step; radii top left, top right, bottom
-    // right, bottom left.
-    float2 half_size = (ramps.clip.zw - ramps.clip.xy) * 0.5;
-    float2 p = position - (ramps.clip.xy + half_size);
-    float radius = p.x < 0. ? (p.y < 0. ? ramps.radii.x : ramps.radii.w)
-                            : (p.y < 0. ? ramps.radii.y : ramps.radii.z);
-    radius = min(radius, min(half_size.x, half_size.y));
-    float2 q = abs(p) - half_size + radius;
-    float distance = length(max(q, float2(0.))) + min(max(q.x, q.y), 0.) - radius;
-    alpha *= saturate(0.5 - distance);
+    // The rounded clip (zui 361ff20), and the one around it it does not lie
+    // inside (overflow's padding edges, longbridge/gpui-fast#76): the
+    // signed distance from each edge, over a pixel's antialiased step.
+    float coverage =
+        saturate(0.5 - rounded_clip_distance(position, ramps.clip, ramps.radii, ramps.radii_y));
+    if (ramps.outer_clip.z > ramps.outer_clip.x) {
+      coverage = min(coverage, saturate(0.5 - rounded_clip_distance(position, ramps.outer_clip,
+                                                                    ramps.outer_radii,
+                                                                    ramps.outer_radii_y)));
+    }
+    alpha *= coverage;
   }
   if (ramps.mask_shape.y > 0.) {
     // The image alpha mask (zui aa00941): smoothstep out of a rounded

@@ -501,12 +501,15 @@ fn a_scroll_layer_s_tiles_fade_as_its_content() {
     }
 }
 
-/// Content setting fades of its own is drawn without its layer's tiles,
-/// since those fades would move with the tiles.
+/// Content setting fades of its own composites its layer's tiles: its
+/// fades are kept in content space and move with the tiles, drawing as the
+/// content drawn without a layer does.
 #[test]
-fn content_fading_of_its_own_is_drawn_without_tiles() {
+fn content_fading_of_its_own_composites_its_tiles() {
     let stats = scroll_both(true, false);
-    assert_eq!(stats.layer_frames_composited, 0, "{stats:?}");
+    if crate::fast::layers::COMPILED {
+        assert!(stats.layer_frames_composited > 0, "{stats:?}");
+    }
 }
 
 /// A background painted inside the fade fades too, so a layer can't clear

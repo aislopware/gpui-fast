@@ -2462,7 +2462,12 @@ impl Interactivity {
 
                             let scroll_offset =
                                 self.clamp_scroll_position(bounds, &style, window, cx);
-                            let result = f(&style, scroll_offset, hitbox, window, cx);
+                            let result = crate::fast::rounded_clip::prepaint_children(
+                                &style,
+                                bounds,
+                                window,
+                                |window| f(&style, scroll_offset, hitbox, window, cx),
+                            );
                             (result, element_state)
                         },
                     )

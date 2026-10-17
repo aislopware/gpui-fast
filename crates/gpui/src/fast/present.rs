@@ -48,11 +48,13 @@ pub(crate) fn reuse_paint(window: &mut Window, range: &Range<PaintIndex>) {
         .extend(reused.iter().cloned());
 }
 
-/// How many fades painting entered and callbacks it handed the present so
-/// far: what a scroll layer's tiles can't carry as they move, so content
-/// that adds to it is drawn into the frame (`fast::layers`).
+/// How many callbacks painting handed the present so far: what a scroll
+/// layer's tiles can't carry as they move, since a callback holds where it
+/// was painted, so content that adds to it is drawn into the frame
+/// (`fast::layers`). Edge fades and rounded clips set inside the content
+/// move with it ([`crate::fast::edge_fade::Relocation`]).
 pub(crate) fn uncarried(window: &Window) -> u64 {
-    crate::fast::edge_fade::applied(window) + window.next_frame.retained.present.len() as u64
+    window.next_frame.retained.present.len() as u64
 }
 
 /// Runs the callbacks of the frame being presented, in paint order.

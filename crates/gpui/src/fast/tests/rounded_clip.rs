@@ -403,10 +403,77 @@ fn a_scroll_layer_inside_a_rounded_clip_composites() {
     }
 }
 
-/// Content clipping of its own is drawn without its layer's tiles, since
-/// those clips would move with the tiles.
+/// Content clipping of its own composites its layer's tiles: its clips
+/// move with the tiles, inside the layer's own around them.
 #[test]
-fn content_clipping_of_its_own_is_drawn_without_tiles() {
+fn content_clipping_of_its_own_composites_its_tiles() {
     let stats = scroll_both(true);
-    assert_eq!(stats.layer_frames_composited, 0, "{stats:?}");
+    if crate::fast::layers::COMPILED {
+        assert!(stats.layer_frames_composited > 0, "{stats:?}");
+    }
+}
+
+/// A card clipping its overflow with rounded corners, a view inside it.
+struct OverflowCard {
+    hidden: bool,
+    radius: f32,
+    inner: Entity<OverflowCardInner>,
+}
+
+struct OverflowCardInner;
+
+impl Render for OverflowCardInner {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .bg(hsla(0.3, 0.5, 0.5, 1.))
+            .child(div().w(px(80.)).h(px(30.)).bg(hsla(0.6, 0.5, 0.5, 1.)))
+    }
+}
+
+impl Render for OverflowCard {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let card = div()
+            .w(px(200.))
+            .h(px(120.))
+            .rounded(px(self.radius))
+            .overflow_hidden()
+            .bg(hsla(0., 0., 0.9, 1.))
+            .child(self.inner.clone());
+        if self.hidden { card.invisible() } else { card }
+    }
+}
+
+/// A rounded card's children, drawn again from last frame or not, after it
+/// was hidden or its corners changed, draw as a window drawing it afresh.
+#[test]
+fn a_rounded_overflow_drawn_again_draws_as_afresh() {
+    let mut cx = text_cx();
+    let new = |cx: &mut TestAppContext, hidden: bool, radius: f32| {
+        cx.add_window(move |_, cx| OverflowCard {
+            hidden,
+            radius,
+            inner: cx.new(|_| OverflowCardInner),
+        })
+    };
+    let kept = new(&mut cx, false, 12.);
+    with_window(&mut cx, kept.into(), |window, cx| window.draw(cx).clear(cx));
+    for (hidden, radius) in [(true, 12.), (false, 12.), (false, 0.), (false, 20.)] {
+        kept.update(&mut cx, |card, _, cx| {
+            card.hidden = hidden;
+            card.radius = radius;
+            cx.notify();
+        })
+        .unwrap();
+        let actual = with_window(&mut cx, kept.into(), |window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_primitives()
+        });
+        let fresh = new(&mut cx, hidden, radius);
+        let expected = with_window(&mut cx, fresh.into(), |window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_primitives()
+        });
+        assert_eq!(actual, expected, "hidden {hidden}, radius {radius}");
+    }
 }

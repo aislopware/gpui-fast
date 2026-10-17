@@ -56,6 +56,7 @@ pub(crate) mod present;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod render_at;
 pub(crate) mod retained;
+pub(crate) mod rounded_clip;
 pub(crate) mod scene;
 pub(crate) mod scroll;
 pub(crate) mod shift;

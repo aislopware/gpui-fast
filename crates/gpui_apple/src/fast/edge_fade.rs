@@ -24,6 +24,10 @@ const EMPTY: [EdgeFadeRamps; 1] = [EdgeFadeRamps {
     mask: [0.; 4],
     mask_shape: [0.; 4],
     mask_bottom: [0.; 4],
+    radii_y: [0.; 4],
+    outer_clip: [0.; 4],
+    outer_radii: [0.; 4],
+    outer_radii_y: [0.; 4],
 }];
 
 /// Writes `scene`'s table of fades into the frame's instances.
