@@ -47,6 +47,7 @@ pub(crate) use platform::*;
 pub(crate) use window::*;
 
 pub use fast::composition::MacNativeHost;
+pub use fast::pasteboard::set_clipboard_pasteboard;
 #[cfg(feature = "font-kit")]
 pub use fast::text_system::text_system;
 

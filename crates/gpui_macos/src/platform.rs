@@ -1235,12 +1235,12 @@ impl Platform for MacPlatform {
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         let state = self.0.lock();
-        state.general_pasteboard.read()
+        crate::fast::pasteboard::read(&state.general_pasteboard)
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {
         let state = self.0.lock();
-        state.general_pasteboard.write(item);
+        crate::fast::pasteboard::write(&state.general_pasteboard, item);
     }
 
     fn read_from_find_pasteboard(&self) -> Option<ClipboardItem> {

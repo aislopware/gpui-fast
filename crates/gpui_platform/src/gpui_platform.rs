@@ -4,6 +4,8 @@
 pub use gpui::Platform;
 
 mod fast;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub use fast::clipboard::set_clipboard_pasteboard;
 pub use fast::text_system::text_system;
 
 use std::rc::Rc;

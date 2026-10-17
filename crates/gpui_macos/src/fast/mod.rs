@@ -11,6 +11,7 @@ pub(crate) mod backdrop;
 pub(crate) mod cursor;
 pub(crate) mod gesture;
 pub(crate) mod keypad;
+pub(crate) mod pasteboard;
 pub(crate) mod scroll;
 #[cfg(feature = "font-kit")]
 pub(crate) mod text_smoothing;

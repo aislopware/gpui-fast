@@ -371,6 +371,14 @@ unchanged, and a new entry needs as good a reason.
   native's hole is, so retention, paint layers and list layers carry it; a
   scroll container whose content blurs draws without its tiles. Only Metal
   draws it, with Metal Performance Shaders; elsewhere nothing is drawn.
+- `gpui_platform::set_clipboard_pasteboard`, with `gpui_macos`'s and
+  `gpui_ios`'s, is new public API (`gpui_macos/src/fast/pasteboard.rs`,
+  `gpui_platform/src/fast/clipboard.rs`, `gpui_ios`'s platform). Upstream's
+  clipboard is always the general pasteboard, so an application that shares
+  its clipboard through a pasteboard of its own copied to one and shared
+  another, and its tests' copies landed on the person's clipboard. Named once
+  at startup, GPUI's clipboard reads and writes that pasteboard instead; the
+  find pasteboard is never redirected. macOS and iOS only.
 - The workspace pins Taffy 0.14 where upstream pins 0.13. Taffy 0.13 keeps
   one cached size per kind of constraint, so a node measured under two widths
   in one layout evicts one with the other, and the clean subtrees around a

@@ -441,7 +441,7 @@ impl Platform for IosPlatform {
 
     fn write_to_clipboard(&self, item: ClipboardItem) {
         unsafe {
-            let pasteboard: *mut AnyObject = msg_send![class!(UIPasteboard), generalPasteboard];
+            let pasteboard = clipboard_pasteboard();
             if let Some(text) = item.text() {
                 let ns_string = super::util::nsstring(&text);
                 let _: () = msg_send![pasteboard, setString: ns_string];
@@ -466,7 +466,7 @@ impl Platform for IosPlatform {
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         unsafe {
-            let pasteboard: *mut AnyObject = msg_send![class!(UIPasteboard), generalPasteboard];
+            let pasteboard = clipboard_pasteboard();
             // A picture first, in the order most likely on a phone (a screenshot is a PNG),
             // as the macOS pasteboard does; then text.
             let has_images: Bool = msg_send![pasteboard, hasImages];
@@ -682,6 +682,35 @@ mod security {
     pub const ERR_SEC_SUCCESS: OSStatus = 0;
     pub const ERR_SEC_USER_CANCELED: OSStatus = -128;
     pub const ERR_SEC_ITEM_NOT_FOUND: OSStatus = -25300;
+}
+
+/// The pasteboard the application named for GPUI's clipboard, if it named one.
+static CLIPBOARD_NAME: Mutex<Option<String>> = Mutex::new(None);
+
+/// Makes GPUI's clipboard (`App::write_to_clipboard`, `App::read_from_clipboard`) the
+/// pasteboard named `name` (`UIPasteboard pasteboardWithName:create:`), in place of the
+/// general pasteboard, for the rest of the process or until named again. Call it before the
+/// first copy, so that no copy reaches the general pasteboard. A simulator's general
+/// pasteboard follows its Mac's, so a test names one of its own.
+pub fn set_clipboard_pasteboard(name: &str) {
+    *CLIPBOARD_NAME.lock() = Some(name.to_owned());
+}
+
+/// The pasteboard GPUI's clipboard reads and writes: the named one, made on first use, or the
+/// general one while none is named (or the named one cannot be made).
+unsafe fn clipboard_pasteboard() -> *mut AnyObject {
+    let name = CLIPBOARD_NAME.lock().clone();
+    unsafe {
+        if let Some(name) = name {
+            let name = super::util::nsstring(&name);
+            let named: *mut AnyObject =
+                msg_send![class!(UIPasteboard), pasteboardWithName: name, create: Bool::YES];
+            if !named.is_null() {
+                return named;
+            }
+        }
+        msg_send![class!(UIPasteboard), generalPasteboard]
+    }
 }
 
 /// The picture formats read off the pasteboard, most likely on a phone first (a screenshot

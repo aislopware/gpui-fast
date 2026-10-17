@@ -39,7 +39,7 @@ impl Pasteboard {
         unsafe { Self::new(NSPasteboard::pasteboardWithUniqueName(nil)) }
     }
 
-    unsafe fn new(inner: id) -> Self {
+    pub(crate) unsafe fn new(inner: id) -> Self {
         // These constructors return autoreleased objects, but a Pasteboard can
         // outlive the autorelease pool in which it was created.
         Self {
