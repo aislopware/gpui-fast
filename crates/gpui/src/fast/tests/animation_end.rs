@@ -175,6 +175,11 @@ fn a_frame_drawn_again_at_the_last_frames_moment_paints_the_same_fade() {
         short > 0.9 && short < 1.0,
         "a hair short of its end: {short}"
     );
+    let moment = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, _| window.frame_time())
+            .unwrap()
+    };
+    let shown_at = moment(&mut cx);
 
     cx.executor().advance_clock(Duration::from_millis(5));
     let again = cx
@@ -186,6 +191,7 @@ fn a_frame_drawn_again_at_the_last_frames_moment_paints_the_same_fade() {
         })
         .unwrap();
     assert_eq!(again, Some(short), "drawn again at the moment shown");
+    assert_eq!(moment(&mut cx), shown_at, "the frame drawn again says so");
 
     let later = cx
         .update_window(window.into(), |_, window, cx| {
@@ -195,4 +201,5 @@ fn a_frame_drawn_again_at_the_last_frames_moment_paints_the_same_fade() {
         })
         .unwrap();
     assert_eq!(later, Some(1.0), "the next frame shows its own moment");
+    assert!(moment(&mut cx) > shown_at, "and says so");
 }

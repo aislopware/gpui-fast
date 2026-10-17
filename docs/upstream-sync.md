@@ -385,13 +385,15 @@ unchanged, and a new entry needs as good a reason.
   layout that makes room for the keyboard needs to know when a button or a
   pane took the focus and the keyboard went; GPUI keeps the answer privately
   for the platform. A view that reads it is built again when it changes.
-- `Window::repeat_frame_time` is new public API (`fast/frame_time.rs`): the
-  next frame shows the moment the last frame showed. Every animation of a
+- `Window::frame_time` and `Window::repeat_frame_time` are new public API
+  (`fast/frame_time.rs`): the moment the frame being drawn shows, and the
+  next frame shown at the moment the last frame showed. Every animation of a
   frame reads one moment, taken as the frame starts drawing, where upstream
   reads the wall clock as each is laid out; a check that draws the frame
   shown again from scratch and compares the two (Slopty's retained-mode
   oracle) draws it at the same moment, or a fade drawn a hair short of its
-  end in the frame shown is at its end in the one from scratch.
+  end in the frame shown is at its end in the one from scratch. A view that
+  animates on its own clock reads `frame_time` to be drawn again the same.
 - The workspace pins Taffy 0.14 where upstream pins 0.13. Taffy 0.13 keeps
   one cached size per kind of constraint, so a node measured under two widths
   in one layout evicts one with the other, and the clean subtrees around a

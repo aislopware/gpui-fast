@@ -45,6 +45,16 @@ pub(crate) fn since(window: &Window, cx: &App, start: Instant) -> std::time::Dur
 }
 
 impl Window {
+    /// The moment the frame being drawn shows, which every animation in it
+    /// stands at: read once as the frame starts drawing, or the last frame's
+    /// again after [`Window::repeat_frame_time`]. A view that animates on its
+    /// own clock reads this rather than the wall clock to move in step with
+    /// GPUI's animations, and to be drawn again where it stood. Read outside
+    /// a frame, it is the last frame's.
+    pub fn frame_time(&self) -> Instant {
+        self.fast_frame_time.now.unwrap_or_else(Instant::now)
+    }
+
     /// Has the next frame drawn show the moment the last frame showed, so
     /// every animation stands where it stood then: for a check that draws the
     /// frame shown again, from scratch, and compares the two.
