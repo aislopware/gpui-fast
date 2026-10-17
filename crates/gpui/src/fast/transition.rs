@@ -243,7 +243,7 @@ fn follow_transition(
     window: &mut Window,
     cx: &App,
 ) {
-    let now = cx.background_executor().now();
+    let now = crate::fast::frame_time::now(window, cx);
     let target = Colors::of_style(style);
     let rest = Colors::of_refinement(base);
     let Some(state) = state.as_deref_mut() else {

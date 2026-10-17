@@ -25,6 +25,7 @@ pub(crate) mod element;
 pub(crate) mod fling;
 pub(crate) mod focus;
 pub(crate) mod focus_tooltip;
+pub(crate) mod frame_time;
 pub mod gesture;
 pub(crate) mod glyph_blur;
 pub(crate) mod glyphs;

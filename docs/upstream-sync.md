@@ -379,6 +379,19 @@ unchanged, and a new entry needs as good a reason.
   another, and its tests' copies landed on the person's clipboard. Named once
   at startup, GPUI's clipboard reads and writes that pasteboard instead; the
   find pasteboard is never redirected. macOS and iOS only.
+- `Window::text_input_focused` is new public API (`fast/focus.rs`): whether
+  the focused element is a text field the last frame registered, its input
+  handler taking text. The platform shows its soft keyboard for one, and a
+  layout that makes room for the keyboard needs to know when a button or a
+  pane took the focus and the keyboard went; GPUI keeps the answer privately
+  for the platform. A view that reads it is built again when it changes.
+- `Window::repeat_frame_time` is new public API (`fast/frame_time.rs`): the
+  next frame shows the moment the last frame showed. Every animation of a
+  frame reads one moment, taken as the frame starts drawing, where upstream
+  reads the wall clock as each is laid out; a check that draws the frame
+  shown again from scratch and compares the two (Slopty's retained-mode
+  oracle) draws it at the same moment, or a fade drawn a hair short of its
+  end in the frame shown is at its end in the one from scratch.
 - The workspace pins Taffy 0.14 where upstream pins 0.13. Taffy 0.13 keeps
   one cached size per kind of constraint, so a node measured under two widths
   in one layout evicts one with the other, and the clean subtrees around a
