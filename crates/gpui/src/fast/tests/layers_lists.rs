@@ -3077,8 +3077,8 @@ mod rows {
         );
 
         assert!(
-            with_window(cx, window, |window, _| {
-                window.end_hover_freeze();
+            with_window(cx, window, |window, cx| {
+                window.end_hover_freeze(cx);
                 window.invalidator.is_dirty()
             }),
             "the end of the freeze draws the window"
@@ -3568,6 +3568,163 @@ mod rows {
         }
         let extended = crate::fast::layers::lists::extended_frames() - extended;
         assert!(extended > 300, "frames kept the rows held ({extended})");
+    }
+
+    /// What the hover listener of each [`HoverCard`] heard, in order.
+    type Heard = Rc<RefCell<Vec<(usize, bool)>>>;
+
+    /// A 40 px row in a view of its own whose hover listener says what it
+    /// heard, as a card fading its actions in on hover does.
+    struct HoverCard {
+        ix: usize,
+        heard: Heard,
+    }
+
+    impl Render for HoverCard {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use crate::InteractiveElement as _;
+            let (ix, heard) = (self.ix, self.heard.clone());
+            div()
+                .id(("card", ix))
+                .w(px(VIEWPORT_WIDTH))
+                .h(px(40.))
+                .bg(row_color(ix))
+                .on_hover(move |hovered, _, _| heard.borrow_mut().push((ix, *hovered)))
+        }
+    }
+
+    /// A list of 300 [`HoverCard`]s.
+    struct HoverCards {
+        state: ListState,
+        cards: Vec<Entity<HoverCard>>,
+    }
+
+    impl Render for HoverCards {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let cards = self.cards.clone();
+            div().size_full().bg(rgb(0xffffff)).child(
+                crate::list(self.state.clone(), move |ix, _, _| {
+                    cards[ix].clone().into_any_element()
+                })
+                .w(px(VIEWPORT_WIDTH))
+                .h(px(VIEWPORT_HEIGHT)),
+            )
+        }
+    }
+
+    /// A wheel that scrolls a card off a still pointer, on frames the layer
+    /// composites, tells the card's hover listener it is no longer hovered,
+    /// and the card the wheel brings under the pointer that it is, once the
+    /// wheel stops: as a pointer moving off it would, though the frames that
+    /// moved it painted no card.
+    #[crate::test]
+    fn a_composited_scroll_off_a_still_pointer_ends_a_cards_hover(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        for freeze in [false, true] {
+            let heard: Heard = Rc::default();
+            let handle = cx.add_window({
+                let heard = heard.clone();
+                move |_, cx| HoverCards {
+                    state: ListState::new(300, ListAlignment::Top, px(0.)).measure_all(),
+                    cards: (0..300)
+                        .map(|ix| {
+                            let heard = heard.clone();
+                            cx.new(|_| HoverCard { ix, heard })
+                        })
+                        .collect(),
+                }
+            });
+            let window: AnyWindowHandle = handle.into();
+            open_at(cx, window, 1.);
+            with_window(cx, window, |window, cx| {
+                window.set_hover_freeze(freeze);
+                window.dispatch_event(
+                    crate::PlatformInput::MouseMove(crate::MouseMoveEvent {
+                        position: crate::point(px(20.), px(20.)),
+                        pressed_button: None,
+                        modifiers: Default::default(),
+                    }),
+                    cx,
+                );
+            });
+            draw(cx, window);
+            draw(cx, window);
+            assert_eq!(
+                heard.borrow().last(),
+                Some(&(0, true)),
+                "freeze {freeze}: card 0 hovered"
+            );
+            // Row 0 stays under the pointer while the list takes its layer.
+            for _ in 0..3 {
+                wheel(cx, window, -3.);
+            }
+            assert_eq!(
+                decision(cx, window),
+                Some(Decision::Composite),
+                "freeze {freeze}"
+            );
+            // Then 7 px a frame takes it off: the pointer is over card 1.
+            for _ in 0..3 {
+                wheel(cx, window, -7.);
+            }
+            with_window(cx, window, |window, cx| {
+                if freeze {
+                    window.end_hover_freeze(cx);
+                }
+            });
+            let settle = |cx: &mut TestAppContext| {
+                for _ in 0..3 {
+                    draw(cx, window);
+                    cx.run_until_parked();
+                }
+            };
+            settle(cx);
+            let last = |ix: usize| {
+                let heard = heard.borrow();
+                heard
+                    .iter()
+                    .rev()
+                    .find(|(card, _)| *card == ix)
+                    .map(|(_, hovered)| *hovered)
+            };
+            assert_eq!(
+                last(0),
+                Some(false),
+                "freeze {freeze}: card 0 hears it left: {heard:?}"
+            );
+            assert_eq!(
+                last(1),
+                Some(true),
+                "freeze {freeze}: card 1 hears it came: {heard:?}"
+            );
+
+            // Card 1, hovered while the list is on its layer, is taken off the
+            // pointer by one wheel event the layer composites.
+            wheel(cx, window, -40.);
+            assert_eq!(
+                decision(cx, window),
+                Some(Decision::Composite),
+                "freeze {freeze}"
+            );
+            with_window(cx, window, |window, cx| {
+                if freeze {
+                    window.end_hover_freeze(cx);
+                }
+            });
+            settle(cx);
+            assert_eq!(
+                last(1),
+                Some(false),
+                "freeze {freeze}: card 1 hears it left: {heard:?}"
+            );
+            assert_eq!(
+                last(2),
+                Some(true),
+                "freeze {freeze}: card 2 hears it came: {heard:?}"
+            );
+        }
     }
 
     #[crate::test]

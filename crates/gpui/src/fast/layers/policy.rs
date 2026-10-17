@@ -103,6 +103,11 @@ pub(crate) struct LayerPolicy {
 impl LayerPolicy {
     /// How often `owner` was notified since the container was last looked
     /// at, if it held the container then.
+    /// The view holding the scroll container, as last seen.
+    pub(crate) fn owner(&self) -> Option<EntityId> {
+        self.owner.as_ref().map(OwnerWatch::view)
+    }
+
     pub(crate) fn owner_notifies_since(&self, owner: EntityId) -> Option<u64> {
         let watch = self.owner.as_ref().filter(|watch| watch.view() == owner)?;
         Some(watch.notifies().saturating_sub(self.owner_notifies_at))
