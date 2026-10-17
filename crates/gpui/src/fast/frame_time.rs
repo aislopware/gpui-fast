@@ -21,6 +21,12 @@ pub(crate) struct FrameTime {
     repeat: bool,
 }
 
+thread_local! {
+    /// The moment of the frame a window is drawing on this thread, while it
+    /// draws.
+    static DRAWING: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
 /// Starts a frame: it shows the moment it starts at, or the last frame's when
 /// that was asked for.
 pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
@@ -28,6 +34,13 @@ pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
     if !std::mem::take(&mut time.repeat) || time.now.is_none() {
         time.now = Some(cx.background_executor().now());
     }
+    DRAWING.set(time.now);
+}
+
+/// Ends the frame begun by [`begin_frame`]: what reads the time from here on
+/// reads now.
+pub(crate) fn end_frame() {
+    DRAWING.set(None);
 }
 
 /// The moment the frame being drawn shows; before any frame, now.
@@ -42,6 +55,19 @@ pub(crate) fn now(window: &Window, cx: &App) -> Instant {
 /// shows; nothing for a `start` after it.
 pub(crate) fn since(window: &Window, cx: &App, start: Instant) -> std::time::Duration {
     now(window, cx).saturating_duration_since(start)
+}
+
+impl App {
+    /// The moment the frame a window is drawing shows ([`Window::frame_time`])
+    /// while it draws, and now between frames: for code that animates on its
+    /// own clock without a window at hand, to stand where the frame's
+    /// animations stand. A start stamped from an event, between frames, is
+    /// now.
+    pub fn frame_time(&self) -> Instant {
+        DRAWING
+            .get()
+            .unwrap_or_else(|| self.background_executor().now())
+    }
 }
 
 impl Window {

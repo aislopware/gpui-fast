@@ -203,3 +203,50 @@ fn a_frame_drawn_again_at_the_last_frames_moment_paints_the_same_fade() {
     assert_eq!(later, Some(1.0), "the next frame shows its own moment");
     assert!(moment(&mut cx) > shown_at, "and says so");
 }
+
+/// Records the app's moment each time it is built.
+struct Clock {
+    read: std::rc::Rc<std::cell::Cell<Option<scheduler::Instant>>>,
+}
+
+impl Render for Clock {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.read.set(Some(cx.frame_time()));
+        div().size_full()
+    }
+}
+
+/// The app's moment is the frame's while a window draws, the frame drawn
+/// again included, and now between frames.
+#[test]
+fn the_apps_moment_is_the_frames_while_it_draws() {
+    let mut cx = TestAppContext::single();
+    let read = std::rc::Rc::new(std::cell::Cell::new(None));
+    let window = cx.add_window({
+        let read = read.clone();
+        move |_, _| Clock { read }
+    });
+    let frame = |cx: &mut TestAppContext, repeat: bool| {
+        cx.update_window(window.into(), |_, window, cx| {
+            if repeat {
+                window.repeat_frame_time();
+            }
+            window.refresh();
+            window.draw(cx).clear(cx);
+            window.frame_time()
+        })
+        .unwrap()
+    };
+    let first = frame(&mut cx, false);
+    assert_eq!(read.get(), Some(first), "read while drawing");
+    cx.executor().advance_clock(Duration::from_millis(7));
+    let between = cx.update(|cx| cx.frame_time());
+    assert_eq!(
+        between,
+        first + Duration::from_millis(7),
+        "now between frames"
+    );
+    assert_eq!(frame(&mut cx, true), first, "drawn again");
+    assert_eq!(read.get(), Some(first), "read while drawn again");
+    assert_eq!(frame(&mut cx, false), between, "the next frame's own");
+}
