@@ -131,8 +131,12 @@ unsafe impl Send for VideoRenderer {}
 impl VideoLayer {
     /// Creates a video layer and attaches it to `host`, whose element places it. Main thread.
     pub fn attach(host: &NativeHost, options: VideoLayerOptions) -> Result<Self> {
-        let mut renderer =
-            MetalRenderer::new(Arc::new(Mutex::new(InstanceBufferPool::default())), false);
+        // Decoded frames are sRGB (BT.709), drawn as they are, not in Display P3.
+        let mut renderer = MetalRenderer::new(
+            Arc::new(Mutex::new(InstanceBufferPool::default())),
+            false,
+            false,
+        );
         let Some(layer) = renderer.layer() else {
             bail!("the video renderer has no layer");
         };
