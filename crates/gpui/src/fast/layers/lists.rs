@@ -293,9 +293,6 @@ struct Row {
     /// layer drops them when the row leaves its viewport: the row is
     /// rendered afresh before it shows again. See [`sort_rows`].
     dropped: bool,
-    /// How far the debug bounds in the row's paint records have been moved
-    /// from where the row was painted (see [`reuse::carry_paint_records`]).
-    debug_moved: Point<Pixels>,
 }
 
 impl Row {
@@ -1233,18 +1230,21 @@ fn carry_paint_rows(window: &mut Window, id: &GlobalElementId) {
     let carried = frame.carried.clone();
     let leaving = frame.leaving.clone();
     let (translation, viewport) = (frame.translation, frame.viewport);
+    let last_translation = layer.rows.last_translation;
     let mut rows = mem::take(&mut layer.rows.rows);
     for ix in &carried {
         let Some(row) = rows.get_mut(ix) else {
             continue;
         };
         let delta = row.delta(translation, scale_factor);
+        // The rendered frame holds the row's debug bounds where it showed.
+        let scrolled = last_translation.map_or(delta, |last| delta - row.delta(last, scale_factor));
         let element_states = !row.dropped && !leaving.contains(ix);
         row.paint = reuse::carry_paint_records(
             window,
             &row.paint,
             delta,
-            &mut row.debug_moved,
+            scrolled,
             viewport,
             element_states,
         );
@@ -3007,7 +3007,6 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                 paint: span.paint,
                 suspect: false,
                 dropped: false,
-                debug_moved: Point::default(),
             },
         );
     }
@@ -3119,7 +3118,6 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
         has_paths: false,
         overlay: Rc::from([]),
         view_layouts: Rc::default(),
-        debug_moved: Point::default(),
         a11y: None,
     });
     finish_records(window, id, &frame, records);

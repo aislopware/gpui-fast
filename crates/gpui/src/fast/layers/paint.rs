@@ -823,7 +823,6 @@ fn repaint(
         has_paths,
         overlay,
         view_layouts: Rc::new(mem::take(&mut painting.view_layouts)),
-        debug_moved: Point::default(),
         a11y: painting.a11y.take(),
     });
     let dirtied = layer
