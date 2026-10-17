@@ -74,9 +74,27 @@ still sees a press that lands on a native, as the native element's hitbox is top
 macOS the window's `sendEvent:` shows it to GPUI first (menus close on `mouse_down_out`,
 the element's `on_mouse_down` runs) and then lets it go to the native, with the drag and
 release that follow; on iOS a gesture recogniser on the root view that never recognises,
-cancels or delays shows GPUI a touch that begins over a native as a press. Scrolling over
-a native goes to the native only. The cursor is left to the native where its hitbox is
-topmost.
+cancels or delays shows GPUI a touch that begins over a native as a press. The cursor is
+left to the native where its hitbox is topmost.
+
+**Scrolling over a native.** A wheel or a finger over a native goes to the native first.
+On macOS GPUI does not route it: an app hands what its native leaves to the GPUI view's
+`scrollWheel:` (Slopty's pages do so from WebKit's `_webView:didNotHandleWheelEvent:`). On iOS the
+container does it with UIKit's own nested scrolling: a container is a `UIScrollView` whose
+content never moves (its offset is held at zero, its content is its own size, inset a
+million points every way), so it is the scroll view an edge's pan is passed to. UIKit
+gives it a pan that the native's own scroll views leave: a native with nothing to scroll
+that way, or one at its edge in the pan's direction as the pan begins
+(`transfersVerticalScrollingToParent`). Its pan reaches GPUI as one touch from where the
+pan began, so GPUI's recogniser scrolls and flings what is under the native as it would
+under a finger on GPUI's view. For that to reach the content under it, the native's
+element blocks the mouse except the wheel (`block_mouse_except_scroll`). The container
+never delays the native's touches. Its own deceleration is stopped as the pan ends, so a tap
+right after a fling is not taken to stop it. A pan that begins in one of the native's scroll
+views stays there to its end, as UIKit and Safari keep it. Every scroll view between the
+native's and the container must be able to scroll: a disabled one, or one that cannot bounce
+that way, stops UIKit passing the pan on. A `WKWebView` whose root is `overflow: hidden` has
+its scroll view turned off by WebKit; leave the root's overflow alone.
 
 **Keyboard.** `native_view(..).track_focus(&handle)` ties the native to a focus handle.
 GPUI to platform: after each present, if GPUI's focus is on the native's element, the
@@ -196,8 +214,22 @@ xcrun simctl shutdown booted
 ```
 
 All 19 checks pass on iOS 27.0 (iPhone 18 Pro simulator), the safe area GPUI reports
-among them (62 and 34 pt, the window's own). Touches cannot be synthesised in-process
-there, so the recogniser's press is not exercised by a test; its configuration is.
+among them (62 and 34 pt, the window's own). The recogniser's press is not exercised by
+these checks; its configuration is.
+
+Scrolling over a native is checked the same way, with
+`SIMCTL_CHILD_GPUI_IOS_NATIVE_SCROLL_TEST=1` (`examples/ios/src/native_scroll_test.rs`).
+Its drags are real touches the app sends itself through `UIApplication`, as KIF makes
+them: a `UITouch` with its IOKit digitizer event, hit-tested where it lands. So UIKit's
+hit testing and gesture recognisers decide where they go, and WebKit's too. The native is
+a `WKWebView` holding its page in a frame, as an inline page does. All 13 checks pass on
+iOS 27.0 (iPhone 18 Pro simulator):
+- A drag over a page with nothing to scroll scrolls GPUI's scroller under it by the whole
+  drag, and the fling carries it on.
+- A tap still reaches the page.
+- A page that can scroll takes a drag it can take.
+- At its top, a drag down goes to GPUI; at its bottom, a drag up does.
+- A drag that begins in the page stays the page's.
 
 The live tests open one non-activating panel above other windows and never take the
 keyboard; their events are made in-process and sent to their own window.

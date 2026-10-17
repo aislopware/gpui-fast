@@ -11,6 +11,7 @@ use std::{cell::Cell, rc::Rc};
 mod composition_test;
 #[cfg(feature = "menu-test")]
 mod menu_test;
+mod native_scroll_test;
 
 struct IosExample {
     tap_count: usize,
@@ -61,6 +62,11 @@ pub extern "C" fn gpui_ios_example_run() -> bool {
             if std::env::var_os("GPUI_IOS_MENU_TEST").is_some() {
                 did_open_window.set(true);
                 menu_test::open(cx);
+                return;
+            }
+            if std::env::var_os("GPUI_IOS_NATIVE_SCROLL_TEST").is_some() {
+                did_open_window.set(true);
+                native_scroll_test::open(cx);
                 return;
             }
             if std::env::var_os("GPUI_IOS_COMPOSITION_TEST").is_some() {
