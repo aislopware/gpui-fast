@@ -9,7 +9,7 @@
 //! the last one showed paints the fade where that one did, a hair short of its
 //! end included.
 
-use std::time::Duration;
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use crate::{
     Animation, AnimationExt as _, AppContext as _, Context, Entity, InteractiveElement as _,
@@ -249,4 +249,134 @@ fn the_apps_moment_is_the_frames_while_it_draws() {
     assert_eq!(frame(&mut cx, true), first, "drawn again");
     assert_eq!(read.get(), Some(first), "read while drawn again");
     assert_eq!(frame(&mut cx, false), between, "the next frame's own");
+}
+
+/// Rows in a `list`, the last faded in when it arrives, as a chat's
+/// transcript shows its rows.
+struct ListPane {
+    state: crate::ListState,
+    rows: Rc<Cell<usize>>,
+}
+
+impl Render for ListPane {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let rows = self.rows.clone();
+        div().size_full().child(
+            crate::list(self.state.clone(), move |ix, _, _| {
+                let row = div()
+                    .h(px(20.))
+                    .w(px(100. + ix as f32))
+                    .bg(hsla(0.3, 0.5, 0.5, 1.));
+                if ix + 1 == rows.get() && ix > 0 {
+                    div()
+                        .child(row)
+                        .with_animation(("row-in", ix), Animation::new(FADE), |el, t| el.opacity(t))
+                        .into_any_element()
+                } else {
+                    row.into_any_element()
+                }
+            })
+            .size_full(),
+        )
+    }
+}
+
+struct ListRoot {
+    pane: Entity<ListPane>,
+}
+
+impl Render for ListRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(300.)).child(
+            self.pane
+                .clone()
+                .cached(StyleRefinement::default().w(px(200.)).h(px(100.))),
+        )
+    }
+}
+
+fn list_fade_ends_at_one(rows_before: usize, scrolled: bool) {
+    let mut cx = TestAppContext::single();
+    let rows = Rc::new(Cell::new(rows_before));
+    let state = crate::ListState::new(rows_before, crate::ListAlignment::Bottom, px(50.));
+    let window = cx.add_window({
+        let (rows, state) = (rows.clone(), state.clone());
+        move |_, cx| ListRoot {
+            pane: cx.new(|_| ListPane { state, rows }),
+        }
+    });
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .unwrap()
+    };
+    draw(&mut cx);
+    if scrolled {
+        // Scrolled for a while, so the list's content may be on a layer.
+        for step in 0..12 {
+            state.scroll_by(px(if step % 2 == 0 { -5. } else { 5. }));
+            window
+                .update(&mut cx, |root, _, cx| {
+                    root.pane.update(cx, |_, cx| cx.notify())
+                })
+                .unwrap();
+            draw(&mut cx);
+        }
+        for _ in 0..4 {
+            draw(&mut cx);
+        }
+    }
+    let total = rows_before + 1;
+    rows.set(total);
+    state.splice(rows_before..rows_before, 1);
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.pane.update(cx, |_, cx| cx.notify())
+        })
+        .unwrap();
+    let mut alphas = Vec::new();
+    for _ in 0..200 {
+        cx.executor().advance_clock(Duration::from_millis(4));
+        let (ran, drawn) = cx
+            .update_window(window.into(), |_, window, cx| {
+                let ran = window.simulate_next_frame(cx);
+                let drawn = window.invalidator.is_dirty();
+                if drawn {
+                    window.draw(cx).clear(cx);
+                }
+                (ran, drawn.then(|| alpha(window, total)).flatten())
+            })
+            .unwrap();
+        alphas.extend(drawn);
+        if ran == 0 && drawn.is_none() {
+            break;
+        }
+    }
+    let scratch = cx
+        .update_window(window.into(), |_, window, cx| {
+            window.refresh();
+            window.draw(cx).clear(cx);
+            alpha(window, total)
+        })
+        .unwrap();
+    assert_eq!(scratch, Some(1.0), "a frame from scratch shows the row");
+    assert_eq!(
+        alphas.last().copied(),
+        Some(1.0),
+        "rows {rows_before}, scrolled {scrolled}: the fade rests short of its end: {alphas:?}"
+    );
+}
+
+#[test]
+fn a_fade_in_a_lists_new_row_ends_at_its_end() {
+    list_fade_ends_at_one(2, false);
+}
+
+#[test]
+fn a_fade_in_a_long_lists_new_row_ends_at_its_end() {
+    list_fade_ends_at_one(40, false);
+}
+
+#[test]
+fn a_fade_in_a_scrolled_lists_new_row_ends_at_its_end() {
+    list_fade_ends_at_one(40, true);
 }
