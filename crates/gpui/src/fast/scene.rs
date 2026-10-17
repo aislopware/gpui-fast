@@ -730,9 +730,62 @@ pub(crate) fn sort_in_drawing_order(scene: &mut Scene) {
     scene.composition.sort();
 }
 
+/// The matrix turning by `angle`, a right angle exactly: in `f32`,
+/// `cos(π/2)` is about −4.4e-8, and that hair, times where a sprite is
+/// drawn, lands in a rotated sprite's translation, so the same sprite drawn
+/// at one place, or drawn elsewhere and moved there by a scroll layer
+/// (`t + (I − R)·delta`, [`crate::fast::layers::scene`]), would differ by it.
+pub(crate) fn rotation(angle: f32) -> [[f32; 2]; 2] {
+    let (sin, cos) = exact_sin_cos(angle);
+    [[cos, -sin], [sin, cos]]
+}
+
+/// [`rotation`]'s sine and cosine.
+fn exact_sin_cos(angle: f32) -> (f32, f32) {
+    const NEAR: f32 = 1e-6;
+    let (sin, cos) = angle.sin_cos();
+    if cos.abs() < NEAR {
+        (sin.signum(), 0.0)
+    } else if sin.abs() < NEAR {
+        (0.0, cos.signum())
+    } else {
+        (sin, cos)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Sorted, sort_by_gathering};
+    use super::{Sorted, exact_sin_cos, sort_by_gathering};
+    use crate::{ScaledPixels, TransformationMatrix, point, radians};
+
+    /// A quarter turn is exact, so a sprite turned by it moves by whole
+    /// pixels as it scrolls: turned about its centre at one place, or at
+    /// another and moved there, it is the same.
+    #[test]
+    fn a_right_angle_turns_exactly() {
+        let quarters = [(1.0, 0.0), (0.0, -1.0), (-1.0, 0.0), (0.0, 1.0)];
+        for (n, exact) in quarters.into_iter().enumerate() {
+            let angle = std::f32::consts::FRAC_PI_2 * (n as f32 + 1.0);
+            assert_eq!(exact_sin_cos(angle), exact, "{angle}");
+        }
+        let turned = |y: f32| {
+            TransformationMatrix::unit()
+                .translate(point(ScaledPixels(432.0), ScaledPixels(y)))
+                .rotate(radians(-std::f32::consts::FRAC_PI_2))
+                .translate(point(ScaledPixels(-432.0), ScaledPixels(-y)))
+        };
+        let here = turned(307.0);
+        assert_eq!(here.rotation_scale, [[0.0, 1.0], [-1.0, 0.0]]);
+        // Drawn 400 px lower and moved up by 400, as a scroll layer does.
+        let lower = turned(707.0);
+        let (dx, dy) = (0.0_f32, -400.0_f32);
+        let r = lower.rotation_scale;
+        let moved = [
+            lower.translation[0] + dx - (r[0][0] * dx + r[0][1] * dy),
+            lower.translation[1] + dy - (r[1][0] * dx + r[1][1] * dy),
+        ];
+        assert_eq!(moved, here.translation);
+    }
     use rand::{Rng as _, SeedableRng as _, rngs::StdRng};
 
     /// Sorts as a stable sort by key does, whether the keys are narrow, wide
