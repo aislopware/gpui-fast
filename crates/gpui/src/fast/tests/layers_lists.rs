@@ -5105,3 +5105,226 @@ mod layout_states {
         }
     }
 }
+mod tail {
+    use super::{draw, expanded_quads, open_at, row_color, with_window};
+    use crate::{
+        AnyWindowHandle, Context, IntoElement, ListAlignment, ListOffset, ListState,
+        ParentElement as _, Render, Styled as _, TestAppContext, Window, WindowHandle, div, px,
+        rgb,
+    };
+    use std::{cell::RefCell, rc::Rc};
+
+    const WIDTH: f32 = 300.;
+    const HEIGHT: f32 = 200.;
+
+    struct TailPage {
+        state: ListState,
+        heights: Rc<RefCell<Vec<f32>>>,
+        pad: Rc<RefCell<f32>>,
+    }
+
+    impl Render for TailPage {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let heights = self.heights.clone();
+            let pad = *self.pad.borrow();
+            div().size_full().bg(rgb(0xffffff)).child(
+                crate::list(self.state.clone(), move |row, _, _| {
+                    let heights = heights.borrow();
+                    let last = row + 1 == heights.len();
+                    // A full-width row over a narrower column that clips its
+                    // words, as a transcript row is.
+                    div()
+                        .w(px(WIDTH))
+                        .pb(px(if last { pad } else { 0. }))
+                        .bg(row_color(row))
+                        .child(
+                            div()
+                                .mx(px(40.))
+                                .h(px(heights[row]))
+                                .overflow_hidden()
+                                .child(div().h(px(heights[row] + 10.)).bg(row_color(row + 50))),
+                        )
+                        .into_any_element()
+                })
+                .w(px(WIDTH))
+                .h(px(HEIGHT)),
+            )
+        }
+    }
+
+    fn page(cx: &mut TestAppContext, rows: usize) -> WindowHandle<TailPage> {
+        let heights: Vec<f32> = (0..rows).map(|row| 18. + (row % 4) as f32 * 7.).collect();
+        let window = cx.add_window(move |_, _| TailPage {
+            state: ListState::new(rows, ListAlignment::Top, px(50.)),
+            heights: Rc::new(RefCell::new(heights)),
+            pad: Rc::new(RefCell::new(60.)),
+        });
+        open_at(cx, window.into(), 1.);
+        window
+    }
+
+    /// Does `step` to the page of `handle` and draws the frame that follows.
+    fn step(cx: &mut TestAppContext, handle: WindowHandle<TailPage>, step: &dyn Fn(&mut TailPage)) {
+        handle
+            .update(cx, |page, _, cx| {
+                step(page);
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx, handle.into());
+        draw(cx, handle.into());
+    }
+
+    fn append(page: &mut TailPage) {
+        let len = page.heights.borrow().len();
+        page.heights.borrow_mut().push(18. + (len % 5) as f32 * 9.);
+        page.state.splice(len..len, 1);
+        page.state.remeasure_items(len - 1..len);
+    }
+
+    /// Two pixels short of the end, as a list following its tail stands
+    /// between the frames that bring it there.
+    fn near_end(page: &mut TailPage) {
+        let len = page.heights.borrow().len();
+        page.state.scroll_to(ListOffset {
+            item_ix: len,
+            offset_in_item: px(0.),
+        });
+    }
+
+    fn near_end_by(page: &mut TailPage, short: f32) {
+        let max = f32::from(page.state.max_offset_for_scrollbar().y);
+        page.state
+            .set_offset_from_scrollbar(crate::point(px(0.), px(-(max - short).max(0.))));
+    }
+
+    fn same(cx: &mut TestAppContext, with: AnyWindowHandle, without: AnyWindowHandle, label: &str) {
+        let expected = with_window(cx, without, |window, _| {
+            assert!(window.rendered_frame.scene.layers.frames.is_empty());
+            expanded_quads(&window.rendered_frame.scene)
+        });
+        let actual = with_window(cx, with, |window, _| {
+            expanded_quads(&window.rendered_frame.scene)
+        });
+        assert_eq!(actual, expected, "{label}");
+    }
+
+    #[crate::test]
+    fn rows_arriving_at_a_list_held_near_its_end_draw_as_without_layers(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let with = page(cx, 6);
+        let without = page(cx, 6);
+        with_window(cx, without.into(), |window, _| {
+            window.set_scroll_layers(false)
+        });
+        draw(cx, without.into());
+        for handle in [with, without] {
+            step(cx, handle, &near_end);
+        }
+        same(cx, with.into(), without.into(), "at the end");
+        for row in 0..14 {
+            for handle in [with, without] {
+                step(cx, handle, &append);
+            }
+            same(
+                cx,
+                with.into(),
+                without.into(),
+                &format!("row {row} arrived"),
+            );
+            for handle in [with, without] {
+                step(cx, handle, &|page| near_end_by(page, 2.));
+            }
+            same(
+                cx,
+                with.into(),
+                without.into(),
+                &format!("row {row}, near the end"),
+            );
+            if row % 3 == 2 {
+                for handle in [with, without] {
+                    step(cx, handle, &|page| {
+                        *page.pad.borrow_mut() += 18.;
+                        let len = page.heights.borrow().len();
+                        page.state.remeasure_items(len - 1..len);
+                    });
+                }
+                same(
+                    cx,
+                    with.into(),
+                    without.into(),
+                    &format!("row {row}, the room under it grew"),
+                );
+            }
+        }
+    }
+
+    /// A view holding a row a set distance below the viewport's top (a
+    /// negative offset into it, as a transcript holds the turn just sent)
+    /// shows the rows above it there, with or without the scroll layer, and
+    /// the same as the list scrolls on and the row is held again.
+    #[crate::test]
+    fn rows_above_a_held_row_draw_as_without_layers(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let with = page(cx, 14);
+        let without = page(cx, 14);
+        with_window(cx, without.into(), |window, _| {
+            window.set_scroll_layers(false)
+        });
+        draw(cx, without.into());
+        for handle in [with, without] {
+            step(cx, handle, &near_end);
+        }
+        let hold = |row: usize, inset: f32| {
+            move |page: &mut TailPage| {
+                page.state.scroll_to(ListOffset {
+                    item_ix: row,
+                    offset_in_item: px(-inset),
+                });
+            }
+        };
+        for (n, (row, inset)) in [(9, 30.), (9, 48.), (8, 11.), (10, 48.), (6, 70.)]
+            .into_iter()
+            .enumerate()
+        {
+            // The wheel first, so the layer holds the rows above.
+            for dy in [-20., 20., -20., 20.] {
+                for handle in [with, without] {
+                    super::wheel(cx, handle.into(), dy);
+                }
+            }
+            for handle in [with, without] {
+                step(cx, handle, &hold(row, inset));
+            }
+            same(
+                cx,
+                with.into(),
+                without.into(),
+                &format!("held {n}: row {row} at {inset}"),
+            );
+            // The row above ends where the held row begins, and rows fill the space up to the top.
+            let above = with_window(cx, without.into(), |window, _| {
+                let scale = window.scale_factor();
+                let quads = &window.rendered_frame.scene.quads;
+                let ends_at_held = quads.iter().any(|quad| {
+                    quad.background == row_color(row - 1).into()
+                        && (quad.bounds.bottom().0 - inset * scale).abs() < 1.
+                });
+                let fills_top = quads.iter().any(|quad| {
+                    quad.background != crate::rgb(0xffffff).into()
+                        && quad.bounds.origin.y.0 <= 0.
+                        && quad.bounds.bottom().0 > 0.
+                });
+                ends_at_held && fills_top
+            });
+            assert!(
+                above,
+                "held {n}: rows above row {row} fill the {inset} px over it"
+            );
+        }
+    }
+}

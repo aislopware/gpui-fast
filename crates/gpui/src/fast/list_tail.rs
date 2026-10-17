@@ -211,3 +211,48 @@ pub(crate) fn reserve(
     state.fast_tail.extra = extra;
     delta
 }
+
+/// Moves `scroll_top`, a row and an offset above that row's top (a
+/// negative offset, as a view holding the turn just sent a set distance
+/// below the viewport's top writes it), to the row the viewport's top falls
+/// in and the offset into it, for the layout under way: the rows above the
+/// held row are laid out and painted there, as a scroll offset shows them
+/// and as a scroll layer composites the rows it holds there. The list's
+/// own scroll top stays as the view set it. A row not yet measured is
+/// rendered to measure it; above the first row the offset stays, and the
+/// space shows empty.
+pub(crate) fn lay_out_above(
+    items: &SumTree<ListItem>,
+    scroll_top: &mut crate::ListOffset,
+    available: Size<crate::AvailableSpace>,
+    render_item: &mut dyn FnMut(usize, &mut crate::Window, &mut crate::App) -> crate::AnyElement,
+    window: &mut crate::Window,
+    cx: &mut crate::App,
+) {
+    if scroll_top.offset_in_item >= Pixels::ZERO {
+        return;
+    }
+    let mut cursor = items.cursor::<Count>(());
+    cursor.seek(&Count(scroll_top.item_ix), Bias::Right);
+    while scroll_top.offset_in_item < Pixels::ZERO {
+        cursor.prev();
+        let Some(item) = cursor.item() else { break };
+        let ix = cursor.start().0;
+        let height = match item.size() {
+            Some(size) => size.height,
+            None => {
+                let mut element = render_item(ix, window, cx);
+                crate::fast::layout_key::layout_as_list_item(
+                    &mut element,
+                    ix,
+                    available,
+                    window,
+                    cx,
+                )
+                .height
+            }
+        };
+        scroll_top.item_ix = ix;
+        scroll_top.offset_in_item += height;
+    }
+}
