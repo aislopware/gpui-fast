@@ -1955,8 +1955,8 @@ impl IosWindow {
     pub fn handle_layout_change(&self) {
         unsafe {
             let view_bounds: ObjcCGRect = msg_send![self.view, bounds];
-            let screen: *mut AnyObject = msg_send![class!(UIScreen), mainScreen];
-            let scale: core_graphics::base::CGFloat = msg_send![screen, scale];
+            // The scale of the display the window is on, which an external one may not share.
+            let scale: core_graphics::base::CGFloat = msg_send![self.screen(), scale];
 
             let new_w = view_bounds.width as f32;
             let new_h = view_bounds.height as f32;
