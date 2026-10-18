@@ -98,7 +98,7 @@ impl Interactivity {
 
 /// Where the tooltip shown this frame is anchored, how the window places hover tooltips, and
 /// when one last showed, kept by the window.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct WindowFocusTooltip {
     anchor: Option<(TooltipId, Bounds<Pixels>, TooltipPlacement)>,
     /// The placement of a hover tooltip whose element names none.

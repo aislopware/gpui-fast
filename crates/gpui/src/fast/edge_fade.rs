@@ -1661,6 +1661,13 @@ pub(crate) fn finish_frame(window: &mut Window) {
         let live = live_slots(window);
         window.fast_edge_fade.sweep(&live);
     }
+    copy_table(window);
+}
+
+/// Gives the frame's scene a copy of the window's table, unless it holds
+/// the current one: a frame drawn from scratch to be checked against one
+/// drawn again needs it as much as one shown.
+pub(crate) fn copy_table(window: &mut Window) {
     let fades = &window.fast_edge_fade;
     let scene = &mut window.next_frame.scene.fast_painted.fades;
     if scene.version == fades.version {

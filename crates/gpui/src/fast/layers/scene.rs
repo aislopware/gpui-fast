@@ -278,9 +278,28 @@ pub(crate) struct LayerPart {
     /// Where the part's primitives can draw, if known: a tile it misses
     /// draws nothing of it.
     pub(crate) bounds: Option<Bounds<ScaledPixels>>,
+    /// Where a list placed the row the part is, if it is one. A list drawn
+    /// without a layer paints the rows its scroll offset puts over its
+    /// viewport, however little of one, and nothing of a row past them
+    /// that would reach into it (a path spilling out of the row, a shadow):
+    /// neither does its layer.
+    pub(crate) row: Option<Bounds<ScaledPixels>>,
     /// The part's paint operations, in drawing order. A row's scene holds
     /// nothing else.
     pub(crate) scene: Rc<Scene>,
+}
+
+impl LayerPart {
+    /// Whether the part draws anything over `bounds` when its content is
+    /// drawn into a frame.
+    /// A row part draws only if its row lies over `rows_over`: the viewport
+    /// where the list's scroll offset puts it before the offset is snapped
+    /// to whole device pixels, as a list drawn without a layer tells the
+    /// rows it paints.
+    fn draws_over(&self, bounds: &Bounds<ScaledPixels>, rows_over: &Bounds<ScaledPixels>) -> bool {
+        self.bounds.is_none_or(|reach| reach.intersects(bounds))
+            && self.row.is_none_or(|slot| slot.intersects(rows_over))
+    }
 }
 
 impl From<Scene> for LayerContent {
@@ -294,6 +313,7 @@ impl From<Rc<Scene>> for LayerContent {
         LayerContent {
             parts: Rc::new([LayerPart {
                 bounds: None,
+                row: None,
                 scene,
             }]),
         }
@@ -338,10 +358,11 @@ impl LayerContent {
     pub(crate) fn part_scenes_over(
         &self,
         bounds: Bounds<ScaledPixels>,
+        rows_over: Bounds<ScaledPixels>,
     ) -> impl Iterator<Item = &Rc<Scene>> + '_ {
         self.parts
             .iter()
-            .filter(move |part| part.bounds.is_none_or(|part| part.intersects(&bounds)))
+            .filter(move |part| part.draws_over(&bounds, &rows_over))
             .map(|part| &part.scene)
     }
 
@@ -359,10 +380,11 @@ impl LayerContent {
     pub(crate) fn operations_over(
         &self,
         bounds: Bounds<ScaledPixels>,
+        rows_over: Bounds<ScaledPixels>,
     ) -> impl Iterator<Item = Operation> + '_ {
         self.parts
             .iter()
-            .filter(move |part| part.bounds.is_none_or(|part| part.intersects(&bounds)))
+            .filter(move |part| part.draws_over(&bounds, &rows_over))
             .flat_map(|part| crate::fast::scene::operations(&part.scene))
     }
 }

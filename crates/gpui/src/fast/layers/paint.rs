@@ -347,6 +347,34 @@ fn paint_unbaked(
     crate::fast::layers::policy::defer_unbaked(window, &id);
 }
 
+/// Asks for the content of the container `id`, composited this frame, to
+/// be painted afresh on the next frame if what the pointer hovers in it
+/// changed as it scrolled under a still pointer: its hovers were checked
+/// against the last frame's hit test, and the content's own hitboxes, moved
+/// by the scroll, are found under the pointer only now, too late to paint
+/// it again, as a view drawn again from last frame finds its hovers. The view
+/// holding the container is built on the next frame, which repaints the
+/// content for the hovers it finds then. While hover is held still for the
+/// wheel, the content keeps its hovers until the wheel stops, which builds
+/// what hovers differently then.
+fn paint_moved_hover_next(window: &mut Window, id: &GlobalElementId) {
+    if crate::fast::layers::hover_freeze::frozen(window) {
+        return;
+    }
+    let Some(layer) = window.fast_layers.layers.get(id) else {
+        return;
+    };
+    let Some(record) = layer.record.as_ref() else {
+        return;
+    };
+    if window.hovers_unchanged(&record.hovers) {
+        return;
+    }
+    if let Some(owner) = layer.policy.owner() {
+        window.on_next_frame(move |_, cx| cx.notify(owner));
+    }
+}
+
 /// Carries out a `Composite` decision for the container `id`, scrolled to
 /// `scroll_offset`: the layer's content stands, cleared with the background
 /// now under it, and is composited at the offset.
@@ -363,6 +391,7 @@ pub(crate) fn composite_at(
     id: &GlobalElementId,
     translation: Point<ScaledPixels>,
 ) {
+    paint_moved_hover_next(window, id);
     if replays(window, id) {
         insert_layer(window, id, translation, 0);
         return;
@@ -423,14 +452,33 @@ pub(crate) fn insert_layer(
     if layer.rows.list {
         let content = record.content.clone();
         let key = layer.key;
+        let scroll_snap = layer.rows.scroll_snap;
         let viewport = viewports(window).snapped;
         let in_content = Bounds {
             origin: viewport.origin - translation,
             size: viewport.size,
         };
-        if !crate::fast::check_retained::replay_rows(window, key, &content, in_content, translation)
-        {
-            draw_into_frame(window, content.operations_over(in_content), translation);
+        let rows_over = Bounds {
+            origin: in_content.origin
+                + point(
+                    ScaledPixels(0.),
+                    ScaledPixels(scroll_snap.0 * window.scale_factor()),
+                ),
+            size: in_content.size,
+        };
+        if !crate::fast::check_retained::replay_rows(
+            window,
+            key,
+            &content,
+            in_content,
+            rows_over,
+            translation,
+        ) {
+            draw_into_frame(
+                window,
+                content.operations_over(in_content, rows_over),
+                translation,
+            );
         }
         let stats = &mut window.layout_engine.as_mut().unwrap().retention.stats;
         stats.layer_frames_composited += 1;

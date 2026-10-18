@@ -102,6 +102,11 @@ pub(crate) struct LayerRows {
     /// past [`REPAINT_AFTER_ADDED`] times the rows the layer is to hold, the
     /// rows are painted afresh.
     added_since_repaint: usize,
+    /// How far a `list`'s scroll offset was moved, as the frame drawing its
+    /// rows snapped it to whole device pixels: the rows it paints are those
+    /// over its viewport where the offset itself puts it. See
+    /// [`LayerPart::row`].
+    pub(crate) scroll_snap: Pixels,
     /// The rows the layer holds, by index.
     rows: BTreeMap<usize, Row>,
     /// A uniform list's measured item, as last measured.
@@ -1139,6 +1144,15 @@ fn changed_rows(window: &Window, cx: &App, id: &GlobalElementId) -> BTreeSet<usi
         .collect()
 }
 
+/// Whether a row the layer of a list holds, with `rows`, read an entity
+/// `read` says yes to.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn a_held_row_read(rows: &LayerRows, read: impl Fn(&EntityId) -> bool) -> bool {
+    rows.rows
+        .values()
+        .any(|row| row.dependencies.entities.iter().any(&read))
+}
+
 /// Whether the view `view` is drawn in a row the layer of the list `id`
 /// holds: a notification of it changes that row, not the rest of what the
 /// layer holds.
@@ -1687,6 +1701,7 @@ impl Row {
         match &self.whole {
             Some(whole) => LayerPart {
                 bounds: None,
+                row: Some(self.slot),
                 scene: whole.clone(),
             },
             None => self.part.clone(),
@@ -1811,6 +1826,7 @@ pub(crate) fn begin_list(
     let item_count = state.items.summary().count;
     if let Some(layer) = window.fast_layers.layers.get_mut(&id) {
         layer.rows.items_changed = layer.rows.item_count.replace(item_count) != Some(item_count);
+        layer.rows.scroll_snap = scroll_offset.y + scroll_top;
     }
     // A list lays out its rows itself, and is not taken for changed when a
     // row is measured for the first time: its rows are checked where they
@@ -1878,6 +1894,15 @@ pub(crate) fn begin_list(
 /// [`invalidate::note_at_end_read`]).
 pub(crate) fn note_at_end_read(state: &crate::StateInner) {
     invalidate::note_at_end_read(&state.version, scrolled_to_end(state));
+}
+
+/// Notes whether the `list` of `state`, just laid out, is scrolled to its end
+/// (see [`invalidate::note_list_laid_out`]).
+pub(crate) fn note_laid_out(window: &mut Window, state: &crate::StateInner) {
+    if !COMPILED {
+        return;
+    }
+    invalidate::note_list_laid_out(window, &state.version, scrolled_to_end(state));
 }
 
 /// Marks the state of a `list` changed if scrolling it to its end moves it.
@@ -2990,6 +3015,7 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                 slot,
                 part: LayerPart {
                     bounds: Some(reach.unwrap_or_default()),
+                    row: Some(slot),
                     scene: Rc::new(scene),
                 },
                 tile_hashes,

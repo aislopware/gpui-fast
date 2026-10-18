@@ -35,6 +35,7 @@ pub(crate) const HOVER_FREEZE: Duration = Duration::from_millis(100);
 pub(crate) type Held = SmallVec<[(HitboxId, Bounds<Pixels>); 8]>;
 
 /// When the window last got a wheel event, and where the pointer was.
+#[derive(Clone)]
 pub(crate) struct HoverFreeze {
     last_wheel: Option<(Instant, Point<Pixels>)>,
     /// What was hovered when the wheel began: what of it stays where it was
@@ -171,7 +172,11 @@ pub(crate) fn begin_draw(window: &mut Window) {
 /// what of its hitboxes hover holds while it is held still.
 pub(crate) fn begin_paint(window: &mut Window) {
     if window.fast_layers.hover_freeze.drawing_held {
-        let drawn = held_hovered(window, &window.next_frame.hitboxes);
+        let drawn = if crate::fast::check_retained::scratch(window) {
+            held_hovered_afresh(window)
+        } else {
+            held_hovered(window, &window.next_frame.hitboxes)
+        };
         window.fast_layers.hover_freeze.drawn = drawn;
     }
 }
@@ -183,6 +188,31 @@ fn held_hovered(window: &Window, hitboxes: &[Hitbox]) -> SmallVec<[HitboxId; 8]>
     let mut ids = SmallVec::new();
     under_pointer(hitboxes, window.mouse_position, |hitbox, hovered| {
         if hovered && holds(Some(held), hitbox) {
+            ids.push(hitbox.id);
+        }
+    });
+    ids
+}
+
+/// [`held_hovered`] for the retained check's frame from scratch, which drew
+/// every hitbox afresh, under an id of its own: hover holds a hitbox of it
+/// where the frame shown inserted, in the same place in its order and with
+/// the same bounds, one that hover holds, which is the same element's.
+fn held_hovered_afresh(window: &Window) -> SmallVec<[HitboxId; 8]> {
+    let held = window.fast_layers.hover_freeze.held.as_slice();
+    let shown = &window.rendered_frame.hitboxes;
+    let afresh = &window.next_frame.hitboxes;
+    let mut ids = SmallVec::new();
+    under_pointer(afresh, window.mouse_position, |hitbox, hovered| {
+        let at = afresh
+            .iter()
+            .position(|other| std::ptr::eq(other, hitbox))
+            .unwrap_or(usize::MAX);
+        if hovered
+            && shown
+                .get(at)
+                .is_some_and(|was| was.bounds == hitbox.bounds && holds(Some(held), was))
+        {
             ids.push(hitbox.id);
         }
     });

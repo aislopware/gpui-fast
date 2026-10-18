@@ -1907,6 +1907,31 @@ mod list {
         }
     }
 
+    /// A view asks whether its list is at its end before the list is first
+    /// laid out, when the list cannot tell: once it is laid out, the view is
+    /// drawn again with the answer, its button beside the list.
+    #[crate::test]
+    fn a_view_asking_whether_its_list_is_at_its_end_before_its_first_layout_shows_the_answer(
+        cx: &mut TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let (window, _) = scroll_aware_page(cx, 1000, ScrollRead::AtEnd);
+        let red = crate::Background::from(crate::red());
+        let buttons = with_window(cx, window, |window, _| {
+            window
+                .painted_quads()
+                .iter()
+                .filter(|quad| quad.background == red)
+                .count()
+        });
+        assert_eq!(
+            buttons, 1,
+            "the list is not at its end, so the button shows"
+        );
+    }
+
     #[crate::test]
     fn a_view_reading_its_list_offset_keeps_it_off_its_layer(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -2949,7 +2974,9 @@ mod rows {
 
     /// A list whose rows draw over the paths of rows before them keeps its
     /// layer: the rows are replayed in order, paths and all, so what a row
-    /// draws over another's paths lands as drawn afresh.
+    /// draws over another's paths lands as drawn afresh. A row scrolled past
+    /// the viewport's top whose path still reaches into it is not drawn, as
+    /// a list without a layer draws only the rows over its viewport.
     #[crate::test]
     fn a_list_whose_rows_draw_over_paths_of_rows_before_composites_them_in_order(
         cx: &mut TestAppContext,
@@ -2957,6 +2984,22 @@ mod rows {
         if !crate::fast::layers::COMPILED {
             return;
         }
+        let paths = |cx: &mut TestAppContext, window: AnyWindowHandle| {
+            with_window(cx, window, |window, _| {
+                let mut paths: Vec<String> = window
+                    .rendered_frame
+                    .scene
+                    .paths
+                    .iter()
+                    .map(|path| {
+                        let drawn = path.bounds.intersect(&path.content_mask.bounds);
+                        format!("{:?} {drawn:?}", path.bounds)
+                    })
+                    .collect();
+                paths.sort();
+                paths
+            })
+        };
         for uniform in [false, true] {
             let with_layers = page(cx, RowKind::SpillingPath, uniform);
             let without_layers = page(cx, RowKind::SpillingPath, uniform);
@@ -2969,8 +3012,83 @@ mod rows {
                     Some(Decision::Composite),
                     "uniform {uniform}, step {step}"
                 );
+                assert_eq!(
+                    paths(cx, with_layers),
+                    paths(cx, without_layers),
+                    "uniform {uniform}, step {step}: the paths drawn"
+                );
             }
         }
+    }
+
+    /// A list scrolled to all but the last fraction of a device pixel of a
+    /// row, which its offset snaps to a whole device pixel over, paints that
+    /// row though none of it lies over the viewport: it is the row the
+    /// offset lies in. Its layer draws the path the row spills into the
+    /// viewport too, as the list does without one.
+    #[crate::test]
+    fn a_list_scrolled_into_the_end_of_a_row_draws_what_it_spills_as_without_layers(
+        cx: &mut TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let paths = |cx: &mut TestAppContext, window: AnyWindowHandle| {
+            with_window(cx, window, |window, _| {
+                let mut paths: Vec<String> = window
+                    .rendered_frame
+                    .scene
+                    .paths
+                    .iter()
+                    .map(|path| {
+                        let drawn = path.bounds.intersect(&path.content_mask.bounds);
+                        format!("{:?} {drawn:?}", path.bounds)
+                    })
+                    .filter(|path| !path.ends_with("size: Size { 0px (scaled) × 0px (scaled) } }"))
+                    .collect();
+                paths.sort();
+                paths
+            })
+        };
+        let with_layers = page(cx, RowKind::SpillingPath, false);
+        let without_layers = page(cx, RowKind::SpillingPath, false);
+        compare_with_layers_off(
+            cx,
+            with_layers,
+            without_layers,
+            &[-20., -20., -15.],
+            "promote",
+        );
+        assert_eq!(decision(cx, with_layers), Some(Decision::Composite));
+        for window in [with_layers, without_layers] {
+            let handle = window.downcast::<RowsPage>().unwrap();
+            handle
+                .update(cx, |page, _, cx| {
+                    page.state.scroll_to(crate::ListOffset {
+                        item_ix: 3,
+                        offset_in_item: px(39.8),
+                    });
+                    cx.notify();
+                })
+                .unwrap();
+            draw(cx, window);
+        }
+        let spilled = paths(cx, without_layers);
+        assert!(
+            spilled
+                .iter()
+                .any(|path| path.starts_with("Bounds { origin: Point { x: 0px (scaled), y: -")),
+            "the row the offset lies in spills its path into the viewport: {spilled:#?}"
+        );
+        assert_eq!(paths(cx, with_layers), spilled, "the paths drawn");
+        assert_eq!(
+            with_window(cx, with_layers, |window, _| expanded_quads(
+                &window.rendered_frame.scene
+            )),
+            with_window(cx, without_layers, |window, _| expanded_quads(
+                &window.rendered_frame.scene
+            )),
+        );
     }
 
     /// While a wheel scrolls rows under a still pointer, hover styling is held

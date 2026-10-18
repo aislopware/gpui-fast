@@ -29,19 +29,30 @@
 //! its hitboxes were in), which a frame from scratch after it reads anew,
 //! and the frame that wrote it asks for the next one.
 //!
-//! The frame from scratch is the one the window shows, so the frame shown
-//! is correct whatever the check finds, and it is what the next frame draws
-//! again from. A frame built afresh element by element in a shadow, as
-//! Chromium builds a display item again, would have to take back what
-//! building an element leaves behind in GPUI (layout nodes, element state,
-//! hitboxes, dispatch nodes); drawing the whole frame again sees the same
-//! state just as well, and the records of the first frame say which of its
-//! parts were drawn again.
+//! A frame can find too late that it drew something again it should have
+//! built: one that asks for the next frame (a hover over a view drawn
+//! again, the focus moving while it drew), and a place that read what the
+//! frame's own drawing wrote after it (a row rendering widens the column the
+//! rows before it were drawn at, as upstream draws them that frame too). What
+//! differs there waits for the next frame, and is reported only if that frame
+//! draws the place again and it still differs.
 //!
-//! A frame from scratch paints every scroll layer that holds content afresh
-//! into it, without deciding anything about it, as the frame it repeats did:
-//! the next frame finds the layer as current as the last, and composites it
-//! just as it would have.
+//! The frame from scratch is drawn in a shadow and leaves no trace: the
+//! window shows the frame it drew, as it would with the check off, and every
+//! frame after is drawn from that one. A checked app is the app unchecked,
+//! frame for frame, so what an end-to-end test sees and compares holds with
+//! the check on. The frame from scratch builds every view again (their
+//! `render`s run) and lays them out on a layout engine of its own, with
+//! scroll layers off, and is never presented; then everything drawing it
+//! changed is put back: the element states it moved on are handed back to
+//! the frame shown, the window's state of the frame shown (its hit test,
+//! focus, layers, retained bookkeeping, accessibility tree and invalidation)
+//! is restored, the effects, next-frame callbacks and change stamps its
+//! views made are dropped, and the state of every `list`, scroll handle and
+//! versioned state its views scrolled or bumped is set back to where the
+//! frame shown left it. What a view's own `render` does to its own state
+//! beyond notifying, a model it mutates in place, stays: no framework can
+//! take that back.
 
 use crate::{App, ArenaClearNeeded, Window};
 #[cfg(any(test, feature = "test-support"))]
@@ -95,6 +106,16 @@ pub(crate) struct CheckState {
     /// the next frame: reported if that frame draws it again too.
     #[cfg(any(test, feature = "test-support"))]
     pending: Vec<Found>,
+    /// The state of every `list` the window laid out while checked. A view
+    /// may scroll its list as it renders, before the list is laid out, so
+    /// the frame from scratch keeps them all as the frame shown left them,
+    /// to put them back once drawn.
+    #[cfg(any(test, feature = "test-support"))]
+    lists: Vec<std::rc::Weak<std::cell::RefCell<crate::StateInner>>>,
+    /// Where the writes made while the window drew stood as the last frame
+    /// checked ended: those past it were made while drawing this one.
+    #[cfg(any(test, feature = "test-support"))]
+    writes_seen: u64,
 }
 
 impl CheckState {
@@ -139,8 +160,7 @@ impl Window {
     }
 }
 
-/// Whether the frame being drawn is the check's frame from scratch, which
-/// paints every scroll layer that holds content afresh.
+/// Whether the frame being drawn is the check's frame from scratch.
 #[inline(always)]
 pub(crate) fn scratch(window: &Window) -> bool {
     #[cfg(any(test, feature = "test-support"))]
@@ -152,19 +172,67 @@ pub(crate) fn scratch(window: &Window) -> bool {
     }
 }
 
-/// What the check's frame from scratch does with the scroll container `id`:
-/// its layer, if it holds content, is painted afresh, and nothing about the
-/// layer is decided or counted. `None` on any other frame.
+/// Notes that the frame being drawn lays out the `list` of `state`, for
+/// the check's frame from scratch to put it back as the frame shown left it.
 #[inline(always)]
-pub(crate) fn scratch_decision(
-    window: &Window,
-    id: &crate::GlobalElementId,
-) -> Option<crate::fast::layers::policy::Decision> {
-    use crate::fast::layers::policy::Decision;
-    scratch(window).then(|| match window.fast_layers.layers.get(id) {
-        Some(layer) if layer.record.is_some() => Decision::Repaint,
-        _ => Decision::Bypass,
-    })
+pub(crate) fn note_list(window: &mut Window, state: &crate::ListState) {
+    #[cfg(any(test, feature = "test-support"))]
+    if window.retained_state.check.mode.is_some() {
+        let lists = &mut window.retained_state.check.lists;
+        if !lists
+            .iter()
+            .any(|kept| std::ptr::eq(kept.as_ptr(), Rc::as_ptr(&state.0)))
+        {
+            lists.retain(|kept| kept.strong_count() > 0);
+            lists.push(Rc::downgrade(&state.0));
+        }
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = (window, state);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    /// The scroll handles any window laid out a container for, which a view
+    /// may scroll as it renders: the check's frame from scratch keeps them as
+    /// the frame shown left them, to put them back once drawn.
+    static SCROLL_HANDLES: std::cell::RefCell<Vec<std::rc::Weak<std::cell::RefCell<crate::ScrollHandleState>>>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    /// While the check's frame from scratch is drawn, each versioned state it
+    /// changed, with the version it had before: put back once it is drawn.
+    static VERSIONS: std::cell::RefCell<Option<Vec<(crate::fast::dependencies::StateVersion, u64)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Notes that a container was laid out for the scroll handle `handle`. See
+/// [`SCROLL_HANDLES`].
+#[inline(always)]
+pub(crate) fn note_scroll_handle(handle: &crate::ScrollHandle) {
+    #[cfg(any(test, feature = "test-support"))]
+    SCROLL_HANDLES.with_borrow_mut(|handles| {
+        if !handles
+            .iter()
+            .any(|kept| std::ptr::eq(kept.as_ptr(), Rc::as_ptr(&handle.0)))
+        {
+            handles.retain(|kept| kept.strong_count() > 0);
+            handles.push(Rc::downgrade(&handle.0));
+        }
+    });
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = handle;
+}
+
+/// Notes that the state `version` counts changes of is about to change: the
+/// check's frame from scratch puts its version back. See [`VERSIONS`].
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn note_version_bump(version: &crate::fast::dependencies::StateVersion) {
+    VERSIONS.with_borrow_mut(|versions| {
+        if let Some(versions) = versions
+            && !versions.iter().any(|(kept, _)| kept.same(version))
+        {
+            versions.push((version.clone(), version.get()));
+        }
+    });
 }
 
 /// Notes the type of the view of `entity` as it is laid out.
@@ -199,11 +267,12 @@ pub(crate) fn replay_rows(
     key: crate::LayerKey,
     content: &crate::LayerContent,
     in_content: crate::Bounds<crate::ScaledPixels>,
+    rows_over: crate::Bounds<crate::ScaledPixels>,
     translation: crate::Point<crate::ScaledPixels>,
 ) -> bool {
     #[cfg(any(test, feature = "test-support"))]
     if window.retained_state.check.mode.is_some() && !window.retained_state.check.scratch {
-        for part in content.part_scenes_over(in_content) {
+        for part in content.part_scenes_over(in_content, rows_over) {
             let start = window.next_frame.scene.paint_operations.len();
             crate::fast::layers::paint::draw_into_frame(
                 window,
@@ -219,7 +288,7 @@ pub(crate) fn replay_rows(
         }
         return true;
     }
-    let _ = (window, key, content, in_content, translation);
+    let _ = (window, key, content, in_content, rows_over, translation);
     false
 }
 
@@ -253,6 +322,13 @@ fn check(
     mode: RetainedCheck,
     drawn: ArenaClearNeeded,
 ) -> ArenaClearNeeded {
+    // What was written while this frame was drawn: views, keyed stretches
+    // and layers drawn again that read it may have read it before it was.
+    let writes_seen = std::mem::replace(
+        &mut window.retained_state.check.writes_seen,
+        cx.entities.write_generation(),
+    );
+    let written = cx.entities.written_after(writes_seen);
     let keyed = std::mem::take(&mut window.retained_state.check.keyed);
     let replayed = std::mem::take(&mut window.retained_state.check.replayed);
     let painted_before = std::mem::take(&mut window.retained_state.check.painted_parts);
@@ -264,43 +340,335 @@ fn check(
         window.retained_state.check.painted_parts = layer_parts(window);
         return drawn;
     };
-    // What the last frame drew otherwise while it asked for this one, this
-    // one draws again rather than building it: it was never going to be.
-    let confirmed: Vec<Found> = pending
-        .into_iter()
-        .filter(|found| shown.draws_again(&found.place))
-        .collect();
     drawn.clear(cx);
 
-    window.retained_state.check.scratch = true;
-    // The frame from scratch repeats the frame shown: its layers are painted
-    // as of that frame's number, for the next frame to find them current.
-    window.fast_layers.frame = window.fast_layers.frame.saturating_sub(1);
-    window.repeat_frame_time();
-    window.refreshing = true;
-    let drawn = window.draw(cx);
-    window.retained_state.check.scratch = false;
-    window.retained_state.check.keyed.clear();
-    window.retained_state.check.replayed.clear();
-
+    let (fresh, drawn) = draw_from_scratch(window, cx);
     window.retained_state.check.painted_parts = layer_parts(window);
-    let fresh = crate::fast::layers::verify::sourced(&window.rendered_frame.scene);
     let found = shown.judge(fresh, &window.retained_state.check.view_types);
-    // A frame that asked for the next one may have found too late what it
-    // drew again, and builds it then (a hover over a view drawn again, the
-    // focus moving while it drew): what it found waits for that frame.
+    // A frame may find too late what it drew again, and build it on the
+    // next: one that asked for the next frame (a hover over a view drawn
+    // again, the focus moving while it drew), and a place that read what
+    // was written while the frame was drawn, after it read it, as a row
+    // rendering widens a column the rows before it were drawn at. What it
+    // found there waits for the next frame.
     let asked_for_next = !window.next_frame_callbacks.borrow().is_empty()
         || window.invalidator.is_dirty()
         || !window.retained_state.dirty_subtrees.is_empty();
-    let (now, later) = if asked_for_next {
-        (Vec::new(), found)
-    } else {
-        (found, Vec::new())
-    };
+    let (mut now, mut later): (Vec<Found>, Vec<Found>) = found
+        .into_iter()
+        .partition(|found| !asked_for_next && !read_written(window, &found.place, &written));
+    // What the last frame found to wait for, this one draws again, rather
+    // than building it, and still otherwise: it was never going to be.
+    let confirmed: Vec<Found> = pending
+        .into_iter()
+        .filter(|found| {
+            shown.draws_again(&found.place)
+                && now
+                    .iter()
+                    .chain(&later)
+                    .any(|again| again.place == found.place)
+        })
+        .collect();
+    let unconfirmed = |found: &Found| !confirmed.iter().any(|again| again.place == found.place);
+    now.retain(unconfirmed);
+    later.retain(unconfirmed);
     window.retained_state.check.pending = later;
     report(window, mode, confirmed, true);
     report(window, mode, now, false);
     drawn
+}
+
+/// Whether what was drawn again at `place` read one of the entities
+/// `written` while the frame was drawn: views and layers record what they
+/// read, keyed stretches do not.
+#[cfg(any(test, feature = "test-support"))]
+fn read_written(
+    window: &Window,
+    place: &PlaceKey,
+    written: &collections::FxHashSet<EntityId>,
+) -> bool {
+    if written.is_empty() {
+        return false;
+    }
+    let was_written = |entity: &EntityId| written.contains(entity);
+    match place {
+        PlaceKey::View(id) => {
+            let retained = &window.rendered_frame.retained;
+            retained.find(id).is_some_and(|index| {
+                retained.records[index]
+                    .dependencies
+                    .entities
+                    .iter()
+                    .any(was_written)
+            })
+        }
+        PlaceKey::Layer(id) => window.fast_layers.layers.get(id).is_some_and(|layer| {
+            layer
+                .record
+                .as_ref()
+                .is_some_and(|record| record.dependencies.entities.iter().any(was_written))
+                || crate::fast::layers::lists::a_held_row_read(&layer.rows, was_written)
+        }),
+        PlaceKey::Keyed(_) => false,
+    }
+}
+
+/// Draws the frame `window` shows again from scratch, at its moment, and
+/// returns what it painted, leaving the window, the frame it shows and the
+/// app as they were (see [`crate::fast::check_retained`]), with what the
+/// draw owes the arena.
+#[cfg(any(test, feature = "test-support"))]
+fn draw_from_scratch(window: &mut Window, cx: &mut App) -> (Vec<Sourced>, ArenaClearNeeded) {
+    let shadow = Shadow::enter(window, cx);
+    let arena = crate::ElementArenaScope::enter(&cx.element_arena);
+    window.repeat_frame_time();
+    crate::fast::frame_time::begin_frame(window, cx);
+    window.refreshing = true;
+    window.draw_roots(cx);
+    window.refreshing = false;
+    crate::fast::frame_time::end_frame();
+    // The fades its primitives index: a frame shown gets them as it ends.
+    crate::fast::edge_fade::copy_table(window);
+    let fresh = crate::fast::layers::verify::sourced(&window.next_frame.scene);
+    // What the elements kept from one frame to the next, the frame from
+    // scratch took from the frame shown as it drew them: they go back.
+    let states = std::mem::take(&mut window.next_frame.element_states);
+    window.rendered_frame.element_states.extend(states);
+    window.next_frame.clear();
+    shadow.leave(window, cx);
+    (fresh, arena.exit(&cx.element_arena))
+}
+
+/// What drawing a frame changes besides the frame it draws, as it stood
+/// before the check's frame from scratch was drawn, or set aside for it.
+#[cfg(any(test, feature = "test-support"))]
+struct Shadow {
+    /// The window's retained bookkeeping: the frame from scratch keeps its
+    /// own, which notes nothing for the next frame.
+    retained: crate::fast::retained::RetainedState,
+    /// The window's scroll layers: the frame from scratch draws with none,
+    /// every container painting its content directly.
+    layers: crate::fast::layers::WindowLayers,
+    /// The layout engine and what matches elements to its nodes: the frame
+    /// from scratch lays out on nodes of its own, so the nodes the frame
+    /// shown keeps for the next one stay as they were.
+    layout_engine: Option<crate::TaffyLayoutEngine>,
+    fast_layout: crate::fast::layout_key::WindowLayout,
+    /// The accessibility tree: the frame from scratch builds none and sends
+    /// the platform nothing.
+    a11y: crate::window::a11y::A11y,
+    focus_tooltip: crate::fast::focus_tooltip::WindowFocusTooltip,
+    tooltip_bounds: Option<crate::TooltipBounds>,
+    mouse_hit_test: crate::HitTest,
+    requested_autoscroll: Option<Bounds<crate::Pixels>>,
+    /// The focus, which a view may move as it renders.
+    focus: Option<crate::FocusId>,
+    focus_generation: u64,
+    dirty_views: FxHashSet<EntityId>,
+    /// The views notified for the next frame, and whether the window asked
+    /// for one.
+    invalidated: FxHashSet<EntityId>,
+    dirty: bool,
+    next_frame_callbacks: usize,
+    pending_effects: usize,
+    pending_notifications: FxHashSet<EntityId>,
+    pending_global_notifications: collections::TypeIdHashSet,
+    accessed_entities: FxHashSet<EntityId>,
+    stamps: crate::fast::dependencies::ChangeStamps,
+    thread: crate::fast::layers::invalidate::ThreadNotes,
+    lists: Vec<ListSnapshot>,
+    scroll_handles: Vec<ScrollHandleSnapshot>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Shadow {
+    /// Sets aside what drawing the frame from scratch would change.
+    fn enter(window: &mut Window, cx: &mut App) -> Self {
+        let mut retained = crate::fast::retained::RetainedState::new(cx);
+        retained.view_retention = window.retained_state.view_retention;
+        retained.element_retention = window.retained_state.element_retention;
+        retained.font_generation = window.retained_state.font_generation;
+        retained.check.scratch = true;
+        let lists = window
+            .retained_state
+            .check
+            .lists
+            .iter()
+            .filter_map(|list| list.upgrade())
+            .map(ListSnapshot::take)
+            .collect();
+        let layers = crate::fast::layers::WindowLayers {
+            enabled: false,
+            frame: window.fast_layers.frame,
+            window_size: window.fast_layers.window_size,
+            hover_freeze: window.fast_layers.hover_freeze.clone(),
+            ..Default::default()
+        };
+        VERSIONS.set(Some(Vec::new()));
+        let a11y = crate::window::a11y::A11y::new(
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            true,
+            None,
+        );
+        Shadow {
+            retained: std::mem::replace(&mut window.retained_state, retained),
+            layers: std::mem::replace(&mut window.fast_layers, layers),
+            layout_engine: window
+                .layout_engine
+                .replace(crate::TaffyLayoutEngine::new()),
+            fast_layout: std::mem::take(&mut window.fast_layout),
+            a11y: std::mem::replace(&mut window.a11y, a11y),
+            focus_tooltip: window.fast_focus_tooltip.clone(),
+            tooltip_bounds: window.tooltip_bounds.take(),
+            mouse_hit_test: std::mem::take(&mut window.mouse_hit_test),
+            requested_autoscroll: window.requested_autoscroll,
+            focus: window.focus,
+            focus_generation: window.focus_generation,
+            dirty_views: std::mem::take(&mut window.dirty_views),
+            invalidated: window.invalidator.take_views(),
+            dirty: window.invalidator.is_dirty(),
+            next_frame_callbacks: window.next_frame_callbacks.borrow().len(),
+            pending_effects: cx.pending_effects.len(),
+            pending_notifications: cx.pending_notifications.clone(),
+            pending_global_notifications: cx.pending_global_notifications.clone(),
+            accessed_entities: std::mem::take(cx.entities.accessed_entities.get_mut()),
+            stamps: crate::fast::dependencies::ChangeStamps::take(cx),
+            thread: crate::fast::layers::invalidate::ThreadNotes::take(),
+            lists,
+            scroll_handles: SCROLL_HANDLES.with_borrow(|handles| {
+                handles
+                    .iter()
+                    .filter_map(|handle| handle.upgrade())
+                    .map(ScrollHandleSnapshot::take)
+                    .collect()
+            }),
+        }
+    }
+
+    /// Puts back what [`Shadow::enter`] set aside, dropping what drawing the
+    /// frame from scratch made.
+    fn leave(self, window: &mut Window, cx: &mut App) {
+        window.retained_state = self.retained;
+        for list in self.lists {
+            list.restore();
+        }
+        for handle in self.scroll_handles {
+            handle.restore();
+        }
+        for (version, at) in VERSIONS.take().unwrap_or_default() {
+            version.set(at);
+        }
+        window.fast_layers = self.layers;
+        window.layout_engine = self.layout_engine;
+        window.fast_layout = self.fast_layout;
+        window.a11y = self.a11y;
+        window.fast_focus_tooltip = self.focus_tooltip;
+        window.tooltip_bounds = self.tooltip_bounds;
+        window.mouse_hit_test = self.mouse_hit_test;
+        window.requested_autoscroll = self.requested_autoscroll;
+        window.focus = self.focus;
+        window.focus_generation = self.focus_generation;
+        window.dirty_views = self.dirty_views;
+        window.invalidator.replace_views(self.invalidated);
+        if !self.dirty {
+            window.invalidator.set_dirty(false);
+        }
+        window.invalidator.set_phase(crate::window::DrawPhase::None);
+        window
+            .next_frame_callbacks
+            .borrow_mut()
+            .truncate(self.next_frame_callbacks);
+        cx.pending_effects.truncate(self.pending_effects);
+        cx.pending_notifications = self.pending_notifications;
+        cx.pending_global_notifications = self.pending_global_notifications;
+        *cx.entities.accessed_entities.get_mut() = self.accessed_entities;
+        self.stamps.restore(cx);
+        self.thread.restore();
+    }
+}
+
+/// A scroll handle's state as the frame shown left it. See
+/// [`SCROLL_HANDLES`].
+#[cfg(any(test, feature = "test-support"))]
+struct ScrollHandleSnapshot {
+    state: Rc<std::cell::RefCell<crate::ScrollHandleState>>,
+    offset: crate::Point<crate::Pixels>,
+    bounds: Bounds<crate::Pixels>,
+    max_offset: crate::Point<crate::Pixels>,
+    scroll_to_bottom: bool,
+    overflow: crate::Point<crate::Overflow>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ScrollHandleSnapshot {
+    fn take(handle: Rc<std::cell::RefCell<crate::ScrollHandleState>>) -> Self {
+        let state = handle.borrow();
+        let snapshot = ScrollHandleSnapshot {
+            state: handle.clone(),
+            offset: *state.offset.borrow(),
+            bounds: state.bounds,
+            max_offset: state.max_offset,
+            scroll_to_bottom: state.scroll_to_bottom,
+            overflow: state.overflow,
+        };
+        drop(state);
+        snapshot
+    }
+
+    fn restore(self) {
+        let mut state = self.state.borrow_mut();
+        *state.offset.borrow_mut() = self.offset;
+        state.bounds = self.bounds;
+        state.max_offset = self.max_offset;
+        state.scroll_to_bottom = self.scroll_to_bottom;
+        state.overflow = self.overflow;
+    }
+}
+
+/// A `list`'s state as the frame shown left it. See [`CheckState::lists`].
+#[cfg(any(test, feature = "test-support"))]
+struct ListSnapshot {
+    state: Rc<std::cell::RefCell<crate::StateInner>>,
+    last_layout_bounds: Option<Bounds<crate::Pixels>>,
+    last_padding: Option<crate::Edges<crate::Pixels>>,
+    items: sum_tree::SumTree<crate::ListItem>,
+    logical_scroll_top: Option<crate::ListOffset>,
+    pending_scroll: Option<crate::PendingScroll>,
+    follow_state: crate::FollowState,
+    version: u64,
+    tail: crate::fast::list_tail::TailReservation,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ListSnapshot {
+    fn take(list: Rc<std::cell::RefCell<crate::StateInner>>) -> Self {
+        let state = list.borrow();
+        let snapshot = ListSnapshot {
+            state: list.clone(),
+            last_layout_bounds: state.last_layout_bounds,
+            last_padding: state.last_padding,
+            items: state.items.clone(),
+            logical_scroll_top: state.logical_scroll_top,
+            pending_scroll: state.pending_scroll.clone(),
+            follow_state: state.follow_state,
+            version: state.version.get(),
+            tail: state.fast_tail,
+        };
+        drop(state);
+        snapshot
+    }
+
+    fn restore(self) {
+        let mut state = self.state.borrow_mut();
+        state.last_layout_bounds = self.last_layout_bounds;
+        state.last_padding = self.last_padding;
+        state.items = self.items;
+        state.logical_scroll_top = self.logical_scroll_top;
+        state.pending_scroll = self.pending_scroll;
+        state.follow_state = self.follow_state;
+        state.version.set(self.version);
+        state.fast_tail = self.tail;
+    }
 }
 
 /// Reports `found`, if anything was, as `mode` asks: `again` for what the
