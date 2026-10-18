@@ -477,3 +477,28 @@ fn a_rounded_overflow_drawn_again_draws_as_afresh() {
         assert_eq!(actual, expected, "hidden {hidden}, radius {radius}");
     }
 }
+
+/// A quad painted in a rounded clip equals the background it was painted
+/// with, as `Window::painted_quads` gives it: the clip its background's
+/// padding holds is the scene's to draw with, not the quad's colour.
+#[test]
+fn a_quad_painted_in_a_rounded_clip_keeps_its_background() {
+    let mut cx = text_cx();
+    let window = cx.add_window(|_, _| Card { radius: 9. });
+    let background: crate::Background = hsla(0.6, 0.5, 0.5, 1.).into();
+    let (in_clip, painted) = with_window(&mut cx, window.into(), |window, cx| {
+        window.draw(cx).clear(cx);
+        let in_clip = window
+            .rendered_frame
+            .scene
+            .quads
+            .iter()
+            .any(|quad| quad.background.pad != crate::fast::edge_fade::NONE);
+        (in_clip, window.painted_quads())
+    });
+    assert!(in_clip, "the card's fill is drawn in its clip");
+    assert!(
+        painted.iter().any(|quad| quad.background == background),
+        "{painted:?}"
+    );
+}
