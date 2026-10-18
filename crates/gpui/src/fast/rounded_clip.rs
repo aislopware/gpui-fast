@@ -50,14 +50,19 @@ impl Shape {
                 ScaledPixels(f32::from((radius - vertical).max(Pixels::ZERO)) * scale),
             )
         };
+        // The edges on the 1/64 device pixel grid the shift module reads as
+        // exact: one laid out a whole number of pixels away from another then
+        // lies exactly that far, not off by the float noise of where each was
+        // added up, so a layer moved by whole pixels keeps its clip's entry.
+        let snap = |v: Pixels| ScaledPixels(((f32::from(v) * scale) * 64.).round() / 64.);
+        let left = snap(bounds.origin.x + widths.left);
+        let top = snap(bounds.origin.y + widths.top);
+        let right = snap(bounds.origin.x + bounds.size.width - widths.right).max(left);
+        let bottom = snap(bounds.origin.y + bounds.size.height - widths.bottom).max(top);
         Some(Self {
             bounds: Bounds {
-                origin: (bounds.origin + point(widths.left, widths.top)).scale(scale),
-                size: size(
-                    (bounds.size.width - widths.left - widths.right).max(Pixels::ZERO),
-                    (bounds.size.height - widths.top - widths.bottom).max(Pixels::ZERO),
-                )
-                .scale(scale),
+                origin: point(left, top),
+                size: size(right - left, bottom - top),
             },
             radii: Corners {
                 top_left: inner(radii.top_left, widths.left, widths.top),
@@ -193,6 +198,34 @@ mod tests {
 
     fn at(x: f32, y: f32) -> crate::Point<ScaledPixels> {
         point(ScaledPixels(x), ScaledPixels(y))
+    }
+
+    /// A padding edge moved by whole device pixels, as a frame drawn again
+    /// from the last one moves it, lies where one laid out there afresh
+    /// does, to the bit: its sides hold to the grid moving adds to exactly.
+    #[test]
+    fn a_padding_edge_moved_by_whole_pixels_lies_where_one_laid_out_there_does() {
+        for scale in [1., 1.5, 2., 3.] {
+            for step in 0..400 {
+                let y = step as f32 * 0.37 + 0.13;
+                let at_y = |y: f32| {
+                    Shape::for_style(
+                        &style(12.),
+                        Bounds::new(point(px(3.3), px(y)), size(px(100.7), px(60.1))),
+                        px(16.),
+                        scale,
+                    )
+                    .unwrap()
+                    .bounds
+                };
+                for pixels in [1., 7., 300., 2377.] {
+                    let moved = at_y(y + pixels / scale);
+                    let mut expected = at_y(y);
+                    expected.origin.y += ScaledPixels(pixels);
+                    assert_eq!(moved, expected, "scale {scale}, y {y}, moved {pixels}");
+                }
+            }
+        }
     }
 
     #[test]
