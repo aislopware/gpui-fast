@@ -575,6 +575,29 @@ impl Scene {
 pub(crate) const NONE: u32 = 0;
 
 #[cfg(any(test, feature = "test-support"))]
+/// The quads `scene` paints, each without the fade or clip its background's
+/// padding holds: a quad equals the background it was painted with, as
+/// upstream's does, wherever it was painted.
+pub(crate) fn painted_quads(scene: &Scene) -> Vec<crate::Quad> {
+    let mut quads = scene.quads.clone();
+    for quad in &mut quads {
+        quad.background.pad = NONE;
+    }
+    quads
+}
+
+#[cfg(any(test, feature = "test-support"))]
+/// The underlines `scene` paints, each without the fade or clip its padding
+/// holds.
+pub(crate) fn painted_underlines(scene: &Scene) -> Vec<crate::Underline> {
+    let mut underlines = scene.underlines.clone();
+    for underline in &mut underlines {
+        underline.pad = NONE;
+    }
+    underlines
+}
+
+#[cfg(any(test, feature = "test-support"))]
 /// Takes `primitive`'s fade away.
 pub(crate) fn unfade(primitive: &mut Primitive) {
     if let Some(slot) = slot_of(primitive) {
