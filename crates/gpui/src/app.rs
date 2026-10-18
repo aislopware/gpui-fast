@@ -2108,6 +2108,7 @@ impl App {
                 }
 
                 if self.pending_effects.is_empty() {
+                    crate::fast::check_retained::at_rest(self);
                     for window in self.windows.values().filter_map(|window| window.as_deref()) {
                         if window.invalidator.is_dirty()
                             || window.needs_present.get()

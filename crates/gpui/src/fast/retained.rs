@@ -43,6 +43,7 @@ pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
     window.fast_layers.scrolls.take_offsets_set();
     crate::fast::a11y::new_frame(window);
     window.mark_changed_retained_views_dirty(cx);
+    crate::fast::check_retained::begin_drawing(window);
 }
 
 /// Prepares `window` for an element drawn outside of its frames, as
@@ -1574,6 +1575,7 @@ pub(crate) fn finish_deferred(
 /// becomes the rendered frame.
 #[inline]
 pub(crate) fn finish_retained_frame(window: &mut Window) {
+    crate::fast::check_retained::end_drawing(window);
     crate::fast::focus::finish_frame(window);
     // The sprite atlas may be cleared when the frame is presented.
     window.fast_glyph_bounds.finish_frame();

@@ -829,6 +829,7 @@ pub(crate) fn notify_asks_for_a_frame(phase: crate::window::DrawPhase) -> bool {
 #[inline(always)]
 pub(crate) fn note_notify(entities: &mut EntityMap, entity_id: EntityId) {
     crate::fast::layers::invalidate::note_notify(entity_id);
+    crate::fast::check_retained::note_notify(entity_id);
     let log = &mut entities.access_log;
     if log.updated_unnotified.remove(&entity_id)
         || log.recordings.get() > 0

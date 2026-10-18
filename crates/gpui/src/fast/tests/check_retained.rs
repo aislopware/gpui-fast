@@ -326,3 +326,206 @@ fn a_checked_window_draws_every_frame_as_an_unchecked_one() {
         "with accessibility, it never drew a view again"
     );
 }
+
+/// How a view that measures itself as it paints tells itself of what it
+/// measured.
+#[derive(Clone, Copy, PartialEq)]
+enum Tell {
+    /// `cx.notify` there, during paint, which asks for no frame.
+    WhilePainting,
+    /// `cx.notify` from `cx.defer`, once the frame is drawn.
+    Deferred,
+}
+
+/// A view that shows a bar as wide as it measured itself while it painted
+/// last, as a text folds at the width it was last laid out at, and tells
+/// itself of a new width as `tell` says. It spans `span` pixels.
+struct Measured {
+    measured: Rc<Cell<f32>>,
+    span: f32,
+    tell: Tell,
+}
+
+impl Render for Measured {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity_id();
+        let (measured, tell) = (self.measured.clone(), self.tell);
+        div()
+            .w(px(self.span))
+            .h(px(20.))
+            .child(
+                div()
+                    .w(px(self.measured.get()))
+                    .h(px(4.))
+                    .bg(crate::black()),
+            )
+            .child(
+                crate::canvas(
+                    |_, _, _| {},
+                    move |bounds, _, _, cx| {
+                        let width = f32::from(bounds.size.width);
+                        if measured.replace(width) != width {
+                            match tell {
+                                Tell::WhilePainting => cx.notify(entity),
+                                Tell::Deferred => cx.defer(move |cx| cx.notify(entity)),
+                            }
+                        }
+                    },
+                )
+                .w_full()
+                .h(px(4.)),
+            )
+    }
+}
+
+/// A page holding a [`Measured`] view and a [`Bar`] beside it, drawn again
+/// whenever the measured view is built.
+struct MeasuredPage {
+    measured: Entity<Measured>,
+    bar: Entity<Bar>,
+}
+
+impl Render for MeasuredPage {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size(px(300.))
+            .child(self.measured.clone())
+            .child(div().h(px(20.)).child(self.bar.clone()))
+    }
+}
+
+/// Opens a checked [`MeasuredPage`], `Record`ing, whose measured view tells
+/// itself as `tell` says, and lets it come to rest.
+fn measured_page(cx: &mut TestAppContext, tell: Tell) -> WindowHandle<MeasuredPage> {
+    let window = cx.add_window(move |window, cx| {
+        window.set_check_retained(Some(RetainedCheck::Record));
+        MeasuredPage {
+            measured: cx.new(|_| Measured {
+                measured: Rc::new(Cell::new(0.)),
+                span: 100.,
+                tell,
+            }),
+            bar: cx.new(|_| Bar {
+                width: Rc::new(Cell::new(10.)),
+            }),
+        }
+    });
+    cx.run_until_parked();
+    window
+}
+
+/// Widens the page's measured view, which builds it again and draws the bar
+/// beside it again from last frame, and lets the window come to rest.
+fn widen(cx: &mut TestAppContext, window: WindowHandle<MeasuredPage>, span: f32) {
+    let measured = window
+        .update(cx, |page, _, _| page.measured.clone())
+        .unwrap();
+    measured.update(cx, |measured, cx| {
+        measured.span = span;
+        cx.notify();
+    });
+    cx.run_until_parked();
+}
+
+fn shown(cx: &mut TestAppContext, window: AnyWindowHandle) -> String {
+    with_window(cx, window, |window, _| {
+        window.painted_primitives().join("\n")
+    })
+}
+
+/// A view that measures itself while it paints and notifies itself there
+/// is given no frame: the window comes to rest showing it as it was built,
+/// before it measured, and the check reports it then, naming the view and
+/// that it was notified while the window drew. The frame drew nothing again,
+/// so nothing was judged as it was drawn.
+#[test]
+fn a_view_notified_while_painting_is_caught_at_rest() {
+    let mut cx = TestAppContext::single();
+    let window = measured_page(&mut cx, Tell::WhilePainting);
+    let found = reports(&mut cx, window.into());
+    assert_eq!(found.len(), 1, "{found:#?}");
+    let report = &found[0];
+    assert!(
+        report.contains("came to rest")
+            && report.contains("check_retained::Measured")
+            && report.contains("built this frame")
+            && report.contains("notified while the window drew"),
+        "{report}"
+    );
+    // The window shows the frame it drew, the bar not yet measured.
+    assert!(
+        !shown(&mut cx, window.into()).contains("200px (scaled) × 8px"),
+        "the bar is shown unmeasured"
+    );
+}
+
+/// The same view built again in a frame that draws its neighbour again from
+/// last frame, its new width measured while painting and told there, is
+/// reported at rest, though the frame's own check judged only what it drew
+/// again.
+#[test]
+fn a_view_built_beside_one_drawn_again_and_notified_while_painting_is_caught_at_rest() {
+    let mut cx = TestAppContext::single();
+    let window = measured_page(&mut cx, Tell::WhilePainting);
+    reports(&mut cx, window.into());
+    // Something else draws, and the bar shows its first measure.
+    with_window(&mut cx, window.into(), |window, _| window.refresh());
+    cx.run_until_parked();
+    assert_eq!(reports(&mut cx, window.into()), Vec::<String>::new());
+    assert!(shown(&mut cx, window.into()).contains("200px (scaled) × 8px"));
+
+    widen(&mut cx, window, 150.);
+    let found = reports(&mut cx, window.into());
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(
+        found[0].contains("came to rest")
+            && found[0].contains("check_retained::Measured")
+            && !found[0].contains("check_retained::Bar"),
+        "{}",
+        found[0]
+    );
+}
+
+/// Told from `cx.defer`, once the frame is drawn, the measure is drawn in
+/// the frame it asks for, and the window comes to rest showing what a frame
+/// from scratch draws: nothing is caught, through a first frame and a
+/// widening.
+#[test]
+fn a_view_notified_once_the_frame_is_drawn_passes() {
+    let mut cx = TestAppContext::single();
+    let window = measured_page(&mut cx, Tell::Deferred);
+    assert_eq!(reports(&mut cx, window.into()), Vec::<String>::new());
+    assert!(shown(&mut cx, window.into()).contains("200px (scaled) × 8px"));
+    widen(&mut cx, window, 150.);
+    assert_eq!(reports(&mut cx, window.into()), Vec::<String>::new());
+    assert!(shown(&mut cx, window.into()).contains("300px (scaled) × 8px"));
+}
+
+/// A frame that asks for the next one is not judged at rest: the window is
+/// not at rest until the frame it asked for is drawn.
+#[test]
+fn a_window_asking_for_a_frame_is_not_at_rest() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(move |window, cx| {
+        window.set_check_retained(Some(RetainedCheck::Panic));
+        // Asked for the next frame, the first one is not judged at rest;
+        // the second, drawn from the measure, shows what a frame from
+        // scratch draws.
+        window.on_next_frame(|window, _| window.refresh());
+        MeasuredPage {
+            measured: cx.new(|_| Measured {
+                measured: Rc::new(Cell::new(0.)),
+                span: 100.,
+                tell: Tell::WhilePainting,
+            }),
+            bar: cx.new(|_| Bar {
+                width: Rc::new(Cell::new(10.)),
+            }),
+        }
+    });
+    with_window(&mut cx, window.into(), |window, cx| {
+        assert!(!window.next_frame_callbacks.borrow().is_empty());
+        window.simulate_next_frame(cx);
+    });
+    assert!(shown(&mut cx, window.into()).contains("200px (scaled) × 8px"));
+}

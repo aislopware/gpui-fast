@@ -23,19 +23,35 @@
 //! innermost view drawn from last frame around what differs, a stretch
 //! drawn again under a key, a layer part kept from the last paint — the
 //! check reports it: the view's type, its entity, its element id path, and
-//! the primitives each frame painted there. Differences in what the first
-//! frame built are not judged: a build reads what the frame before it wrote
-//! as it drew (a height measured while it was laid out, a hover found once
-//! its hitboxes were in), which a frame from scratch after it reads anew,
-//! and the frame that wrote it asks for the next one.
+//! the primitives each frame painted there.
 //!
-//! A frame can find too late that it drew something again it should have
-//! built: one that asks for the next frame (a hover over a view drawn
-//! again, the focus moving while it drew), and a place that read what the
-//! frame's own drawing wrote after it (a row rendering widens the column the
-//! rows before it were drawn at, as upstream draws them that frame too). What
-//! differs there waits for the next frame, and is reported only if that frame
-//! draws the place again and it still differs.
+//! What differs in what the first frame built is not judged with it: a build
+//! reads what the frame before it wrote as it drew (a height measured while
+//! it was painted, a hover found once its hitboxes were in), which a frame
+//! from scratch after it reads anew, and the frame that wrote it is to ask
+//! for the next one. A frame can also find too late that it drew something
+//! again it should have built: one that asks for the next frame (a hover
+//! over a view drawn again, the focus moving while it drew), and a place that
+//! read what the frame's own drawing wrote after it (a row rendering widens
+//! the column the rows before it were drawn at, as upstream draws them that
+//! frame too). What differs there waits for the next frame, and is reported
+//! only if that frame draws the place again and it still differs.
+//!
+//! Both wait on a next frame, and a notification while the window draws
+//! (laying out, prepainting or painting) asks for none, as upstream: the
+//! view is built on whatever frame comes next, and until then the window
+//! shows it stale, as a text folded at a width it measured while painting
+//! and told with `cx.notify` there. So the check holds the window to the
+//! frame it owes. Once the effects queued are run and nothing else is (the
+//! end of `App::flush_effects`), a window whose last frame notified anything
+//! while it drew, and that asks for no frame (not dirty, no next-frame
+//! callback), is at rest owing one: what differs from its frame from scratch
+//! in a view notified then, inside one, or reading an entity notified then
+//! is reported, naming what was notified. Told from `cx.defer`, once the
+//! frame is drawn, the notification asks for the frame, and nothing is
+//! reported. A frame that drew nothing again is drawn from scratch only
+//! then, at rest. A change no notification tells, a `Cell` written while
+//! painting and read by `render`, is left to comparing settled frames.
 //!
 //! The frame from scratch is drawn in a shadow and leaves no trace: the
 //! window shows the frame it drew, as it would with the check off, and every
@@ -116,6 +132,75 @@ pub(crate) struct CheckState {
     /// checked ended: those past it were made while drawing this one.
     #[cfg(any(test, feature = "test-support"))]
     writes_seen: u64,
+    /// What the last frame checked, having notified something while it
+    /// drew, left to its next frame: judged once the window is at rest if it
+    /// asked for none. See [`at_rest`].
+    #[cfg(any(test, feature = "test-support"))]
+    rest: Option<Rest>,
+    /// The entities notified while the last frame checked was laid out,
+    /// prepainted or painted, which asks for no frame.
+    #[cfg(any(test, feature = "test-support"))]
+    notified_drawing: Vec<EntityId>,
+}
+
+/// What a frame left to its next frame, for [`at_rest`].
+#[cfg(any(test, feature = "test-support"))]
+enum Rest {
+    /// The frame drew nothing again, and was not drawn from scratch.
+    Unjudged,
+    /// What the frame built otherwise than its frame from scratch.
+    Judged(Vec<Found>),
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    /// How many windows hold a [`CheckState::rest`]: [`at_rest`] looks for
+    /// them only while there are any.
+    static RESTING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// While a checked window lays out, prepaints and paints a frame (not
+    /// the frame from scratch), the entities notified meanwhile.
+    static NOTIFIED_DRAWING: std::cell::RefCell<Option<Vec<EntityId>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Notes that a checked window begins to draw a frame: what is notified
+/// until [`end_drawing`] is given no frame.
+#[inline(always)]
+pub(crate) fn begin_drawing(window: &Window) {
+    #[cfg(any(test, feature = "test-support"))]
+    if window.retained_state.check.mode.is_some() && !window.retained_state.check.scratch {
+        NOTIFIED_DRAWING.set(Some(Vec::new()));
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = window;
+}
+
+/// Notes that the window ends drawing the frame [`begin_drawing`] began,
+/// keeping what was notified meanwhile.
+#[inline(always)]
+pub(crate) fn end_drawing(window: &mut Window) {
+    #[cfg(any(test, feature = "test-support"))]
+    if window.retained_state.check.mode.is_some() && !window.retained_state.check.scratch {
+        let notified = NOTIFIED_DRAWING.take().unwrap_or_default();
+        window.retained_state.check.notified_drawing = notified;
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = window;
+}
+
+/// Notes that `entity` is notified, for [`begin_drawing`].
+#[inline(always)]
+pub(crate) fn note_notify(entity: crate::EntityId) {
+    #[cfg(any(test, feature = "test-support"))]
+    NOTIFIED_DRAWING.with_borrow_mut(|notified| {
+        if let Some(notified) = notified
+            && !notified.contains(&entity)
+        {
+            notified.push(entity);
+        }
+    });
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = entity;
 }
 
 impl CheckState {
@@ -303,12 +388,156 @@ pub(crate) fn after_draw(
     #[cfg(any(test, feature = "test-support"))]
     if let Some(mode) = window.retained_state.check.mode
         && !window.retained_state.check.scratch
+        && !cx.mode.skip_drawing()
     {
         return check(window, cx, mode, drawn);
     }
     let _ = cx;
     let _ = &window;
     drawn
+}
+
+/// Judges every window checked whose last frame notified something while it
+/// drew and asked for no next frame, once the effects are run and nothing is
+/// queued: what the notification told must show as a frame from scratch
+/// draws it. See [`crate::fast::check_retained`].
+#[inline(always)]
+pub(crate) fn at_rest(cx: &mut App) {
+    #[cfg(any(test, feature = "test-support"))]
+    if RESTING.get() > 0 {
+        let windows: Vec<crate::WindowId> = cx
+            .windows
+            .values()
+            .filter_map(|window| window.as_deref())
+            .filter(|window| window.retained_state.check.rest.is_some())
+            .map(|window| window.handle.window_id())
+            .collect();
+        for id in windows {
+            let _ = cx.update_window_id(id, |_, window, cx| judge_at_rest(window, cx));
+        }
+    }
+    let _ = cx;
+}
+
+/// Sets what the frame `window` drew leaves to its next frame, if anything.
+#[cfg(any(test, feature = "test-support"))]
+fn leave_rest(window: &mut Window, rest: Option<Rest>) {
+    let left = rest.is_some();
+    let had = std::mem::replace(&mut window.retained_state.check.rest, rest).is_some();
+    match (had, left) {
+        (false, true) => RESTING.set(RESTING.get() + 1),
+        (true, false) => RESTING.set(RESTING.get().saturating_sub(1)),
+        _ => {}
+    }
+}
+
+/// Reports what the frame `window` shows left to a next frame it did not
+/// ask for. See [`at_rest`].
+#[cfg(any(test, feature = "test-support"))]
+fn judge_at_rest(window: &mut Window, cx: &mut App) {
+    let Some(rest) = window.retained_state.check.rest.take() else {
+        return;
+    };
+    RESTING.set(RESTING.get().saturating_sub(1));
+    let Some(mode) = window.retained_state.check.mode else {
+        return;
+    };
+    if window.invalidator.is_dirty() || !window.next_frame_callbacks.borrow().is_empty() {
+        return;
+    }
+    let mut found = match rest {
+        Rest::Judged(found) => found,
+        Rest::Unjudged => {
+            // Nothing was drawn again, so no layer part was kept.
+            let Some(shown) = Shown::capture(window, &[], Vec::new(), Vec::new(), true) else {
+                return;
+            };
+            let (fresh, drawn) = draw_from_scratch(window, cx);
+            drawn.clear(cx);
+            shown.judge(fresh, &window.retained_state.check.view_types)
+        }
+    };
+    let notified: FxHashSet<EntityId> = window
+        .retained_state
+        .check
+        .notified_drawing
+        .iter()
+        .copied()
+        .collect();
+    found.retain(|found| told_late(window, &found.place, &notified));
+    if found.is_empty() {
+        return;
+    }
+    let mut notified: Vec<String> = window
+        .retained_state
+        .check
+        .notified_drawing
+        .iter()
+        .map(|entity| {
+            let name = window
+                .retained_state
+                .check
+                .view_types
+                .get(entity)
+                .copied()
+                .unwrap_or("an entity");
+            format!("{name} {entity:?}")
+        })
+        .collect();
+    notified.sort_unstable();
+    let mut report = format!(
+        "a window came to rest, asking for no next frame, showing what a frame built afresh at \
+         the same moment draws otherwise, in {} place{}:",
+        found.len(),
+        if found.len() == 1 { "" } else { "s" },
+    );
+    for found in &found {
+        report.push('\n');
+        report.push_str(&found.text);
+    }
+    let _ = write!(
+        report,
+        "\n  notified while the window drew, which asks for no frame (notify from cx.defer \
+         instead): {}",
+        notified.join(", ")
+    );
+    deliver(window, mode, report);
+}
+
+/// Whether what differs at `place` was told by a notification of one of
+/// `notified` while the frame was drawn: the place is, or is inside, a view
+/// notified, or read an entity notified.
+#[cfg(any(test, feature = "test-support"))]
+fn told_late(window: &Window, place: &PlaceKey, notified: &FxHashSet<EntityId>) -> bool {
+    let inside = |id: &GlobalElementId| {
+        id.iter().any(|segment| {
+            matches!(segment, crate::ElementId::View(entity) if notified.contains(entity))
+        })
+    };
+    let was_notified = |entity: &EntityId| notified.contains(entity);
+    match place {
+        PlaceKey::View(id) => {
+            let retained = &window.rendered_frame.retained;
+            inside(id)
+                || retained.find(id).is_some_and(|index| {
+                    retained.records[index]
+                        .dependencies
+                        .entities
+                        .iter()
+                        .any(was_notified)
+                })
+        }
+        PlaceKey::Layer(id) => {
+            inside(id)
+                || window.fast_layers.layers.get(id).is_some_and(|layer| {
+                    layer
+                        .record
+                        .as_ref()
+                        .is_some_and(|record| record.dependencies.entities.iter().any(was_notified))
+                })
+        }
+        PlaceKey::Keyed(_) => false,
+    }
 }
 
 /// How many primitives a report lists for each place, of each frame.
@@ -333,18 +562,24 @@ fn check(
     let replayed = std::mem::take(&mut window.retained_state.check.replayed);
     let painted_before = std::mem::take(&mut window.retained_state.check.painted_parts);
     let pending = std::mem::take(&mut window.retained_state.check.pending);
-    let shown = Shown::capture(window, &painted_before, keyed, replayed);
+    let shown = Shown::capture(window, &painted_before, keyed, replayed, false);
     drop(painted_before);
     let Some(shown) = shown else {
-        // Nothing was drawn again: what the last frame found is built.
+        // Nothing was drawn again: what the last frame found is built, and
+        // the window is drawn from scratch only if it comes to rest.
         window.retained_state.check.painted_parts = layer_parts(window);
+        let told = !window.retained_state.check.notified_drawing.is_empty();
+        leave_rest(window, told.then_some(Rest::Unjudged));
         return drawn;
     };
     drawn.clear(cx);
 
     let (fresh, drawn) = draw_from_scratch(window, cx);
     window.retained_state.check.painted_parts = layer_parts(window);
-    let found = shown.judge(fresh, &window.retained_state.check.view_types);
+    let (found, built): (Vec<Found>, Vec<Found>) = shown
+        .judge(fresh, &window.retained_state.check.view_types)
+        .into_iter()
+        .partition(|found| found.drawn_again);
     // A frame may find too late what it drew again, and build it on the
     // next: one that asked for the next frame (a hover over a view drawn
     // again, the focus moving while it drew), and a place that read what
@@ -372,6 +607,11 @@ fn check(
     let unconfirmed = |found: &Found| !confirmed.iter().any(|again| again.place == found.place);
     now.retain(unconfirmed);
     later.retain(unconfirmed);
+    let told = !window.retained_state.check.notified_drawing.is_empty();
+    leave_rest(
+        window,
+        (told && !built.is_empty()).then_some(Rest::Judged(built)),
+    );
     window.retained_state.check.pending = later;
     report(window, mode, confirmed, true);
     report(window, mode, now, false);
@@ -693,6 +933,12 @@ fn report(window: &mut Window, mode: RetainedCheck, found: Vec<Found>, again: bo
         report.push('\n');
         report.push_str(&found.text);
     }
+    deliver(window, mode, report);
+}
+
+/// Does with `report` what `mode` asks.
+#[cfg(any(test, feature = "test-support"))]
+fn deliver(window: &mut Window, mode: RetainedCheck, report: String) {
     match mode {
         RetainedCheck::Panic => panic!("{report}"),
         RetainedCheck::Record => {
@@ -752,9 +998,13 @@ struct Shown {
 /// A place a frame drew again otherwise than a frame built afresh draws it,
 /// and the report's lines about it.
 #[cfg(any(test, feature = "test-support"))]
+#[derive(Clone)]
 pub(crate) struct Found {
     place: PlaceKey,
     text: String,
+    /// Whether the place was drawn again from the last frame, rather than
+    /// built.
+    drawn_again: bool,
 }
 
 /// A place drawn again, named so that the next frame can find it.
@@ -778,12 +1028,13 @@ enum Place {
 #[cfg(any(test, feature = "test-support"))]
 impl Shown {
     /// What the check needs of the frame `window` shows, or `None` when it
-    /// drew nothing again.
+    /// drew nothing again, unless `always`.
     fn capture(
         window: &Window,
         painted_before: &[Rc<Scene>],
         keyed: Vec<(Range<usize>, u64)>,
         replayed: Vec<(Range<usize>, LayerKey, *const Scene)>,
+        always: bool,
     ) -> Option<Self> {
         let frame = &window.rendered_frame;
         let before: FxHashSet<*const Scene> = painted_before
@@ -816,7 +1067,12 @@ impl Shown {
             .records
             .iter()
             .any(|record| record.drawn_again && painted(record));
-        if !drew_again && kept_parts.is_empty() && replayed.is_empty() && keyed.is_empty() {
+        if !always
+            && !drew_again
+            && kept_parts.is_empty()
+            && replayed.is_empty()
+            && keyed.is_empty()
+        {
             return None;
         }
         let scale = window.scale_factor();
@@ -941,8 +1197,8 @@ impl Shown {
         }
     }
 
-    /// The report of what the frame from scratch, painting `fresh`, found
-    /// the frame shown drew again otherwise, if it found anything.
+    /// What the frame from scratch, painting `fresh`, found the frame shown
+    /// drew otherwise, by place, each drawn again or built.
     fn judge(
         &self,
         mut fresh: Vec<Sourced>,
@@ -960,15 +1216,12 @@ impl Shown {
             if let Some(place) = self
                 .source_place(painted)
                 .or_else(|| self.place_over(&painted.reach))
-                && self.drawn_again(place)
             {
                 found.push((place, &painted.text, true));
             }
         }
         for painted in &only_fresh {
-            if let Some(place) = self.place_over(&painted.reach)
-                && self.drawn_again(place)
-            {
+            if let Some(place) = self.place_over(&painted.reach) {
                 found.push((place, &painted.text, false));
             }
         }
@@ -997,6 +1250,7 @@ impl Shown {
                 Found {
                     place: self.key(place),
                     text,
+                    drawn_again: self.drawn_again(place),
                 }
             })
             .collect()
@@ -1033,10 +1287,18 @@ impl Shown {
                     .and_then(|entity| view_types.get(&entity).copied())
                     .unwrap_or("a view");
                 let entity = entity.map_or_else(String::new, |entity| format!(" {entity:?}"));
-                format!(
-                    "the view {name}{entity}, drawn from the last frame without being notified, at {}",
-                    view.id
-                )
+                if self.drawn_again(place) {
+                    format!(
+                        "the view {name}{entity}, drawn from the last frame without being notified, at {}",
+                        view.id
+                    )
+                } else {
+                    format!(
+                        "the view {name}{entity}, built this frame from what the frame's own \
+                         drawing then changed, at {}",
+                        view.id
+                    )
+                }
             }
             Place::Keyed(at) => format!(
                 "the stretch painted under the key {:#x}, drawn again for its key",
