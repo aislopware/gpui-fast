@@ -543,19 +543,29 @@ unsafe impl Encode for CAFrameRateRange {
 /// `view`, asking for the screen's full refresh rate. Returns the link, retained, and the
 /// screen's refresh interval.
 ///
+/// The link is the window scene's own (iOS 27), which UIKit retargets as the scene moves
+/// between displays, so a window on an external display ticks with that display rather than
+/// the device's; with no scene it is the device screen's.
+///
 /// # Safety
 ///
-/// `view` must be a live `GPUIMetalView` and `screen` a live `UIScreen`, on the main thread.
+/// `view` must be a live `GPUIMetalView`, `scene` a live `UIWindowScene` or null, and `screen`
+/// a live `UIScreen`, on the main thread.
 unsafe fn paused_display_link(
     view: *mut AnyObject,
+    scene: *mut AnyObject,
     screen: *mut AnyObject,
 ) -> (*mut AnyObject, Duration) {
     unsafe {
-        let link: *mut AnyObject = msg_send![
-            class!(CADisplayLink),
-            displayLinkWithTarget: view,
-            selector: sel!(gpuiDisplayLinkFired:)
-        ];
+        let link: *mut AnyObject = if scene.is_null() {
+            msg_send![
+                class!(CADisplayLink),
+                displayLinkWithTarget: view,
+                selector: sel!(gpuiDisplayLinkFired:)
+            ]
+        } else {
+            msg_send![scene, displayLinkWithTarget: view, selector: sel!(gpuiDisplayLinkFired:)]
+        };
         let link: *mut AnyObject = msg_send![link, retain];
         let max_fps: isize = msg_send![screen, maximumFramesPerSecond];
         let max_fps = max_fps.max(1) as f32;
@@ -1155,7 +1165,7 @@ impl IosWindow {
                 false,
             );
             renderer.update_drawable_size(size(DevicePixels(pixel_w), DevicePixels(pixel_h)));
-            let (display_link, refresh_interval) = paused_display_link(view, screen_obj);
+            let (display_link, refresh_interval) = paused_display_link(view, window_scene, screen_obj);
             renderer.set_refresh_interval(refresh_interval);
 
             let ios_window = Self {
