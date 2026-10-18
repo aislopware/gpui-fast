@@ -1572,6 +1572,7 @@ impl Element for List {
         cx: &mut App,
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
         crate::fast::dependencies::note_state_read(cx, &self.state.0.borrow().version);
+        crate::fast::check_retained::note_list(window, &self.state);
         let layout_id = match self.sizing_behavior {
             ListSizingBehavior::Infer => {
                 let mut style = Style::default();
@@ -1691,6 +1692,7 @@ impl Element for List {
 
         state.last_layout_bounds = Some(bounds);
         state.last_padding = Some(padding);
+        crate::fast::layers::lists::note_laid_out(window, state);
         ListPrepaintState { hitbox, layout }
     }
 

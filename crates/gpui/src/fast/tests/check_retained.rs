@@ -84,8 +84,7 @@ fn count_up(cx: &mut TestAppContext, window: WindowHandle<Page>) {
 
 /// A view whose state changed without it being notified, drawn again from
 /// last frame, is caught on the frame that draws it again, named by its type
-/// and its place, and the frame the window then shows is the one built
-/// afresh.
+/// and its place; the window shows the frame it drew.
 #[test]
 fn a_view_drawn_again_without_being_notified_is_caught_and_named() {
     let mut cx = TestAppContext::single();
@@ -95,21 +94,42 @@ fn a_view_drawn_again_without_being_notified_is_caught_and_named() {
 
     width.set(40.);
     count_up(&mut cx, window);
-    let reports = reports(&mut cx, window.into());
-    assert_eq!(reports.len(), 1, "{reports:#?}");
-    let report = &reports[0];
-    assert!(
-        report.contains("check_retained::Bar") && report.contains("drawn from the last frame"),
-        "{report}"
-    );
-    assert!(
-        report.contains("drawn (1)") && report.contains("afresh (1)"),
-        "{report}"
-    );
+    let found = reports(&mut cx, window.into());
+    assert!(!found.is_empty(), "the stale bar is caught");
+    for report in &found {
+        assert!(
+            report.contains("check_retained::Bar") && report.contains("drawn from the last frame"),
+            "{report}"
+        );
+        assert!(
+            report.contains("drawn (1)") && report.contains("afresh (1)"),
+            "{report}"
+        );
+    }
+    // The check leaves the frame shown as the window drew it, stale bar and
+    // all, as it would be with the check off.
     let shown = with_window(&mut cx, window.into(), |window, _| {
         window.painted_primitives().join("\n")
     });
-    assert!(shown.contains("40px"), "the bar is shown 40 wide: {shown}");
+    assert!(
+        shown.contains("20px (scaled) × 8px") && !shown.contains("80px (scaled) × 8px"),
+        "the bar is shown as drawn, 10 wide: {shown}"
+    );
+
+    // Told of it, the bar is built afresh, and nothing is caught.
+    let bar = window
+        .update(&mut cx, |page, _, _| page.bar.clone())
+        .unwrap();
+    bar.update(&mut cx, |_, cx| cx.notify());
+    count_up(&mut cx, window);
+    assert_eq!(reports(&mut cx, window.into()), Vec::<String>::new());
+    let shown = with_window(&mut cx, window.into(), |window, _| {
+        window.painted_primitives().join("\n")
+    });
+    assert!(
+        shown.contains("80px (scaled) × 8px"),
+        "the bar is shown 40 wide: {shown}"
+    );
 }
 
 /// The same change told to the view is drawn afresh, and nothing is caught.
@@ -285,4 +305,24 @@ fn a_layer_composited_over_an_untold_change_is_caught(cx: &mut TestAppContext) {
         wheel(cx, window, dy);
     }
     assert_eq!(reports(cx, window), Vec::<String>::new());
+}
+
+/// The check leaves no trace: through random histories of edits, hovers,
+/// focus moves, resizes, lists growing and scrolling, a window checking
+/// every frame paints what a window that does not paints, frame for frame,
+/// draws the same views from its last frame and does the same layout work,
+/// with its accessibility tree alike; and the check finds nothing.
+#[test]
+fn a_checked_window_draws_every_frame_as_an_unchecked_one() {
+    let checked: usize = (0..8)
+        .map(|seed| super::oracle::run_checked(seed, 60, false))
+        .sum();
+    assert!(checked > 0, "the checked window never drew a view again");
+    let checked: usize = (100..102)
+        .map(|seed| super::oracle::run_checked(seed, 60, true))
+        .sum();
+    assert!(
+        checked > 0,
+        "with accessibility, it never drew a view again"
+    );
 }

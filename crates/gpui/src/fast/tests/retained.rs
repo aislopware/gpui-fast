@@ -994,6 +994,107 @@ fn a_view_that_read_a_changed_model_is_built_again_beside_a_notified_one() {
     assert_eq!(updated, draw_spliced(&mut cx, &s).0);
 }
 
+/// A view that writes what it was last told into a model as it renders,
+/// without notifying anyone: a component handing a sibling what to show.
+struct Teller {
+    model: Entity<Model>,
+    value: usize,
+}
+
+impl Render for Teller {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let value = self.value;
+        self.model.update(cx, |model, _| model.0 = value);
+        div().size(px(20.))
+    }
+}
+
+/// A view as wide as the model says.
+struct Gauge {
+    model: Entity<Model>,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for Gauge {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        let width = 10. + self.model.read(cx).0 as f32;
+        div().w(px(width)).h(px(10.)).bg(crate::red())
+    }
+}
+
+struct TellerAndGauge {
+    teller: Entity<Teller>,
+    gauge: Entity<Gauge>,
+}
+
+impl Render for TellerAndGauge {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(self.teller.clone())
+            .child(self.gauge.clone())
+    }
+}
+
+/// A view built again in a gap of the view around it may write, as it
+/// renders, what a view copied around it read: that view is out of date in
+/// this very frame, drawn after the write, and is not copied showing what the
+/// model held before.
+#[test]
+fn a_view_a_gap_writes_to_as_it_renders_is_not_copied_around_it() {
+    let mut cx = TestAppContext::single();
+    let model = cx.new(|_| Model(0));
+    let gauge_builds = Rc::new(Cell::new(0));
+    let window = cx.add_window({
+        let gauge_builds = gauge_builds.clone();
+        move |_, cx| TellerAndGauge {
+            teller: cx.new(|_| Teller {
+                model: model.clone(),
+                value: 0,
+            }),
+            gauge: cx.new(|_| Gauge {
+                model,
+                builds: gauge_builds,
+            }),
+        }
+    });
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.describe_rendered_frame()
+        })
+        .unwrap()
+    };
+    draw(&mut cx);
+    let unchanged = draw(&mut cx);
+    let builds = gauge_builds.get();
+
+    let teller = window
+        .update(&mut cx, |view, _, _| view.teller.clone())
+        .unwrap();
+    // The test context draws the frame the notification asks for.
+    teller.update(&mut cx, |teller, cx| {
+        teller.value = 7;
+        cx.notify();
+    });
+    let told = cx
+        .update_window(window.into(), |_, window, _| {
+            window.describe_rendered_frame()
+        })
+        .unwrap();
+    assert_eq!(
+        gauge_builds.get(),
+        builds + 1,
+        "the view that read what the teller wrote is built again in that frame"
+    );
+    assert_ne!(unchanged, told, "showing what was written");
+    cx.update_window(window.into(), |_, window, _| window.forget_retained_state())
+        .unwrap();
+    assert_eq!(told, draw(&mut cx));
+}
+
 /// A view around [`SwatchAndCounted`], to notify from outside it.
 struct AroundSpliced {
     inner: Entity<SwatchAndCounted>,

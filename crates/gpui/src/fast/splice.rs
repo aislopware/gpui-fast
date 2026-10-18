@@ -400,8 +400,9 @@ impl Window {
             }
         }
         // A gap may have changed what the views copied around it read as
-        // it was built: moved the focus, or notified one of them, as it
-        // rendered. Copied, they would show what was.
+        // it was built: moved the focus, notified one of them, or written
+        // what one of them read, as it rendered. Copied, they would show
+        // what was.
         if same_roots
             && cx.dependencies_checked() != checked
             && !self.splice_still_holds(previous, entity, &built, cx)

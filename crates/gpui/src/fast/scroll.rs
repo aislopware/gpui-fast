@@ -24,6 +24,7 @@ pub(crate) fn into_view(handle: Option<&ScrollHandle>, bounds: Bounds<Pixels>, s
     let Some(handle) = handle else {
         return;
     };
+    crate::fast::check_retained::note_scroll_handle(handle);
     {
         let mut state = handle.0.borrow_mut();
         state.bounds = bounds;

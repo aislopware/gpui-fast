@@ -1108,6 +1108,137 @@ fn run(seed: u64, steps: usize, a11y: bool) -> (u64, usize, usize) {
     (reused, frames_reusing_subtrees, frames_reusing_with_natives)
 }
 
+/// What a frame leaves to compare between a checked window and an unchecked
+/// one: what it painted and the hitboxes it left, whether it drew views from
+/// its last frame, the layout work it did and, with accessibility on, its
+/// tree.
+fn checked_draw(
+    cx: &mut TestAppContext,
+    window: WindowHandle<OracleView>,
+) -> (Vec<String>, bool, [u64; 8], Option<A11ySnapshot>) {
+    cx.update_window(window.into(), |_, window, cx| {
+        window.reset_layout_stats();
+        window.draw(cx).clear(cx);
+        let stats = window.layout_stats();
+        (
+            window.describe_rendered_frame(),
+            window.rendered_frame.retained.reused_any(),
+            [
+                stats.nodes_created,
+                stats.nodes_reused,
+                stats.views_built,
+                stats.views_reused,
+                stats.elements_built,
+                stats.elements_reused,
+                stats.paints_keyed,
+                stats.paints_replayed,
+            ],
+            window
+                .is_a11y_active()
+                .then(|| super::a11y::a11y_snapshot(window)),
+        )
+    })
+    .unwrap()
+}
+
+/// Drives a window with the retained check on and one without through one
+/// random history, and returns in how many frames the checked window drew
+/// views from its last frame, each of which it checked. The check must find
+/// nothing, and leave nothing: frame for frame, the checked window paints
+/// what the unchecked one paints, reuses what it reuses and does the same
+/// layout work.
+pub(super) fn run_checked(seed: u64, steps: usize, a11y: bool) -> usize {
+    let mut cx = TestAppContext::with_text_system(Arc::new(GlyphBoxTextSystem(NoopTextSystem)));
+    let unchecked = cx.add_window(OracleView::new);
+    let checked = cx.add_window(|window, cx| {
+        window.set_check_retained(Some(crate::RetainedCheck::Record));
+        OracleView::new(window, cx)
+    });
+    if a11y {
+        for window in [unchecked, checked] {
+            cx.update_window(window.into(), |_, window, _| {
+                window.set_a11y_active_for_tests(true)
+            })
+            .unwrap();
+        }
+    }
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut history: Vec<Vec<Change>> = Vec::new();
+    let mut checked_frames = 0;
+    for step in 0..steps {
+        let changes: Vec<Change> = if step == 0 {
+            Vec::new()
+        } else {
+            (0..rng.random_range(1..=3))
+                .map(|_| Change::random(&mut rng))
+                .collect()
+        };
+        for change in &changes {
+            apply(&mut cx, unchecked, change);
+            apply(&mut cx, checked, change);
+        }
+        history.push(changes);
+        let expected = checked_draw(&mut cx, unchecked);
+        let actual = checked_draw(&mut cx, checked);
+        checked_frames += actual.1 as usize;
+        if let (Some(actual), Some(expected)) = (&actual.3, &expected.3)
+            && let Some(difference) = super::a11y::a11y_difference(actual, expected, 0.)
+        {
+            panic!(
+                "seed {seed}, step {step}: the checked window's accessibility tree differs \
+                 from the unchecked one's:\n{difference}\nchanges so far:\n{history:#?}"
+            );
+        }
+        assert_eq!(actual.3.is_some(), a11y);
+        assert!(
+            (&actual.0, actual.1, actual.2) == (&expected.0, expected.1, expected.2),
+            "seed {seed}, step {step}: the checked window drew otherwise than the unchecked \
+             one\nchecked: reused {} {:?}\nunchecked: reused {} {:?}\n{}\nchanges so far:\n{history:#?}",
+            actual.1,
+            actual.2,
+            expected.1,
+            expected.2,
+            first_difference(&actual.0, &expected.0),
+        );
+        let reports = cx
+            .update_window(checked.into(), |_, window, _| {
+                window.take_retained_check_reports()
+            })
+            .unwrap();
+        assert!(
+            reports.is_empty(),
+            "seed {seed}, step {step}: the check found what the frame drew again stale:\n{}\n\
+             changes so far:\n{history:#?}",
+            reports.join("\n")
+        );
+    }
+    checked_frames
+}
+
+/// The lines around the first one where two frames' descriptions differ.
+fn first_difference(actual: &[String], expected: &[String]) -> String {
+    let first = actual
+        .iter()
+        .zip(expected)
+        .position(|(actual, expected)| actual != expected)
+        .unwrap_or(actual.len().min(expected.len()));
+    let excerpt = |lines: &[String]| {
+        lines
+            .iter()
+            .enumerate()
+            .skip(first.saturating_sub(2))
+            .take(5)
+            .map(|(ix, line)| format!("  {ix}: {line}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    format!(
+        "first difference at line {first}\nchecked:\n{}\nunchecked:\n{}",
+        excerpt(actual),
+        excerpt(expected)
+    )
+}
+
 #[test]
 fn incremental_frames_match_frames_drawn_from_scratch() {
     let (reused, frames_reusing_subtrees, frames_reusing_with_natives) = (0..24)

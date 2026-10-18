@@ -384,7 +384,6 @@ pub(crate) fn reuse_kept_layout(
     if window.fast_layers.layers.is_empty()
         || crate::fast::layers::paint::inside_layer(window)
         || !crate::fast::layers::active(window, cx)
-        || crate::fast::check_retained::scratch(window)
         || window.retained_state.notified_entities.contains(&entity)
         || window.retained_state.dirty_subtrees.contains(id)
     {

@@ -531,6 +531,7 @@ impl App {
         Checked {
             updates: self.entities.access_log.update_generation,
             generation: self.dependencies.global_generation,
+            writes: self.entities.access_log.write_generation.get(),
         }
     }
 
@@ -732,6 +733,21 @@ impl EntityMap {
     /// How many writes were made while the window drew so far.
     pub(crate) fn write_generation(&self) -> u64 {
         self.access_log.write_generation.get()
+    }
+
+    /// The entities last written while the window drew after `generation`
+    /// in the write generation.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn written_after(&self, generation: u64) -> FxHashSet<EntityId> {
+        if self.write_generation() == generation {
+            return FxHashSet::default();
+        }
+        self.access_log
+            .written_at
+            .iter()
+            .filter(|(_, written_at)| **written_at > generation)
+            .map(|(entity, _)| *entity)
+            .collect()
     }
 
     pub fn extend_accessed<'a>(&mut self, entities: impl IntoIterator<Item = &'a EntityId>) {
@@ -990,12 +1006,17 @@ impl Writes {
     }
 }
 
-/// Where the entity updates and the global changes stood when dependencies
-/// were found unchanged. See [`App::dependencies_checked`].
+/// Where the entity updates, the global changes and the writes made while
+/// the window draws stood when dependencies were found unchanged. See
+/// [`App::dependencies_checked`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Checked {
     updates: u64,
     generation: u64,
+    /// A write while the window draws changes what was found unchanged as
+    /// much as an update: a view rendering writes what views drawn after it
+    /// read.
+    writes: u64,
 }
 
 /// The logs of what is read while a recording is open, and the count of
@@ -1137,9 +1158,24 @@ impl StateVersion {
         self.0.get()
     }
 
+    /// Sets the count back to `version`, for the retained check's frame from
+    /// scratch, which leaves the state as it found it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set(&self, version: u64) {
+        self.0.set(version);
+    }
+
     /// Marks the state as changed.
     pub(crate) fn bump(&self) {
+        #[cfg(any(test, feature = "test-support"))]
+        crate::fast::check_retained::note_version_bump(self);
         self.0.set(self.0.get().wrapping_add(1));
+    }
+
+    /// Whether `self` and `other` count changes of the same state.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
     }
 
     /// Marks the state as changed if `changed`, for a change that may leave
@@ -1456,5 +1492,56 @@ impl RenderDependencies {
             updates: self.updates.min(other.updates),
             writes: self.writes.union(&other.writes),
         }
+    }
+}
+
+/// What the app has stamped of the changes to its entities and globals, kept
+/// while a frame is drawn that must leave no trace: the retained check's
+/// frame from scratch (see [`crate::fast::check_retained`]). A view that
+/// writes or notifies as it renders stamps it, and a frame after would take
+/// what it read for changed.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct ChangeStamps {
+    update_generation: u64,
+    updated_at: FxHashMap<EntityId, u64>,
+    write_generation: u64,
+    written_at: FxHashMap<EntityId, u64>,
+    updated_unnotified: FxHashSet<EntityId>,
+    changed_at: FxHashMap<EntityId, u64>,
+    boundary: usize,
+    global_generation: u64,
+    global_changed_at: TypeIdHashMap<u64>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ChangeStamps {
+    /// The stamps `cx` holds now.
+    pub(crate) fn take(cx: &App) -> Self {
+        let log = &cx.entities.access_log;
+        ChangeStamps {
+            update_generation: log.update_generation,
+            updated_at: log.updated_at.clone(),
+            write_generation: log.write_generation.get(),
+            written_at: log.written_at.clone(),
+            updated_unnotified: log.updated_unnotified.clone(),
+            changed_at: log.changed_at.clone(),
+            boundary: log.boundary.get(),
+            global_generation: cx.dependencies.global_generation,
+            global_changed_at: cx.dependencies.global_changed_at.clone(),
+        }
+    }
+
+    /// Puts back the stamps of `cx` as they were taken.
+    pub(crate) fn restore(self, cx: &mut App) {
+        let log = &mut cx.entities.access_log;
+        log.update_generation = self.update_generation;
+        log.updated_at = self.updated_at;
+        log.write_generation.set(self.write_generation);
+        log.written_at = self.written_at;
+        log.updated_unnotified = self.updated_unnotified;
+        log.changed_at = self.changed_at;
+        log.boundary.set(self.boundary);
+        cx.dependencies.global_generation = self.global_generation;
+        cx.dependencies.global_changed_at = self.global_changed_at;
     }
 }

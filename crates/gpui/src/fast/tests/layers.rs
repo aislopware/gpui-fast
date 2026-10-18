@@ -230,6 +230,7 @@ fn content_in_parts_draws_each_tile_as_one_scene_does() {
         insert_operations(&mut scene, operations);
         LayerPart {
             bounds: Some(reach.unwrap_or_default()),
+            row: None,
             scene: Rc::new(scene),
         }
     });
@@ -2556,6 +2557,41 @@ mod decisions {
             })
         });
         assert_eq!(decision(cx, window), Some(Decision::Repaint));
+    }
+
+    /// A scroll that composites the content under a still pointer moves
+    /// another row under it: the frame asks for the next one, which paints
+    /// the content afresh with the row now under the pointer hovered, as a
+    /// frame drawn from scratch shows it, without the pointer moving.
+    #[crate::test]
+    fn a_scroll_moving_another_row_under_a_still_pointer_hovers_it_on_the_next_frame(
+        cx: &mut TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = page(cx, false);
+        let window = handle.into();
+        handle
+            .update(cx, |page, _, cx| {
+                page.hover = true;
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx, window);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        let asked = with_window(cx, window, |window, cx| window.simulate_next_frame(cx));
+        assert!(asked > 0, "the composited frame asks for the next one");
+        draw(cx, window);
+        let shown = with_window(cx, window, |window, _| window.painted_primitives());
+        with_window(cx, window, |window, _| window.refresh());
+        draw(cx, window);
+        let afresh = with_window(cx, window, |window, _| window.painted_primitives());
+        assert_eq!(
+            shown, afresh,
+            "the hover drawn is the one a frame from scratch draws"
+        );
     }
 
     /// A view around the page that sets the text colour the page inherits.

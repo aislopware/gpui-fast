@@ -73,6 +73,13 @@ pub(crate) struct ScrollLog {
     /// its state's version counter, is scrolled to its end, for the reads of
     /// only that to be judged by it. See [`note_at_end_read`].
     list_ends: FxHashMap<usize, Option<bool>>,
+    /// Whether each list laid out this frame came out of its layout scrolled
+    /// to its end: what a view that asked before the list was laid out read
+    /// may no longer stand. See [`note_list_laid_out`].
+    ends_laid_out: FxHashMap<usize, Option<bool>>,
+    /// `ends_laid_out` of the last frame, for the views asked to be drawn
+    /// again this one.
+    ends_last_laid_out: FxHashMap<usize, Option<bool>>,
     /// The animation frames asked for while this frame was being drawn, and
     /// while the last one was. See [`note_animation_frame`].
     animation_frames: RefCell<FxHashSet<AnimationRequest>>,
@@ -184,6 +191,7 @@ impl ScrollLog {
         self.scrolled_sources.clear();
         self.scroll_notifies.clear();
         self.list_ends.clear();
+        self.ends_last_laid_out = std::mem::take(&mut self.ends_laid_out);
         self.animation_frames_before = std::mem::take(self.animation_frames.get_mut());
         self.anchored.clear();
         self.written_owners.clear();
@@ -468,6 +476,24 @@ pub(crate) fn note_list_at_end(window: &mut Window, version: &StateVersion, at_e
         .insert(version.id(), at_end);
 }
 
+/// Notes whether the list whose state `version` counts changes of, just laid
+/// out, is scrolled to its end: a list laid out for the first time, or at a
+/// new size, or with rows measured anew, answers otherwise than it did before
+/// its layout, when a view drawn before it may have asked, as a view showing
+/// a "back to bottom" button beside its transcript does. That view is drawn
+/// again on the next frame, as it would be had the answer changed in between.
+pub(crate) fn note_list_laid_out(
+    window: &mut Window,
+    version: &StateVersion,
+    at_end: Option<bool>,
+) {
+    window
+        .fast_layers
+        .scrolls
+        .ends_laid_out
+        .insert(version.id(), at_end);
+}
+
 /// Opens a recording of offset reads, returning where in the log it starts.
 pub(crate) fn begin_offset_reads() -> usize {
     OFFSET_READS.with_borrow_mut(|log| {
@@ -642,6 +668,14 @@ pub(crate) fn offset_read_changed(window: &Window, dependencies: &RenderDependen
             && let Some(now) = scrolls.list_ends.get(&read.version.id())
         {
             return *now != at_end;
+        }
+        if let Read::AtEnd(at_end) = read.read
+            && scrolls
+                .ends_last_laid_out
+                .get(&read.version.id())
+                .is_some_and(|laid_out| *laid_out != at_end)
+        {
+            return true;
         }
         read.version.get() != read.read_at
             || (!scrolled.is_empty() && scrolled.contains(&ScrollSource::of_state(&read.version)))
@@ -1242,4 +1276,42 @@ fn any_content_view(window: &Window, id: &GlobalElementId, f: impl Fn(EntityId) 
 pub(crate) fn changed_without_layer(window: &Window, cx: &App, id: &GlobalElementId) -> bool {
     let source = window.fast_layers.scrolls.source(id);
     nested_container_scrolled(window, id) || !owner_scrolled_only(window, cx, id, source.as_ref())
+}
+
+/// What the thread notes for the next frame's layers, kept while a frame is
+/// drawn that must leave no trace: the retained check's frame from scratch
+/// (see [`crate::fast::check_retained`]). Offsets set and views notified
+/// while it renders are its own, not the frame shown's.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct ThreadNotes {
+    offsets_set: Vec<ScrollSource>,
+    notifies: Vec<(EntityId, u64)>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ThreadNotes {
+    /// Takes what the thread notes, leaving nothing noted.
+    pub(crate) fn take() -> Self {
+        ThreadNotes {
+            offsets_set: OFFSETS_SET.with_borrow_mut(std::mem::take),
+            notifies: OWNER_NOTIFIES.with_borrow(|watched| {
+                watched
+                    .iter()
+                    .map(|(view, notifies)| (*view, notifies.notifies))
+                    .collect()
+            }),
+        }
+    }
+
+    /// Puts back what was taken, dropping what was noted since.
+    pub(crate) fn restore(self) {
+        OFFSETS_SET.set(self.offsets_set);
+        OWNER_NOTIFIES.with_borrow_mut(|watched| {
+            for (view, count) in self.notifies {
+                if let Some(notifies) = watched.get_mut(&view) {
+                    notifies.notifies = count;
+                }
+            }
+        });
+    }
 }

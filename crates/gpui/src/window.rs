@@ -3799,7 +3799,7 @@ impl Window {
         self.refresh();
     }
 
-    fn draw_roots(&mut self, cx: &mut App) {
+    pub(crate) fn draw_roots(&mut self, cx: &mut App) {
         crate::fast::retained::begin_frame(self, cx);
         self.invalidator.set_phase(DrawPhase::Prepaint);
         self.tooltip_bounds.take();
