@@ -1165,7 +1165,8 @@ impl IosWindow {
                 false,
             );
             renderer.update_drawable_size(size(DevicePixels(pixel_w), DevicePixels(pixel_h)));
-            let (display_link, refresh_interval) = paused_display_link(view, window_scene, screen_obj);
+            let (display_link, refresh_interval) =
+                paused_display_link(view, window_scene, screen_obj);
             renderer.set_refresh_interval(refresh_interval);
 
             let ios_window = Self {
