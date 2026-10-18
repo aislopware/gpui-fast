@@ -65,6 +65,7 @@ pub(crate) mod splice;
 pub(crate) mod stats;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod subscriptions;
+pub(crate) mod svg_text;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_window;
 pub(crate) mod text;
