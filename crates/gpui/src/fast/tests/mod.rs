@@ -60,6 +60,7 @@ mod text;
 mod text_input_focused;
 mod text_shaping;
 mod text_smoothing;
+mod touch_hover;
 mod transition;
 mod value_transition;
 mod wheel_notifies;

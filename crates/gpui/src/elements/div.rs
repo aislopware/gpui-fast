@@ -1783,7 +1783,7 @@ pub enum HoverListenerMode {
 impl HoverListenerMode {
     fn is_hovered(self, hitbox: &Hitbox, window: &Window) -> bool {
         match self {
-            Self::InputModalityAware => hitbox.is_hovered(window),
+            Self::InputModalityAware => crate::fast::touch_hover::hovered(hitbox, window),
             Self::InputModalityIndependent => hitbox.id.is_hovered_ignoring_last_input(window),
         }
     }
