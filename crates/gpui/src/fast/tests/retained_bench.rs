@@ -4,12 +4,15 @@
 //! ```text
 //! cargo test -p gpui --lib --release retained_bench -- --ignored --nocapture
 //! ```
+//!
+//! `check_retained_bench` measures the same frames under the retained check
+//! ([`crate::fast::check_retained`]), with it off and on.
 
 use std::time::{Duration, Instant};
 
 use crate::{
-    Context, Entity, IntoElement, Render, SharedString, TestAppContext, Window, WindowHandle, div,
-    hsla, prelude::*, px,
+    Context, Entity, IntoElement, Render, RetainedCheck, SharedString, TestAppContext, Window,
+    WindowHandle, div, hsla, prelude::*, px,
 };
 
 struct Panel {
@@ -60,8 +63,15 @@ impl Render for Dashboard {
 }
 
 /// Draws `frames` frames of `panels` panels, `changing` of them notified
-/// before each, and returns the time a frame took on average.
-fn measure(retention: bool, panels: usize, changing: usize, frames: usize) -> Duration {
+/// before each, checked as `check` says, and returns the time a frame took
+/// on average.
+fn measure(
+    retention: bool,
+    check: Option<RetainedCheck>,
+    panels: usize,
+    changing: usize,
+    frames: usize,
+) -> Duration {
     let mut cx = TestAppContext::single();
     let window: WindowHandle<Dashboard> = cx.add_window(|_, cx| Dashboard {
         panels: (0..panels)
@@ -79,6 +89,7 @@ fn measure(retention: bool, panels: usize, changing: usize, frames: usize) -> Du
         .unwrap();
     cx.update_window(window.into(), |_, window, cx| {
         window.set_view_retention(retention);
+        window.set_check_retained(check);
         window.draw(cx).clear(cx);
     })
     .unwrap();
@@ -108,13 +119,28 @@ fn measure(retention: bool, panels: usize, changing: usize, frames: usize) -> Du
 #[ignore]
 fn retained_bench() {
     for (panels, changing) in [(60, 0), (60, 1), (60, 6), (60, 60)] {
-        let off = measure(false, panels, changing, 200);
-        let on = measure(true, panels, changing, 200);
+        let off = measure(false, None, panels, changing, 200);
+        let on = measure(true, None, panels, changing, 200);
         println!(
             "{panels} panels, {changing:>2} notified per frame: from scratch {:>7.3} ms, retained {:>7.3} ms ({:+.0}%)",
             off.as_secs_f64() * 1e3,
             on.as_secs_f64() * 1e3,
             (on.as_secs_f64() / off.as_secs_f64() - 1.) * 100.,
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn check_retained_bench() {
+    for (panels, changing) in [(60, 0), (60, 1), (60, 6), (60, 60)] {
+        let off = measure(true, None, panels, changing, 200);
+        let on = measure(true, Some(RetainedCheck::Record), panels, changing, 200);
+        println!(
+            "{panels} panels, {changing:>2} notified per frame: unchecked {:>7.3} ms, checked {:>7.3} ms ({:.2}x)",
+            off.as_secs_f64() * 1e3,
+            on.as_secs_f64() * 1e3,
+            on.as_secs_f64() / off.as_secs_f64(),
         );
     }
 }
