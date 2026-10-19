@@ -973,14 +973,14 @@ impl TooltipId {
 }
 
 pub(crate) struct TooltipBounds {
-    id: TooltipId,
-    bounds: Bounds<Pixels>,
+    pub(crate) id: TooltipId,
+    pub(crate) bounds: Bounds<Pixels>,
 }
 
 #[derive(Clone)]
 pub(crate) struct TooltipRequest {
-    id: TooltipId,
-    tooltip: AnyTooltip,
+    pub(crate) id: TooltipId,
+    pub(crate) tooltip: AnyTooltip,
 }
 
 /// The ids of the elements being drawn, root first, with the hash of every
@@ -1261,6 +1261,7 @@ pub struct Window {
     pub(crate) fast_edge_fade: crate::fast::edge_fade::WindowFades,
     pub(crate) fast_layers: crate::fast::layers::WindowLayers,
     pub(crate) fast_frame_time: crate::fast::frame_time::FrameTime,
+    pub(crate) fast_tooltip_exit: crate::fast::tooltip_exit::TooltipExit,
     pub(crate) fast_focus_tooltip: crate::fast::focus_tooltip::WindowFocusTooltip,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
     pub(crate) element_offset_stack: Vec<Point<Pixels>>,
@@ -1325,7 +1326,7 @@ pub struct Window {
     pending_input: Option<PendingInput>,
     pending_modifier: ModifierState,
     pub(crate) pending_input_observers: SubscriberSet<(), AnyObserver>,
-    prompt: Option<RenderablePromptHandle>,
+    pub(crate) prompt: Option<RenderablePromptHandle>,
     pub(crate) client_inset: Option<Pixels>,
     /// The hitbox that has captured the pointer, if any.
     /// While captured, mouse events route to this hitbox regardless of hit testing.
@@ -2203,6 +2204,7 @@ impl Window {
             fast_edge_fade: crate::fast::edge_fade::WindowFades::default(),
             fast_layers: crate::fast::layers::WindowLayers::default(),
             fast_frame_time: crate::fast::frame_time::FrameTime::default(),
+            fast_tooltip_exit: crate::fast::tooltip_exit::TooltipExit::default(),
             fast_focus_tooltip: crate::fast::focus_tooltip::WindowFocusTooltip::default(),
             rendered_entity_stack: Vec::new(),
             element_offset_stack: Vec::new(),
@@ -3872,6 +3874,7 @@ impl Window {
             tooltip_element = self.prepaint_tooltip(cx);
         }
         crate::fast::focus_tooltip::note_drawn(self, cx, tooltip_element.is_some());
+        tooltip_element = crate::fast::tooltip_exit::prepaint(self, cx, tooltip_element);
 
         crate::fast::stats::FramePhaseTimes::end_prepaint(&mut self.fast_layout.phase_times);
         self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
@@ -3893,7 +3896,7 @@ impl Window {
         } else if let Some(mut drag_element) = active_drag_element {
             drag_element.paint(self, cx);
         } else if let Some(mut tooltip_element) = tooltip_element {
-            tooltip_element.paint(self, cx);
+            crate::fast::tooltip_exit::paint(self, cx, &mut tooltip_element);
         }
 
         #[cfg(any(feature = "inspector", debug_assertions))]
