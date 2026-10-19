@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use scheduler::Instant;
 
-use crate::{AnyElement, AnyView, App, AvailableSpace, Pixels, Point, Window};
+use crate::{AnyElement, AnyView, App, AvailableSpace, IntoElement as _, Pixels, Point, Window};
 
 /// How long a tooltip takes to fade out (opencode's 80 ms).
 pub(crate) const EXIT: Duration = Duration::from_millis(80);
