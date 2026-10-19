@@ -407,7 +407,7 @@ fn prepare_gradient_color(tag: u32, color_space: u32,
 
     if (tag == 0u || tag == 2u || tag == 3u) {
         result.solid = hsla_to_rgba(solid);
-    } else if (tag == 1u) {
+    } else if (tag == 1u || tag == 4u) { // 4u: fast::radial_gradient
         // The hsla_to_rgba is returns a linear sRGB color
         result.color0 = hsla_to_rgba(colors[0].color);
         result.color1 = hsla_to_rgba(colors[1].color);
@@ -426,6 +426,21 @@ fn prepare_gradient_color(tag: u32, color_space: u32,
     }
 
     return result;
+}
+
+// gpui-fast: a radial gradient (fast::radial_gradient): `color0` at the centre,
+// fading to `color1` at the ellipse's edge. The centre rides the stops'
+// percentages and the radii `solid`'s hue and saturation, in fractions of the bounds.
+fn fast_radial_gradient(background: Background, position: vec2<f32>, bounds: Bounds,
+    color0: vec4<f32>, color1: vec4<f32>) -> vec4<f32> {
+    let center = bounds.origin
+        + vec2<f32>(background.colors[0].percentage, background.colors[1].percentage) * bounds.size;
+    let radius = max(vec2<f32>(background.solid.h, background.solid.s) * bounds.size, vec2<f32>(0.0001));
+    let t = clamp(length((position - center) / radius), 0.0, 1.0);
+    if (background.color_space == 1u) {
+        return oklab_to_linear_srgb(mix(color0, color1, t));
+    }
+    return srgba_to_linear(mix(color0, color1, t));
 }
 
 fn gradient_color(background: Background, position: vec2<f32>, bounds: Bounds,
@@ -508,6 +523,9 @@ fn gradient_color(background: Background, position: vec2<f32>, bounds: Bounds,
 
             background_color = solid_color;
             background_color.a *= saturate(should_be_colored);
+        }
+        case 4u: { // fast::radial_gradient
+            background_color = fast_radial_gradient(background, position, bounds, color0, color1);
         }
     }
 

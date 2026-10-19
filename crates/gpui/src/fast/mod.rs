@@ -54,6 +54,7 @@ pub(crate) mod misc;
 pub(crate) mod number_shaping;
 pub(crate) mod path_cache;
 pub(crate) mod present;
+pub(crate) mod radial_gradient;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod render_at;
 pub(crate) mod retained;
