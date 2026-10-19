@@ -2746,7 +2746,7 @@ unsafe fn is_ime_input_source_active() -> bool {
 
         CFRelease(source as CFTypeRef);
 
-        is_input_mode && !is_ascii_capable
+        crate::fast::ime::composes(is_input_mode, is_ascii_capable)
     }
 }
 
