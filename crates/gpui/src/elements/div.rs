@@ -3311,7 +3311,7 @@ impl Interactivity {
                     &mut element_state.fast_focus_tooltip,
                     build_tooltip.clone(),
                     self.tooltip_show_delay,
-                    hitbox.bounds,
+                    hitbox,
                     window,
                     cx,
                 );

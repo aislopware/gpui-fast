@@ -15,8 +15,8 @@
 //!   any binding, so a dialog's Escape closes the hint first. It stays hidden
 //!   until the focus leaves the element or the pointer is used.
 //!
-//! An element without a tooltip, or without a focus handle, never reaches
-//! this module beyond one test in its paint.
+//! An element without a tooltip never reaches this module; one without a
+//! focus handle only for its press ([`crate::fast::tooltip_press`]).
 //!
 //! The module also places hover tooltips and warms them up:
 //!
@@ -31,8 +31,8 @@
 //!   each button without waiting each time.
 
 use crate::{
-    ActiveTooltip, AnyTooltip, AnyView, App, Bounds, EntityId, FocusHandle, Interactivity, Pixels,
-    Subscription, TooltipId, Window, point, px,
+    ActiveTooltip, AnyTooltip, AnyView, App, Bounds, EntityId, FocusHandle, Hitbox, Interactivity,
+    Pixels, Subscription, TooltipId, Window, point, px,
 };
 use scheduler::Instant;
 use std::{
@@ -59,6 +59,8 @@ pub(crate) struct FocusTooltip {
     /// Hides the tooltip on Escape before any binding sees the key, held
     /// while it shows.
     escape: RefCell<Option<Subscription>>,
+    /// The element was pressed and the pointer has not left it since.
+    pub(crate) pressed: Rc<Cell<bool>>,
 }
 
 /// Where a hover tooltip sits ([`crate::StatefulInteractiveElement::tooltip_placement`],
@@ -158,8 +160,9 @@ fn hide(state: &FocusTooltip, active: &Active, window: &mut Window) {
     state.shown.set(None);
 }
 
-/// Shows the element's tooltip, after its delay, while it is focus-visible:
-/// the paint hook of an element with a tooltip.
+/// Shows the element's tooltip, after its delay, while it is focus-visible,
+/// and keeps it away after a press: the paint hook of an element with a
+/// tooltip.
 #[allow(
     clippy::too_many_arguments,
     reason = "the element's parts, passed apart"
@@ -170,14 +173,16 @@ pub(crate) fn paint(
     state: &mut Option<Rc<FocusTooltip>>,
     build: BuildTooltip,
     show_delay: Option<Duration>,
-    bounds: Bounds<Pixels>,
+    hitbox: &Hitbox,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let state = state.get_or_insert_with(Default::default);
+    crate::fast::tooltip_press::watch(&state.pressed, active, hitbox, window);
     let Some(handle) = focus_handle else {
         return;
     };
-    let state = state.get_or_insert_with(Default::default);
+    let bounds = hitbox.bounds;
     if !is_shown(state, active) {
         state.shown.set(None);
         state.escape.take();
