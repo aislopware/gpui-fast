@@ -130,6 +130,7 @@ pub use fast::layers::scene::{
 };
 pub use fast::live_region::LiveRegion;
 pub use fast::mask::RenderMaskParams;
+pub use fast::radial_gradient::radial_gradient;
 #[cfg(any(test, feature = "test-support"))]
 pub use fast::stats::LayoutStats;
 #[cfg(any(test, feature = "test-support"))]

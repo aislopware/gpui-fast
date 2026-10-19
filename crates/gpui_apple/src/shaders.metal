@@ -1216,7 +1216,7 @@ GradientColor prepare_fill_color(uint tag, uint color_space, Hsla solid,
   GradientColor out;
   if (tag == 0 || tag == 2 || tag == 3) {
     out.solid = hsla_to_rgba(solid);
-  } else if (tag == 1) {
+  } else if (tag == 1 || tag == 4) { // 4: fast::radial_gradient
     out.color0 = hsla_to_rgba(color0);
     out.color1 = hsla_to_rgba(color1);
 
@@ -1236,6 +1236,32 @@ float2x2 rotate2d(float angle) {
     float s = sin(angle);
     float c = cos(angle);
     return float2x2(c, -s, s, c);
+}
+
+// gpui-fast: a radial gradient (fast::radial_gradient): `color0` at the
+// centre, fading to `color1` at the ellipse's edge. The centre rides the
+// stops' percentages and the radii `solid`'s hue and saturation, all in
+// fractions of the bounds.
+float4 fast_radial_gradient(Background background, float2 position,
+                            Bounds_ScaledPixels bounds, float4 color0,
+                            float4 color1) {
+  float2 size = float2(bounds.size.width, bounds.size.height);
+  float2 center = float2(bounds.origin.x, bounds.origin.y) +
+      float2(background.colors[0].percentage, background.colors[1].percentage) * size;
+  float2 radius = max(float2(background.solid.h, background.solid.s) * size, float2(0.0001));
+  float t = clamp(length((position - center) / radius), 0.0, 1.0);
+  float4 color = mix(color0, color1, t);
+  if (background.color_space == 1) {
+    color = oklab_to_srgb(color);
+  }
+  // Dithered as the linear gradient is: a faint glow bands at 8 bits.
+  float2 seed = (position - float2(bounds.origin.x, bounds.origin.y)) * 0.6180339887;
+  float r1 = fract(sin(dot(seed, float2(12.9898, 78.233))) * 43758.5453);
+  float r2 = fract(sin(dot(seed, float2(39.3460, 11.135))) * 24634.6345);
+  float tri = r1 + r2 - 1.0;
+  color.rgb += tri * 2.0 / 255.0;
+  color.a += tri * 3.0 / 255.0;
+  return color;
 }
 
 float4 fill_color(Background background,
@@ -1334,6 +1360,9 @@ float4 fill_color(Background background,
         color.a *= saturate(should_be_colored);
         break;
     }
+    case 4: // fast::radial_gradient
+      color = fast_radial_gradient(background, position, bounds, color0, color1);
+      break;
   }
 
   return color;

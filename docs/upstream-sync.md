@@ -238,6 +238,15 @@ unchanged, and a new entry needs as good a reason.
   the wgpu and Direct3D renderers draw everything unfaded. With
   `test-support`, `Scene::edge_fade_ramps`, `Scene::add_edge_fade` and
   `Scene::insert_faded_primitive` let a renderer's test build a faded scene.
+- `radial_gradient(center, radius, from, to)` is new public API
+  (`fast/radial_gradient.rs`). Upstream's backgrounds are a
+  solid colour, a linear gradient and two patterns, so a soft glow or a lit
+  surface could only be faked with stacked shadows. The ellipse is placed in
+  fractions of the bounds, and rides fields a linear gradient leaves alone in
+  `Background`'s shared `repr(C)` layout (the radii in `solid`'s hue and
+  saturation, the centre in the stops' percentages), so the struct keeps
+  upstream's size. Metal, wgpu and Direct3D all draw it, in the colour space
+  the background asks for.
 - A tooltip (`.tooltip(..)`, `.hoverable_tooltip(..)`) on an element that
   tracks a focus handle also shows while the element is focus-visible:
   focused, with the keyboard the last input (`fast/focus_tooltip.rs`).
