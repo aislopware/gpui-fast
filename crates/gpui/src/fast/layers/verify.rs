@@ -304,6 +304,7 @@ fn describe_unfaded(primitive: &Primitive) -> String {
             crate::MonochromeSprite {
                 order: 0,
                 tile: neutral(p.tile),
+                transformation: settled(p.transformation),
                 ..*p
             }
         ),
@@ -312,6 +313,7 @@ fn describe_unfaded(primitive: &Primitive) -> String {
             crate::SubpixelSprite {
                 order: 0,
                 tile: neutral(p.tile),
+                transformation: settled(p.transformation),
                 ..*p
             }
         ),
@@ -324,6 +326,22 @@ fn describe_unfaded(primitive: &Primitive) -> String {
             }
         ),
         Primitive::Surface(p) => format!("surface {:?} {:?}", p.bounds, p.content_mask),
+    }
+}
+
+/// A sprite's transform as two frames placing it alike both give it: its
+/// translation on the 1/64 pixel grid and its rotation and scale to 1/4096,
+/// without a negative zero. A rotated sprite's translation is worked out from
+/// where its element landed, and a frame that drew the element again and one
+/// that kept it reach the same place through different sums, a few ulps apart
+/// (a spinner at a quarter turn: -591.0 and -590.99994).
+fn settled(transform: crate::TransformationMatrix) -> crate::TransformationMatrix {
+    fn on(grid: f32) -> impl Fn(f32) -> f32 {
+        move |value| (value * grid).round() / grid + 0.0
+    }
+    crate::TransformationMatrix {
+        rotation_scale: transform.rotation_scale.map(|row| row.map(on(4096.0))),
+        translation: transform.translation.map(on(64.0)),
     }
 }
 
@@ -465,4 +483,48 @@ fn push_sourced(out: &mut Vec<Sourced>, scene: &Scene, drawn: Drawn, source: Sou
         source,
         reach,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_unfaded;
+    use crate::{
+        AtlasTextureId, AtlasTextureKind, AtlasTile, Bounds, ContentMask, MonochromeSprite, TileId,
+        TransformationMatrix, hsla, point, px, scene::Primitive, size,
+    };
+
+    fn spinner(translation: [f32; 2], turn: f32) -> Primitive {
+        let bounds = Bounds::new(point(px(160.), px(751.)), size(px(42.), px(42.))).scale(1.0);
+        Primitive::MonochromeSprite(MonochromeSprite {
+            order: 0,
+            pad: 0,
+            bounds,
+            content_mask: ContentMask { bounds },
+            color: hsla(0.66, 0.04, 0.4, 1.),
+            tile: AtlasTile {
+                texture_id: AtlasTextureId {
+                    index: 3,
+                    kind: AtlasTextureKind::Monochrome,
+                },
+                tile_id: TileId(7),
+                padding: 0,
+                bounds: Bounds::default(),
+            },
+            transformation: TransformationMatrix {
+                rotation_scale: [[turn, 1.0], [-1.0, turn]],
+                translation,
+            },
+        })
+    }
+
+    /// A sprite one frame placed a few ulps from where another did reads the
+    /// same; one a pixel away does not.
+    #[test]
+    fn a_sprite_placed_a_few_ulps_apart_reads_the_same() {
+        let kept = describe_unfaded(&spinner([-591.0, 953.0], 0.0));
+        let again = describe_unfaded(&spinner([-590.99994, 952.99994], -1.2e-8));
+        assert_eq!(kept, again);
+        let moved = describe_unfaded(&spinner([-590.0, 953.0], 0.0));
+        assert_ne!(kept, moved);
+    }
 }
