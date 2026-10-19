@@ -61,6 +61,7 @@ mod text;
 mod text_input_focused;
 mod text_shaping;
 mod text_smoothing;
+mod tooltip_exit;
 mod tooltip_press;
 mod touch_hover;
 mod transition;

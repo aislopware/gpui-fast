@@ -254,6 +254,7 @@ fn the_tooltip_follows_the_focus() {
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
     assert_eq!(s.tooltip_at(), Some((90., 74.)));
     s.tab_to(&b);
+    s.wait(crate::fast::tooltip_exit::EXIT); // it fades out first
     assert_eq!(s.tooltip(), None, "gone with the focus");
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
     assert_eq!(s.tooltip_at(), Some((190., 74.)));
@@ -270,6 +271,7 @@ fn escape_hides_it_first_and_keeps_the_focus() {
     assert!(s.tooltip().is_some());
 
     s.press("escape");
+    s.wait(crate::fast::tooltip_exit::EXIT); // it fades out first
     assert_eq!(s.tooltip(), None);
     assert!(s.is_focused(&a));
     assert_eq!(s.cancels.get(), 0, "the binding never saw it");
@@ -309,6 +311,7 @@ fn the_pointer_hides_it() {
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
     assert!(s.tooltip().is_some());
     s.move_mouse(5., 5.);
+    s.wait(crate::fast::tooltip_exit::EXIT); // it fades out first
     assert_eq!(s.tooltip(), None);
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
     assert_eq!(s.tooltip(), None);
@@ -393,6 +396,7 @@ fn the_next_tooltip_shows_at_once_while_warm() {
     assert_eq!(s.tooltip_at(), Some((211., 56.)), "warm: the next at once");
 
     s.move_mouse(5., 5.);
+    s.wait(crate::fast::tooltip_exit::EXIT); // it fades out first
     assert_eq!(s.tooltip(), None);
     s.wait(crate::TOOLTIP_WARM_FOR - Duration::from_millis(100));
     s.move_mouse(110., 55.);
