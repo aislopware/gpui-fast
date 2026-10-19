@@ -101,12 +101,11 @@ mod tests {
 
     const NUMERIC_PAD: NSEventModifierFlags = NSEventModifierFlags::NSNumericPadKeyMask;
 
-    /// One test, because the Text Input Sources calls that spell a key abort
-    /// the process when two threads make them at once. What a key types comes
-    /// from the current keyboard layout, so it is compared with the layout's
-    /// answer rather than with a US keyboard's.
+    /// What a key types comes from the current keyboard layout, so it is
+    /// compared with the layout's answer rather than with a US keyboard's.
     #[test]
     fn keypad_keys_are_named_apart_from_the_main_keys() {
+        let _spelling = crate::fast::typed::SPELLING.lock();
         for (key_code, characters, key) in [
             (0x52, "0", "kp0"),
             (0x53, "1", "kp1"),
@@ -145,6 +144,7 @@ mod tests {
 
     #[test]
     fn a_chord_on_the_keypad_keeps_the_keypad_name_and_types_nothing() {
+        let _spelling = crate::fast::typed::SPELLING.lock();
         let keystroke = key_down(
             0x53,
             "1",

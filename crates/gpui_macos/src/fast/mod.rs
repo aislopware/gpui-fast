@@ -18,6 +18,7 @@ pub(crate) mod scroll;
 pub(crate) mod text_smoothing;
 #[cfg(feature = "font-kit")]
 pub(crate) mod text_system;
+pub(crate) mod typed;
 
 pub(crate) mod composition;
 pub(crate) mod frame_park;

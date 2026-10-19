@@ -477,7 +477,10 @@ unsafe fn parse_keystroke(native_event: id) -> Keystroke {
                         mods |= OPTION_MOD;
                     }
 
-                    key_char = Some(chars_for_modified_key(native_event.keyCode(), mods));
+                    key_char = Some(crate::fast::typed::key_char(
+                        native_event,
+                        chars_for_modified_key(native_event.keyCode(), mods),
+                    ));
                 }
 
                 if shift
