@@ -76,7 +76,7 @@ fn a_measured_size_shows_in_the_frame_it_changed_in(cx: &mut TestAppContext) {
     let measured = Rc::new(Cell::new(0.));
     let renders = Rc::new(Cell::new(0));
     let window = cx.add_window({
-        let (tall, measured, renders) = (tall.clone(), measured.clone(), renders.clone());
+        let (tall, measured, renders) = (tall.clone(), measured, renders);
         move |_, _| Measured {
             tall,
             measured,
@@ -104,7 +104,7 @@ fn a_deferral_that_changes_nothing_costs_no_draw(cx: &mut TestAppContext) {
     let measured = Rc::new(Cell::new(30.));
     let renders = Rc::new(Cell::new(0));
     let window = cx.add_window({
-        let (tall, measured, renders) = (tall.clone(), measured.clone(), renders.clone());
+        let (tall, measured, renders) = (tall, measured, renders.clone());
         move |_, _| Measured {
             tall,
             measured,
