@@ -49,6 +49,7 @@ mod rounded_clip;
 mod scene_order;
 mod scroll;
 mod scroll_to_bottom;
+mod settle;
 mod shift;
 mod splice;
 mod subscriptions;

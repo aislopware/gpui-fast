@@ -2091,7 +2091,9 @@ impl App {
                 }
             } else {
                 #[cfg(any(test, feature = "test-support"))]
-                if matches!(self.mode, GpuiMode::Test { .. }) {
+                if matches!(self.mode, GpuiMode::Test { .. })
+                    && !crate::fast::settle::platform_frames()
+                {
                     for window in self
                         .windows
                         .values()
