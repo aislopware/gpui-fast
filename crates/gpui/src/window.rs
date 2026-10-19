@@ -1932,10 +1932,10 @@ impl Window {
                                     window.refresh();
                                 }
                                 let arena_clear_needed = window.draw(cx);
-                                window.present();
                                 arena_clear_needed.clear(cx);
                             })
                             .log_err();
+                        crate::fast::settle::settle_and_present(handle, &mut cx);
                     })
                 } else if needs_present {
                     handle
@@ -3734,7 +3734,7 @@ impl Window {
     }
 
     #[profiling::function]
-    fn present(&mut self) {
+    pub(crate) fn present(&mut self) {
         #[cfg(feature = "profiler")]
         let _foreground_turn = profiler::journal::foreground_turn();
         #[cfg(feature = "profiler")]
