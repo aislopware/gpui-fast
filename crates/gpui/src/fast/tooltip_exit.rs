@@ -84,7 +84,8 @@ pub(crate) fn prepaint(
     let mut element = view.into_any_element();
     element.layout_as_root(AvailableSpace::min_size(), window, cx);
     window.with_absolute_element_offset(origin, |window| element.prepaint(window, cx));
-    window.request_animation_frame();
+    // No view is being drawn here, so the next frame is asked of the window.
+    window.on_next_frame(|window, _| window.refresh());
     Some(element)
 }
 

@@ -86,7 +86,7 @@ impl Setup {
                         let color = quad.background.solid;
                         (color.h, color.s, color.l) == (TIP.h, TIP.s, TIP.l)
                     })
-                    .map(|quad| (quad.bounds.origin.x / scale, quad.background.solid.a))
+                    .map(|quad| (px(quad.bounds.origin.x.0 / scale), quad.background.solid.a))
             })
             .unwrap()
     }

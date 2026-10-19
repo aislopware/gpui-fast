@@ -140,6 +140,7 @@ fn a_press_hides_the_tooltip_until_the_pointer_leaves() {
     assert_eq!(s.tooltip(), Some(60.));
 
     s.click();
+    s.wait(crate::fast::tooltip_exit::EXIT); // it fades out first
     assert_eq!(s.tooltip(), None, "the press hides it");
     s.move_mouse(120., 60.);
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY * 2);
