@@ -112,7 +112,10 @@ mod tests {
         let half = glow.opacity(0.5);
         assert_eq!(center(&half), point(0.25, 0.2), "the centre stays");
         assert_eq!(radius(&half), size(0.7, 1.5), "the ellipse stays");
-        assert_eq!(half.colors[0].color.a, 0.1, "the colours fade");
+        assert!(
+            (half.colors[0].color.a - 0.1).abs() < 1e-6,
+            "the colours fade"
+        );
         assert!(glow.opacity(0.0).is_transparent());
         assert!(format!("{glow:?}").starts_with("RadialGradient(at 0.25, 0.2; 0.7 x 1.5"));
     }

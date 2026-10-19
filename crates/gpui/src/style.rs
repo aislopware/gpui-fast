@@ -742,7 +742,7 @@ impl Style {
                         .map(|stop| stop.color)
                         .unwrap_or_default(),
                     BackgroundTag::RadialGradient => {
-                        crate::fast::radial_gradient::from_color(color)
+                        crate::fast::radial_gradient::from_color(&color)
                     }
                 },
                 None => Hsla::default(),
