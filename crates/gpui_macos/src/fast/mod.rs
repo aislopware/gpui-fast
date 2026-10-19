@@ -10,6 +10,7 @@
 pub(crate) mod backdrop;
 pub(crate) mod cursor;
 pub(crate) mod gesture;
+pub(crate) mod ime;
 pub(crate) mod keypad;
 pub(crate) mod pasteboard;
 pub(crate) mod scroll;
