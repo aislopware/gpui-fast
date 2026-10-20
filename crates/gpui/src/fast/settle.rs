@@ -15,7 +15,7 @@
 
 use gpui_util::ResultExt as _;
 
-use crate::{AnyWindowHandle, AsyncApp};
+use crate::{AnyWindowHandle, AppContext, AsyncApp};
 
 /// How many more times a frame is drawn, at most, before it is shown. A measurement that has
 /// not settled after these is shown as it stands and settles in the frames that follow.
@@ -45,7 +45,7 @@ pub(crate) fn settle_and_present(handle: AnyWindowHandle, cx: &mut AsyncApp) {
 
 /// Draw `handle`'s window again while what its last draw deferred, run as the draw's update
 /// ended, left it dirty: up to [`PASSES`] times. How many more draws it took.
-pub(crate) fn settle(handle: AnyWindowHandle, cx: &mut AsyncApp) -> usize {
+pub(crate) fn settle(handle: AnyWindowHandle, cx: &mut impl AppContext) -> usize {
     let mut passes = 0;
     while passes < PASSES {
         let drew = handle

@@ -166,16 +166,17 @@ pub(crate) fn before_dispatch(window: &mut Window, cx: &mut App, event: &Platfor
         crate::fast::layers::hover_freeze::note_wheel(window, cx);
     }
     crate::fast::layers::wheel::begin_dispatch(window, cx, event);
-    draw_for(window, cx, event);
+    let _drew = draw_for(window, cx, event);
 }
 
-/// The frame [`before_dispatch`] draws for `event`, if it needs one: the
+/// The frame [`before_dispatch`] draws for `event`, if it needs one, and
+/// whether it drew one: the
 /// layers it could reach whose content was shown scrolled since it was
 /// painted, painted again. Drawn by [`crate::prepare_input`] in an update of
 /// its own first, it leaves [`before_dispatch`] nothing to draw.
-pub(crate) fn draw_for(window: &mut Window, cx: &mut App, event: &PlatformInput) {
+pub(crate) fn draw_for(window: &mut Window, cx: &mut App, event: &PlatformInput) -> bool {
     if !COMPILED || window.fast_layers.layers.is_empty() {
-        return;
+        return false;
     }
     // The element a move lands on, as last frame hit tested it.
     let moved_onto = match event {
@@ -188,7 +189,7 @@ pub(crate) fn draw_for(window: &mut Window, cx: &mut App, event: &PlatformInput)
         _ => None,
     };
     let reaches: &dyn Fn(&Window, &Layer) -> bool = match event {
-        PlatformInput::Scroll(_) => return,
+        PlatformInput::Scroll(_) => return false,
         PlatformInput::KeyDown(_)
         | PlatformInput::KeyUp(_)
         | PlatformInput::ModifiersChanged(_) => &focus_inside,
@@ -226,7 +227,7 @@ pub(crate) fn draw_for(window: &mut Window, cx: &mut App, event: &PlatformInput)
         }
     }
     if rebuilt == 0 {
-        return;
+        return false;
     }
     for layer in window.fast_layers.layers.values_mut() {
         let input = &mut layer.input;
@@ -260,6 +261,7 @@ pub(crate) fn draw_for(window: &mut Window, cx: &mut App, event: &PlatformInput)
     if let Some(engine) = window.layout_engine.as_mut() {
         engine.retention.stats.layer_rebuilds_for_input += rebuilt as u64;
     }
+    true
 }
 
 /// Whether the focused element is inside the content of `layer`, as the

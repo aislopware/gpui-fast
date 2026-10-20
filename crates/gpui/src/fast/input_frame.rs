@@ -15,8 +15,13 @@
 //!
 //! [`prepare_input`] draws the frame in an update of its own before the update
 //! that dispatches the event: its effects are flushed, its deferred work run,
-//! before any handler sees the event, and the dispatch finds nothing left to
-//! draw.
+//! before any handler sees the event. That work can leave the window dirty
+//! again (a hover the keyboard's modality takes away, a size measured while
+//! painting and told on), and a key would then draw it inside the dispatch
+//! after all, so the frame is settled as a platform frame is
+//! ([`crate::fast::settle`]): drawn again, each time in an update of its own,
+//! while what it deferred leaves it dirty. The dispatch then finds nothing
+//! left to draw.
 
 use crate::{
     AnyWindowHandle, AppContext, KeyDownEvent, Keystroke, PlatformInput, window::InputModality,
@@ -27,23 +32,30 @@ use crate::{
 /// views deferred. Call it before the update that dispatches `event`, as the
 /// platform's input does; a window that is gone is left alone.
 pub fn prepare_input(window: AnyWindowHandle, event: &PlatformInput, cx: &mut impl AppContext) {
-    cx.update_window(window, |_, window, cx| {
-        // A key draws the window first when it is dirty (`dispatch_key_event`), and the first key
-        // after the pointer dirties it, taking the keyboard's modality (`dispatch_event`).
-        if event.keyboard_event().is_some() {
-            if matches!(event, PlatformInput::KeyDown(_))
-                && window.last_input_modality != InputModality::Keyboard
-            {
-                window.last_input_modality = InputModality::Keyboard;
-                window.refresh();
+    let drew = cx
+        .update_window(window, |_, window, cx| {
+            let mut drew = false;
+            // A key draws the window first when it is dirty (`dispatch_key_event`), and the first
+            // key after the pointer dirties it, taking the keyboard's modality (`dispatch_event`).
+            if event.keyboard_event().is_some() {
+                if matches!(event, PlatformInput::KeyDown(_))
+                    && window.last_input_modality != InputModality::Keyboard
+                {
+                    window.last_input_modality = InputModality::Keyboard;
+                    window.refresh();
+                }
+                if window.invalidator.is_dirty() {
+                    window.draw(cx).clear(cx);
+                    drew = true;
+                }
             }
-            if window.invalidator.is_dirty() {
-                window.draw(cx).clear(cx);
-            }
-        }
-        crate::fast::layers::input::draw_for(window, cx, event);
-    })
-    .ok();
+            crate::fast::layers::input::draw_for(window, cx, event) || drew
+        })
+        .unwrap_or(false);
+    // What the frame deferred ran as its update ended, and may have left the window dirty.
+    if drew {
+        crate::fast::settle::settle(window, cx);
+    }
 }
 
 /// [`prepare_input`] for `keystroke` pressed, as `Window::dispatch_keystroke`

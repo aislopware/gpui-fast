@@ -3316,6 +3316,9 @@ mod input {
         /// Each frame's work deferred from rendering the page ("frame") and
         /// each press on a row ("press"), in the order they ran.
         log: Rc<RefCell<Vec<&'static str>>>,
+        /// How many more frames notify the page again from their deferred
+        /// work, as a size measured while painting is told on.
+        again: Rc<Cell<usize>>,
     }
 
     /// What a row of an [`InputPage`] is dragged as.
@@ -3342,6 +3345,11 @@ mod input {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let log = self.log.clone();
             window.defer(cx, move |_, _| log.borrow_mut().push("frame"));
+            if self.again.get() > 0 {
+                self.again.set(self.again.get() - 1);
+                let page = cx.entity();
+                window.defer(cx, move |_, cx| page.update(cx, |_, cx| cx.notify()));
+            }
             let rows = (0..ROWS).map(|index| {
                 let clicks = self.clicks.clone();
                 let drags = self.drags.clone();
@@ -3423,6 +3431,7 @@ mod input {
             tooltip,
             translucent: false,
             log: Rc::default(),
+            again: Rc::default(),
         });
         draw(cx, window.into());
         draw(cx, window.into());
@@ -3789,6 +3798,30 @@ mod input {
         log.borrow_mut().clear();
         cx.dispatch_keystroke(window, crate::Keystroke::parse("a").unwrap());
         assert_eq!(log.borrow().get(..2), Some(&["frame", "key"][..]));
+    }
+
+    /// On a platform's frames, the frame a key draws first leaves the window
+    /// dirty again when its deferred work notifies, and is settled before the
+    /// key is dispatched: no frame is drawn inside the dispatch, whose deferred
+    /// work would run after the key's handlers.
+    #[crate::test]
+    fn a_frame_a_key_draws_is_settled_before_the_key(cx: &mut TestAppContext) {
+        let handle = input_page(cx);
+        let window = handle.into();
+        let (log, again) = handle
+            .update(cx, |page, window, cx| {
+                window.focus(&page.focus, cx);
+                (page.log.clone(), page.again.clone())
+            })
+            .unwrap();
+        draw(cx, window);
+        crate::fast::settle::set_platform_frames(true);
+        handle.update(cx, |_, _, cx| cx.notify()).unwrap();
+        again.set(1);
+        log.borrow_mut().clear();
+        cx.dispatch_keystroke(window, crate::Keystroke::parse("a").unwrap());
+        crate::fast::settle::set_platform_frames(false);
+        assert_eq!(*log.borrow(), ["frame", "frame", "key"]);
     }
 
     #[crate::test]
