@@ -640,6 +640,7 @@ impl TestAppContext {
 
     /// dispatches a single Keystroke (see also `simulate_keystrokes` and `simulate_input`)
     pub fn dispatch_keystroke(&mut self, window: AnyWindowHandle, keystroke: Keystroke) {
+        crate::fast::input_frame::prepare_keystroke(window, &keystroke, self);
         self.update_window(window, |_, window, cx| {
             window.dispatch_keystroke(keystroke, cx)
         })

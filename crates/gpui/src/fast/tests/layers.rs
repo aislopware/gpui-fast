@@ -3310,6 +3310,9 @@ mod input {
         /// Paints the page's background translucent, which a layer's tiles
         /// cannot be cleared with.
         translucent: bool,
+        /// Each frame's work deferred from rendering the page ("frame") and
+        /// each press on a row ("press"), in the order they ran.
+        log: Rc<RefCell<Vec<&'static str>>>,
     }
 
     /// What a row of an [`InputPage`] is dragged as.
@@ -3333,15 +3336,21 @@ mod input {
     }
 
     impl Render for InputPage {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let log = self.log.clone();
+            window.defer(cx, move |_, _| log.borrow_mut().push("frame"));
             let rows = (0..ROWS).map(|index| {
                 let clicks = self.clicks.clone();
                 let drags = self.drags.clone();
+                let log = self.log.clone();
                 let row = div()
                     .id(("row", index))
                     .w(px(100.))
                     .h(px(ROW_HEIGHT))
                     .bg(rgb(0x100000 + index as u32 * 0x10))
+                    .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                        log.borrow_mut().push("press")
+                    })
                     .on_click(move |_, _, _| clicks.borrow_mut().push(index))
                     .on_drag(DraggedRow, |_, _, _, cx| cx.new(|_| super::EmptyView))
                     .on_drag_move::<DraggedRow>(move |event, _, _| {
@@ -3352,8 +3361,11 @@ mod input {
                     .child(noting_canvas(index, self.seen.clone()));
                 if index == 2 {
                     let keys = self.keys.clone();
-                    row.track_focus(&self.focus)
-                        .on_key_down(move |_, _, _| keys.set(keys.get() + 1))
+                    let log = self.log.clone();
+                    row.track_focus(&self.focus).on_key_down(move |_, _, _| {
+                        keys.set(keys.get() + 1);
+                        log.borrow_mut().push("key");
+                    })
                 } else {
                     row
                 }
@@ -3407,6 +3419,7 @@ mod input {
             inner,
             tooltip,
             translucent: false,
+            log: Rc::default(),
         });
         draw(cx, window.into());
         draw(cx, window.into());
@@ -3728,6 +3741,50 @@ mod input {
             assert_eq!(scroll(cx, window, 5.), Some(Decision::Composite));
         }
         assert_eq!(rebuilds(cx, window), 0);
+    }
+
+    /// A press after a scroll needs the layer painted again first, in a frame
+    /// drawn before the press is dispatched. The work that frame's views
+    /// deferred runs before the press's handlers, as it does for any frame
+    /// drawn before an input: a view giving the keyboard back to what its
+    /// frame mounts must not see the focus a handler then moves.
+    #[crate::test]
+    fn a_frame_drawn_for_a_press_runs_its_deferred_work_first(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window = handle.into();
+        scroll_five_times(cx, window);
+        let log = handle.update(cx, |page, _, _| page.log.clone()).unwrap();
+        log.borrow_mut().clear();
+        cx.test_window(window)
+            .simulate_input(mouse_down(point(px(20.), px(50.))));
+        assert_eq!(
+            rebuilds(cx, window),
+            1,
+            "a frame was drawn before the press"
+        );
+        assert_eq!(log.borrow().get(..2), Some(&["frame", "press"][..]));
+    }
+
+    /// The first key after the pointer leaves the window dirty, and a key draws
+    /// a dirty window before it is dispatched: that frame's deferred work runs
+    /// before the key's handlers too.
+    #[crate::test]
+    fn a_frame_drawn_for_a_key_runs_its_deferred_work_first(cx: &mut TestAppContext) {
+        let handle = input_page(cx);
+        let window = handle.into();
+        let log = handle
+            .update(cx, |page, window, cx| {
+                window.focus(&page.focus, cx);
+                page.log.clone()
+            })
+            .unwrap();
+        draw(cx, window);
+        log.borrow_mut().clear();
+        cx.dispatch_keystroke(window, crate::Keystroke::parse("a").unwrap());
+        assert_eq!(log.borrow().get(..2), Some(&["frame", "key"][..]));
     }
 
     #[crate::test]
