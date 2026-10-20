@@ -702,3 +702,59 @@ fn blurs_whose_regions_are_apart_share_one_copy() {
         assert!(labels.clone().all(|sprite| sprite.order < order));
     });
 }
+
+/// A native and a blur whose regions are apart take one draw order. A
+/// renderer meets the blur, then the hole, then the batches over them, and
+/// the batches end: a hole waiting on a blur of its own order never stalls
+/// them.
+#[test]
+fn a_hole_and_a_blur_of_one_order_are_both_met() {
+    let mut scene = crate::Scene::default();
+    let device = |x: f32| {
+        Bounds::new(
+            point(ScaledPixels(x), ScaledPixels(0.)),
+            crate::size(ScaledPixels(40.), ScaledPixels(40.)),
+        )
+    };
+    scene.insert_native(crate::composition::NativePlacement {
+        order: 0,
+        id: crate::composition::NativeId(1),
+        hitbox: None,
+        focus: None,
+        bounds: device(0.),
+        content_mask: crate::ContentMask { bounds: device(0.) },
+        corner_radii: Corners::default(),
+        opacity: 1.,
+    });
+    scene.insert_backdrop_blur(crate::fast::backdrop::BackdropBlur {
+        order: 0,
+        fade: 0,
+        bounds: device(100.),
+        content_mask: crate::ContentMask {
+            bounds: device(100.),
+        },
+        corner_radii: Corners::default(),
+        blur_radius: ScaledPixels(8.),
+        opacity: 1.,
+    });
+    scene.insert_primitive(crate::Quad {
+        bounds: device(0.),
+        content_mask: crate::ContentMask { bounds: device(0.) },
+        ..Default::default()
+    });
+    scene.finish();
+    assert_eq!(
+        scene.natives().holes[0].order,
+        scene.backdrop_blurs()[0].order
+    );
+    let batches: Vec<_> = scene.composed_batches().take(8).collect();
+    let kinds: Vec<_> = batches
+        .iter()
+        .map(|batch| match batch {
+            ComposedBatch::Blurs(range) => format!("blurs {range:?}"),
+            ComposedBatch::Holes(range) => format!("holes {range:?}"),
+            ComposedBatch::Primitives(_) => "primitives".to_owned(),
+        })
+        .collect();
+    assert_eq!(kinds, ["blurs 0..1", "holes 0..1", "primitives"]);
+}

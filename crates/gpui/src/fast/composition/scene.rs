@@ -209,7 +209,8 @@ struct ComposedBatches<'a, I> {
 
 impl<I: Iterator<Item = PrimitiveBatch>> ComposedBatches<'_, I> {
     /// The order of the next hole, or of the next blur when it comes first,
-    /// and whether it is the blur.
+    /// and whether it is the blur. A blur goes before a hole of its order,
+    /// as [`Self::holes`] stops at it.
     fn next_cut(&self) -> Option<(DrawOrder, bool)> {
         let hole = self
             .scene
@@ -224,7 +225,7 @@ impl<I: Iterator<Item = PrimitiveBatch>> ComposedBatches<'_, I> {
             .get(self.next_blur)
             .map(|blur| blur.order);
         match (hole, blur) {
-            (Some(hole), Some(blur)) if blur < hole => Some((blur, true)),
+            (Some(hole), Some(blur)) if blur <= hole => Some((blur, true)),
             (Some(hole), _) => Some((hole, false)),
             (None, Some(blur)) => Some((blur, true)),
             (None, None) => None,
