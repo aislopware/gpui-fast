@@ -21,7 +21,8 @@ use crate::fast::splice::{Prebuilt, Rebuild, Splice, SplicedPrepaint};
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, ElementId, EntityId, GlobalElementId,
-    HitboxId, LayoutId, Pixels, Point, Size, Style, TextStyle, View, ViewElement, Window,
+    HitboxId, LayoutId, Pixels, PlatformInputHandler, Point, Size, Style, TextStyle, View,
+    ViewElement, Window,
 };
 use collections::{FxHashMap, FxHashSet};
 use refineable::Refineable;
@@ -56,18 +57,19 @@ pub(crate) fn draw_outside_frames(window: &mut Window) {
     window.refreshing = true;
 }
 
-/// Notes the input handler the platform hands back as a frame begins. It is
-/// put back where the last frame painted one, for a subtree drawn again from
-/// last frame to install it again. That is right while it is the handler the
-/// last frame installed, which a platform holds between frames. One for
-/// another field than the field the last frame gave text input to was not
-/// painted where it goes back, so nothing is drawn from last frame and the
-/// focused field paints its own handler.
-#[inline(always)]
-pub(crate) fn restore_input_handler(window: &mut Window, handler: &crate::PlatformInputHandler) {
-    let focus = handler.focus_id();
-    if focus.is_some() && window.focused_text_input.is_some() && focus != window.focused_text_input
-    {
+/// Forwarded to by `Window::draw` as it hands the platform this frame's input
+/// handler.
+pub(crate) fn note_installed_input_handler(window: &mut Window, handler: &PlatformInputHandler) {
+    window.retained_state.installed_input_focus = Some(handler.focus_id());
+}
+
+/// Forwarded to by `Window::draw` as it takes back the input handler it gave
+/// the platform. A view drawn again from last frame hands the platform that
+/// handler again, which is only right if it is the one GPUI gave it: when
+/// the platform hands back another, nothing is drawn again from last frame,
+/// so the views that paint input handlers paint them anew.
+pub(crate) fn note_restored_input_handler(window: &mut Window, handler: &PlatformInputHandler) {
+    if window.retained_state.installed_input_focus != Some(handler.focus_id()) {
         window.refreshing = true;
     }
 }
@@ -360,6 +362,9 @@ pub(crate) struct RetainedState {
     pub(crate) render_writes: FxHashMap<EntityId, Range<u64>>,
     /// The retained check's state. See [`crate::fast::check_retained`].
     pub(crate) check: crate::fast::check_retained::CheckState,
+    /// The focus of the input handler last given to the platform window, if
+    /// one was. See [`note_restored_input_handler`].
+    pub(crate) installed_input_focus: Option<Option<crate::FocusId>>,
 }
 
 impl RetainedState {
@@ -389,6 +394,7 @@ impl RetainedState {
             rendering_since: FxHashMap::default(),
             render_writes: FxHashMap::default(),
             check: crate::fast::check_retained::CheckState::new(),
+            installed_input_focus: None,
         }
     }
 

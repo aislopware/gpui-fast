@@ -3570,7 +3570,7 @@ impl Window {
         // cached paint_range indices in reuse_paint find the handler at the
         // expected position.
         if let Some(input_handler) = self.platform_window.take_input_handler() {
-            crate::fast::retained::restore_input_handler(self, &input_handler);
+            crate::fast::retained::note_restored_input_handler(self, &input_handler);
             if let Some(slot) = self
                 .rendered_frame
                 .input_handlers
@@ -3612,6 +3612,7 @@ impl Window {
             .find_map(|h| h.take())
         {
             let accepts_text_input = input_handler.accepts_text_input(self, cx);
+            crate::fast::retained::note_installed_input_handler(self, &input_handler);
             self.platform_window.set_input_handler(input_handler);
             self.focus.filter(|_| accepts_text_input)
         } else {
