@@ -3361,8 +3361,11 @@ mod input {
                     .child(noting_canvas(index, self.seen.clone()));
                 if index == 2 {
                     let keys = self.keys.clone();
-                    row.track_focus(&self.focus)
-                        .on_key_down(move |_, _, _| keys.set(keys.get() + 1))
+                    let log = self.log.clone();
+                    row.track_focus(&self.focus).on_key_down(move |_, _, _| {
+                        keys.set(keys.get() + 1);
+                        log.borrow_mut().push("key");
+                    })
                 } else {
                     row
                 }
@@ -3763,6 +3766,25 @@ mod input {
             "a frame was drawn before the press"
         );
         assert_eq!(log.borrow().get(..2), Some(&["frame", "press"][..]));
+    }
+
+    /// The first key after the pointer leaves the window dirty, and a key draws
+    /// a dirty window before it is dispatched: that frame's deferred work runs
+    /// before the key's handlers too.
+    #[crate::test]
+    fn a_frame_drawn_for_a_key_runs_its_deferred_work_first(cx: &mut TestAppContext) {
+        let handle = input_page(cx);
+        let window = handle.into();
+        let log = handle
+            .update(cx, |page, window, cx| {
+                window.focus(&page.focus, cx);
+                page.log.clone()
+            })
+            .unwrap();
+        draw(cx, window);
+        log.borrow_mut().clear();
+        cx.dispatch_keystroke(window, crate::Keystroke::parse("a").unwrap());
+        assert_eq!(log.borrow().get(..2), Some(&["frame", "key"][..]));
     }
 
     #[crate::test]
