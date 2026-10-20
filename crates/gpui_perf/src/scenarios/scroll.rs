@@ -1,6 +1,6 @@
 //! Scrolling with a real wheel: a gallery shaped like GPUI Kit's, a sidebar
 //! beside a scrolled page, scrolled the way a user scrolls it, by
-//! `ScrollWheelEvent`s dispatched with the pointer over the content.
+//! `ScrollEvent`s dispatched with the pointer over the content.
 //!
 //! Unlike scenarios that set a scroll offset and notify a view, the wheel
 //! goes through dispatch: hit testing, the scroll container's own wheel
@@ -40,7 +40,7 @@ use std::{borrow::Cow, cell::Cell, rc::Rc};
 use gpui::{
     AnyElement, AnyView, App, AssetSource, Context, EdgeFade, Entity, FontWeight, Hsla,
     ListAlignment, ListState, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
-    PlatformInput, Render, Result, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString,
+    PlatformInput, Render, Result, ScrollDelta, ScrollEvent, ScrollHandle, SharedString,
     TouchPhase, UniformListScrollHandle, Window, div, edge_fade, hsla, list, point, prelude::*, px,
     svg, uniform_list,
 };
@@ -203,11 +203,12 @@ fn wheel_part(frame: usize, parts: usize) -> PlatformInput {
     let down = (frame / FRAMES_PER_SWEEP).is_multiple_of(2);
     let step = WHEEL_STEP / parts as f32;
     let delta = if down { -step } else { step };
-    PlatformInput::ScrollWheel(ScrollWheelEvent {
+    PlatformInput::Scroll(ScrollEvent {
         position: pointer(),
         delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
         modifiers: Modifiers::default(),
         touch_phase: TouchPhase::Moved,
+        source: gpui::ScrollSource::Pointer,
         momentum_phase: None,
     })
 }

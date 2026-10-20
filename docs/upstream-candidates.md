@@ -307,7 +307,7 @@ the same scenarios.
 
 Generic, each with tests in its commit, and each a product question for upstream:
 
-- `2e199c6` `ScrollWheelEvent::momentum_phase`: momentum told apart from a finger and a wheel.
+- `2e199c6` `ScrollEvent::momentum_phase`: momentum told apart from a finger and a wheel.
   A candidate for Zed itself.
 - `a8868ac`: trackpad rotate, smart magnify and swipe events.
 - `67fb314` `CursorStyle::None`; `032a19b` and `5cd6369`: a cursor with the application's own

@@ -2,8 +2,8 @@
 
 use crate::{
     Animation, AnimationExt as _, AnyWindowHandle, App, AppContext as _, Context, Entity,
-    IntoElement, ParentElement as _, Render, RetainedCheck, ScrollDelta, ScrollWheelEvent,
-    Styled as _, TestAppContext, TouchPhase, Window, WindowHandle, div, point, px, rgb,
+    IntoElement, ParentElement as _, Render, RetainedCheck, ScrollDelta, ScrollEvent, Styled as _,
+    TestAppContext, TouchPhase, Window, WindowHandle, div, point, px, rgb,
 };
 use std::{cell::Cell, ops::Range, rc::Rc, time::Duration};
 
@@ -231,11 +231,12 @@ fn wheel(cx: &mut TestAppContext, window: AnyWindowHandle, dy: f32) {
     let frame = with_window(cx, window, |window, _| window.fast_layers.frame);
     with_window(cx, window, |window, cx| {
         window.dispatch_event(
-            crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
+            crate::PlatformInput::Scroll(ScrollEvent {
                 position: point(px(20.), px(20.)),
                 delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                 modifiers: Default::default(),
                 touch_phase: TouchPhase::Moved,
+                source: crate::ScrollSource::Pointer,
                 momentum_phase: None,
             }),
             cx,

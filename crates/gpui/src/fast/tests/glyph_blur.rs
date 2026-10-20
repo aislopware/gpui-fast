@@ -8,7 +8,7 @@ use super::element_oracle::GlyphBoxTextSystem;
 use crate::{
     AnyWindowHandle, App, AppContext as _, Context, FontId, GlyphId, InteractiveElement as _,
     IntoElement, NoopTextSystem, ParentElement as _, PlatformInput, Render, ScaledPixels,
-    ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _,
+    ScrollDelta, ScrollEvent, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
     TestAppContext, TouchPhase, TransformationMatrix, Window, canvas, div, hsla, point, px, size,
 };
 
@@ -146,11 +146,12 @@ impl Render for Column {
 fn wheel_and_draw(cx: &mut TestAppContext, window: AnyWindowHandle, dy: f32) -> Vec<String> {
     with_window(cx, window, |window, cx| {
         window.dispatch_event(
-            PlatformInput::ScrollWheel(ScrollWheelEvent {
+            PlatformInput::Scroll(ScrollEvent {
                 position: point(px(20.), px(20.)),
                 delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                 modifiers: Default::default(),
                 touch_phase: TouchPhase::Moved,
+                source: crate::ScrollSource::Pointer,
                 momentum_phase: None,
             }),
             cx,

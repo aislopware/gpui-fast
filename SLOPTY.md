@@ -463,11 +463,13 @@ Added in this fork:
 - `817e345` perf(gpui): a `ShapedLine` keeps four decoration runs inline, not 32
 - `dfb5ad0` test(gpui): the test window records where it was asked to put the input
   method's candidate window (`TestAppContext::ime_positions`)
-- `2e199c6` feat(gpui): `ScrollWheelEvent::momentum_phase`. macOS reads it from
-  `NSEvent.momentumPhase`, and the touch recognizer's fling steps carry it too.
-  Windows, Linux and the web send `None`: Direct Manipulation's inertia could be
-  mapped, but it is untested here. Consumers that build a `ScrollWheelEvent` without
-  `..Default::default()` have to add the field.
+- `2e199c6` feat(gpui): `ScrollEvent::momentum_phase` (`ScrollWheelEvent` before zed #65805
+  renamed it). macOS reads it from `NSEvent.momentumPhase`, and the touch recognizer's fling
+  steps carry it too. Windows, Linux and the web send `None`: Direct Manipulation's inertia
+  could be mapped, but it is untested here. Consumers that build a `ScrollEvent` without
+  `..Default::default()` have to add the field. zed's `ScrollEvent::source` tells a touch pan
+  (`Touch`) from a wheel or trackpad (`Pointer`); `momentum_phase` still tells the
+  platform's momentum from a finger's scrolling, which `source` cannot.
 - fix(gpui): a touch's fling ends once a step of it moves nothing, and a touch outside what
   it scrolls stays a tap (`fast/fling.rs`). `div`'s and `list`'s scroll listeners report
   whether a step moved them and where they are; a custom scroll handler reports nothing and

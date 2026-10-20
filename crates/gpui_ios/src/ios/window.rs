@@ -17,7 +17,7 @@ use crate::described::{DescribedPinch, DescribedRotation, GestureState, PressPha
 use crate::frame_pacing::{FramePacer, FrameSource, Wake};
 use crate::hardware_keyboard::{self, UiKey};
 use gpui::{
-    AnyWindowHandle, Bounds, Capslock, DevicePixels, DispatchEventResult, Edges, GpuSpecs,
+    AnyWindowHandle, Bounds, Capslock, Corners, DevicePixels, DispatchEventResult, Edges, GpuSpecs,
     Keystroke, Modifiers, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
     PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions,
     Scene, Size, TextInputStateChange, TouchEvent, TouchId, TouchPhase, WindowAppearance,
@@ -932,7 +932,7 @@ fn handle_hover_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
 }
 
 /// An indirect scroll (trackpad, wheel) from the scroll-only pan recognizer: the translation
-/// since the previous report becomes a pixel `ScrollWheel` delta with the gesture's phase.
+/// since the previous report becomes a pixel `Scroll` delta with the gesture's phase.
 fn handle_scroll_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
     unsafe {
         #[allow(deprecated)]
@@ -960,14 +960,23 @@ fn handle_scroll_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
         );
         let location: super::cg_types::ObjcCGPoint = msg_send![recognizer, locationInView: view];
         let position = Point::new(px(location.x as f32), px(location.y as f32));
-        window.dispatch_input(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+        window.dispatch_input(PlatformInput::Scroll(gpui::ScrollEvent {
             position,
             delta: gpui::ScrollDelta::Pixels(delta),
             modifiers: window.modifiers.get(),
             touch_phase: phase,
             momentum_phase: None,
+            source: gpui::ScrollSource::Pointer,
         }));
     }
+}
+
+/// Whether UIKit can resolve corner configurations, which arrived in iOS 26.
+fn reports_corner_radii(view: *mut AnyObject) -> bool {
+    // SAFETY: `view` is a live UIView; `respondsToSelector:` is NSObject's.
+    let responds: Bool =
+        unsafe { msg_send![view, respondsToSelector: sel!(effectiveRadiusForCorner:)] };
+    responds.as_bool()
 }
 
 #[allow(clippy::type_complexity)]
@@ -1099,6 +1108,18 @@ impl IosWindow {
             let _: () = msg_send![view, setUserInteractionEnabled: true];
             let _: () = msg_send![view, setMultipleTouchEnabled: true];
 
+            // UIKit has no public API for the display's corner radius, but since iOS 26 a view
+            // filling the window with a container-concentric corner configuration resolves its
+            // radii to the display's (zed #65806). This only sets the layer's corner radius;
+            // without `masksToBounds` the Metal drawable is not clipped.
+            if reports_corner_radii(view) {
+                let radius: *mut AnyObject =
+                    msg_send![class!(UICornerRadius), containerConcentricRadius];
+                let configuration: *mut AnyObject =
+                    msg_send![class!(UICornerConfiguration), configurationWithRadius: radius];
+                let _: () = msg_send![view, setCornerConfiguration: configuration];
+            }
+
             // Pinch to zoom, recognized by UIKit and delivered as `PinchEvent`s (see
             // `handle_pinch_gesture`). The view is its own target.
             let pinch: *mut AnyObject = msg_send![class!(UIPinchGestureRecognizer), alloc];
@@ -1118,7 +1139,7 @@ impl IosWindow {
             // A trackpad or mouse on an iPad: hover moves the pointer (`MouseMove`), and a
             // pan recognizer that accepts scroll events with no touches at all (so direct
             // drags stay with gpui core's touch recognizer) carries two-finger scrolling and
-            // wheel ticks as `ScrollWheel`, phases included, the way an NSEvent does.
+            // wheel ticks as `Scroll`, phases included, the way an NSEvent does.
             let hover: *mut AnyObject = msg_send![class!(UIHoverGestureRecognizer), alloc];
             let hover: *mut AnyObject =
                 msg_send![hover, initWithTarget: view, action: sel!(handleHover:)];
@@ -1623,6 +1644,29 @@ impl IosWindow {
                 bottom: self.keyboard_height.get(),
                 ..Default::default()
             },
+            corner_radii: self.display_corner_radii(),
+        }
+    }
+
+    /// The display's corner radii as UIKit resolved the view's container-concentric corner
+    /// configuration, zero where it cannot tell.
+    fn display_corner_radii(&self) -> Corners<Pixels> {
+        if self.view.is_null() || !reports_corner_radii(self.view) {
+            return Corners::default();
+        }
+        // UIRectCorner (UIKit/UIGeometry.h): an NSUInteger bit per corner.
+        let radius = |corner: usize| {
+            // SAFETY: `view` is the window's live UIView, which answers
+            // `effectiveRadiusForCorner:` (checked above) with a CGFloat.
+            let radius: core_graphics::base::CGFloat =
+                unsafe { msg_send![self.view, effectiveRadiusForCorner: corner] };
+            px(radius as f32)
+        };
+        Corners {
+            top_left: radius(1),
+            top_right: radius(2),
+            bottom_left: radius(4),
+            bottom_right: radius(8),
         }
     }
 

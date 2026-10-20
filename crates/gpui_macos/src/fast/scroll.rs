@@ -56,7 +56,7 @@ mod tests {
                 Some(px(600.)),
             )
         };
-        let Some(PlatformInput::ScrollWheel(event)) = input else {
+        let Some(PlatformInput::Scroll(event)) = input else {
             panic!("not a scroll: {input:?}");
         };
         (

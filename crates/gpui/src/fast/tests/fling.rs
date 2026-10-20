@@ -5,9 +5,9 @@ use std::{cell::Cell, rc::Rc, time::Duration};
 
 use crate::{
     self as gpui, Context, InteractiveElement, IntoElement, ListAlignment, ListOffset, ListState,
-    ParentElement, Pixels, Point, Render, ScrollHandle, ScrollWheelEvent,
-    StatefulInteractiveElement, Styled, TestAppContext, TouchEvent, TouchId, TouchPhase,
-    VisualTestContext, Window, canvas, div, list, point, px,
+    ParentElement, Pixels, Point, Render, ScrollEvent, ScrollHandle, StatefulInteractiveElement,
+    Styled, TestAppContext, TouchEvent, TouchId, TouchPhase, VisualTestContext, Window, canvas,
+    div, list, point, px,
 };
 
 /// How the scrolling part of [`Pane`] is drawn.
@@ -53,7 +53,7 @@ impl Render for Pane {
             Scroller::Custom => canvas(
                 |_, _, _| {},
                 |_, _, window, _| {
-                    window.on_mouse_event(|_: &ScrollWheelEvent, _, _, cx| {
+                    window.on_mouse_event(|_: &ScrollEvent, _, _, cx| {
                         cx.stop_propagation();
                     });
                 },
@@ -67,7 +67,7 @@ impl Render for Pane {
         div()
             .id("pane")
             .size_full()
-            .on_scroll_wheel(move |event, _, _| {
+            .on_scroll(move |event, _, _| {
                 let mut seen = momentum.get();
                 match event.momentum_phase {
                     Some(TouchPhase::Ended) => seen[1] += 1,

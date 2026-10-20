@@ -6,9 +6,9 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, InteractiveElement as _,
-    IntoElement, ParentElement as _, Pixels, PlatformInput, Render, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _, TestAppContext, TouchPhase,
-    Window, canvas, div, hsla, point, px,
+    IntoElement, ParentElement as _, Pixels, PlatformInput, Render, ScrollDelta, ScrollEvent,
+    ScrollHandle, StatefulInteractiveElement as _, Styled as _, TestAppContext, TouchPhase, Window,
+    canvas, div, hsla, point, px,
 };
 
 type Log = Rc<RefCell<Vec<(&'static str, Bounds<Pixels>)>>>;
@@ -189,11 +189,12 @@ fn content_handing_the_present_a_callback_scrolls_without_tiles() {
     for _ in 0..12 {
         with_window(&mut cx, window.into(), |window, cx| {
             window.dispatch_event(
-                PlatformInput::ScrollWheel(ScrollWheelEvent {
+                PlatformInput::Scroll(ScrollEvent {
                     position: point(px(20.), px(20.)),
                     delta: ScrollDelta::Pixels(point(px(0.), px(-3.))),
                     modifiers: Default::default(),
                     touch_phase: TouchPhase::Moved,
+                    source: crate::ScrollSource::Pointer,
                     momentum_phase: None,
                 }),
                 cx,

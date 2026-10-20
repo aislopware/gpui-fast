@@ -10,9 +10,9 @@ use super::element_oracle::GlyphBoxTextSystem;
 use crate::{
     AnyElement, AnyWindowHandle, App, Bounds, Context, EdgeFade, EdgeFadeRamps, Element, ElementId,
     Entity, GlobalElementId, InspectorElementId, IntoElement, LayoutId, LayoutStats,
-    NoopTextSystem, Pixels, PlatformInput, Render, ScaledPixels, Scene, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, TestAppContext, TouchPhase, Window, WindowHandle, div, edge_fade, hsla,
-    point, prelude::*, px,
+    NoopTextSystem, Pixels, PlatformInput, Render, ScaledPixels, Scene, ScrollDelta, ScrollEvent,
+    ScrollHandle, TestAppContext, TouchPhase, Window, WindowHandle, div, edge_fade, hsla, point,
+    prelude::*, px,
 };
 
 fn text_cx() -> TestAppContext {
@@ -349,11 +349,12 @@ impl Render for Scrolled {
 fn wheel_and_draw(cx: &mut TestAppContext, window: AnyWindowHandle, dy: f32) -> Vec<String> {
     with_window(cx, window, |window, cx| {
         window.dispatch_event(
-            PlatformInput::ScrollWheel(ScrollWheelEvent {
+            PlatformInput::Scroll(ScrollEvent {
                 position: point(px(20.), px(20.)),
                 delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                 modifiers: Default::default(),
                 touch_phase: TouchPhase::Moved,
+                source: crate::ScrollSource::Pointer,
                 momentum_phase: None,
             }),
             cx,

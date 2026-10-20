@@ -8,9 +8,9 @@ use std::sync::Arc;
 use super::element_oracle::GlyphBoxTextSystem;
 use crate::{
     AnyWindowHandle, App, Context, EdgeFade, EdgeFadeRamps, Entity, IntoElement, LayoutStats,
-    NoopTextSystem, PlatformInput, Render, ScaledPixels, Scene, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, TestAppContext, TouchPhase, Window, WindowHandle, div, edge_fade, hsla,
-    point, prelude::*, px,
+    NoopTextSystem, PlatformInput, Render, ScaledPixels, Scene, ScrollDelta, ScrollEvent,
+    ScrollHandle, TestAppContext, TouchPhase, Window, WindowHandle, div, edge_fade, hsla, point,
+    prelude::*, px,
 };
 
 fn text_cx() -> TestAppContext {
@@ -444,11 +444,12 @@ fn wheel_and_draw(
 ) -> (Vec<String>, LayoutStats) {
     with_window(cx, window, |window, cx| {
         window.dispatch_event(
-            PlatformInput::ScrollWheel(ScrollWheelEvent {
+            PlatformInput::Scroll(ScrollEvent {
                 position: point(px(20.), px(20.)),
                 delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                 modifiers: Default::default(),
                 touch_phase: TouchPhase::Moved,
+                source: crate::ScrollSource::Pointer,
                 momentum_phase: None,
             }),
             cx,

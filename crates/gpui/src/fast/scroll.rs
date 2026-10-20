@@ -1,11 +1,11 @@
 //! Momentum: the scrolling that carries on after the fingers lift, told apart
 //! from the scrolling a finger or a wheel drives
-//! ([`ScrollWheelEvent::momentum_phase`]), and a scroll handle's item brought into view
+//! ([`ScrollEvent::momentum_phase`]), and a scroll handle's item brought into view
 //! against the frame it is asked in.
 
-use crate::{Bounds, Pixels, ScrollHandle, ScrollWheelEvent, Style, TouchPhase};
+use crate::{Bounds, Pixels, ScrollEvent, ScrollHandle, Style, TouchPhase};
 
-impl ScrollWheelEvent {
+impl ScrollEvent {
     /// This scroll step, as a step of momentum in `phase`.
     pub(crate) fn fast_momentum(mut self, phase: TouchPhase) -> Self {
         self.momentum_phase = Some(phase);

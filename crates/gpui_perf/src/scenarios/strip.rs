@@ -513,7 +513,7 @@ impl Render for Terminal {
                     .focus(|style| style.border_color(ACCENT))
             })
             .on_key_down(cx.listener(|_, _, _, _| {}))
-            .on_scroll_wheel(cx.listener(|_, _, _, _| {}))
+            .on_scroll(cx.listener(|_, _, _, _| {}))
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _, _, _| {}))
             .on_mouse_move(cx.listener(|_, _, _, _| {}))
             .child(Grid {
