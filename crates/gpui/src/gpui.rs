@@ -124,6 +124,7 @@ pub use fast::gesture::{
     InteractiveGestures, PlatformGesture, RotateEvent, SmartMagnifyEvent, SwipeEvent,
 };
 pub use fast::inline_boxes::InlineBox;
+pub use fast::input_frame::{prepare_input, prepare_keystroke};
 pub use fast::layers::scene::{
     LAYER_TILE_TEXTURE_BASE, LayerContent, LayerFrame, LayerKey, SceneLayers, TileCoord,
     decode_layer_tile, layer_tile_id, layer_tile_texture_id,

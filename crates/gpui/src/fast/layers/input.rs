@@ -166,6 +166,14 @@ pub(crate) fn before_dispatch(window: &mut Window, cx: &mut App, event: &Platfor
         crate::fast::layers::hover_freeze::note_wheel(window, cx);
     }
     crate::fast::layers::wheel::begin_dispatch(window, cx, event);
+    draw_for(window, cx, event);
+}
+
+/// The frame [`before_dispatch`] draws for `event`, if it needs one: the
+/// layers it could reach whose content was shown scrolled since it was
+/// painted, painted again. Drawn by [`crate::prepare_input`] in an update of
+/// its own first, it leaves [`before_dispatch`] nothing to draw.
+pub(crate) fn draw_for(window: &mut Window, cx: &mut App, event: &PlatformInput) {
     if !COMPILED || window.fast_layers.layers.is_empty() {
         return;
     }
