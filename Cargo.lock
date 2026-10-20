@@ -2836,14 +2836,14 @@ dependencies = [
 
 [[package]]
 name = "gpui-fast"
-version = "0.1.7"
+version = "0.1.10"
 dependencies = [
  "gpui",
 ]
 
 [[package]]
 name = "gpui-fast-platform"
-version = "0.1.7"
+version = "0.1.10"
 dependencies = [
  "gpui",
  "gpui_platform",
@@ -2851,7 +2851,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-fast-web"
-version = "0.1.7"
+version = "0.1.10"
 dependencies = [
  "gpui_web",
 ]

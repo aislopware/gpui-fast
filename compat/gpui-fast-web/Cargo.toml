@@ -1,6 +1,6 @@
 [package]
 name = "gpui-fast-web"
-version = "0.1.7"
+version = "0.1.10"
 description = "gpui-fast's `gpui_web`, under the name and version of the GPUI Fast release GPUI Kit names for its `gpui-fast` feature."
 license = "Apache-2.0"
 edition.workspace = true
