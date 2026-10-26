@@ -57,9 +57,9 @@ use std::{
 
 use gpui::{
     Animation, AnimationExt as _, App, Bounds, Context, Entity, FocusHandle, FontWeight,
-    KeyBinding, Modifiers, Pixels, PlatformInput, Render, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Subscription, TouchPhase, WeakEntity, Window, WindowBounds,
-    WindowOptions, actions, div, point, prelude::*, px, size,
+    KeyBinding, Modifiers, Pixels, PlatformInput, Render, ScrollDelta, ScrollEvent, ScrollHandle,
+    SharedString, Subscription, TouchPhase, WeakEntity, Window, WindowBounds, WindowOptions,
+    actions, div, point, prelude::*, px, size,
 };
 use gpui_platform::application;
 
@@ -463,11 +463,12 @@ fn step(
     };
     drop(driver);
     window.dispatch_event(
-        PlatformInput::ScrollWheel(ScrollWheelEvent {
+        PlatformInput::Scroll(ScrollEvent {
             position: bounds.center(),
             delta: ScrollDelta::Pixels(point(px(0.), -delta)),
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
+            ..Default::default()
         }),
         cx,
     );
