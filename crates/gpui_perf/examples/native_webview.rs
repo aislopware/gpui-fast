@@ -772,7 +772,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
                     bounds,
                     scale,
                 ),
-                PlatformInput::ScrollWheel(event) => {
+                PlatformInput::Scroll(event) => {
                     let amount = match event.delta {
                         ScrollDelta::Pixels(delta) => delta.map(f32::from),
                         ScrollDelta::Lines(delta) => delta * 120.,
