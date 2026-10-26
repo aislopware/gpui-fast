@@ -57,10 +57,15 @@ use std::{
 
 use gpui::{
     Animation, AnimationExt as _, App, Bounds, Context, Entity, FocusHandle, FontWeight,
-    KeyBinding, Modifiers, Pixels, PlatformInput, Render, ScrollDelta, ScrollEvent, ScrollHandle,
+    InputEvent as _, KeyBinding, Modifiers, Pixels, Render, ScrollDelta, ScrollHandle,
     SharedString, Subscription, TouchPhase, WeakEntity, Window, WindowBounds, WindowOptions,
     actions, div, point, prelude::*, px, size,
 };
+// gpui-pre predates upstream's rename of `ScrollWheelEvent`.
+#[cfg(not(feature = "upstream"))]
+use gpui::ScrollEvent;
+#[cfg(feature = "upstream")]
+use gpui::ScrollWheelEvent as ScrollEvent;
 use gpui_platform::application;
 
 use app_state::{AppState, SharedAppState, app_state};
@@ -463,13 +468,15 @@ fn step(
     };
     drop(driver);
     window.dispatch_event(
-        PlatformInput::Scroll(ScrollEvent {
+        ScrollEvent {
             position: bounds.center(),
             delta: ScrollDelta::Pixels(point(px(0.), -delta)),
             modifiers: Modifiers::default(),
             touch_phase: TouchPhase::Moved,
-            ..Default::default()
-        }),
+            #[cfg(not(feature = "upstream"))]
+            source: gpui::ScrollSource::Pointer,
+        }
+        .to_platform_input(),
         cx,
     );
     true
