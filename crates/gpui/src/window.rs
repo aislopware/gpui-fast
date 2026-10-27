@@ -5890,16 +5890,11 @@ impl Window {
         let old_modality = self.last_input_modality;
         self.last_input_modality = match &event {
             PlatformInput::KeyDown(_) => InputModality::Keyboard,
-            // A drag from another app moves the pointer without mouse events; without this a
-            // drop after typing finds no hovered hitbox and falls through.
-            PlatformInput::MouseMove(_)
-            | PlatformInput::MouseDown(_)
-            | PlatformInput::FileDrop(
-                FileDropEvent::Entered { .. } | FileDropEvent::Pending { .. },
-            ) => InputModality::Mouse,
+            PlatformInput::MouseMove(_) | PlatformInput::MouseDown(_) => InputModality::Mouse,
             PlatformInput::Touch(_) => InputModality::Touch,
             _ => self.last_input_modality,
         };
+        crate::fast::misc::mouse_up_modality::note_input(self, &event);
         if self.last_input_modality != old_modality {
             self.refresh();
         }
