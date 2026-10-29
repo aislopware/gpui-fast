@@ -17,6 +17,7 @@ use gpui::{
     TileCoord, TransformationMatrix, Underline, decode_layer_tile, layer_tile_id,
     layer_tile_texture_id, linear_color_stop, linear_gradient, point, px, rgba, size,
 };
+use objc2_metal::MTLCommandBuffer as _;
 use parking_lot::Mutex;
 
 use crate::fast::layers::TileCache;
@@ -80,14 +81,15 @@ fn rounded_overflow_mask_cost(cx: &mut gpui::TestAppContext) {
             let mut harness = Harness::new().expect("timing requires Metal");
             rounded_clip_tests::render_with(cx, build, |scene, _| {
                 let extent = device_size(side, side);
-                let descriptor = metal::TextureDescriptor::new();
-                descriptor.set_width(side as u64);
-                descriptor.set_height(side as u64);
-                descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
-                descriptor.set_storage_mode(metal::MTLStorageMode::Private);
-                descriptor.set_usage(metal::MTLTextureUsage::RenderTarget);
-                let target = harness.renderer.device.new_texture(&descriptor);
-                harness.renderer.update_path_intermediate_textures(extent);
+                let target = crate::fast::render_target(
+                    &harness.renderer.device,
+                    side as usize,
+                    side as usize,
+                );
+                harness
+                    .renderer
+                    .update_path_intermediate_textures(extent)
+                    .unwrap();
                 let mut samples = Vec::new();
                 for frame in 0..18 {
                     objc2::rc::autoreleasepool(|_| {
@@ -98,7 +100,7 @@ fn rounded_overflow_mask_cost(cx: &mut gpui::TestAppContext) {
                             .unwrap();
                         let encoded = start.elapsed();
                         commands.commit();
-                        commands.wait_until_completed();
+                        commands.waitUntilCompleted();
                         if frame >= 3 {
                             samples.push((start.elapsed(), encoded));
                         }
@@ -951,13 +953,13 @@ impl Harness {
     /// A harness on the system's Metal device, or `None` when there is none
     /// (the tests then skip).
     fn new() -> Option<Harness> {
-        if metal::Device::system_default().is_none() && metal::Device::all().is_empty() {
+        if objc2_metal::MTLCreateSystemDefaultDevice().is_none() {
             eprintln!("skipped: no Metal device");
             return None;
         }
         let pool = Arc::new(Mutex::new(InstanceBufferPool::default()));
         Some(Harness {
-            renderer: MetalRenderer::new_headless(pool),
+            renderer: MetalRenderer::new_headless(pool).ok()?,
         })
     }
 
@@ -1051,16 +1053,11 @@ fn scroll_frame_gpu_cost() {
         }
     };
 
-    let texture = {
-        let descriptor = metal::TextureDescriptor::new();
-        descriptor.set_width(window.size.width.0 as u64);
-        descriptor.set_height(window.size.height.0 as u64);
-        descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
-        descriptor
-            .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
-        descriptor.set_storage_mode(metal::MTLStorageMode::Private);
-        harness.renderer.device.new_texture(&descriptor)
-    };
+    let texture = crate::fast::render_target(
+        &harness.renderer.device,
+        window.size.width.0 as usize,
+        window.size.height.0 as usize,
+    );
     // Instructions the calling thread has retired: unlike time, steady on a
     // busy machine.
     fn instructions() -> u64 {
@@ -1087,18 +1084,9 @@ fn scroll_frame_gpu_cost() {
             let cpu = start.elapsed();
             encoded.set(instructions() - before);
             command_buffer.commit();
-            command_buffer.wait_until_completed();
+            command_buffer.waitUntilCompleted();
             let wall = start.elapsed();
-            // SAFETY: `GPUStartTime` and `GPUEndTime` are `MTLCommandBuffer`
-            // properties, read after the buffer completed.
-            let (gpu_start, gpu_end): (f64, f64) = unsafe {
-                let command_buffer: &objc2::runtime::AnyObject =
-                    &*foreign_types::ForeignType::as_ptr(&command_buffer).cast();
-                (
-                    objc2::msg_send![command_buffer, GPUStartTime],
-                    objc2::msg_send![command_buffer, GPUEndTime],
-                )
-            };
+            let (gpu_start, gpu_end) = (command_buffer.GPUStartTime(), command_buffer.GPUEndTime());
             (
                 cpu,
                 Duration::from_secs_f64((gpu_end - gpu_start).max(0.)),

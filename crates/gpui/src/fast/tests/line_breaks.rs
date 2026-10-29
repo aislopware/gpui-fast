@@ -3,22 +3,31 @@
 //! allows. See [`crate::fast::line_breaks`].
 
 use crate::{
-    Boundary, IndentAdjustment, LineFragment, LineWrapper, Pixels, SharedString, TestAppContext,
-    TextRun, black, font, px,
+    Boundary, CharWidthCache, IndentAdjustment, LineFragment, LineWrapper, Pixels, SharedString,
+    TestAppContext, TextRun, black, font, px,
 };
 
 fn wrapper(cx: &TestAppContext) -> LineWrapper {
     let font_id = cx.text_system().resolve_font(&font(".ZedMono"));
-    LineWrapper::new(font_id, px(16.), cx.text_system().clone())
+    LineWrapper::new(
+        font_id,
+        px(16.),
+        cx.text_system().clone(),
+        CharWidthCache::default(),
+    )
 }
 
-fn width_of(wrapper: &mut LineWrapper, fragments: &[LineFragment]) -> Pixels {
+fn width_of(cx: &TestAppContext, wrapper: &LineWrapper, fragments: &[LineFragment]) -> Pixels {
     let mut width = px(0.);
     for fragment in fragments {
         match fragment {
             LineFragment::Text { text } => {
                 for character in text.chars().filter(|&character| character != '\n') {
-                    width += wrapper.width_for_char(character);
+                    width += cx.text_system().layout_width(
+                        wrapper.font_id,
+                        wrapper.font_size,
+                        character,
+                    );
                 }
             }
             LineFragment::Element {
@@ -57,15 +66,19 @@ fn a_wrapped_line_that_fits_exactly_is_not_broken() {
         (&[LineFragment::text("aaa\nbbb ccc")], 8),
     ];
     for (fragments, break_at) in cases {
-        let width = width_of(&mut wrapper, fragments);
-        assert!(
+        let width = width_of(&cx, &wrapper, fragments);
+        assert_eq!(
             crate::fast::line_breaks::unless_fragments_fit(
-                &mut wrapper,
+                &mut CharWidthCache::default(),
+                cx.text_system(),
+                wrapper.font_id,
+                wrapper.font_size,
                 fragments,
                 &joined(fragments),
                 width
             )
-            .is_empty()
+            .count(),
+            0
         );
         assert_eq!(
             wrap(&mut wrapper, fragments, width),
@@ -154,7 +167,7 @@ fn ascii_breaks_as_its_utf8_does() {
             .map(|_| alphabet[(next() % 128) as usize])
             .collect();
         assert_eq!(
-            crate::fast::line_breaks::break_indices(&text),
+            crate::fast::line_breaks::break_indices(&text).collect::<Vec<_>>(),
             LineWrapper::break_indices(&text).collect::<Vec<_>>(),
             "{text:?}",
         );

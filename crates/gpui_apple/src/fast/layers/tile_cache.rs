@@ -15,8 +15,15 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use anyhow::{Context as _, Result};
 use collections::{FxHashMap, FxHashSet};
 use gpui::{LayerKey, Scene, SceneLayers, TileCoord, decode_layer_tile};
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_foundation::ns_string;
+use objc2_metal::{
+    MTLDevice, MTLPixelFormat, MTLResource as _, MTLStorageMode, MTLTexture, MTLTextureDescriptor,
+    MTLTextureUsage,
+};
 
 /// How much tile texture memory a window keeps, by default (spec §5.6).
 pub(crate) const DEFAULT_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
@@ -80,7 +87,7 @@ struct SeenLayer {
 
 struct TileTexture {
     size: u32,
-    texture: metal::Texture,
+    texture: Retained<ProtocolObject<dyn MTLTexture>>,
 }
 
 fn tile_bytes(tile_size: u32) -> u64 {
@@ -89,12 +96,16 @@ fn tile_bytes(tile_size: u32) -> u64 {
 
 impl TileCache {
     /// The texture of `tile` of `layer`, if the cache holds its content.
-    pub(crate) fn texture(&self, layer: LayerKey, tile: TileCoord) -> Option<&metal::TextureRef> {
+    pub(crate) fn texture(
+        &self,
+        layer: LayerKey,
+        tile: TileCoord,
+    ) -> Option<&Retained<ProtocolObject<dyn MTLTexture>>> {
         self.tiles
             .get(&(layer, tile))
             .filter(|tile| tile.valid)
             .and_then(|tile| tile.texture.as_ref())
-            .map(|texture| texture.texture.as_ref())
+            .map(|texture| &texture.texture)
     }
 
     #[cfg(test)]
@@ -346,11 +357,11 @@ impl TileCache {
     /// texture of `format`.
     pub(crate) fn prepare(
         &mut self,
-        device: &metal::DeviceRef,
-        format: metal::MTLPixelFormat,
+        device: &ProtocolObject<dyn MTLDevice>,
+        format: MTLPixelFormat,
         layers: &SceneLayers,
         planned: &[(usize, TileCoord)],
-    ) {
+    ) -> Result<()> {
         self.evict_to_budget(self.budget_bytes);
         for &(index, coord) in planned {
             let layer = &layers.frames[index];
@@ -367,27 +378,33 @@ impl TileCache {
             let size = tile.tile_size;
             let texture = match self.pool.iter().position(|texture| texture.size == size) {
                 Some(position) => self.pool.swap_remove(position),
-                None => create_tile_texture(device, format, size),
+                None => create_tile_texture(device, format, size)?,
             };
             tile.texture = Some(texture);
         }
+        Ok(())
     }
 }
 
 /// A tile texture: a render target of the frame's format that the
 /// polychrome sprite pipeline samples.
 fn create_tile_texture(
-    device: &metal::DeviceRef,
-    format: metal::MTLPixelFormat,
+    device: &ProtocolObject<dyn MTLDevice>,
+    format: MTLPixelFormat,
     size: u32,
-) -> TileTexture {
-    let descriptor = metal::TextureDescriptor::new();
-    descriptor.set_width(size as u64);
-    descriptor.set_height(size as u64);
-    descriptor.set_pixel_format(format);
-    descriptor.set_storage_mode(metal::MTLStorageMode::Private);
-    descriptor.set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
-    let texture = device.new_texture(&descriptor);
-    texture.set_label("scroll_layer_tile");
-    TileTexture { size, texture }
+) -> Result<TileTexture> {
+    let descriptor = MTLTextureDescriptor::new();
+    // SAFETY: a 2D texture's width and height, which Metal checks against the device's limits.
+    unsafe {
+        descriptor.setWidth(size as usize);
+        descriptor.setHeight(size as usize);
+    }
+    descriptor.setPixelFormat(format);
+    descriptor.setStorageMode(MTLStorageMode::Private);
+    descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
+    let texture = device
+        .newTextureWithDescriptor(&descriptor)
+        .with_context(|| format!("allocating a {size}-pixel scroll layer tile"))?;
+    texture.setLabel(Some(ns_string!("scroll_layer_tile")));
+    Ok(TileTexture { size, texture })
 }

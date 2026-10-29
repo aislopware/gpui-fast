@@ -86,7 +86,9 @@ pub(crate) fn lay_out_boxes(
         .unwrapped_layout
         .with_inline_boxes(&boxes, |font_id| platform.glyph_for_char(font_id, ' '));
     let wrap_boundaries = match layout.wrap_width {
-        Some(wrap_width) => boxed.compute_wrap_boundaries(line_text, wrap_width, max_lines),
+        Some(wrap_width) => {
+            boxed.compute_wrap_boundaries(line_text, wrap_width, max_lines, &mut Default::default())
+        }
         None => SmallVec::new(),
     };
     std::sync::Arc::new(WrappedLineLayout {

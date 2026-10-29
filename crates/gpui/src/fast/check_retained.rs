@@ -692,7 +692,7 @@ struct Shadow {
     /// The layout engine and what matches elements to its nodes: the frame
     /// from scratch lays out on nodes of its own, so the nodes the frame
     /// shown keeps for the next one stay as they were.
-    layout_engine: Option<crate::TaffyLayoutEngine>,
+    layout_engine: Option<crate::taffy::TaffyLayoutEngine>,
     fast_layout: crate::fast::layout_key::WindowLayout,
     /// The accessibility tree: the frame from scratch builds none and sends
     /// the platform nothing.
@@ -755,7 +755,7 @@ impl Shadow {
             layers: std::mem::replace(&mut window.fast_layers, layers),
             layout_engine: window
                 .layout_engine
-                .replace(crate::TaffyLayoutEngine::new()),
+                .replace(crate::taffy::TaffyLayoutEngine::new()),
             fast_layout: std::mem::take(&mut window.fast_layout),
             a11y: std::mem::replace(&mut window.a11y, a11y),
             focus_tooltip: window.fast_focus_tooltip.clone(),
@@ -906,7 +906,7 @@ impl ListSnapshot {
         state.last_layout_bounds = self.last_layout_bounds;
         state.last_padding = self.last_padding;
         state.items = self.items;
-        (self.restore_anchor)(&mut *state);
+        (self.restore_anchor)(&mut state);
         state.follow_state = self.follow_state;
         state.version.set(self.version);
         state.fast_tail = self.tail;

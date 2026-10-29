@@ -22,9 +22,10 @@ use gpui::{
     Action, ActivityGuard, AnyWindowHandle, AppLifecyclePhase, BackgroundExecutor, ClipboardEntry,
     ClipboardItem, CursorStyle, DummyKeyboardMapper, ForegroundExecutor, Image, ImageFormat,
     Keymap, Menu, MenuItem, OwnedMenu, PathPromptOptions, Platform, PlatformDisplay,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, Result,
-    Task, ThermalState, WindowAppearance, WindowParams,
+    PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, PowerMode,
+    Result, Task, ThermalState, WindowAppearance, WindowParams,
 };
+use gpui_apple::process_info::{self, ProcessInfoObserver};
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{class, msg_send};
 use parking_lot::Mutex;
@@ -63,7 +64,8 @@ pub(crate) struct IosPlatformState {
     background_executor: BackgroundExecutor,
     foreground_executor: ForegroundExecutor,
     text_system: Arc<dyn PlatformTextSystem>,
-    thermal_state_callback: Option<Box<dyn FnMut()>>,
+    thermal_observer: Option<ProcessInfoObserver>,
+    power_mode_observer: Option<ProcessInfoObserver>,
 }
 
 impl Default for IosPlatform {
@@ -82,7 +84,8 @@ impl IosPlatform {
             background_executor: BackgroundExecutor::new(dispatcher.clone()),
             foreground_executor: ForegroundExecutor::new(dispatcher),
             text_system,
-            thermal_state_callback: None,
+            thermal_observer: None,
+            power_mode_observer: None,
         }))
     }
 
@@ -626,15 +629,21 @@ impl Platform for IosPlatform {
     }
 
     fn thermal_state(&self) -> ThermalState {
-        // iOS provides thermal state via ProcessInfo
-        // For now, return nominal
-        ThermalState::Nominal
+        process_info::thermal_state()
     }
 
     fn on_thermal_state_change(&self, callback: Box<dyn FnMut()>) {
-        self.0.lock().thermal_state_callback = Some(callback);
-        // In a full implementation, we would register for
-        // NSProcessInfoThermalStateDidChangeNotification
+        let observer = process_info::observe_thermal_state(&self.foreground_executor(), callback);
+        self.0.lock().thermal_observer = Some(observer);
+    }
+
+    fn power_mode(&self) -> PowerMode {
+        process_info::power_mode()
+    }
+
+    fn on_power_mode_change(&self, callback: Box<dyn FnMut()>) {
+        let observer = process_info::observe_power_mode(&self.foreground_executor(), callback);
+        self.0.lock().power_mode_observer = Some(observer);
     }
 
     fn prevent_idle_sleep(&self, _reason: &str) -> Task<Result<ActivityGuard>> {

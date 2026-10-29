@@ -21,12 +21,16 @@
 //! bandwidth; a pass restarted after a path group marks the interiors again,
 //! without clearing what the pass before drew over them.
 
+use anyhow::{Context as _, Result};
 use gpui::{Bounds, Corners, Quad, ScaledPixels, Scene, point, size};
-use metal::{
-    DepthStencilDescriptor, DepthStencilState, DeviceRef, LibraryRef, MTLCompareFunction,
-    MTLPixelFormat, MTLStencilOperation, MTLStorageMode, MTLTextureUsage, RenderCommandEncoderRef,
-    RenderPipelineDescriptor, RenderPipelineState, StencilDescriptor, Texture, TextureDescriptor,
-    TextureRef,
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_foundation::NSString;
+use objc2_metal::{
+    MTLColorWriteMask, MTLCompareFunction, MTLDepthStencilDescriptor, MTLDepthStencilState,
+    MTLDevice, MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLRenderCommandEncoder,
+    MTLRenderPassDescriptor, MTLRenderPipelineDescriptor, MTLRenderPipelineState,
+    MTLStencilDescriptor, MTLStencilOperation, MTLStorageMode, MTLStoreAction, MTLTexture,
+    MTLTextureDescriptor, MTLTextureUsage,
 };
 
 use crate::metal_renderer::{
@@ -44,68 +48,74 @@ const STENCIL_SIZES: usize = 4;
 /// The pipelines, stencil states and stencil textures of a renderer.
 pub(crate) struct Occlusion {
     /// Marks an interior in the stencil and clears its colour.
-    clear: RenderPipelineState,
+    clear: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     /// Marks an interior in the stencil only.
-    mark: RenderPipelineState,
+    mark: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     /// Writes the reference value wherever an interior is drawn.
-    marking: DepthStencilState,
+    marking: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
     /// Passes where the stencil is at most the reference value.
-    culling: DepthStencilState,
+    culling: Retained<ProtocolObject<dyn MTLDepthStencilState>>,
     memoryless: bool,
-    stencils: Vec<Texture>,
+    stencils: Vec<Retained<ProtocolObject<dyn MTLTexture>>>,
 }
 
 impl Occlusion {
     pub(crate) fn new(
-        device: &DeviceRef,
-        library: &LibraryRef,
+        device: &ProtocolObject<dyn MTLDevice>,
+        library: &ProtocolObject<dyn MTLLibrary>,
         target_format: MTLPixelFormat,
         memoryless: bool,
-    ) -> Self {
-        let pipeline = |label: &str, clears: bool| {
-            let descriptor = RenderPipelineDescriptor::new();
-            descriptor.set_label(label);
-            let vertex = library
-                .get_function("quad_vertex", None)
-                .expect("error locating vertex function");
-            descriptor.set_vertex_function(Some(&vertex));
-            let color = descriptor.color_attachments().object_at(0).unwrap();
-            color.set_pixel_format(target_format);
+    ) -> Result<Self> {
+        let function = |name: &str| {
+            library
+                .newFunctionWithName(&NSString::from_str(name))
+                .with_context(|| format!("locating function {name}"))
+        };
+        let pipeline = |label: &str, clears: bool| -> Result<_> {
+            let descriptor = MTLRenderPipelineDescriptor::new();
+            descriptor.setLabel(Some(&NSString::from_str(label)));
+            descriptor.setVertexFunction(Some(&*function("quad_vertex")?));
+            // SAFETY: Index zero is within the pipeline's color attachment array.
+            let color = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
+            color.setPixelFormat(target_format);
             if clears {
-                let fragment = library
-                    .get_function("hole_interior_fragment", None)
-                    .expect("error locating fragment function");
-                descriptor.set_fragment_function(Some(&fragment));
+                descriptor.setFragmentFunction(Some(&*function("hole_interior_fragment")?));
             } else {
-                color.set_write_mask(metal::MTLColorWriteMask::empty());
+                color.setWriteMask(MTLColorWriteMask::empty());
             }
-            descriptor.set_stencil_attachment_pixel_format(STENCIL_FORMAT);
+            descriptor.setStencilAttachmentPixelFormat(STENCIL_FORMAT);
             device
-                .new_render_pipeline_state(&descriptor)
-                .expect("could not create render pipeline state")
+                .newRenderPipelineStateWithDescriptor_error(&descriptor)
+                .with_context(|| format!("creating {label} render pipeline"))
         };
         let state = |compare: MTLCompareFunction, pass: MTLStencilOperation| {
-            let stencil = StencilDescriptor::new();
-            stencil.set_stencil_compare_function(compare);
-            stencil.set_depth_stencil_pass_operation(pass);
-            let descriptor = DepthStencilDescriptor::new();
-            descriptor.set_front_face_stencil(Some(&stencil));
-            descriptor.set_back_face_stencil(Some(&stencil));
-            device.new_depth_stencil_state(&descriptor)
+            let stencil = MTLStencilDescriptor::new();
+            stencil.setStencilCompareFunction(compare);
+            stencil.setDepthStencilPassOperation(pass);
+            let descriptor = MTLDepthStencilDescriptor::new();
+            descriptor.setFrontFaceStencil(Some(&stencil));
+            descriptor.setBackFaceStencil(Some(&stencil));
+            device
+                .newDepthStencilStateWithDescriptor(&descriptor)
+                .context("creating a stencil state")
         };
-        Self {
-            clear: pipeline("hole_interiors", true),
-            mark: pipeline("hole_interior_marks", false),
-            marking: state(MTLCompareFunction::Always, MTLStencilOperation::Replace),
-            culling: state(MTLCompareFunction::GreaterEqual, MTLStencilOperation::Keep),
+        Ok(Self {
+            clear: pipeline("hole_interiors", true)?,
+            mark: pipeline("hole_interior_marks", false)?,
+            marking: state(MTLCompareFunction::Always, MTLStencilOperation::Replace)?,
+            culling: state(MTLCompareFunction::GreaterEqual, MTLStencilOperation::Keep)?,
             // The simulator's Metal has no memoryless storage.
             memoryless: memoryless && !cfg!(target_abi = "sim"),
             stencils: Vec::new(),
-        }
+        })
     }
 
     /// The stencil attachment for a pass drawing into `target`.
-    pub(crate) fn stencil_for(&mut self, device: &DeviceRef, target: &TextureRef) -> Texture {
+    pub(crate) fn stencil_for(
+        &mut self,
+        device: &ProtocolObject<dyn MTLDevice>,
+        target: &ProtocolObject<dyn MTLTexture>,
+    ) -> Result<Retained<ProtocolObject<dyn MTLTexture>>> {
         let (width, height) = (target.width(), target.height());
         if let Some(index) = self
             .stencils
@@ -114,34 +124,42 @@ impl Occlusion {
         {
             let stencil = self.stencils.remove(index);
             self.stencils.push(stencil.clone());
-            return stencil;
+            return Ok(stencil);
         }
-        let descriptor = TextureDescriptor::new();
-        descriptor.set_width(width);
-        descriptor.set_height(height);
-        descriptor.set_pixel_format(STENCIL_FORMAT);
-        descriptor.set_usage(MTLTextureUsage::RenderTarget);
-        descriptor.set_storage_mode(if self.memoryless {
+        let descriptor = MTLTextureDescriptor::new();
+        // SAFETY: the target's own width and height, which the device already allowed.
+        unsafe {
+            descriptor.setWidth(width);
+            descriptor.setHeight(height);
+        }
+        descriptor.setPixelFormat(STENCIL_FORMAT);
+        descriptor.setUsage(MTLTextureUsage::RenderTarget);
+        descriptor.setStorageMode(if self.memoryless {
             MTLStorageMode::Memoryless
         } else {
             MTLStorageMode::Private
         });
-        let stencil = device.new_texture(&descriptor);
+        let stencil = device
+            .newTextureWithDescriptor(&descriptor)
+            .with_context(|| format!("allocating a {width}x{height} stencil"))?;
         if self.stencils.len() == STENCIL_SIZES {
             self.stencils.remove(0);
         }
         self.stencils.push(stencil.clone());
-        stencil
+        Ok(stencil)
     }
 }
 
 /// Gives a pass `stencil`, cleared to 0 and dropped at its end.
-pub(crate) fn attach_stencil(descriptor: &metal::RenderPassDescriptorRef, stencil: &TextureRef) {
-    let attachment = descriptor.stencil_attachment().unwrap();
-    attachment.set_texture(Some(stencil));
-    attachment.set_load_action(metal::MTLLoadAction::Clear);
-    attachment.set_clear_stencil(0);
-    attachment.set_store_action(metal::MTLStoreAction::DontCare);
+pub(crate) fn attach_stencil(
+    descriptor: &MTLRenderPassDescriptor,
+    stencil: &ProtocolObject<dyn MTLTexture>,
+) {
+    let attachment = descriptor.stencilAttachment();
+    attachment.setTexture(Some(stencil));
+    attachment.setLoadAction(MTLLoadAction::Clear);
+    attachment.setClearStencil(0);
+    attachment.setStoreAction(MTLStoreAction::DontCare);
 }
 
 /// The interior of every hole a scene cuts, as quads the quad shader draws:
@@ -187,14 +205,14 @@ impl Interiors {
         &self,
         renderer: &MetalRenderer,
         viewport_size: gpui::Size<gpui::DevicePixels>,
-        encoder: &RenderCommandEncoderRef,
+        encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
         binds: &mut Binds,
         clear: bool,
     ) {
         let occlusion = &renderer.fast_occlusion;
-        encoder.set_depth_stencil_state(&occlusion.marking);
+        encoder.setDepthStencilState(Some(&occlusion.marking));
         for index in 0..self.count {
-            encoder.set_stencil_reference_value(index as u32 + 1);
+            encoder.setStencilReferenceValue(index as u32 + 1);
             renderer.draw_instanced(
                 Instanced {
                     pipeline: if clear {
@@ -213,14 +231,14 @@ impl Interiors {
                 binds,
             );
         }
-        encoder.set_depth_stencil_state(&occlusion.culling);
-        encoder.set_stencil_reference_value(0);
+        encoder.setDepthStencilState(Some(&occlusion.culling));
+        encoder.setStencilReferenceValue(0);
     }
 
     /// Culls the batches drawn before hole `next_hole`, or the holes from it
     /// on, drawing only where no hole from it on has its interior.
-    pub(crate) fn before(encoder: &RenderCommandEncoderRef, next_hole: usize) {
-        encoder.set_stencil_reference_value(next_hole as u32);
+    pub(crate) fn before(encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>, next_hole: usize) {
+        encoder.setStencilReferenceValue(next_hole as u32);
     }
 }
 

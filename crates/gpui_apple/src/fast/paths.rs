@@ -19,11 +19,18 @@
 //! if it had been rasterized alone into the cleared texture, so the image is
 //! the same as upstream's.
 
-use std::{mem, ops::Range};
+use std::{mem, ops::Range, ptr};
 
 use anyhow::{Context as _, Result};
 use gpui::{
     Bounds, DevicePixels, PrimitiveBatch, ScaledPixels, Scene, Size, composition::ComposedBatch,
+};
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_core_foundation::CFRetained;
+use objc2_core_video::CVMetalTexture;
+use objc2_metal::{
+    MTLClearColor, MTLCommandBuffer, MTLCommandEncoder as _, MTLCommandQueue as _, MTLLoadAction,
+    MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLStoreAction, MTLTexture,
 };
 
 use super::occlusion::Interiors;
@@ -48,11 +55,11 @@ const MAX_GROUP_PATH_BATCHES: usize = 64;
 /// path vertices, and the bounds everything it draws stays within.
 struct PathBatch {
     paths: Range<usize>,
-    vertices: Range<u64>,
+    vertices: Range<usize>,
     bounds: Bounds<ScaledPixels>,
     /// For the first batch of a group, the vertices of the whole group,
     /// rasterized together before the batch is drawn.
-    group: Option<Range<u64>>,
+    group: Option<Range<usize>>,
 }
 
 /// Forwarded to by `MetalRenderer::draw_primitives_to_texture`. Encodes the
@@ -64,9 +71,10 @@ pub(crate) fn draw_primitives_to_texture(
     scene: &Scene,
     instance_bindings: &InstanceBindings,
     writer: &mut InstanceBufferWriter,
-    texture: &metal::TextureRef,
+    texture: &ProtocolObject<dyn MTLTexture>,
     viewport_size: Size<DevicePixels>,
-) -> Result<Option<metal::CommandBuffer>> {
+    surface_textures: &mut Vec<CFRetained<CVMetalTexture>>,
+) -> Result<Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>> {
     if scene.paths.is_empty() && scene.backdrop_blurs().is_empty() && binds::upstream_loop() {
         return Ok(None);
     }
@@ -80,7 +88,9 @@ pub(crate) fn draw_primitives_to_texture(
     let vertices = write_vertices(scene, &path_batches, writer)?;
 
     let command_queue = renderer.command_queue.clone();
-    let command_buffer = command_queue.new_command_buffer();
+    let command_buffer = command_queue
+        .commandBuffer()
+        .context("creating command buffer")?;
     let alpha = if renderer.opaque { 1. } else { 0. };
 
     // The first group is rasterized before the main pass, which saves ending
@@ -91,26 +101,33 @@ pub(crate) fn draw_primitives_to_texture(
             vertices.as_ref(),
             first.group.clone(),
             viewport_size,
-            command_buffer,
+            &command_buffer,
             &instance_bindings.fades,
         )?,
         None => false,
     };
 
     let interiors = Interiors::of(scene, writer)?;
-    let stencil = renderer
-        .fast_occlusion
-        .stencil_for(&renderer.device, texture);
+    let stencil = super::occlusion::Occlusion::stencil_for(
+        &mut renderer.fast_occlusion,
+        &renderer.device,
+        texture,
+    )?;
     let mut command_encoder = new_command_encoder_for_texture(
-        command_buffer,
+        &command_buffer,
         texture,
         &stencil,
         viewport_size,
-        Some(metal::MTLClearColor::new(0., 0., 0., alpha)),
-    );
+        Some(MTLClearColor {
+            red: 0.,
+            green: 0.,
+            blue: 0.,
+            alpha,
+        }),
+    )?;
     let mut binds = Binds::default();
     if let Some(interiors) = &interiors {
-        interiors.begin_pass(renderer, viewport_size, command_encoder, &mut binds, true);
+        interiors.begin_pass(renderer, viewport_size, &command_encoder, &mut binds, true);
     }
     // The holes drawn so far, and what the pass culls for.
     let (mut holes_drawn, mut culling_for) = (0, 0);
@@ -118,7 +135,7 @@ pub(crate) fn draw_primitives_to_texture(
 
     for batch in scene.composed_batches() {
         if interiors.is_some() && culling_for != holes_drawn {
-            Interiors::before(command_encoder, holes_drawn);
+            Interiors::before(&command_encoder, holes_drawn);
             culling_for = holes_drawn;
         }
         let batch = match batch {
@@ -129,18 +146,19 @@ pub(crate) fn draw_primitives_to_texture(
                     range,
                     instance_bindings,
                     viewport_size,
-                    command_encoder,
+                    &command_encoder,
                     &mut binds,
                 );
                 continue;
             }
             ComposedBatch::Blurs(range) => {
                 let pass = super::backdrop::Pass {
-                    command_buffer,
+                    command_buffer: &command_buffer,
                     texture,
                     stencil: &stencil,
                     viewport_size,
                 };
+                // On an error the pass is ended.
                 let restarted = super::backdrop::draw(
                     renderer,
                     scene,
@@ -148,20 +166,19 @@ pub(crate) fn draw_primitives_to_texture(
                     &instance_bindings.fast_blurs,
                     &instance_bindings.fades,
                     &pass,
-                    command_encoder,
-                );
-                if !std::ptr::eq(restarted, command_encoder) {
-                    command_encoder = restarted;
+                    &mut command_encoder,
+                )?;
+                if restarted {
                     binds.forget();
                     if let Some(interiors) = &interiors {
                         interiors.begin_pass(
                             renderer,
                             viewport_size,
-                            command_encoder,
+                            &command_encoder,
                             &mut binds,
                             false,
                         );
-                        Interiors::before(command_encoder, holes_drawn);
+                        Interiors::before(&command_encoder, holes_drawn);
                         culling_for = holes_drawn;
                     }
                 }
@@ -172,7 +189,7 @@ pub(crate) fn draw_primitives_to_texture(
             &batch,
             instance_bindings,
             viewport_size,
-            command_encoder,
+            &command_encoder,
             &mut binds,
         ) {
             continue;
@@ -186,32 +203,32 @@ pub(crate) fn draw_primitives_to_texture(
                     continue;
                 };
                 if index > 0 && path_batch.group.is_some() {
-                    command_encoder.end_encoding();
+                    command_encoder.endEncoding();
                     rasterized = rasterize_group(
                         renderer,
                         vertices.as_ref(),
                         path_batch.group.clone(),
                         viewport_size,
-                        command_buffer,
+                        &command_buffer,
                         &instance_bindings.fades,
                     )?;
                     command_encoder = new_command_encoder_for_texture(
-                        command_buffer,
+                        &command_buffer,
                         texture,
                         &stencil,
                         viewport_size,
                         None,
-                    );
+                    )?;
                     binds.forget();
                     if let Some(interiors) = &interiors {
                         interiors.begin_pass(
                             renderer,
                             viewport_size,
-                            command_encoder,
+                            &command_encoder,
                             &mut binds,
                             false,
                         );
-                        Interiors::before(command_encoder, holes_drawn);
+                        Interiors::before(&command_encoder, holes_drawn);
                         culling_for = holes_drawn;
                     }
                 }
@@ -224,19 +241,25 @@ pub(crate) fn draw_primitives_to_texture(
                     &scene.paths[range],
                     writer,
                     viewport_size,
-                    command_encoder,
+                    &command_encoder,
                 ) {
-                    command_encoder.end_encoding();
+                    command_encoder.endEncoding();
                     return Err(error);
                 }
             }
-            PrimitiveBatch::Surfaces(range) => renderer.draw_surfaces(
-                &scene.surfaces[range.clone()],
-                range.start,
-                instance_bindings,
-                viewport_size,
-                command_encoder,
-            ),
+            PrimitiveBatch::Surfaces(range) => {
+                if let Err(error) = renderer.draw_surfaces(
+                    &scene.surfaces[range.clone()],
+                    range.start,
+                    instance_bindings,
+                    viewport_size,
+                    &command_encoder,
+                    surface_textures,
+                ) {
+                    command_encoder.endEncoding();
+                    return Err(error);
+                }
+            }
             PrimitiveBatch::Shadows(_)
             | PrimitiveBatch::Quads(_)
             | PrimitiveBatch::Underlines(_)
@@ -248,16 +271,16 @@ pub(crate) fn draw_primitives_to_texture(
         binds.forget();
     }
 
-    command_encoder.end_encoding();
+    command_encoder.endEncoding();
 
-    Ok(Some(command_buffer.to_owned()))
+    Ok(Some(command_buffer))
 }
 
 /// Lays out every path batch's rasterization vertices, in the order of the
 /// scene's batches, and groups the batches.
 fn plan_paths(scene: &Scene) -> Vec<PathBatch> {
     let mut path_batches: Vec<PathBatch> = Vec::new();
-    let mut vertex_count = 0u64;
+    let mut vertex_count = 0;
     let mut group_start = 0;
     // The batches the frame is drawn in, which window composition splits
     // around the holes its natives cut.
@@ -274,7 +297,7 @@ fn plan_paths(scene: &Scene) -> Vec<PathBatch> {
         let mut union = first_path.clipped_bounds();
         for path in paths {
             union = union.union(&path.clipped_bounds());
-            vertex_count += path.vertices.len() as u64;
+            vertex_count += path.vertices.len();
         }
 
         let near = union.dilate(ScaledPixels(PATH_BATCH_MARGIN));
@@ -314,7 +337,7 @@ fn write_vertices(
     path_batches: &[PathBatch],
     writer: &mut InstanceBufferWriter,
 ) -> Result<Option<InstanceBinding>> {
-    let count = path_batches.last().map_or(0, |last| last.vertices.end) as usize;
+    let count = path_batches.last().map_or(0, |last| last.vertices.end);
     if count == 0 {
         return Ok(None);
     }
@@ -369,9 +392,9 @@ impl<I: Iterator> ExactSizeIterator for Counted<I> {}
 fn rasterize_group(
     renderer: &MetalRenderer,
     vertices: Option<&InstanceBinding>,
-    group: Option<Range<u64>>,
+    group: Option<Range<usize>>,
     viewport_size: Size<DevicePixels>,
-    command_buffer: &metal::CommandBufferRef,
+    command_buffer: &ProtocolObject<dyn MTLCommandBuffer>,
     fades: &InstanceBinding,
 ) -> Result<bool> {
     let (Some(vertices), Some(group)) = (vertices, group.filter(|group| !group.is_empty())) else {
@@ -382,48 +405,62 @@ fn rasterize_group(
         .as_ref()
         .context("missing path intermediate texture")?;
 
-    let render_pass_descriptor = metal::RenderPassDescriptor::new();
-    let color_attachment = render_pass_descriptor
-        .color_attachments()
-        .object_at(0)
-        .context("render pass has no color attachment")?;
-    color_attachment.set_load_action(metal::MTLLoadAction::Clear);
-    color_attachment.set_clear_color(metal::MTLClearColor::new(0., 0., 0., 0.));
+    let render_pass_descriptor = MTLRenderPassDescriptor::new();
+    // SAFETY: Index zero is within the render pass's color attachment array.
+    let color_attachment = unsafe {
+        render_pass_descriptor
+            .colorAttachments()
+            .objectAtIndexedSubscript(0)
+    };
+    color_attachment.setLoadAction(MTLLoadAction::Clear);
+    color_attachment.setClearColor(MTLClearColor {
+        red: 0.,
+        green: 0.,
+        blue: 0.,
+        alpha: 0.,
+    });
 
     if let Some(msaa_texture) = &renderer.path_intermediate_msaa_texture {
-        color_attachment.set_texture(Some(msaa_texture));
-        color_attachment.set_resolve_texture(Some(intermediate_texture));
-        color_attachment.set_store_action(metal::MTLStoreAction::MultisampleResolve);
+        color_attachment.setTexture(Some(msaa_texture));
+        color_attachment.setResolveTexture(Some(intermediate_texture));
+        color_attachment.setStoreAction(MTLStoreAction::MultisampleResolve);
     } else {
-        color_attachment.set_texture(Some(intermediate_texture));
-        color_attachment.set_store_action(metal::MTLStoreAction::Store);
+        color_attachment.setTexture(Some(intermediate_texture));
+        color_attachment.setStoreAction(MTLStoreAction::Store);
     }
 
-    let command_encoder = command_buffer.new_render_command_encoder(render_pass_descriptor);
-    command_encoder.set_render_pipeline_state(&renderer.paths_rasterization_pipeline_state);
-    crate::fast::edge_fade::bind(command_encoder, fades);
-    command_encoder.set_vertex_buffer(
-        PathRasterizationInputIndex::Vertices as u64,
-        Some(&vertices.buffer),
-        vertices.offset as u64,
-    );
-    command_encoder.set_vertex_bytes(
-        PathRasterizationInputIndex::ViewportSize as u64,
-        mem::size_of_val(&viewport_size) as u64,
-        &viewport_size as *const Size<DevicePixels> as *const _,
-    );
-    command_encoder.set_fragment_buffer(
-        PathRasterizationInputIndex::Vertices as u64,
-        Some(&vertices.buffer),
-        vertices.offset as u64,
-    );
-    // The shaders index the vertices by `vertex_id`, which counts from the
-    // group's first vertex.
-    command_encoder.draw_primitives(
-        metal::MTLPrimitiveType::Triangle,
-        group.start,
-        group.end - group.start,
-    );
-    command_encoder.end_encoding();
+    let command_encoder = command_buffer
+        .renderCommandEncoderWithDescriptor(&render_pass_descriptor)
+        .context("creating path rasterization encoder")?;
+    command_encoder.setRenderPipelineState(&renderer.paths_rasterization_pipeline_state);
+    crate::fast::edge_fade::bind(&command_encoder, fades);
+    // SAFETY: the frame's path vertices and the viewport match the rasterization shaders'
+    // layouts and slots; Metal retains the buffer and copies the bytes, and the group lies
+    // within the vertices written.
+    unsafe {
+        command_encoder.setVertexBuffer_offset_atIndex(
+            Some(&vertices.buffer),
+            vertices.offset,
+            PathRasterizationInputIndex::Vertices as usize,
+        );
+        command_encoder.setVertexBytes_length_atIndex(
+            ptr::NonNull::from(&viewport_size).cast(),
+            mem::size_of_val(&viewport_size),
+            PathRasterizationInputIndex::ViewportSize as usize,
+        );
+        command_encoder.setFragmentBuffer_offset_atIndex(
+            Some(&vertices.buffer),
+            vertices.offset,
+            PathRasterizationInputIndex::Vertices as usize,
+        );
+        // The shaders index the vertices by `vertex_id`, which counts from the
+        // group's first vertex.
+        command_encoder.drawPrimitives_vertexStart_vertexCount(
+            MTLPrimitiveType::Triangle,
+            group.start,
+            group.end - group.start,
+        );
+    }
+    command_encoder.endEncoding();
     Ok(true)
 }

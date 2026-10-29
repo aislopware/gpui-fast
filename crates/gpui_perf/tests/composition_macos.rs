@@ -44,7 +44,6 @@ mod macos {
         base::{id, nil},
         foundation::{NSPoint, NSRect, NSSize},
     };
-    use foreign_types::ForeignType;
     use gpui::{
         App, AsyncApp, Bounds, Context, FocusHandle, MouseButton, PresentedFrame, Window,
         WindowBounds, WindowHandle, WindowKind, WindowOptions,
@@ -63,6 +62,15 @@ mod macos {
         runtime::{BOOL, Class, NO, Object, Sel, YES},
         sel, sel_impl,
     };
+    use objc2::{rc::Retained, runtime::ProtocolObject};
+    use objc2_core_foundation::{CFRetained, CGSize};
+    use objc2_core_video::CVPixelBuffer;
+    use objc2_metal::{
+        MTLClearColor, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLCommandQueue,
+        MTLDevice as _, MTLDrawable, MTLLoadAction, MTLPixelFormat, MTLRenderPassDescriptor,
+        MTLStoreAction,
+    };
+    use objc2_quartz_core::{CAMetalDrawable as _, CAMetalLayer};
 
     static MOVED_TO_WINDOW: AtomicUsize = AtomicUsize::new(0);
     static MOUSE_DOWNS: AtomicUsize = AtomicUsize::new(0);
@@ -185,15 +193,15 @@ mod macos {
     /// A native whose layer is a `CAMetalLayer` presented with the Core Animation
     /// transaction on every GPUI frame, recording when each drawable was shown.
     struct LiveNative {
-        layer: metal::MetalLayer,
-        queue: metal::CommandQueue,
+        layer: Retained<CAMetalLayer>,
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
         shown: Arc<parking_lot::Mutex<Vec<Option<Instant>>>>,
     }
 
     impl LiveNative {
         fn present_frame(&self) {
             objc2::rc::autoreleasepool(|_| {
-                let Some(drawable) = self.layer.next_drawable() else {
+                let Some(drawable) = self.layer.nextDrawable() else {
                     return;
                 };
                 let slot = {
@@ -202,30 +210,41 @@ mod macos {
                     shown.len() - 1
                 };
                 let shown = self.shown.clone();
-                let handler =
-                    block2::RcBlock::new(move |drawable: NonNull<objc2::runtime::AnyObject>| {
-                        // SAFETY: the presented handler gets the drawable it was added to.
-                        let drawable = unsafe { &*drawable.as_ptr().cast::<Object>() };
-                        // SAFETY: `presentedTime` is a property of every CAMetalDrawable.
-                        let time: f64 = unsafe { msg_send![drawable, presentedTime] };
-                        shown.lock()[slot] = Some(host_time(time));
-                    });
+                let handler = block2::RcBlock::new(
+                    move |drawable: NonNull<ProtocolObject<dyn MTLDrawable>>| {
+                        // SAFETY: the presented handler gets the drawable it was added to,
+                        // alive for the call.
+                        let drawable = unsafe { drawable.as_ref() };
+                        shown.lock()[slot] = Some(host_time(drawable.presentedTime()));
+                    },
+                );
                 // SAFETY: `addPresentedHandler:` copies the block, before presenting.
                 unsafe {
-                    let () = msg_send![drawable, addPresentedHandler: &*handler];
+                    drawable.addPresentedHandler(block2::RcBlock::as_ptr(&handler));
                 }
-                let descriptor = metal::RenderPassDescriptor::new();
-                let attachment = descriptor.color_attachments().object_at(0).unwrap();
-                attachment.set_texture(Some(drawable.texture()));
-                attachment.set_load_action(metal::MTLLoadAction::Clear);
-                attachment.set_clear_color(metal::MTLClearColor::new(0.1, 0.6, 0.6, 1.));
-                attachment.set_store_action(metal::MTLStoreAction::Store);
-                let command_buffer = self.queue.new_command_buffer();
-                command_buffer
-                    .new_render_command_encoder(descriptor)
-                    .end_encoding();
+                let descriptor = MTLRenderPassDescriptor::new();
+                // SAFETY: index zero is within the pass's colour attachments.
+                let attachment =
+                    unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
+                attachment.setTexture(Some(&drawable.texture()));
+                attachment.setLoadAction(MTLLoadAction::Clear);
+                attachment.setClearColor(MTLClearColor {
+                    red: 0.1,
+                    green: 0.6,
+                    blue: 0.6,
+                    alpha: 1.,
+                });
+                attachment.setStoreAction(MTLStoreAction::Store);
+                let Some(command_buffer) = self.queue.commandBuffer() else {
+                    return;
+                };
+                if let Some(encoder) =
+                    command_buffer.renderCommandEncoderWithDescriptor(&descriptor)
+                {
+                    encoder.endEncoding();
+                }
                 command_buffer.commit();
-                command_buffer.wait_until_scheduled();
+                command_buffer.waitUntilScheduled();
                 drawable.present();
             });
         }
@@ -372,7 +391,7 @@ mod macos {
             host.attach_view(NonNull::new(probe.cast()).unwrap())
                 .unwrap();
             let () = msg_send![probe, release];
-            let container = mac_host(&host).container_view();
+            let container: id = mac_host(&host).container_view().cast();
             let content_view: id = msg_send![container, superview];
             let ns_window: id = msg_send![container, window];
             let subviews: id = msg_send![content_view, subviews];
@@ -630,31 +649,37 @@ mod macos {
     }
 
     /// A 4:2:0 picture backed by an IOSurface, as a decoder hands over.
-    struct Picture(core_video::pixel_buffer::CVPixelBuffer);
+    struct Picture(CFRetained<CVPixelBuffer>);
 
     // SAFETY: a CVPixelBuffer is a CoreFoundation object, whose retain and release are
     // thread-safe; nothing writes this one after it is made.
     unsafe impl Send for Picture {}
 
     fn picture() -> Picture {
-        use core_foundation::{base::TCFType, dictionary::CFDictionary, string::CFString};
-        use core_video::pixel_buffer::{
-            CVPixelBuffer, kCVPixelBufferIOSurfacePropertiesKey,
-            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        use objc2_core_foundation::{CFDictionary, CFType};
+        use objc2_core_video::{
+            CVPixelBufferCreate, kCVPixelBufferIOSurfacePropertiesKey,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVReturnSuccess,
         };
         // SAFETY: CoreVideo's constant key string lives forever.
-        let key = unsafe { CFString::wrap_under_get_rule(kCVPixelBufferIOSurfacePropertiesKey) };
-        let empty = CFDictionary::<CFString, CFString>::from_CFType_pairs(&[]);
-        let options = CFDictionary::from_CFType_pairs(&[(key, empty.as_CFType())]);
-        Picture(
-            CVPixelBuffer::new(
-                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        let key = unsafe { kCVPixelBufferIOSurfacePropertiesKey };
+        let options =
+            CFDictionary::from_slices(&[key], &[&*CFDictionary::<CFType, CFType>::empty()]);
+        let mut buffer = std::ptr::null_mut();
+        // SAFETY: a valid out-pointer, which CoreVideo fills with a +1 buffer on success.
+        let status = unsafe {
+            CVPixelBufferCreate(
+                None,
                 640,
                 360,
-                Some(&options),
+                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                Some(options.as_opaque()),
+                NonNull::from(&mut buffer),
             )
-            .expect("a 4:2:0 buffer"),
-        )
+        };
+        assert_eq!(status, kCVReturnSuccess, "a 4:2:0 buffer");
+        // SAFETY: the buffer CoreVideo created, owned from here.
+        Picture(unsafe { CFRetained::from_raw(NonNull::new(buffer).expect("a 4:2:0 buffer")) })
     }
 
     /// Scrolls the native a point a frame for ten seconds; every frame's GPUI drawable
@@ -667,21 +692,23 @@ mod macos {
     ) {
         let host = window.update(cx, |stage, _, _| stage.host.clone()).unwrap();
         let live = {
-            let device = metal::Device::system_default().expect("a Metal device");
-            let layer = metal::MetalLayer::new();
-            layer.set_device(&device);
-            layer.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
-            layer.set_presents_with_transaction(true);
-            layer.set_maximum_drawable_count(3);
-            layer.set_drawable_size(core_graphics::geometry::CGSize::new(600., 400.));
+            let device = objc2_metal::MTLCreateSystemDefaultDevice().expect("a Metal device");
+            let layer = CAMetalLayer::new();
+            layer.setDevice(Some(&device));
+            layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+            layer.setPresentsWithTransaction(true);
+            layer.setMaximumDrawableCount(3);
+            layer.setDrawableSize(CGSize::new(600., 400.));
             // SAFETY: attaches a live CAMetalLayer on the main thread.
             unsafe {
-                host.attach_layer(NonNull::new(layer.as_ptr().cast()).unwrap())
-                    .unwrap();
+                host.attach_layer(
+                    NonNull::new(Retained::as_ptr(&layer).cast_mut().cast()).unwrap(),
+                )
+                .unwrap();
             }
             Rc::new(LiveNative {
                 layer,
-                queue: device.new_command_queue(),
+                queue: device.newCommandQueue().expect("a command queue"),
                 shown: Arc::default(),
             })
         };

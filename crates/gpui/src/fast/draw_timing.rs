@@ -37,15 +37,13 @@ impl Window {
         mut callback: impl FnMut(Instant, Duration, &mut App) + 'static,
     ) -> Subscription {
         let observers = cx.default_global::<DrawObservers>().0.clone();
-        let (subscription, activate) = observers.insert(
+        observers.insert(
             self.handle.window_id().as_u64(),
             Box::new(move |started, took, cx| {
                 callback(started, took, cx);
                 true
             }),
-        );
-        activate();
-        subscription
+        )
     }
 }
 

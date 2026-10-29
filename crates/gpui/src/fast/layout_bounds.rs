@@ -10,9 +10,9 @@
 //! clearing. What `layout_bounds` computes, pixel snapping included, is left
 //! exactly as upstream wrote it.
 //!
-//! [`TaffyLayoutEngine::layout_bounds`]: crate::TaffyLayoutEngine::layout_bounds
+//! [`TaffyLayoutEngine::layout_bounds`]: crate::taffy::TaffyLayoutEngine::layout_bounds
 
-use crate::{LayoutId, Point, TaffyLayoutEngine};
+use crate::{LayoutId, Point, taffy::TaffyLayoutEngine};
 
 /// A place in device pixels snapped to a device pixel: to the nearest one,
 /// ties toward the pixel below.

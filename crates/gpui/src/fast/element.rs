@@ -276,7 +276,7 @@ struct ElementContext {
     bounds: Bounds<Pixels>,
     /// Where layout placed it within the device pixel its bounds snap to,
     /// which decides where what it holds snaps (see
-    /// [`crate::TaffyLayoutEngine::layout_phase`]).
+    /// [`crate::taffy::TaffyLayoutEngine::layout_phase`]).
     phase: Point<f32>,
     content_mask: ContentMask<Pixels>,
     /// The edge fade it was drawn in (see [`crate::fast::edge_fade`]).
@@ -456,8 +456,6 @@ struct PaintAt {
 struct LinesAt {
     lines: u32,
     wrapped_lines: u32,
-    lines_by_hash: u32,
-    wrapped_lines_by_hash: u32,
 }
 
 /// The offset of `to` from `from`, which it is not before.
@@ -634,17 +632,10 @@ impl LinesAt {
             font_generation: _,
             lines_index,
             wrapped_lines_index,
-            lines_by_hash_index,
-            wrapped_lines_by_hash_index,
         } = to;
         LinesAt {
             lines: offset(from.lines_index, *lines_index),
             wrapped_lines: offset(from.wrapped_lines_index, *wrapped_lines_index),
-            lines_by_hash: offset(from.lines_by_hash_index, *lines_by_hash_index),
-            wrapped_lines_by_hash: offset(
-                from.wrapped_lines_by_hash_index,
-                *wrapped_lines_by_hash_index,
-            ),
         }
     }
 
@@ -653,9 +644,6 @@ impl LinesAt {
             font_generation: base.font_generation,
             lines_index: base.lines_index + self.lines as usize,
             wrapped_lines_index: base.wrapped_lines_index + self.wrapped_lines as usize,
-            lines_by_hash_index: base.lines_by_hash_index + self.lines_by_hash as usize,
-            wrapped_lines_by_hash_index: base.wrapped_lines_by_hash_index
-                + self.wrapped_lines_by_hash as usize,
         }
     }
 
@@ -663,8 +651,6 @@ impl LinesAt {
         LinesAt {
             lines: self.lines + other.lines,
             wrapped_lines: self.wrapped_lines + other.wrapped_lines,
-            lines_by_hash: self.lines_by_hash + other.lines_by_hash,
-            wrapped_lines_by_hash: self.wrapped_lines_by_hash + other.wrapped_lines_by_hash,
         }
     }
 
@@ -672,8 +658,6 @@ impl LinesAt {
         LinesAt {
             lines: self.lines - other.lines,
             wrapped_lines: self.wrapped_lines - other.wrapped_lines,
-            lines_by_hash: self.lines_by_hash - other.lines_by_hash,
-            wrapped_lines_by_hash: self.wrapped_lines_by_hash - other.wrapped_lines_by_hash,
         }
     }
 }

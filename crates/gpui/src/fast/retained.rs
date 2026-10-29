@@ -174,7 +174,7 @@ pub(crate) struct RetainedContext {
     pub(crate) bounds: Bounds<Pixels>,
     /// Where it was laid out within the device pixel its bounds snap to,
     /// which decides where what it holds snaps (see
-    /// [`crate::TaffyLayoutEngine::layout_phase`]), laid out in place or on
+    /// [`crate::taffy::TaffyLayoutEngine::layout_phase`]), laid out in place or on
     /// its own.
     pub(crate) phase: Point<f32>,
     pub(crate) content_mask: ContentMask<Pixels>,
@@ -1265,12 +1265,12 @@ impl Window {
         }
     }
 
-    /// See [`crate::TaffyLayoutEngine::record_claimed_keys`].
+    /// See [`crate::taffy::TaffyLayoutEngine::record_claimed_keys`].
     pub(crate) fn record_claimed_layout_keys(&mut self) -> usize {
         self.layout_engine.as_mut().unwrap().record_claimed_keys()
     }
 
-    /// See [`crate::TaffyLayoutEngine::finish_recording_claimed_keys`].
+    /// See [`crate::taffy::TaffyLayoutEngine::finish_recording_claimed_keys`].
     pub(crate) fn finish_recording_claimed_layout_keys(&mut self, start: usize) -> Vec<u64> {
         self.layout_engine
             .as_mut()
@@ -1278,7 +1278,7 @@ impl Window {
             .finish_recording_claimed_keys(start)
     }
 
-    /// See [`crate::TaffyLayoutEngine::keep_retained`].
+    /// See [`crate::taffy::TaffyLayoutEngine::keep_retained`].
     pub(crate) fn keep_retained_layout(&mut self, keys: &[u64]) {
         self.layout_engine.as_mut().unwrap().keep_retained(keys);
     }
@@ -1602,18 +1602,18 @@ pub(crate) fn finish_retained_frame(window: &mut Window) {
 // layout they kept.
 impl Window {
     /// How many writes that change a layout the engine has made. See
-    /// [`crate::TaffyLayoutEngine::layout_changes`].
+    /// [`crate::taffy::TaffyLayoutEngine::layout_changes`].
     pub(crate) fn layout_changes(&self) -> u64 {
         self.layout_engine.as_ref().unwrap().layout_changes()
     }
 
     /// How many measurements the engine has been given to take again. See
-    /// [`crate::TaffyLayoutEngine::remeasures`].
+    /// [`crate::taffy::TaffyLayoutEngine::remeasures`].
     pub(crate) fn layout_remeasures(&self) -> u64 {
         self.layout_engine.as_ref().unwrap().remeasures()
     }
 
-    /// See [`crate::TaffyLayoutEngine::relayout_in_place`].
+    /// See [`crate::taffy::TaffyLayoutEngine::relayout_in_place`].
     pub(crate) fn relayout_in_place(
         &mut self,
         layout_id: LayoutId,

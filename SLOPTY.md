@@ -19,8 +19,9 @@ Two upstreams feed it:
   longbridge #33 this fork imports zed on top of longbridge's vendor line, not its own:
   #33 replays each zed commit (`script/import-upstream`) from gpui-fast's first import
   (`11a44c4`, zed `7960b2a7`) to `0d78d77` (zed `0bdc70c`), and our imports start from
-  there: the latest is `8e30b2b` (`zed: import f8c2cc84`, zed #64990, "gpui_apple: Share
-  dispatcher and Metal renderer with iOS"; see "Conflicts to expect"). That way a
+  there: the latest is `de241c34` (`zed: import 33156f0d`; see "Conflicts to expect"), and
+  the first was `8e30b2b` (`zed: import f8c2cc84`, zed #64990, "gpui_apple: Share
+  dispatcher and Metal renderer with iOS"). That way a
   longbridge merge and a zed import no longer bring the same zed changes in through two
   lines of history. The fork's own line before it (`zed: import <short
   hash>` commits) ended at `446268b` (`zed: import 39b53293`, zed `39b5329322`: Windows'
@@ -258,38 +259,6 @@ brings it: take zed's version of the files, remove the pull request's line from
     `glyph_raster_bounds_do_not_clip` rasterizes a bold tabular `0` at 12 to 48 pt and 3×
     and compares the ink with a buffer 8 px larger all round; without the margin it fails
     at 24 pt. It runs on the simulator (see "Testing gpui_ios on the simulator").
-- zed #64624 (@timvermeulen, head `54c44986d4`), "UAX #14 line breaking": `wrap_line`
-  and `compute_wrap_boundaries` break where `icu_segmenter`'s line segmenter allows,
-  in place of `is_word_char`. Wrapped lines no longer start with `/` or `?`, emoji
-  sequences such as 👍🏽, 🇯🇵 and 👩‍💻 stay whole, and a word may break after a hyphen.
-  Applied with its tests. Two adaptations:
-  - Its `test_wrap_line_break_opportunities` gained the `IndentAdjustment` argument
-    zed's `wrap_line` took after the pull request's base. The expected boundaries
-    in `test_extra_columns_overflow_guard` changed from `9, 11, 13, 15` to
-    `9, 11, 12, 14, 15`: with 2 columns left after the indent, the words `ef` and
-    `gh` stay whole and each space between them wraps alone. The old numbers came
-    from `prev_c` going stale across a returned boundary, which split `ef`.
-  - Ours, kept when the import brings the pull request: `fast::line_breaks`. The
-    segmenter costs about 8 ns a byte, three times the cost of measuring the line. So
-    both wrappers ask for break opportunities only when something on the line passes
-    the wrap width, and they read ASCII as Latin-1, which gives the same breaks
-    (test `ascii_breaks_as_its_utf8_does`). Tests for the exact-fit edge:
-    `a_wrapped_line_that_fits_exactly_is_not_broken`,
-    `a_shaped_line_that_fits_exactly_is_not_broken`.
-  - Cost (`cargo run -p gpui_perf --example wrap_cost --release`, best of 40 rounds,
-    2000 lines of 40 to 300 bytes at 320, 560 and 900 px):
-
-    | | before | after |
-    | --- | --- | --- |
-    | `wrap_line`, mixed scripts | 5.07 ms | 15.3 ms |
-    | `wrap_line`, ASCII | 5.56 ms | 13.7 ms |
-    | `wrap_line`, every line fits | 1.73 ms | 2.01 ms |
-    | `shape_text`, 100 lines | 0.61 ms | 1.61 ms |
-
-    That is about 2.5 µs per wrapped line of 190 bytes, against 0.85 µs before.
-    `__TEXT` grows by 48 KiB (the example: 5,865,472 to 5,914,624 bytes). Its four
-    new crates compile in about 3 s of CPU in a debug build; the ICU crates they
-    share with `idna` were already built.
 - zed #64542 (@madcodelife, head `21ad132982`), "text decorations across wrapped
   lines": an underline or strikethrough that continues onto the next wrapped line
   resumes where that line's alignment starts it, not at the box's left edge. The
@@ -544,9 +513,6 @@ Added in this fork:
   `on_swipe` on every interactive element (`InteractiveGestures`); on iOS a rotation from
   `UIRotationGestureRecognizer`, recognized alongside the pinch. A swipe no listener
   stops still becomes the back or forward mouse button, as upstream makes it
-- build: core-video 0.6.1 (zed has 0.5.2): its texture cache takes a `CVImageBuffer`, so
-  the surface pass hands it the pixel buffer as one. An application sharing
-  `CVPixelBuffer` with GPUI (Slopty's `slopty-ui`) takes 0.6.1 with it
 - perf(gpui): the tab order is sorted when it is read (`Window::focus_next`, `focus_prev`,
   accessibility's count), not kept as a sum tree every tracked focus handle is inserted
   into as it is painted, and replayed into for every view drawn from last frame
@@ -958,6 +924,58 @@ hot reload is on. The fork's forwarding bodies in `view.rs` stay, `render_view` 
 a retained view picks up a patched render too. The root `Cargo.toml` gains zed's
 `async-tungstenite` workspace dependency, which `hot-reload` needs.
 
+In the 33156f0d sync (zed #64624, #65942, #66147, #66152, #66206, #66237, #66281):
+
+- zed #64624, UAX #14 line breaking, which this fork had carried ahead of zed, is zed's own
+  now, its tests included. Ours stays `fast::line_breaks`: the segmenter costs about 8 ns a
+  byte, three times measuring the line, so both wrappers ask for break opportunities only
+  when something on the line passes the wrap width, and read ASCII as Latin-1, which breaks
+  at the same places (`ascii_breaks_as_its_utf8_does`; the exact-fit edges
+  `a_wrapped_line_that_fits_exactly_is_not_broken` and
+  `a_shaped_line_that_fits_exactly_is_not_broken`). `wrap_line` hands it the wrapper's
+  `CharWidthCache` (#66206), and `compute_wrap_boundaries` is `pub(crate)` with its
+  `WrapScratch` for `fast::inline_boxes` and the tests (#66152 dropped the hash-keyed
+  layouts and moved the scratch into the cache). What UAX #14 costs with `fast::line_breaks`
+  (`cargo run -p gpui_perf --example wrap_cost --release`, best of 40 rounds, 2000 lines of
+  40 to 300 bytes at 320, 560 and 900 px, measured when the pull request was ported):
+
+  | | before #64624 | after |
+  | --- | --- | --- |
+  | `wrap_line`, mixed scripts | 5.07 ms | 15.3 ms |
+  | `wrap_line`, ASCII | 5.56 ms | 13.7 ms |
+  | `wrap_line`, every line fits | 1.73 ms | 2.01 ms |
+  | `shape_text`, 100 lines | 0.61 ms | 1.61 ms |
+
+  About 2.5 µs per wrapped line of 190 bytes, against 0.85 µs before; `__TEXT` grows by
+  48 KiB.
+- zed #65942 ports the Metal renderer from the `metal` crate to `objc2-metal`, which takes
+  `block` out of the tree. Every `fast/` file of `gpui_apple` that draws (binds, the tile
+  cache, raster and composite, occlusion, the backdrop blur, paths, edge fades, glyph blur,
+  the composition and layer tests) moved with it, and the renderer's hooks sit in zed's
+  objc2 code: the fork's fields, presentation reports and pacing, `SurfacesInFlight`
+  releasing a frame's surface textures on the render thread (handed down as
+  `&mut Vec<CFRetained<CVMetalTexture>>`, through `rasterize_tiles` too), the skipped
+  surface on a bad format, the Y′CbCr matrices and their tests. The renderer's
+  constructors return `Result` now, so a pipeline that fails to build is an error, not a
+  panic. `fast::video_layer` takes an `objc2-core-video` `CVPixelBuffer` (its
+  `objc2_buffer` conversion is gone), and with it the `core-video` crate leaves the tree:
+  an application hands `VideoLayer::present` and `surface` the same buffer. `gpui_perf`'s
+  composition test and `video_latency` build their buffers with `CVPixelBufferCreate`.
+- zed #66237 and #66281 apply the frame limits to every frame and make them window
+  options (`inactive_frame_interval`, `low_power_frame_interval`, `thermal_frame_interval`);
+  an inactive window draws at most at about 30 fps. `fast::settle`'s tests drive platform
+  frames back to back, so they make their window active first, as zed's frame-waker test
+  does. `gpui_apple::thermal` is now `process_info` (thermal state and Low Power Mode),
+  which `gpui_ios` now reads as macOS does, in place of its constant `Nominal`.
+- zed #66147 takes the locks out of the window's text layout, and #66206 pools each
+  wrapper's `CharWidthCache` in the text system.
+- The root pins follow zed's: wgpu `cddb2f5d`, scap `b5c86ec5`, oo7 from zed's fork at
+  `731c1215`, and `objc2-uniform-type-identifiers`.
+- The longbridge `07b42ebf` merge kept this fork's fallback in the weight and style asked
+  for, which longbridge's zed `08cbb88a` sync had dropped for zed #65852's cached fallbacks
+  (`caches_resolved_font_fallbacks`); `fast::text` resolves a fallback as longbridge does
+  again: with the features asked for, in the fallback's own weight and style.
+
 For our patches: `window.rs` (`paint_glyph_scaled` sits next to gpui-fast's
 `pub(crate) fn should_use_subpixel_rendering`), the root `Cargo.toml` (`gpui_ios` member
 and dependency) and `Cargo.lock`. `git am -3` needs the preimage blobs from the zed fork;
@@ -967,16 +985,10 @@ hash-object -w --stdin` for every `index` line of `format-patch --full-index`).
 ## Testing gpui_ios on the simulator
 
 `gpui_ios`'s tests that need UIKit or CoreText build for `aarch64-apple-ios-sim` and run
-inside a booted simulator. `core-video` pulls in `cgl`, which links `OpenGL.framework`,
-absent on iOS; a test binary links against a stub whose install name is a library the
-simulator has (`/usr/lib/libobjc.A.dylib`), since nothing calls into it:
+inside a booted simulator:
 
 ```sh
-mkdir -p /tmp/iosstub/OpenGL.framework
-printf -- "--- !tapi-tbd\ntbd-version: 4\ntargets: [ arm64-ios-simulator ]\ninstall-name: '/usr/lib/libobjc.A.dylib'\n...\n" \
-  > /tmp/iosstub/OpenGL.framework/OpenGL.tbd
-CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUSTFLAGS="-C target-cpu=apple-m1 -C link-arg=-F/tmp/iosstub" \
-  cargo test -p gpui_ios --features test-support --target aarch64-apple-ios-sim --lib --no-run
+cargo test -p gpui_ios --features test-support --target aarch64-apple-ios-sim --lib --no-run
 xcrun simctl boot <device>
 xcrun simctl spawn <device> target/aarch64-apple-ios-sim/debug/deps/gpui_ios-<hash>
 xcrun simctl shutdown <device>

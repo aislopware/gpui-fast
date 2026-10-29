@@ -1,8 +1,8 @@
-//! How many subscribers a [`SubscriberSet`] holds, for
-//! [`crate::fast::subscriptions`]. A child of `subscription.rs`, whose fields
-//! it reads.
+//! How many subscribers a [`SubscriberSet`] or a [`SingleSubscriberSet`]
+//! holds, for [`crate::fast::subscriptions`]. A child of `subscription.rs`,
+//! whose fields it reads.
 
-use super::SubscriberSet;
+use super::{SingleSubscriberSet, SubscriberSet};
 
 impl<EmitterKey, Callback> SubscriberSet<EmitterKey, Callback> {
     /// The subscribers registered, active or not yet activated. Those of an
@@ -13,11 +13,15 @@ impl<EmitterKey, Callback> SubscriberSet<EmitterKey, Callback> {
             .borrow()
             .subscribers
             .values()
-            .map(|subscribers| {
-                subscribers
-                    .as_ref()
-                    .map_or(0, |subscribers| subscribers.len())
-            })
+            .map(|subscribers| subscribers.len())
             .sum()
+    }
+}
+
+impl<Callback> SingleSubscriberSet<Callback> {
+    /// The subscribers registered, active or not yet activated. While their
+    /// callbacks run they are taken out and not counted.
+    pub(crate) fn len(&self) -> usize {
+        self.0.borrow().subscribers.len()
     }
 }

@@ -5,13 +5,14 @@
 
 use anyhow::Result;
 use gpui::{EdgeFadeRamps, Scene};
-use metal::RenderCommandEncoderRef;
+use objc2::runtime::ProtocolObject;
+use objc2_metal::MTLRenderCommandEncoder;
 
 use crate::metal_renderer::{InstanceBinding, InstanceBufferWriter};
 
 /// The fragment buffer the shaders read the table from
 /// (`EDGE_FADE_BUFFER` in `shaders.metal`).
-pub(crate) const BUFFER: u64 = 7;
+pub(crate) const BUFFER: usize = 7;
 
 /// A table of no entries: its entry 0 counts none, so every fade draws
 /// whole.
@@ -37,8 +38,12 @@ pub(crate) fn write(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<
 }
 
 /// Binds `fades` for the fragment shaders of `encoder`'s draws.
-pub(crate) fn bind(encoder: &RenderCommandEncoderRef, fades: &InstanceBinding) {
-    encoder.set_fragment_buffer(BUFFER, Some(&fades.buffer), fades.offset as u64);
+pub(crate) fn bind(encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>, fades: &InstanceBinding) {
+    // SAFETY: the fragment shaders read the table of fades at this slot; Metal retains the
+    // buffer, and the frame's writer publishes its writes.
+    unsafe {
+        encoder.setFragmentBuffer_offset_atIndex(Some(&fades.buffer), fades.offset, BUFFER);
+    }
 }
 
 /// Pixel tests: what each kind of primitive draws faded, read back from a
@@ -53,6 +58,7 @@ mod tests {
         RenderSvgParams, ScaledPixels, Scene, TransformationMatrix, Underline, point, px, rgba,
         size,
     };
+    use objc2_metal::MTLCommandBuffer as _;
     use parking_lot::Mutex;
 
     use crate::metal_renderer::{InstanceBufferPool, MetalRenderer};
@@ -132,12 +138,13 @@ mod tests {
         ramps: EdgeFadeRamps,
         draw: impl FnOnce(&mut Scene, u32, &MetalRenderer),
     ) {
-        if metal::Device::system_default().is_none() {
+        if objc2_metal::MTLCreateSystemDefaultDevice().is_none() {
             eprintln!("skipped: no Metal device");
             return;
         }
         let mut renderer =
-            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())));
+            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())))
+                .unwrap();
         let mut scene = Scene::default();
         scene.insert_primitive(quad(
             sp(0., 0., SIDE as f32, SIDE as f32),
@@ -421,11 +428,12 @@ mod tests {
     /// No fade, or an index past the table's end, draws a primitive whole.
     #[test]
     fn an_unfaded_or_unknown_index_draws_whole() {
-        if metal::Device::system_default().is_none() {
+        if objc2_metal::MTLCreateSystemDefaultDevice().is_none() {
             return;
         }
         let mut renderer =
-            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())));
+            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())))
+                .unwrap();
         for fade in [0, 999, 1 | 7 << 16] {
             let mut scene = Scene::default();
             if fade != 0 {
@@ -452,11 +460,12 @@ mod tests {
 
         const W: i32 = 3024;
         const H: i32 = 1964;
-        if metal::Device::system_default().is_none() {
+        if objc2_metal::MTLCreateSystemDefaultDevice().is_none() {
             return;
         }
         let mut renderer =
-            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())));
+            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())))
+                .unwrap();
         let tile = renderer
             .sprite_atlas()
             .get_or_insert_with(
@@ -473,17 +482,7 @@ mod tests {
             )
             .expect("image uploaded")
             .expect("image tile");
-        let target = {
-            let descriptor = metal::TextureDescriptor::new();
-            descriptor.set_width(W as u64);
-            descriptor.set_height(H as u64);
-            descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
-            descriptor.set_usage(
-                metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
-            );
-            descriptor.set_storage_mode(metal::MTLStorageMode::Private);
-            renderer.device.new_texture(&descriptor)
-        };
+        let target = crate::fast::render_target(&renderer.device, W as usize, H as usize);
         let mut ramps = EdgeFadeRamps::NONE;
         ramps.mask = [400., 1400., 2600., 1800.];
         ramps.mask_shape = [48., 560., 16., 1964.];
@@ -524,17 +523,8 @@ mod tests {
                         .render_frame(&scene, &target, size(DevicePixels(W), DevicePixels(H)))
                         .expect("frame encoded");
                     buffer.commit();
-                    buffer.wait_until_completed();
-                    // SAFETY: `GPUStartTime` and `GPUEndTime` are `MTLCommandBuffer`
-                    // properties, read after the buffer completed.
-                    let (start, end): (f64, f64) = unsafe {
-                        let buffer: &objc2::runtime::AnyObject =
-                            &*foreign_types::ForeignType::as_ptr(&buffer).cast();
-                        (
-                            objc2::msg_send![buffer, GPUStartTime],
-                            objc2::msg_send![buffer, GPUEndTime],
-                        )
-                    };
+                    buffer.waitUntilCompleted();
+                    let (start, end) = (buffer.GPUStartTime(), buffer.GPUEndTime());
                     Duration::from_secs_f64((end - start).max(0.))
                 });
                 if frame >= 30 {

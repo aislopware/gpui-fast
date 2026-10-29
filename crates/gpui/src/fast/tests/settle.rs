@@ -85,6 +85,8 @@ fn a_measured_size_shows_in_the_frame_it_changed_in(cx: &mut TestAppContext) {
         }
     });
     let test_window = cx.test_window(window.into());
+    // The frames of an active window, which the inactive window's frame limit leaves alone.
+    test_window.simulate_active_status_change(true);
     test_window.simulate_frame_request(RequestFrameOptions::default());
     assert_eq!(bars().last().copied(), Some(30.), "the first frame shown");
 
@@ -113,6 +115,8 @@ fn a_deferral_that_changes_nothing_costs_no_draw(cx: &mut TestAppContext) {
         }
     });
     let test_window = cx.test_window(window.into());
+    // The frames of an active window, which the inactive window's frame limit leaves alone.
+    test_window.simulate_active_status_change(true);
     test_window.simulate_frame_request(RequestFrameOptions::default());
     let before = renders.get();
     window.update(cx, |_, _, cx| cx.notify()).unwrap();

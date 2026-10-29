@@ -13,7 +13,7 @@
 //!   its bounds, which are snapped from there: moved by part of a device
 //!   pixel, its bounds can snap by a whole one while a box inside, centred
 //!   half a pixel off a pixel's edge, snaps to the pixel beside (see
-//!   [`crate::TaffyLayoutEngine::layout_phase`]). Coordinates that round half toward zero round the
+//!   [`crate::taffy::TaffyLayoutEngine::layout_phase`]). Coordinates that round half toward zero round the
 //!   same way only on the same side of zero, so along the axes it moves,
 //!   every primitive, every element it holds and every glyph it placed lies
 //!   at or past the window's top and left edges, before and after (see

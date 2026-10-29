@@ -26,11 +26,12 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
-use core_video::pixel_buffer::CVPixelBuffer;
 use gpui::{
     Bounds, ContentMask, PaintSurface, PresentedFrame, ScaledPixels, Scene,
     composition::NativeHost, point, size,
 };
+use objc2_core_foundation::{CFRetained, Type as _};
+use objc2_core_video::{CVPixelBuffer, CVPixelBufferGetHeight, CVPixelBufferGetWidth};
 use parking_lot::{Condvar, Mutex};
 
 use crate::metal_renderer::{InstanceBufferPool, MetalRenderer};
@@ -89,7 +90,7 @@ struct Shared {
 }
 
 /// A picture on its way from the decoding thread to the layer's.
-struct Picture(CVPixelBuffer);
+struct Picture(CFRetained<CVPixelBuffer>);
 
 // SAFETY: a CVPixelBuffer is a CoreFoundation object, whose retain and release are
 // thread-safe, and the layer only reads it: CoreVideo lets any thread sample a buffer.
@@ -136,17 +137,17 @@ impl VideoLayer {
             Arc::new(Mutex::new(InstanceBufferPool::default())),
             false,
             false,
-        );
+        )?;
         let Some(layer) = renderer.layer() else {
             bail!("the video renderer has no layer");
         };
-        layer.set_maximum_drawable_count(options.maximum_drawable_count.clamp(2, 3));
+        layer.setMaximumDrawableCount(options.maximum_drawable_count.clamp(2, 3) as usize);
+        // Stretched to the layer: the element places the layer where the picture goes.
+        layer.setNeedsDisplayOnBoundsChange(false);
         let layer = renderer.layer_ptr();
         // SAFETY: a new, live CAMetalLayer, configured and attached on the main thread; the
         // host's container retains it and the renderer keeps its own reference.
         unsafe {
-            // Stretched to the layer: the element places the layer where the picture goes.
-            (*layer.cast::<objc2_quartz_core::CAMetalLayer>()).setNeedsDisplayOnBoundsChange(false);
             host.attach_layer(
                 std::ptr::NonNull::new(layer.cast()).context("the video renderer's layer")?,
             )?;
@@ -190,7 +191,7 @@ impl VideoLayer {
     /// [`Self::on_presented`]. Never blocks on the display: a picture not drawn yet is
     /// replaced by this one.
     pub fn present(&self, picture: &CVPixelBuffer) -> Result<u64> {
-        if picture.get_width() == 0 || picture.get_height() == 0 {
+        if CVPixelBufferGetWidth(picture) == 0 || CVPixelBufferGetHeight(picture) == 0 {
             bail!("an empty picture");
         }
         let shared = &self.handle.shared;
@@ -198,7 +199,7 @@ impl VideoLayer {
             let mut state = shared.state.lock();
             let sequence = state.next_sequence;
             state.next_sequence += 1;
-            let replaced = state.mailbox.replace((sequence, Picture(picture.clone())));
+            let replaced = state.mailbox.replace((sequence, Picture(picture.retain())));
             (sequence, replaced)
         };
         shared.wake.notify_all();
@@ -264,7 +265,10 @@ fn draw_pictures(shared: &Shared, mut video: VideoRenderer) {
 
 impl VideoRenderer {
     fn draw(&mut self, picture: &CVPixelBuffer) -> Result<()> {
-        let (width, height) = (picture.get_width(), picture.get_height());
+        let (width, height) = (
+            CVPixelBufferGetWidth(picture),
+            CVPixelBufferGetHeight(picture),
+        );
         if self.drawable_size != (width, height) {
             let Some(layer) = self.renderer.layer() else {
                 bail!("the video renderer has no layer");
@@ -273,7 +277,7 @@ impl VideoRenderer {
             // without a run loop; `drawableSize` is not animatable, and actions are off.
             objc2_quartz_core::CATransaction::begin();
             objc2_quartz_core::CATransaction::setDisableActions(true);
-            layer.set_drawable_size(core_graphics::geometry::CGSize::new(
+            layer.setDrawableSize(objc2_core_foundation::CGSize::new(
                 width as f64,
                 height as f64,
             ));
@@ -291,26 +295,10 @@ impl VideoRenderer {
             order: 0,
             bounds,
             content_mask: ContentMask { bounds },
-            image_buffer: objc2_buffer(picture),
+            image_buffer: picture.retain(),
         });
         self.scene.finish();
         self.renderer.draw(&self.scene);
         Ok(())
-    }
-}
-
-/// `picture` as the `objc2-core-video` buffer a [`PaintSurface`] holds: the same
-/// CoreFoundation object, retained once more.
-pub fn objc2_buffer(
-    picture: &CVPixelBuffer,
-) -> objc2_core_foundation::CFRetained<objc2_core_video::CVPixelBuffer> {
-    use core_foundation::base::TCFType as _;
-    let raw = picture.as_concrete_TypeRef();
-    // SAFETY: both crates name the same `CVPixelBufferRef` (CVPixelBuffer.h); `picture` holds it
-    // alive for this call, and the get rule retains it for the returned handle.
-    unsafe {
-        objc2_core_foundation::CFRetained::retain(std::ptr::NonNull::new_unchecked(
-            raw.cast::<objc2_core_video::CVPixelBuffer>(),
-        ))
     }
 }

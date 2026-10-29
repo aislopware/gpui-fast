@@ -32,37 +32,44 @@
 //!
 //! [`ComposedBatch::Blurs`]: gpui::composition::ComposedBatch::Blurs
 
-use std::{mem, ops::Range};
+use std::{mem, ops::Range, ptr};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use gpui::{BackdropBlur, DevicePixels, Scene, Size};
-use metal::{
-    CommandBufferRef, DeviceRef, LibraryRef, MTLPixelFormat, RenderCommandEncoderRef,
-    RenderPipelineState, Texture, TextureRef,
-};
 use objc2::{
     msg_send,
     rc::Retained,
-    runtime::{AnyClass, AnyObject, Bool},
+    runtime::{AnyClass, AnyObject, Bool, ProtocolObject},
 };
+use objc2_foundation::NSString;
+use objc2_metal::{
+    MTLBlendFactor, MTLBlendOperation, MTLBlitCommandEncoder as _, MTLCommandBuffer,
+    MTLCommandEncoder as _, MTLDevice, MTLLibrary, MTLOrigin, MTLPixelFormat, MTLPrimitiveType,
+    MTLRenderCommandEncoder, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLSize,
+    MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
+};
+use objc2_quartz_core::CAMetalLayer;
 
 use crate::metal_renderer::{InstanceBinding, MetalRenderer, new_command_encoder_for_texture};
 
 #[link(name = "MetalPerformanceShaders", kind = "framework")]
 unsafe extern "C" {
-    fn MPSSupportsMTLDevice(device: *mut AnyObject) -> Bool;
+    fn MPSSupportsMTLDevice(device: *const AnyObject) -> Bool;
 }
 
+type Texture = Retained<ProtocolObject<dyn MTLTexture>>;
+type Encoder = Retained<ProtocolObject<dyn MTLRenderCommandEncoder>>;
+
 /// The shaders' buffer slots (`BackdropBlurInputIndex` in `shaders.metal`).
-const VERTICES: u64 = 0;
-const BLURS: u64 = 1;
-const VIEWPORT_SIZE: u64 = 2;
-const SOURCE_RECT: u64 = 3;
-const SOURCE_TEXTURE: u64 = 0;
+const VERTICES: usize = 0;
+const BLURS: usize = 1;
+const VIEWPORT_SIZE: usize = 2;
+const SOURCE_RECT: usize = 3;
+const SOURCE_TEXTURE: usize = 0;
 
 /// Scratch textures are sized in steps of this many pixels, so a region
 /// that grows a little reuses its pair.
-const QUANTUM: u64 = 64;
+const QUANTUM: usize = 64;
 /// How many scratch pairs and kernels are kept.
 const KEPT: usize = 4;
 /// The most bytes the kept scratch pairs take, unless one pair needs more.
@@ -81,16 +88,16 @@ struct Scratch {
 
 impl Scratch {
     fn bytes(&self) -> u64 {
-        self.copy.width() * self.copy.height() * 8
+        (self.copy.width() * self.copy.height() * 8) as u64
     }
 }
 
 /// What a renderer keeps for backdrop blurs.
 pub(crate) struct Backdrop {
     /// Keeps `destination × (1 − k)`.
-    erase: RenderPipelineState,
+    erase: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     /// Adds `blurred × k`.
-    add: RenderPipelineState,
+    add: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     /// Whether Metal Performance Shaders run on the device.
     supported: bool,
     scratch: Vec<Scratch>,
@@ -101,52 +108,55 @@ pub(crate) struct Backdrop {
 }
 
 impl Backdrop {
-    pub(crate) fn new(device: &DeviceRef, library: &LibraryRef, format: MTLPixelFormat) -> Self {
-        use metal::foreign_types::ForeignTypeRef as _;
-        let pipeline = |label: &str, fragment: &str, source: metal::MTLBlendFactor| {
-            let descriptor = metal::RenderPipelineDescriptor::new();
-            descriptor.set_label(label);
-            let vertex = library
-                .get_function("backdrop_blur_vertex", None)
-                .expect("error locating vertex function");
-            let fragment = library
-                .get_function(fragment, None)
-                .expect("error locating fragment function");
-            descriptor.set_vertex_function(Some(&vertex));
-            descriptor.set_fragment_function(Some(&fragment));
-            let color = descriptor.color_attachments().object_at(0).unwrap();
-            color.set_pixel_format(format);
-            color.set_blending_enabled(true);
-            color.set_rgb_blend_operation(metal::MTLBlendOperation::Add);
-            color.set_alpha_blend_operation(metal::MTLBlendOperation::Add);
-            color.set_source_rgb_blend_factor(metal::MTLBlendFactor::One);
-            color.set_source_alpha_blend_factor(metal::MTLBlendFactor::One);
-            color.set_destination_rgb_blend_factor(source);
-            color.set_destination_alpha_blend_factor(source);
-            descriptor.set_stencil_attachment_pixel_format(super::occlusion::STENCIL_FORMAT);
+    pub(crate) fn new(
+        device: &ProtocolObject<dyn MTLDevice>,
+        library: &ProtocolObject<dyn MTLLibrary>,
+        format: MTLPixelFormat,
+    ) -> Result<Self> {
+        let function = |name: &str| {
+            library
+                .newFunctionWithName(&NSString::from_str(name))
+                .with_context(|| format!("locating function {name}"))
+        };
+        let pipeline = |label: &str, fragment: &str, source: MTLBlendFactor| -> Result<_> {
+            let descriptor = MTLRenderPipelineDescriptor::new();
+            descriptor.setLabel(Some(&NSString::from_str(label)));
+            descriptor.setVertexFunction(Some(&*function("backdrop_blur_vertex")?));
+            descriptor.setFragmentFunction(Some(&*function(fragment)?));
+            // SAFETY: Index zero is within the pipeline's color attachment array.
+            let color = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
+            color.setPixelFormat(format);
+            color.setBlendingEnabled(true);
+            color.setRgbBlendOperation(MTLBlendOperation::Add);
+            color.setAlphaBlendOperation(MTLBlendOperation::Add);
+            color.setSourceRGBBlendFactor(MTLBlendFactor::One);
+            color.setSourceAlphaBlendFactor(MTLBlendFactor::One);
+            color.setDestinationRGBBlendFactor(source);
+            color.setDestinationAlphaBlendFactor(source);
+            descriptor.setStencilAttachmentPixelFormat(super::occlusion::STENCIL_FORMAT);
             device
-                .new_render_pipeline_state(&descriptor)
-                .expect("could not create render pipeline state")
+                .newRenderPipelineStateWithDescriptor_error(&descriptor)
+                .with_context(|| format!("creating {label} render pipeline"))
         };
         // SAFETY: a live MTLDevice.
-        let supported = unsafe { MPSSupportsMTLDevice(device.as_ptr().cast()) }.as_bool();
-        Self {
+        let supported = unsafe { MPSSupportsMTLDevice(ptr::from_ref(device).cast()) }.as_bool();
+        Ok(Self {
             erase: pipeline(
                 "backdrop_blur_erase",
                 "backdrop_blur_erase_fragment",
-                metal::MTLBlendFactor::OneMinusSourceAlpha,
-            ),
+                MTLBlendFactor::OneMinusSourceAlpha,
+            )?,
             add: pipeline(
                 "backdrop_blur_add",
                 "backdrop_blur_fragment",
-                metal::MTLBlendFactor::One,
-            ),
+                MTLBlendFactor::One,
+            )?,
             supported,
             scratch: Vec::new(),
             kernels: Vec::new(),
             blur_free_frames: 0,
             readable: false,
-        }
+        })
     }
 
     /// Notes whether the frame `scene` draws a blur, releasing what blurs
@@ -167,11 +177,11 @@ impl Backdrop {
     /// target of `target_width` × `target_height` in `format`.
     fn scratch(
         &mut self,
-        device: &DeviceRef,
-        (width, height): (u64, u64),
-        (target_width, target_height): (u64, u64),
+        device: &ProtocolObject<dyn MTLDevice>,
+        (width, height): (usize, usize),
+        (target_width, target_height): (usize, usize),
         format: MTLPixelFormat,
-    ) -> (Texture, Texture) {
+    ) -> Result<(Texture, Texture)> {
         let width = (width.div_ceil(QUANTUM) * QUANTUM).min(target_width);
         let height = (height.div_ceil(QUANTUM) * QUANTUM).min(target_height);
         // The copy always fills its texture from inside the target, so a
@@ -179,7 +189,7 @@ impl Backdrop {
         self.scratch.retain(|pair| {
             pair.copy.width() <= target_width
                 && pair.copy.height() <= target_height
-                && pair.copy.pixel_format() == format
+                && pair.copy.pixelFormat() == format
         });
         if let Some(index) = self
             .scratch
@@ -189,7 +199,7 @@ impl Backdrop {
             let pair = self.scratch.remove(index);
             self.scratch.push(pair);
         } else {
-            let needed = width * height * 8;
+            let needed = (width * height * 8) as u64;
             let budget = SCRATCH_BUDGET.max(needed);
             while !self.scratch.is_empty()
                 && (self.scratch.len() >= KEPT
@@ -197,27 +207,35 @@ impl Backdrop {
             {
                 self.scratch.remove(0);
             }
-            let descriptor = metal::TextureDescriptor::new();
-            descriptor.set_texture_type(metal::MTLTextureType::D2);
-            descriptor.set_pixel_format(format);
-            descriptor.set_width(width);
-            descriptor.set_height(height);
-            descriptor.set_storage_mode(metal::MTLStorageMode::Private);
-            descriptor.set_usage(metal::MTLTextureUsage::ShaderRead);
-            let copy = device.new_texture(&descriptor);
-            descriptor.set_usage(
-                metal::MTLTextureUsage::ShaderRead | metal::MTLTextureUsage::ShaderWrite,
-            );
-            let blurred = device.new_texture(&descriptor);
+            let descriptor = MTLTextureDescriptor::new();
+            descriptor.setTextureType(MTLTextureType::Type2D);
+            descriptor.setPixelFormat(format);
+            // SAFETY: at most the target's own width and height, which the device allowed.
+            unsafe {
+                descriptor.setWidth(width);
+                descriptor.setHeight(height);
+            }
+            descriptor.setStorageMode(MTLStorageMode::Private);
+            descriptor.setUsage(MTLTextureUsage::ShaderRead);
+            let copy = device
+                .newTextureWithDescriptor(&descriptor)
+                .context("allocating a backdrop copy")?;
+            descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::ShaderWrite);
+            let blurred = device
+                .newTextureWithDescriptor(&descriptor)
+                .context("allocating a blurred backdrop")?;
             self.scratch.push(Scratch { copy, blurred });
         }
-        let pair = self.scratch.last().unwrap();
-        (pair.copy.clone(), pair.blurred.clone())
+        let pair = self.scratch.last().context("a scratch pair")?;
+        Ok((pair.copy.clone(), pair.blurred.clone()))
     }
 
     /// The gaussian kernel of standard deviation `sigma`.
-    fn kernel(&mut self, device: &DeviceRef, sigma: f32) -> Option<Retained<AnyObject>> {
-        use metal::foreign_types::ForeignTypeRef as _;
+    fn kernel(
+        &mut self,
+        device: &ProtocolObject<dyn MTLDevice>,
+        sigma: f32,
+    ) -> Option<Retained<AnyObject>> {
         if let Some(index) = self
             .kernels
             .iter()
@@ -236,7 +254,7 @@ impl Backdrop {
             let allocated: *mut AnyObject = msg_send![class, alloc];
             let kernel: *mut AnyObject = msg_send![
                 allocated,
-                initWithDevice: device.as_ptr().cast::<AnyObject>(),
+                initWithDevice: device,
                 sigma: sigma
             ];
             let kernel = Retained::from_raw(kernel)?;
@@ -254,19 +272,15 @@ impl Backdrop {
 /// Makes the drawables of `layer` readable before the drawable for `scene`
 /// is taken if `scene` draws a blur, and write-only again after a run of
 /// frames without one.
-pub(crate) fn prepare_layer(
-    renderer: &mut MetalRenderer,
-    layer: &metal::MetalLayerRef,
-    scene: &Scene,
-) {
+pub(crate) fn prepare_layer(renderer: &mut MetalRenderer, layer: &CAMetalLayer, scene: &Scene) {
     let backdrop = &mut renderer.fast_backdrop;
     let blurs = !scene.backdrop_blurs().is_empty() && backdrop.supported;
     if blurs && !backdrop.readable {
-        layer.set_framebuffer_only(false);
+        layer.setFramebufferOnly(false);
         backdrop.readable = true;
     } else if !blurs && backdrop.readable && backdrop.blur_free_frames >= WRITE_ONLY_AFTER_FRAMES {
         #[cfg(not(all(feature = "test-support", debug_assertions)))]
-        layer.set_framebuffer_only(true);
+        layer.setFramebufferOnly(true);
         backdrop.readable = false;
     }
 }
@@ -281,17 +295,18 @@ pub(crate) fn write(
 
 /// What a pass needs to begin again after a blur.
 pub(crate) struct Pass<'a> {
-    pub(crate) command_buffer: &'a CommandBufferRef,
-    pub(crate) texture: &'a TextureRef,
-    pub(crate) stencil: &'a TextureRef,
+    pub(crate) command_buffer: &'a ProtocolObject<dyn MTLCommandBuffer>,
+    pub(crate) texture: &'a ProtocolObject<dyn MTLTexture>,
+    pub(crate) stencil: &'a ProtocolObject<dyn MTLTexture>,
     pub(crate) viewport_size: Size<DevicePixels>,
 }
 
 /// Draws the blurs `range` of `scene`, of one draw order, over what
 /// `encoder`'s pass drew so far: ends the pass once, blurs a copy of the
-/// region each group of them reads, and returns the pass begun again with
-/// the blurred backdrop drawn back. Returns `encoder` as it is when the
-/// blurs show nothing or Metal Performance Shaders can't run.
+/// region each group of them reads, and leaves in `encoder` the pass begun
+/// again with the blurred backdrop drawn back. Returns whether it did: it
+/// leaves `encoder` as it is when the blurs show nothing or Metal
+/// Performance Shaders can't run. On an error the pass is ended.
 ///
 /// A group is a run of blurs of one radius whose regions' bounding box is
 /// at most twice as large as the regions together: one copy and one
@@ -306,27 +321,28 @@ pub(crate) fn draw<'a>(
     blurs: &InstanceBinding,
     fades: &InstanceBinding,
     pass: &Pass<'a>,
-    encoder: &'a RenderCommandEncoderRef,
-) -> &'a RenderCommandEncoderRef {
+    encoder: &mut Encoder,
+) -> Result<bool> {
     if !renderer.fast_backdrop.supported {
-        return encoder;
+        return Ok(false);
     }
     let all = scene.backdrop_blurs();
     let (target_width, target_height) = (pass.texture.width(), pass.texture.height());
     // The region a blur reads, in whole pixels inside the target.
     let region = |blur: &BackdropBlur| {
         let reach = blur.reach();
-        let x0 = (reach.origin.x.0.floor().max(0.) as u64).min(target_width);
-        let y0 = (reach.origin.y.0.floor().max(0.) as u64).min(target_height);
-        let x1 = ((reach.origin.x.0 + reach.size.width.0).ceil().max(0.) as u64).min(target_width);
+        let x0 = (reach.origin.x.0.floor().max(0.) as usize).min(target_width);
+        let y0 = (reach.origin.y.0.floor().max(0.) as usize).min(target_height);
+        let x1 =
+            ((reach.origin.x.0 + reach.size.width.0).ceil().max(0.) as usize).min(target_width);
         let y1 =
-            ((reach.origin.y.0 + reach.size.height.0).ceil().max(0.) as u64).min(target_height);
+            ((reach.origin.y.0 + reach.size.height.0).ceil().max(0.) as usize).min(target_height);
         (x0 < x1 && y0 < y1).then_some([x0, y0, x1, y1])
     };
-    let area = |[x0, y0, x1, y1]: [u64; 4]| (x1 - x0) * (y1 - y0);
+    let area = |[x0, y0, x1, y1]: [usize; 4]| (x1 - x0) * (y1 - y0);
     // Each group: its blurs, the bounding box of their regions, and their
     // regions' areas together.
-    let mut groups: Vec<(Range<usize>, [u64; 4], u64)> = Vec::new();
+    let mut groups: Vec<(Range<usize>, [usize; 4], usize)> = Vec::new();
     for index in range {
         let Some(own) = region(&all[index]) else {
             continue;
@@ -350,82 +366,95 @@ pub(crate) fn draw<'a>(
         }
         groups.push((index..index + 1, own, area(own)));
     }
-    let mut encoder = encoder;
+    let mut restarted = false;
     for (group, union, _) in groups {
         let sigma = all[group.start].blur_radius.0.max(0.5);
-        encoder = draw_group(renderer, group, union, sigma, blurs, fades, pass, encoder);
+        restarted |= draw_group(renderer, group, union, sigma, blurs, fades, pass, encoder)?;
     }
-    encoder
+    Ok(restarted)
 }
 
 /// Draws the blurs `group`, of standard deviation `sigma`, reading `union`
-/// of the target.
+/// of the target, and returns whether it began the pass in `encoder` again.
+/// On an error the pass is ended.
 #[allow(clippy::too_many_arguments)]
-fn draw_group<'a>(
+fn draw_group(
     renderer: &mut MetalRenderer,
     group: Range<usize>,
-    [x0, y0, x1, y1]: [u64; 4],
+    [x0, y0, x1, y1]: [usize; 4],
     sigma: f32,
     blurs: &InstanceBinding,
     fades: &InstanceBinding,
-    pass: &Pass<'a>,
-    encoder: &'a RenderCommandEncoderRef,
-) -> &'a RenderCommandEncoderRef {
-    use metal::foreign_types::ForeignTypeRef as _;
+    pass: &Pass<'_>,
+    encoder: &mut Encoder,
+) -> Result<bool> {
     let (target_width, target_height) = (pass.texture.width(), pass.texture.height());
     let device = renderer.device.clone();
     let Some(kernel) = renderer.fast_backdrop.kernel(&device, sigma) else {
-        return encoder;
+        return Ok(false);
     };
-    let (copy, blurred) = renderer.fast_backdrop.scratch(
+    let (copy, blurred) = match renderer.fast_backdrop.scratch(
         &device,
         (x1 - x0, y1 - y0),
         (target_width, target_height),
-        pass.texture.pixel_format(),
-    );
+        pass.texture.pixelFormat(),
+    ) {
+        Ok(pair) => pair,
+        Err(error) => {
+            encoder.endEncoding();
+            return Err(error);
+        }
+    };
     // The copy fills its whole texture from inside the target, so that the
     // kernel's clamped edge is the target's edge where the region meets it.
     let copy_x = x0.min(target_width - copy.width());
     let copy_y = y0.min(target_height - copy.height());
-    encoder.end_encoding();
-    let blit = pass.command_buffer.new_blit_command_encoder();
-    blit.copy_from_texture(
-        pass.texture,
-        0,
-        0,
-        metal::MTLOrigin {
-            x: copy_x,
-            y: copy_y,
-            z: 0,
-        },
-        metal::MTLSize {
-            width: copy.width(),
-            height: copy.height(),
-            depth: 1,
-        },
-        &copy,
-        0,
-        0,
-        metal::MTLOrigin { x: 0, y: 0, z: 0 },
-    );
-    blit.end_encoding();
+    encoder.endEncoding();
+    let blit = pass
+        .command_buffer
+        .blitCommandEncoder()
+        .context("creating a backdrop blit encoder")?;
+    // SAFETY: the region lies inside both textures, which share a pixel format and one
+    // sample, and the blit is ended before the next encoder begins.
+    unsafe {
+        blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
+            pass.texture,
+            0,
+            0,
+            MTLOrigin {
+                x: copy_x,
+                y: copy_y,
+                z: 0,
+            },
+            MTLSize {
+                width: copy.width(),
+                height: copy.height(),
+                depth: 1,
+            },
+            &copy,
+            0,
+            0,
+            MTLOrigin { x: 0, y: 0, z: 0 },
+        );
+    }
+    blit.endEncoding();
     // SAFETY: a live kernel, command buffer and two textures of one size and
     // format, the destination writable.
     unsafe {
         let _: () = msg_send![
             &*kernel,
-            encodeToCommandBuffer: pass.command_buffer.as_ptr().cast::<AnyObject>(),
-            sourceTexture: copy.as_ptr().cast::<AnyObject>(),
-            destinationTexture: blurred.as_ptr().cast::<AnyObject>()
+            encodeToCommandBuffer: pass.command_buffer,
+            sourceTexture: &*copy,
+            destinationTexture: &*blurred
         ];
     }
-    let encoder = new_command_encoder_for_texture(
+    *encoder = new_command_encoder_for_texture(
         pass.command_buffer,
         pass.texture,
         pass.stencil,
         pass.viewport_size,
         None,
-    );
+    )?;
     let source_rect = [
         copy_x as f32,
         copy_y as f32,
@@ -433,31 +462,39 @@ fn draw_group<'a>(
         copy.height() as f32,
     ];
     for pipeline in [&renderer.fast_backdrop.erase, &renderer.fast_backdrop.add] {
-        encoder.set_render_pipeline_state(pipeline);
-        encoder.set_vertex_buffer(VERTICES, Some(&renderer.unit_vertices), 0);
-        encoder.set_vertex_buffer(BLURS, Some(&blurs.buffer), blurs.offset as u64);
-        encoder.set_fragment_buffer(BLURS, Some(&blurs.buffer), blurs.offset as u64);
-        encoder.set_vertex_bytes(
-            VIEWPORT_SIZE,
-            mem::size_of_val(&pass.viewport_size) as u64,
-            &pass.viewport_size as *const Size<DevicePixels> as *const _,
-        );
-        encoder.set_fragment_bytes(
-            SOURCE_RECT,
-            mem::size_of_val(&source_rect) as u64,
-            source_rect.as_ptr() as *const _,
-        );
-        encoder.set_fragment_texture(SOURCE_TEXTURE, Some(&blurred));
+        encoder.setRenderPipelineState(pipeline);
+        // SAFETY: the unit vertices, the blurs, the viewport and the source rectangle match
+        // the backdrop shaders' layouts and slots; Metal retains the buffers and the
+        // texture, and copies the bytes. The group lies within the blurs written.
+        unsafe {
+            encoder.setVertexBuffer_offset_atIndex(Some(&renderer.unit_vertices), 0, VERTICES);
+            encoder.setVertexBuffer_offset_atIndex(Some(&blurs.buffer), blurs.offset, BLURS);
+            encoder.setFragmentBuffer_offset_atIndex(Some(&blurs.buffer), blurs.offset, BLURS);
+            encoder.setVertexBytes_length_atIndex(
+                ptr::NonNull::from(&pass.viewport_size).cast(),
+                mem::size_of_val(&pass.viewport_size),
+                VIEWPORT_SIZE,
+            );
+            encoder.setFragmentBytes_length_atIndex(
+                ptr::NonNull::from(&source_rect).cast(),
+                mem::size_of_val(&source_rect),
+                SOURCE_RECT,
+            );
+            encoder.setFragmentTexture_atIndex(Some(&blurred), SOURCE_TEXTURE);
+        }
         super::edge_fade::bind(encoder, fades);
-        encoder.draw_primitives_instanced_base_instance(
-            metal::MTLPrimitiveType::Triangle,
-            0,
-            6,
-            group.len() as u64,
-            group.start as u64,
-        );
+        // SAFETY: as above.
+        unsafe {
+            encoder.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(
+                MTLPrimitiveType::Triangle,
+                0,
+                6,
+                group.len(),
+                group.start,
+            );
+        }
     }
-    encoder
+    Ok(true)
 }
 
 /// Pixel tests: a headless renderer draws scenes with blurs, read back.
@@ -512,13 +549,14 @@ mod tests {
     }
 
     fn renderer() -> Option<MetalRenderer> {
-        if metal::Device::system_default().is_none() {
+        if objc2_metal::MTLCreateSystemDefaultDevice().is_none() {
             eprintln!("skipped: no Metal device");
             return None;
         }
-        Some(MetalRenderer::new_headless(Arc::new(Mutex::new(
-            InstanceBufferPool::default(),
-        ))))
+        Some(
+            MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())))
+                .unwrap(),
+        )
     }
 
     fn render(renderer: &mut MetalRenderer, scene: &mut Scene) -> RgbaImage {
@@ -835,6 +873,8 @@ mod tests {
     fn frosted_popover_frame_cost() {
         use std::time::{Duration, Instant};
 
+        use objc2_metal::MTLCommandBuffer as _;
+
         const WIDTH: i32 = 3024;
         const HEIGHT: i32 = 1964;
         const FRAMES: usize = 300;
@@ -912,17 +952,7 @@ mod tests {
             rows(scene, panel);
         };
 
-        let target = {
-            let descriptor = metal::TextureDescriptor::new();
-            descriptor.set_width(WIDTH as u64);
-            descriptor.set_height(HEIGHT as u64);
-            descriptor.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
-            descriptor.set_usage(
-                metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead,
-            );
-            descriptor.set_storage_mode(metal::MTLStorageMode::Private);
-            renderer.device.new_texture(&descriptor)
-        };
+        let target = crate::fast::render_target(&renderer.device, WIDTH as usize, HEIGHT as usize);
         let mut draw = |scene: &Scene| -> (Duration, Duration) {
             objc2::rc::autoreleasepool(|_| {
                 let start = Instant::now();
@@ -931,17 +961,9 @@ mod tests {
                     .expect("frame encoded");
                 let cpu = start.elapsed();
                 command_buffer.commit();
-                command_buffer.wait_until_completed();
-                // SAFETY: `GPUStartTime` and `GPUEndTime` are `MTLCommandBuffer`
-                // properties, read after the buffer completed.
-                let (gpu_start, gpu_end): (f64, f64) = unsafe {
-                    let command_buffer: &objc2::runtime::AnyObject =
-                        &*foreign_types::ForeignType::as_ptr(&command_buffer).cast();
-                    (
-                        objc2::msg_send![command_buffer, GPUStartTime],
-                        objc2::msg_send![command_buffer, GPUEndTime],
-                    )
-                };
+                command_buffer.waitUntilCompleted();
+                let (gpu_start, gpu_end) =
+                    (command_buffer.GPUStartTime(), command_buffer.GPUEndTime());
                 (cpu, Duration::from_secs_f64((gpu_end - gpu_start).max(0.)))
             })
         };

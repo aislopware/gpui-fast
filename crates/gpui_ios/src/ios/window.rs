@@ -1184,7 +1184,7 @@ impl IosWindow {
                 MetalContext::default(),
                 &*layer.cast::<objc2_quartz_core::CAMetalLayer>(),
                 false,
-            );
+            )?;
             renderer.update_drawable_size(size(DevicePixels(pixel_w), DevicePixels(pixel_h)));
             let (display_link, refresh_interval) =
                 paused_display_link(view, window_scene, screen_obj);
@@ -2316,7 +2316,7 @@ impl PlatformWindow for IosWindow {
         let drawable = renderer
             .layer()
             .ok_or_else(|| anyhow::anyhow!("render_to_image needs a layer-backed renderer"))?
-            .drawable_size();
+            .drawableSize();
         let viewport = size(
             DevicePixels(drawable.width.ceil() as i32),
             DevicePixels(drawable.height.ceil() as i32),

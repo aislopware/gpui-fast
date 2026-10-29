@@ -11,7 +11,7 @@ pub mod keychain;
 mod metal_atlas;
 pub mod metal_renderer;
 mod presentation_pacing;
-pub mod thermal;
+pub mod process_info;
 
 #[cfg(feature = "font-kit")]
 mod open_type;

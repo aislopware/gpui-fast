@@ -14,7 +14,11 @@ use gpui::{
     hsla, point, px, size,
 };
 use image::RgbaImage;
-use metal::MTLPixelFormat;
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{
+    MTLCommandBuffer as _, MTLDevice as _, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize,
+    MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
+};
 
 use super::{InstanceBufferPool, MetalRenderer};
 
@@ -378,6 +382,7 @@ fn renderer() -> MetalRenderer {
     MetalRenderer::new_headless(std::sync::Arc::new(parking_lot::Mutex::new(
         InstanceBufferPool::default(),
     )))
+    .unwrap()
 }
 
 fn render(renderer: &mut MetalRenderer, scene: &Scene) -> RgbaImage {
@@ -392,34 +397,43 @@ fn render(renderer: &mut MetalRenderer, scene: &Scene) -> RgbaImage {
 fn render_precisely(renderer: &mut MetalRenderer, scene: &Scene) -> Image {
     let side = size(DevicePixels(SIDE), DevicePixels(SIDE));
     objc2::rc::autoreleasepool(|_| {
-        renderer.update_path_intermediate_textures(side);
-        let descriptor = metal::TextureDescriptor::new();
-        descriptor.set_width(SIDE as u64);
-        descriptor.set_height(SIDE as u64);
-        descriptor.set_pixel_format(MTLPixelFormat::RGBA16Float);
-        descriptor
-            .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
-        descriptor.set_storage_mode(metal::MTLStorageMode::Shared);
-        let texture = renderer.device.new_texture(&descriptor);
+        renderer.update_path_intermediate_textures(side).unwrap();
+        let descriptor = MTLTextureDescriptor::new();
+        // SAFETY: a small 2D texture's width and height.
+        unsafe {
+            descriptor.setWidth(SIDE as usize);
+            descriptor.setHeight(SIDE as usize);
+        }
+        descriptor.setPixelFormat(MTLPixelFormat::RGBA16Float);
+        descriptor.setUsage(MTLTextureUsage::RenderTarget | MTLTextureUsage::ShaderRead);
+        descriptor.setStorageMode(MTLStorageMode::Shared);
+        let texture = renderer
+            .device
+            .newTextureWithDescriptor(&descriptor)
+            .expect("a half-float target");
         let command_buffer = renderer
             .render_frame(scene, &texture, side)
             .expect("a headless render");
         command_buffer.commit();
-        command_buffer.wait_until_completed();
+        command_buffer.waitUntilCompleted();
         let mut halves = vec![0u16; SIDE as usize * SIDE as usize * 4];
-        texture.get_bytes(
-            halves.as_mut_ptr().cast(),
-            SIDE as u64 * 8,
-            metal::MTLRegion {
-                origin: metal::MTLOrigin { x: 0, y: 0, z: 0 },
-                size: metal::MTLSize {
-                    width: SIDE as u64,
-                    height: SIDE as u64,
-                    depth: 1,
+        // SAFETY: the buffer holds the whole shared texture's rows of four halves, read after
+        // the GPU finished writing it.
+        unsafe {
+            texture.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+                std::ptr::NonNull::from(halves.as_mut_slice()).cast(),
+                SIDE as usize * 8,
+                MTLRegion {
+                    origin: MTLOrigin { x: 0, y: 0, z: 0 },
+                    size: MTLSize {
+                        width: SIDE as usize,
+                        height: SIDE as usize,
+                        depth: 1,
+                    },
                 },
-            },
-            0,
-        );
+                0,
+            );
+        }
         Image {
             pixels: halves
                 .chunks_exact(4)
@@ -614,17 +628,8 @@ fn composition_overlay_gpu_cost() {
     };
 
     let mut renderer = renderer();
-    renderer.update_path_intermediate_textures(window);
-    let target = || {
-        let descriptor = metal::TextureDescriptor::new();
-        descriptor.set_width(WIDTH as u64);
-        descriptor.set_height(HEIGHT as u64);
-        descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
-        descriptor
-            .set_usage(metal::MTLTextureUsage::RenderTarget | metal::MTLTextureUsage::ShaderRead);
-        descriptor.set_storage_mode(metal::MTLStorageMode::Private);
-        renderer.device.new_texture(&descriptor)
-    };
+    renderer.update_path_intermediate_textures(window).unwrap();
+    let target = || crate::fast::render_target(&renderer.device, WIDTH as usize, HEIGHT as usize);
     let (base_target, overlay_target) = (target(), target());
     fn instructions() -> u64 {
         unsafe extern "C" {
@@ -640,7 +645,8 @@ fn composition_overlay_gpu_cost() {
     // Encodes each (scene, target) pass into its own command buffer, as each surface's
     // renderer does, and returns the CPU time and instructions encoding and the GPU time
     // of all of them.
-    let mut frame = |passes: &[(&Scene, &metal::Texture)]| -> (Duration, u64, Duration) {
+    type Target = Retained<ProtocolObject<dyn MTLTexture>>;
+    let mut frame = |passes: &[(&Scene, &Target)]| -> (Duration, u64, Duration) {
         objc2::rc::autoreleasepool(|_| {
             let start = Instant::now();
             let before = instructions();
@@ -657,23 +663,14 @@ fn composition_overlay_gpu_cost() {
             let (cpu, encoded) = (start.elapsed(), instructions() - before);
             let mut gpu = Duration::ZERO;
             for buffer in &buffers {
-                buffer.wait_until_completed();
-                // SAFETY: `GPUStartTime` and `GPUEndTime` are `MTLCommandBuffer`
-                // properties, read after the buffer completed.
-                let (start, end): (f64, f64) = unsafe {
-                    let buffer: &objc2::runtime::AnyObject =
-                        &*foreign_types::ForeignType::as_ptr(buffer).cast();
-                    (
-                        objc2::msg_send![buffer, GPUStartTime],
-                        objc2::msg_send![buffer, GPUEndTime],
-                    )
-                };
+                buffer.waitUntilCompleted();
+                let (start, end) = (buffer.GPUStartTime(), buffer.GPUEndTime());
                 gpu += Duration::from_secs_f64((end - start).max(0.));
             }
             (cpu, encoded, gpu)
         })
     };
-    let mut measure = |name: &str, passes: &[(&Scene, &metal::Texture)]| {
+    let mut measure = |name: &str, passes: &[(&Scene, &Target)]| {
         let mut samples: Vec<(Duration, u64, Duration)> =
             (0..FRAMES + 30).map(|_| frame(passes)).skip(30).collect();
         let median = |samples: &mut Vec<(Duration, u64, Duration)>,

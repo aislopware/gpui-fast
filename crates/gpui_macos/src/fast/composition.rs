@@ -386,7 +386,11 @@ extern "C" fn container_hit_test(this: &AnyObject, _: Sel, point: NSPoint) -> *m
 
 /// The GPUI view declines a hit test where a native is the topmost hitbox, so AppKit
 /// looks further, at the containers under it.
-pub(crate) extern "C" fn gpui_view_hit_test(this: &AnyObject, _: Sel, point: NSPoint) -> *mut AnyObject {
+pub(crate) extern "C" fn gpui_view_hit_test(
+    this: &AnyObject,
+    _: Sel,
+    point: NSPoint,
+) -> *mut AnyObject {
     // SAFETY: `this` is the GPUI view; main thread.
     let window: *mut AnyObject = unsafe { msg_send![this, window] };
     if let Some(composition) = WindowComposition::of_window(window) {
@@ -525,8 +529,14 @@ fn offer_key_to_gpui(gpui_view: *mut AnyObject, event: *mut AnyObject) -> bool {
 
 /// `NSWindow makeFirstResponder:` for a composing window, after AppKit made the change:
 /// tells GPUI when the user moved the keyboard into or out of a native.
-pub(crate) fn first_responder_changed(window: &AnyObject, previous: *mut AnyObject, responder: *mut AnyObject) {
-    let Some(composition) = WindowComposition::of_window(window as *const AnyObject as *mut AnyObject) else {
+pub(crate) fn first_responder_changed(
+    window: &AnyObject,
+    previous: *mut AnyObject,
+    responder: *mut AnyObject,
+) {
+    let Some(composition) =
+        WindowComposition::of_window(window as *const AnyObject as *mut AnyObject)
+    else {
         return;
     };
     if composition.moving_focus.get() {
@@ -574,9 +584,7 @@ impl MacWindow {
         };
         let opaque =
             state.background_appearance == WindowBackgroundAppearance::Opaque && !frame.any_hole;
-        // SAFETY: reads properties of the window's own Metal layer; main thread.
-        let hidden: Bool = unsafe { msg_send![std::ptr::from_ref(layer).cast::<AnyObject>().cast_mut(), isHidden] };
-        layer.is_opaque() != opaque || (hidden == Bool::YES) != frame.covers_window
+        layer.isOpaque() != opaque || layer.isHidden() != frame.covers_window
     }
 
     /// Makes GPUI's layer composite over what is under it while a hole shows a native,
@@ -588,15 +596,9 @@ impl MacWindow {
         };
         let opaque =
             state.background_appearance == WindowBackgroundAppearance::Opaque && !frame.any_hole;
-        layer.set_opaque(opaque);
-        // SAFETY: sets a property of the window's own Metal layer, inside the frame's
-        // transaction; main thread.
-        unsafe {
-            let () = msg_send![
-                std::ptr::from_ref(layer).cast::<AnyObject>().cast_mut(),
-                setHidden: Bool::new(frame.covers_window)
-            ];
-        }
+        layer.setOpaque(opaque);
+        // Inside the frame's transaction; main thread.
+        layer.setHidden(frame.covers_window);
     }
 
     /// Creates a native's container under the GPUI view.
@@ -754,7 +756,11 @@ extern "C" fn window_send_event(this: &AnyObject, _: Sel, event: *mut AnyObject)
     }
 }
 
-extern "C" fn window_make_first_responder(this: &AnyObject, _: Sel, responder: *mut AnyObject) -> Bool {
+extern "C" fn window_make_first_responder(
+    this: &AnyObject,
+    _: Sel,
+    responder: *mut AnyObject,
+) -> Bool {
     // SAFETY: NSWindow's own `makeFirstResponder:` and `firstResponder`; main thread.
     unsafe {
         let previous: *mut AnyObject = msg_send![this, firstResponder];

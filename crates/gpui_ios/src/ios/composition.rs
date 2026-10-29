@@ -914,9 +914,7 @@ impl IosWindow {
             .is_empty();
         let mut renderer = self.renderer.lock();
         let layer_changes = renderer.layer().is_some_and(|layer| {
-            // SAFETY: reads a property of the window's own Metal layer; main thread.
-            let hidden: bool = unsafe { msg_send![layer_object(layer), isHidden] };
-            layer.is_opaque() == frame.any_hole || hidden != frame.covers_window
+            layer.isOpaque() == frame.any_hole || layer.isHidden() != frame.covers_window
         });
         if !changes_natives && !layer_changes {
             composition
@@ -946,8 +944,8 @@ impl IosWindow {
                 renderer.set_presents_with_transaction(presented_with_transaction);
                 composition.apply(frame);
                 if let Some(layer) = renderer.layer() {
-                    layer.set_opaque(!frame.any_hole);
-                    let _: () = msg_send![layer_object(layer), setHidden: frame.covers_window];
+                    layer.setOpaque(!frame.any_hole);
+                    layer.setHidden(frame.covers_window);
                 }
                 if transaction {
                     let _: () = msg_send![class!(CATransaction), commit];
@@ -958,9 +956,4 @@ impl IosWindow {
         *composition.presented.borrow_mut() = frame.clone();
         composition.follow_keyboard(present.keyboard);
     }
-}
-
-fn layer_object(layer: &metal::MetalLayerRef) -> *mut AnyObject {
-    use foreign_types::ForeignTypeRef as _;
-    layer.as_ptr().cast()
 }

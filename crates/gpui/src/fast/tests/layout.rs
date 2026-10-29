@@ -451,8 +451,8 @@ fn a_node_taken_back_by_a_lingering_parent_is_laid_out_under_it() {
 /// the next frame while the first is kept without being requested. Returns
 /// the engine with the child, the parent it was taken from and the one that
 /// took it.
-fn child_taken_from_a_kept_parent() -> (crate::TaffyLayoutEngine, [crate::LayoutId; 3]) {
-    let mut engine = crate::TaffyLayoutEngine::new();
+fn child_taken_from_a_kept_parent() -> (crate::taffy::TaffyLayoutEngine, [crate::LayoutId; 3]) {
+    let mut engine = crate::taffy::TaffyLayoutEngine::new();
     let child = request(&mut engine, 1, &[]);
     let original = request(&mut engine, 2, &[child]);
     engine.clear();
@@ -467,7 +467,7 @@ fn child_taken_from_a_kept_parent() -> (crate::TaffyLayoutEngine, [crate::Layout
 }
 
 fn request(
-    engine: &mut crate::TaffyLayoutEngine,
+    engine: &mut crate::taffy::TaffyLayoutEngine,
     key: u64,
     children: &[crate::LayoutId],
 ) -> crate::LayoutId {

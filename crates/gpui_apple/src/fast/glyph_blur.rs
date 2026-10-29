@@ -26,12 +26,12 @@ fn sp(x: f32, y: f32, width: f32, height: f32) -> Bounds<ScaledPixels> {
 /// blurred by `sigma` and through `transformation`, and returns the red
 /// channel.
 fn draw(sigma: f32, transformation: TransformationMatrix) -> Option<Vec<u8>> {
-    if metal::Device::system_default().is_none() {
+    if objc2_metal::MTLCreateSystemDefaultDevice().is_none() {
         eprintln!("skipped: no Metal device");
         return None;
     }
     let mut renderer =
-        MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default())));
+        MetalRenderer::new_headless(Arc::new(Mutex::new(InstanceBufferPool::default()))).unwrap();
     let mut tile = renderer
         .sprite_atlas()
         .get_or_insert_with(

@@ -116,7 +116,7 @@ mod tests {
         let text_system = cx.text_system().clone();
         let id = text_system.resolve_font(&font(".ZedMono"));
         (
-            LineWrapper::new(id, px(16.), text_system.clone()),
+            LineWrapper::new(id, px(16.), text_system.clone(), Default::default()),
             text_system,
         )
     }
@@ -305,7 +305,9 @@ mod tests {
         let layout = layout_of(text, 10.);
         let mut start = 0;
         let mut lines = Vec::new();
-        for boundary in layout.compute_wrap_boundaries(text, px(wrap_width), None) {
+        for boundary in
+            layout.compute_wrap_boundaries(text, px(wrap_width), None, &mut Default::default())
+        {
             let end = layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].index;
             lines.push(&text[start..end]);
             start = end;
