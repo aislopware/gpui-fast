@@ -23,7 +23,8 @@
 //! at most. Both go after 120 frames without a blur. A window's drawables
 //! are made readable (`framebufferOnly` off) on the first frame with a
 //! blur, before its drawable is taken, and made write-only again after 600
-//! frames without one.
+//! frames without one. A display link takes the drawable before the frame,
+//! so there the first frame's blurs wait for the next, readable drawable.
 //!
 //! The approach (snapshot, MPS gaussian, scratch textures sized to the
 //! region) is zui's (<https://github.com/zeronsh/zui>, `crates/gpui_macos/
@@ -323,7 +324,9 @@ pub(crate) fn draw<'a>(
     pass: &Pass<'a>,
     encoder: &mut Encoder,
 ) -> Result<bool> {
-    if !renderer.fast_backdrop.supported {
+    // A display link hands out its drawable before the frame is drawn, so the first frame with
+    // a blur after the layer went write-only has one it cannot read; the next is readable.
+    if !renderer.fast_backdrop.supported || pass.texture.isFramebufferOnly() {
         return Ok(false);
     }
     let all = scene.backdrop_blurs();

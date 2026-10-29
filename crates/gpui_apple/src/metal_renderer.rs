@@ -147,6 +147,12 @@ pub(crate) fn drawable_pixel_format() -> MTLPixelFormat {
 
 /// Until the platform names the display's refresh, assume the fastest Apple panel's.
 const DEFAULT_REFRESH: Duration = Duration::from_micros(8_333);
+enum DisplayLinkMode {
+    Detached,
+    Attached {
+        drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+    },
+}
 
 pub struct MetalRenderer {
     pub(crate) device: Retained<ProtocolObject<dyn MTLDevice>>,
@@ -165,6 +171,7 @@ pub struct MetalRenderer {
     /// `presentedTime`; there no frame is reported, rather than a made-up instant, and the
     /// pacer never sees a queue.
     drawables_report_presentation: Option<bool>,
+    display_link_mode: DisplayLinkMode,
     /// For headless rendering, tracks whether output should be opaque
     pub(crate) opaque: bool,
     pub(crate) command_queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
@@ -530,6 +537,7 @@ impl MetalRenderer {
             presentations: Arc::default(),
             drawables_report_presentation: None,
             pacer: PresentationPacer::new(DEFAULT_REFRESH),
+            display_link_mode: DisplayLinkMode::Detached,
             is_apple_gpu,
             is_unified_memory,
             opaque,
@@ -579,6 +587,46 @@ impl MetalRenderer {
         self.presents_with_transaction
     }
 
+    /// Draw the next frame into `drawable` instead of asking the layer for one.
+    ///
+    /// A `CAMetalDisplayLink` hands out each frame's drawable early enough for
+    /// the frame to reach the display on time; `nextDrawable` would instead
+    /// wait for the compositor to release one. Pass `None` once the frame is
+    /// done, so a drawable the frame did not use goes back to the layer.
+    ///
+    /// Returns the drawable this replaces: after a frame, `Some` means the
+    /// frame neither drew nor presented.
+    ///
+    /// This is a setter rather than a guard scoped to one frame because the
+    /// window releases its lock on the renderer while GPUI draws.
+    pub fn set_frame_drawable(
+        &mut self,
+        drawable: Option<Retained<ProtocolObject<dyn CAMetalDrawable>>>,
+    ) -> Option<Retained<ProtocolObject<dyn CAMetalDrawable>>> {
+        match &mut self.display_link_mode {
+            DisplayLinkMode::Attached { drawable: current } => mem::replace(current, drawable),
+            DisplayLinkMode::Detached => {
+                // Only a live link hands out drawables, and a link is detached
+                // only after it has been invalidated.
+                debug_assert!(
+                    drawable.is_none(),
+                    "received a display link drawable while detached"
+                );
+                None
+            }
+        }
+    }
+
+    /// Record whether a `CAMetalDisplayLink` drives the layer. While one
+    /// does, frames are drawn only into the drawables it hands out.
+    pub fn set_display_link_attached(&mut self, attached: bool) {
+        self.display_link_mode = if attached {
+            DisplayLinkMode::Attached { drawable: None }
+        } else {
+            DisplayLinkMode::Detached
+        };
+    }
+
     pub fn set_presents_with_transaction(&mut self, presents_with_transaction: bool) {
         self.presents_with_transaction = presents_with_transaction;
         if let Some(layer) = &self.layer {
@@ -600,10 +648,16 @@ impl MetalRenderer {
     /// Whether a display-link tick should draw, or leave its demand to the next tick so the
     /// frames already queued for the display can drain; see `presentation_pacing`.
     pub fn ready_for_vsync_frame(&mut self) -> bool {
+        self.take_presentations();
+        self.pacer.should_draw(Instant::now())
+    }
+
+    /// Takes in the frames the display has shown or dropped since the last look, for a window
+    /// a display link paces: the link times its frames, so none is held back.
+    pub fn take_presentations(&mut self) {
         for frame in self.presentations.lock().drain(..) {
             self.pacer.presented(frame);
         }
-        self.pacer.should_draw(Instant::now())
     }
 
     /// Whether no frame began within the last refresh, so one drawn now, off the vsync
@@ -699,21 +753,33 @@ impl MetalRenderer {
                 return;
             }
         };
-        let viewport_size = layer.drawableSize();
-        let viewport_size: Size<DevicePixels> = size(
-            (viewport_size.width.ceil() as i32).into(),
-            (viewport_size.height.ceil() as i32).into(),
-        );
         crate::fast::backdrop::prepare_layer(self, &layer, scene);
-        let drawable = if let Some(drawable) = layer.nextDrawable() {
-            drawable
-        } else {
-            log::error!(
-                "failed to retrieve next drawable, drawable size: {:?}",
-                viewport_size
-            );
-            return;
+        let drawable = match &mut self.display_link_mode {
+            DisplayLinkMode::Attached { drawable } => {
+                let Some(drawable) = drawable.take() else {
+                    log::error!("skipped a frame drawn outside its display link's update");
+                    return;
+                };
+                drawable
+            }
+            DisplayLinkMode::Detached => {
+                let Some(drawable) = layer.nextDrawable() else {
+                    log::error!(
+                        "failed to retrieve next drawable, drawable size: {:?}",
+                        layer.drawableSize()
+                    );
+                    return;
+                };
+                drawable
+            }
         };
+        // A display link's drawable was sized when the link handed it out,
+        // which can be before a resize the layer has since taken.
+        let texture = drawable.texture();
+        let viewport_size: Size<DevicePixels> = size(
+            (texture.width() as i32).into(),
+            (texture.height() as i32).into(),
+        );
 
         let command_buffer = match self.render_frame(scene, &drawable.texture(), viewport_size) {
             Ok(command_buffer) => command_buffer,
@@ -2697,6 +2763,51 @@ mod tests {
         CVPixelBufferUnlockBaseAddress, kCVPixelBufferIOSurfacePropertiesKey,
     };
     use objc2_metal::MTLCommandBufferStatus;
+
+    #[test]
+    fn display_link_mode_consumes_and_clears_drawables() -> Result<()> {
+        let mut renderer = MetalRenderer::new(Default::default(), false, false)?;
+        renderer.update_drawable_size(size(DevicePixels(64), DevicePixels(64)));
+        let drawable = renderer
+            .layer()
+            .and_then(|layer| layer.nextDrawable())
+            .context("window renderer must supply a drawable")?;
+
+        renderer.set_display_link_attached(true);
+        assert!(matches!(
+            renderer.display_link_mode,
+            DisplayLinkMode::Attached { drawable: None }
+        ));
+        assert!(
+            renderer
+                .set_frame_drawable(Some(drawable.clone()))
+                .is_none()
+        );
+        assert!(matches!(
+            renderer.display_link_mode,
+            DisplayLinkMode::Attached { drawable: Some(_) }
+        ));
+        renderer.draw(&Scene::default());
+        assert!(matches!(
+            renderer.display_link_mode,
+            DisplayLinkMode::Attached { drawable: None }
+        ));
+        // A frame that drew consumed its drawable; one that didn't hands it back.
+        assert!(
+            renderer
+                .set_frame_drawable(Some(drawable.clone()))
+                .is_none()
+        );
+        assert!(renderer.set_frame_drawable(None).is_some());
+
+        renderer.set_frame_drawable(Some(drawable));
+        renderer.set_display_link_attached(false);
+        assert!(matches!(
+            renderer.display_link_mode,
+            DisplayLinkMode::Detached
+        ));
+        Ok(())
+    }
 
     #[test]
     fn render_core_video_surface() {

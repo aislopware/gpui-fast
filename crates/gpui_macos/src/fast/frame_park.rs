@@ -15,19 +15,30 @@
 //! follow keep their vsync pacing. A window the link was stopped for otherwise (hidden, or
 //! between two of AppKit's own draws) is not parked, and draws only as the link brings it
 //! back.
+//!
+//! A `CAMetalDisplayLink` (macOS 14 and later) pauses itself after an update that drew
+//! nothing (`MetalFrames`), so it is never parked here; what stays is the immediate frame. The
+//! link hands each update its drawable and the layer gives none while a link drives it, so the
+//! immediate frame sets the link aside, draws into the layer's next drawable, and attaches a
+//! new link after it: an idle window's first frame reaches the glass as soon as it does with
+//! no link, and the frames after it are the link's.
 
 use std::{
     ffi::c_void,
     mem,
-    sync::{Arc, Weak},
+    rc::{Rc, Weak},
     time::Duration,
 };
 
 use dispatch2::DispatchQueue;
+use objc2::{msg_send, runtime::AnyObject};
 use parking_lot::Mutex;
 use scheduler::Instant;
 
-use crate::{display_link::WindowFrameSource, window::MacWindowState};
+use crate::{
+    display_link::{MetalFrames, WindowFrameSource},
+    window::{FrameSource, MacWindowState},
+};
 
 /// How long a window's ticks draw nothing and nothing asks for a frame before its link stops:
 /// long enough that a pause between keystrokes or a short gap in an animation keeps it, short
@@ -82,14 +93,14 @@ pub(crate) fn after_tick(state: &mut MacWindowState) {
 /// GPUI wants a frame (`PlatformWindow::schedule_frame`). A parked window gets the immediate
 /// frame on the next main-queue turn, as a dirty one does from its waker, which also covers a
 /// frame wanted only for next-frame callbacks or to present.
-pub(crate) fn schedule_frame(window_state: &Arc<Mutex<MacWindowState>>) {
+pub(crate) fn schedule_frame(window_state: &Rc<Mutex<MacWindowState>>) {
     let mut state = window_state.lock();
     state.fast_frame_park.wanted = true;
     if !state.fast_frame_park.parked {
         return;
     }
     drop(state);
-    let weak = Weak::into_raw(Arc::downgrade(window_state));
+    let weak = Weak::into_raw(Rc::downgrade(window_state));
     // SAFETY: `immediate_frame` runs on the main queue, where window state is used, and takes
     // over the `Weak` that `Weak::into_raw` handed out, as it does from `frame_waker`.
     unsafe {
@@ -104,26 +115,88 @@ pub(crate) fn schedule_frame(window_state: &Arc<Mutex<MacWindowState>>) {
 /// running link says yes, as before. A parked window draws now if it can, and the link starts
 /// after the frame ([`after_immediate_frame`]); if it cannot draw yet (it drew within the last
 /// refresh, or no tick passed), the link starts now and its next tick draws.
-pub(crate) fn ticking(state: &mut MacWindowState, armed: bool) -> bool {
-    if !state.fast_frame_park.parked {
-        return state
-            .frame_source
-            .as_ref()
-            .is_some_and(WindowFrameSource::is_running);
+///
+/// A window a `CAMetalDisplayLink` paces draws its immediate frame whenever it has a link,
+/// running or paused ([`before_immediate_frame`]); one without (hidden) draws as the link
+/// brings it back.
+pub(crate) fn ticking(
+    state: &mut MacWindowState,
+    armed: bool,
+    window_state: &Rc<Mutex<MacWindowState>>,
+) -> bool {
+    match &state.frame_source {
+        FrameSource::Metal(metal_frames) => return metal_frames.is_attached(),
+        FrameSource::DisplayLink(source) if !state.fast_frame_park.parked => {
+            return source.as_ref().is_some_and(WindowFrameSource::is_running);
+        }
+        FrameSource::DisplayLink(_) => {}
     }
     if armed && state.renderer.idle_for_a_refresh() {
         return true;
     }
-    state.start_display_link();
+    state.start_display_link(window_state);
     false
 }
 
-/// The immediate frame was drawn: a parked window's link starts again, for the frames that
-/// follow to keep their vsync pacing.
-pub(crate) fn after_immediate_frame(state: &mut MacWindowState) {
+/// The immediate frame is about to draw: a `CAMetalDisplayLink` is set aside, so the frame
+/// takes the layer's next drawable now rather than wait for the link's next update.
+pub(crate) fn before_immediate_frame(state: &mut MacWindowState) {
+    if matches!(state.frame_source, FrameSource::Metal(_)) {
+        state.stop_display_link();
+    }
+}
+
+/// The immediate frame was drawn: a parked window's link starts again, and a
+/// `CAMetalDisplayLink` set aside for it is attached again, for the frames that follow to keep
+/// their vsync pacing.
+pub(crate) fn after_immediate_frame(
+    state: &mut MacWindowState,
+    window_state: &Rc<Mutex<MacWindowState>>,
+) {
     state.fast_frame_park.wanted = true;
-    if state.fast_frame_park.parked {
-        state.start_display_link();
+    if state.fast_frame_park.parked || matches!(state.frame_source, FrameSource::Metal(_)) {
+        state.start_display_link(window_state);
+    }
+}
+
+/// A `CAMetalDisplayLink` update began: it arms the immediate frame as a vsync tick does, and
+/// takes in what the display reported. The link times the frames itself, so no update is held
+/// back to drain a queue.
+pub(crate) fn link_update(state: &mut MacWindowState) {
+    state.immediate_frame_armed = true;
+    state.renderer.take_presentations();
+}
+
+/// What GPUI's frame waker holds of a window's `CAMetalDisplayLink`: weak, as the window
+/// state owns the waker.
+pub(crate) fn link_waker(metal_frames: &Option<Rc<MetalFrames>>) -> Option<Weak<MetalFrames>> {
+    metal_frames.as_ref().map(Rc::downgrade)
+}
+
+/// GPUI's frame waker ran: a paused `CAMetalDisplayLink` runs again, so its next update draws
+/// the frame if the immediate frame does not.
+pub(crate) fn wake_link(metal_frames: &Option<Weak<MetalFrames>>) {
+    if let Some(metal_frames) = metal_frames.as_ref().and_then(Weak::upgrade) {
+        metal_frames.wake();
+    }
+}
+
+/// The window's display reaches its fastest refresh this often (AppKit:
+/// `NSScreen.minimumRefreshInterval`, a variable-rate panel's fastest), which paces the
+/// renderer's presentation.
+pub(crate) fn note_refresh(state: &mut MacWindowState) {
+    // SAFETY: `native_window` is the window this state belongs to, alive while it is.
+    let screen: *mut AnyObject = unsafe { msg_send![state.native_window, screen] };
+    if screen.is_null() {
+        // AppKit can report no screen while displays are being reconfigured.
+        return;
+    }
+    // SAFETY: `screen` is a live NSScreen.
+    let refresh: f64 = unsafe { msg_send![screen, minimumRefreshInterval] };
+    if refresh > 0.0 {
+        state
+            .renderer
+            .set_refresh_interval(Duration::from_secs_f64(refresh));
     }
 }
 
