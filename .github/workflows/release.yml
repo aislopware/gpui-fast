@@ -34,6 +34,9 @@ concurrency:
 jobs:
   validate:
     name: Validate (${{ matrix.os }})
+    # A fork imports zed ahead of the gpui-pre snapshots on crates.io and publishes
+    # nothing, so its tree cannot build as a registry-only release.
+    if: github.repository == 'longbridge/gpui-fast'
     strategy:
       fail-fast: false
       matrix:
