@@ -1,23 +1,17 @@
 //! The phase of the momentum AppKit sends after the fingers lift off the
 //! trackpad, which a scroll's own phase does not tell apart from a wheel's.
 
-use cocoa::{
-    appkit::{NSEvent, NSEventPhase},
-    base::id,
-};
 use gpui::TouchPhase;
+use objc2_app_kit::{NSEvent, NSEventPhase};
 
 /// Where `native_event`, a scroll wheel event, is in the momentum after a
 /// swipe; `None` when a finger or a wheel drives it.
-pub(crate) unsafe fn momentum_phase(native_event: id) -> Option<TouchPhase> {
-    // SAFETY: the caller passes a scroll wheel NSEvent, which answers
-    // momentumPhase.
-    let phase = unsafe { native_event.momentumPhase() };
-    match phase {
-        NSEventPhase::NSEventPhaseBegan => Some(TouchPhase::Started),
-        NSEventPhase::NSEventPhaseChanged => Some(TouchPhase::Moved),
-        NSEventPhase::NSEventPhaseEnded => Some(TouchPhase::Ended),
-        NSEventPhase::NSEventPhaseCancelled => Some(TouchPhase::Cancelled),
+pub(crate) fn momentum_phase(native_event: &NSEvent) -> Option<TouchPhase> {
+    match native_event.momentumPhase() {
+        NSEventPhase::Began => Some(TouchPhase::Started),
+        NSEventPhase::Changed => Some(TouchPhase::Moved),
+        NSEventPhase::Ended => Some(TouchPhase::Ended),
+        NSEventPhase::Cancelled => Some(TouchPhase::Cancelled),
         _ => None,
     }
 }
@@ -52,7 +46,7 @@ mod tests {
         // SAFETY: `native` is a live scroll wheel NSEvent for the whole call.
         let input = unsafe {
             crate::events::platform_input_from_native(
-                objc2::rc::Retained::as_ptr(&native) as cocoa::base::id,
+                objc2::rc::Retained::as_ptr(&native).cast_mut().cast(),
                 Some(px(600.)),
             )
         };

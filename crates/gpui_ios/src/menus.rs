@@ -131,11 +131,11 @@ pub fn keystroke_for(action: &dyn Action, keymap: &Keymap) -> Option<Keystroke> 
 
 /// The context `gpui_macos` evaluates a binding's predicate in for its menu bar.
 fn default_context() -> KeyContext {
-    let mut workspace = KeyContext::new_with_defaults();
+    let mut workspace = KeyContext::new_with_defaults(gpui::OperatingSystem::Ios);
     workspace.add("Workspace");
-    let mut pane = KeyContext::new_with_defaults();
+    let mut pane = KeyContext::new_with_defaults(gpui::OperatingSystem::Ios);
     pane.add("Pane");
-    let mut editor = KeyContext::new_with_defaults();
+    let mut editor = KeyContext::new_with_defaults(gpui::OperatingSystem::Ios);
     editor.add("Editor");
     pane.extend(&editor);
     workspace.extend(&pane);

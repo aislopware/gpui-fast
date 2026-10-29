@@ -1868,8 +1868,7 @@ mod invalidation {
                     delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                     modifiers: Default::default(),
                     touch_phase: TouchPhase::Moved,
-                    source: crate::ScrollSource::Pointer,
-                    momentum_phase: None,
+                    ..Default::default()
                 }),
                 cx,
             );
@@ -2286,8 +2285,7 @@ mod decisions {
                         delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                         modifiers: Default::default(),
                         touch_phase: TouchPhase::Moved,
-                        source: crate::ScrollSource::Pointer,
-                        momentum_phase: None,
+                        ..Default::default()
                     }),
                     cx,
                 );
@@ -2458,8 +2456,7 @@ mod decisions {
                         delta: ScrollDelta::Pixels(point(px(0.), px(-20.))),
                         modifiers: Default::default(),
                         touch_phase: TouchPhase::Moved,
-                        source: crate::ScrollSource::Pointer,
-                        momentum_phase: None,
+                        ..Default::default()
                     }),
                     cx,
                 );
@@ -3440,8 +3437,7 @@ mod input {
                         delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                         modifiers: Default::default(),
                         touch_phase: TouchPhase::Moved,
-                        source: crate::ScrollSource::Pointer,
-                        momentum_phase: None,
+                        ..Default::default()
                     }),
                     cx,
                 );
@@ -4243,8 +4239,7 @@ mod integration {
                             delta: crate::ScrollDelta::Pixels(point(px(0.), px(dy))),
                             modifiers: Default::default(),
                             touch_phase: crate::TouchPhase::Moved,
-                            source: crate::ScrollSource::Pointer,
-                            momentum_phase: None,
+                            ..Default::default()
                         }),
                         cx,
                     );

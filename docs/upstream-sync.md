@@ -404,15 +404,6 @@ unchanged, and a new entry needs as good a reason.
   oracle) draws it at the same moment, or a fade drawn a hair short of its
   end in the frame shown is at its end in the one from scratch. Code that
   animates on its own clock reads `frame_time` to be drawn again the same.
-- The workspace pins Taffy 0.14 where upstream pins 0.13. Taffy 0.13 keeps
-  one cached size per kind of constraint, so a node measured under two widths
-  in one layout evicts one with the other, and the clean subtrees around a
-  single dirty node are laid out again on every frame; 0.14 keeps nine sizes
-  per node whatever their kind. 0.14 hands a leaf's measure function its whole
-  layout, so `taffy.rs` lays the tree out through
-  `fast::layout::MeasuredTaffy`, which lays each leaf out around GPUI's
-  measurement as 0.13 did. When upstream moves to 0.14 or later, the sync
-  takes its version and drops `MeasuredTaffy`.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what

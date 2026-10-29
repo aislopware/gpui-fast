@@ -7,11 +7,12 @@
 //! `App::write_to_clipboard` and `App::read_from_clipboard` go to that one.
 //! The find pasteboard is never redirected.
 
-use cocoa::{appkit::NSPasteboard, base::nil};
 use gpui::ClipboardItem;
+use objc2_app_kit::NSPasteboard;
+use objc2_foundation::NSString;
 use parking_lot::Mutex;
 
-use crate::{ns_string, pasteboard::Pasteboard};
+use crate::pasteboard::Pasteboard;
 
 /// The pasteboard the application named, if it named one.
 static NAME: Mutex<Option<String>> = Mutex::new(None);
@@ -50,18 +51,18 @@ fn named() -> Option<Pasteboard> {
 
 impl Pasteboard {
     fn named(name: &str) -> Self {
-        unsafe { Self::new(NSPasteboard::pasteboardWithName(nil, ns_string(name))) }
+        Self::new(NSPasteboard::pasteboardWithName(&NSString::from_str(name)))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use cocoa::{appkit::NSPasteboard, base::nil};
     use gpui::ClipboardItem;
-    use objc::{msg_send, sel, sel_impl};
+    use objc2_app_kit::NSPasteboard;
+    use objc2_foundation::NSString;
 
     use super::{read, set_clipboard_pasteboard, write};
-    use crate::{ns_string, pasteboard::Pasteboard};
+    use crate::pasteboard::Pasteboard;
 
     /// The only test that names the clipboard, so no other sees it named. A
     /// pasteboard of its own stands in for the general one, which no test
@@ -93,9 +94,8 @@ mod tests {
         );
         assert_eq!(read(&general), Some(copied), "a paste reads the named one");
 
-        unsafe {
-            let board = NSPasteboard::pasteboardWithName(nil, ns_string(&name));
-            let () = msg_send![board, releaseGlobally];
-        }
+        let board = NSPasteboard::pasteboardWithName(&NSString::from_str(&name));
+        // SAFETY: `releaseGlobally` takes no arguments and returns nothing.
+        let () = unsafe { objc2::msg_send![&*board, releaseGlobally] };
     }
 }

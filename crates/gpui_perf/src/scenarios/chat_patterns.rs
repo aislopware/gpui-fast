@@ -822,8 +822,7 @@ fn scroll_events(up: bool, starts: bool, trackpad: bool) -> Vec<PlatformInput> {
             delta: ScrollDelta::Pixels(point(px(0.), px(sign * delta))),
             modifiers: Modifiers::default(),
             touch_phase,
-            source: gpui::ScrollSource::Pointer,
-            momentum_phase: None,
+            ..Default::default()
         })
     };
     if !trackpad {

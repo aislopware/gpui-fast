@@ -4,8 +4,8 @@
 //! binding for the main key still matches.
 
 use crate::events::{NO_MOD, SHIFT_MOD, chars_for_modified_key, read_modifiers};
-use cocoa::{appkit::NSEvent, base::id};
 use gpui::Keystroke;
+use objc2_app_kit::NSEvent;
 
 /// The name of the keypad key with this virtual key code, or `None` for a
 /// key off the keypad. The clear key (0x47) keeps its old name.
@@ -35,19 +35,14 @@ pub(crate) fn key_name(key_code: u16) -> Option<&'static str> {
 /// The keystroke a keypad key makes, or `None` for a key off the keypad.
 /// Enter carries a newline, as the main enter key does; the other keys carry
 /// what they type unless a chord modifier is held, as zed #63402 has it.
-///
-/// # Safety
-///
 /// `native_event` is an `NSEvent` of a key-down or key-up type, whose
 /// `keyCode` AppKit defines only for key events.
-pub(crate) unsafe fn keystroke(native_event: id) -> Option<Keystroke> {
-    // SAFETY: a key event, as the caller guarantees.
-    let key_code = unsafe { native_event.keyCode() };
+pub(crate) fn keystroke(native_event: &NSEvent) -> Option<Keystroke> {
+    let key_code = native_event.keyCode();
     let key = key_name(key_code)?;
-    // SAFETY: an `NSEvent`, as the caller guarantees. Its function flag needs
-    // none of `parse_keystroke`'s care for the arrow keys' private-use
-    // characters, which no keypad key types.
-    let modifiers = unsafe { read_modifiers(native_event) };
+    // Its function flag needs none of `parse_keystroke`'s care for the arrow
+    // keys' private-use characters, which no keypad key types.
+    let modifiers = read_modifiers(native_event);
     let key_char = if key == "kpenter" {
         Some("\n".to_string())
     } else if modifiers.control || modifiers.platform || modifiers.function || modifiers.alt {
@@ -65,41 +60,11 @@ pub(crate) unsafe fn keystroke(native_event: id) -> Option<Keystroke> {
 
 #[cfg(test)]
 mod tests {
-    use crate::events::{NO_MOD, chars_for_modified_key, platform_input_from_native};
-    use cocoa::{
-        appkit::{NSEvent, NSEventModifierFlags, NSEventType},
-        base::{NO, nil},
-        foundation::NSPoint,
-    };
-    use gpui::{Keystroke, PlatformInput};
+    use crate::events::{NO_MOD, chars_for_modified_key};
+    use crate::fast::typed::tests::key_down_with as key_down;
+    use objc2_app_kit::NSEventModifierFlags;
 
-    fn key_down(key_code: u16, characters: &str, flags: NSEventModifierFlags) -> Keystroke {
-        // SAFETY: AppKit builds a key event from plain values, without a
-        // window or a running application; the strings are retained by it.
-        let event = unsafe {
-            let characters = crate::ns_string(characters);
-            NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode_(
-                nil,
-                NSEventType::NSKeyDown,
-                NSPoint::new(0., 0.),
-                flags,
-                0.,
-                0,
-                nil,
-                characters,
-                characters,
-                NO,
-                key_code,
-            )
-        };
-        // SAFETY: `event` is the key event made above.
-        match unsafe { platform_input_from_native(event, None) } {
-            Some(PlatformInput::KeyDown(event)) => event.keystroke,
-            other => panic!("{key_code:#x} made {other:?}"),
-        }
-    }
-
-    const NUMERIC_PAD: NSEventModifierFlags = NSEventModifierFlags::NSNumericPadKeyMask;
+    const NUMERIC_PAD: NSEventModifierFlags = NSEventModifierFlags::NumericPad;
 
     /// What a key types comes from the current keyboard layout, so it is
     /// compared with the layout's answer rather than with a US keyboard's.
@@ -148,7 +113,7 @@ mod tests {
         let keystroke = key_down(
             0x53,
             "1",
-            NUMERIC_PAD | NSEventModifierFlags::NSCommandKeyMask,
+            NUMERIC_PAD | NSEventModifierFlags::Command,
         );
         assert_eq!(keystroke.key, "kp1");
         assert!(keystroke.modifiers.platform);

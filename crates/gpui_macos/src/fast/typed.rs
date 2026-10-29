@@ -9,28 +9,16 @@
 //! dead key's composed letter (`é` after ⌥E) differ the same way, and the event's characters
 //! are what the person typed there too.
 
-use crate::NSStringExt;
-use cocoa::{
-    appkit::NSEvent,
-    base::{id, nil},
-};
+use objc2_app_kit::NSEvent;
 
 /// The text a key-down types: the event's own characters when they are printable and differ
-/// from `layout`, what the key code types on the current layout; else `layout`.
-///
-/// # Safety
-///
-/// `native_event` is an `NSEvent` of a key-down or key-up type.
-pub(crate) unsafe fn key_char(native_event: id, layout: String) -> String {
-    // SAFETY: a key event, as the caller guarantees; AppKit defines `characters` for key
-    // events, and a non-nil `NSString` reads as UTF-8.
-    let characters = unsafe {
-        let characters = native_event.characters();
-        if characters == nil {
-            return layout;
-        }
-        characters.to_str().to_string()
+/// from `layout`, what the key code types on the current layout; else `layout`. `native_event`
+/// is an `NSEvent` of a key-down or key-up type, for which AppKit defines `characters`.
+pub(crate) fn key_char(native_event: &NSEvent, layout: String) -> String {
+    let Some(characters) = native_event.characters() else {
+        return layout;
     };
+    let characters = characters.to_string();
     if typed(&characters) && characters != layout {
         characters
     } else {
@@ -53,40 +41,46 @@ fn typed(characters: &str) -> bool {
 pub(crate) static SPELLING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::events::{NO_MOD, chars_for_modified_key, platform_input_from_native};
-    use cocoa::{
-        appkit::{NSEvent, NSEventModifierFlags, NSEventType},
-        base::{NO, nil},
-        foundation::NSPoint,
-    };
     use gpui::{Keystroke, PlatformInput};
+    use objc2::rc::Retained;
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+    use objc2_foundation::{NSPoint, NSString};
 
-    fn key_down(key_code: u16, characters: &str) -> Keystroke {
-        let _spelling = super::SPELLING.lock();
-        // SAFETY: AppKit builds a key event from plain values, without a window or a running
-        // application; the strings are retained by it.
-        let event = unsafe {
-            let characters = crate::ns_string(characters);
-            NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode_(
-                nil,
-                NSEventType::NSKeyDown,
-                NSPoint::new(0., 0.),
-                NSEventModifierFlags::empty(),
-                0.,
-                0,
-                nil,
-                characters,
-                characters,
-                NO,
-                key_code,
-            )
-        };
-        // SAFETY: `event` is the key event made above.
-        match unsafe { platform_input_from_native(event, None) } {
+    /// A key-down of `key_code` carrying `characters`, as AppKit builds one from plain values,
+    /// without a window or a running application, and what GPUI makes of it.
+    pub(crate) fn key_down_with(
+        key_code: u16,
+        characters: &str,
+        flags: NSEventModifierFlags,
+    ) -> Keystroke {
+        let characters = NSString::from_str(characters);
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::new(0., 0.),
+            flags,
+            0.,
+            0,
+            None,
+            &characters,
+            &characters,
+            false,
+            key_code,
+        )
+        .expect("a key event");
+        // SAFETY: `event` is the live key event made above.
+        match unsafe {
+            platform_input_from_native(Retained::as_ptr(&event).cast_mut().cast(), None)
+        } {
             Some(PlatformInput::KeyDown(event)) => event.keystroke,
             other => panic!("{key_code:#x} made {other:?}"),
         }
+    }
+
+    fn key_down(key_code: u16, characters: &str) -> Keystroke {
+        let _spelling = super::SPELLING.lock();
+        key_down_with(key_code, characters, NSEventModifierFlags::empty())
     }
 
     fn spelled(key_code: u16) -> String {

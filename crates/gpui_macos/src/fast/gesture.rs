@@ -8,22 +8,18 @@
 //! a mouse's back and forward buttons) as one event whose `deltaX` or
 //! `deltaY` is 1 or -1.
 
-use cocoa::{
-    appkit::{NSEvent, NSEventPhase},
-    base::id,
-};
 use gpui::{
     Modifiers, Pixels, PlatformGesture, PlatformInput, RotateEvent, SmartMagnifyEvent, SwipeEvent,
     TouchPhase, point, px,
 };
-use objc::{msg_send, sel, sel_impl};
+use objc2_app_kit::{NSEvent, NSEventPhase, NSEventType};
 
 /// `NSEventTypeRotate`.
-const ROTATE: u64 = 18;
+const ROTATE: u64 = NSEventType::Rotate.0 as u64;
 /// `NSEventTypeSwipe`.
-const SWIPE: u64 = 31;
-/// `NSEventTypeSmartMagnify`, which the `cocoa` crate's `NSEventType` lacks.
-const SMART_MAGNIFY: u64 = 32;
+const SWIPE: u64 = NSEventType::Swipe.0 as u64;
+/// `NSEventTypeSmartMagnify`.
+const SMART_MAGNIFY: u64 = NSEventType::SmartMagnify.0 as u64;
 
 /// What GPUI reads off a gesture's `NSEvent`.
 #[derive(Clone, Copy, Debug)]
@@ -39,21 +35,18 @@ struct Native {
 
 /// The gesture `native_event` is, when it is one GPUI delivers as a
 /// [`PlatformGesture`]; `None` leaves it to the rest of the conversion.
-pub(crate) unsafe fn from_native(
-    native_event: id,
+pub(crate) fn from_native(
+    native_event: &NSEvent,
     window_height: Option<Pixels>,
 ) -> Option<PlatformInput> {
     let window_height = window_height?;
-    // SAFETY: every NSEvent answers `type`, an NSUInteger; read raw, since
-    // smart magnify is not a value of the `cocoa` crate's enum.
-    let event_type: u64 = unsafe { msg_send![native_event, type] };
+    let event_type = native_event.r#type().0 as u64;
     if !matches!(event_type, ROTATE | SWIPE | SMART_MAGNIFY) {
         return None;
     }
-    // SAFETY: a gesture NSEvent answers `phase`, `locationInWindow`,
-    // `rotation` and the deltas; `rotation` and the deltas are 0 where they
-    // mean nothing.
-    let native = unsafe {
+    // A gesture NSEvent answers `phase`, `locationInWindow`, `rotation` and
+    // the deltas; `rotation` and the deltas are 0 where they mean nothing.
+    let native = {
         let location = native_event.locationInWindow();
         Native {
             event_type,
@@ -105,15 +98,15 @@ fn gesture(native: Native, window_height: Pixels) -> Option<PlatformGesture> {
 }
 
 fn phase(phase: NSEventPhase) -> Option<TouchPhase> {
-    if phase.contains(NSEventPhase::NSEventPhaseBegan) {
+    if phase.contains(NSEventPhase::Began) {
         Some(TouchPhase::Started)
     } else if phase
-        .intersects(NSEventPhase::NSEventPhaseChanged | NSEventPhase::NSEventPhaseStationary)
+        .intersects(NSEventPhase::Changed | NSEventPhase::Stationary)
     {
         Some(TouchPhase::Moved)
-    } else if phase.contains(NSEventPhase::NSEventPhaseEnded) {
+    } else if phase.contains(NSEventPhase::Ended) {
         Some(TouchPhase::Ended)
-    } else if phase.contains(NSEventPhase::NSEventPhaseCancelled) {
+    } else if phase.contains(NSEventPhase::Cancelled) {
         Some(TouchPhase::Cancelled)
     } else {
         None
@@ -123,7 +116,7 @@ fn phase(phase: NSEventPhase) -> Option<TouchPhase> {
 #[cfg(test)]
 mod tests {
     use super::{Native, ROTATE, SMART_MAGNIFY, SWIPE, gesture};
-    use cocoa::appkit::NSEventPhase;
+    use objc2_app_kit::NSEventPhase;
     use gpui::{
         Modifiers, PlatformGesture, RotateEvent, SmartMagnifyEvent, SwipeEvent, TouchPhase, point,
         px,
@@ -143,10 +136,10 @@ mod tests {
     #[test]
     fn a_rotation_keeps_appkits_degrees_and_phases_in_window_coordinates() {
         let phases = [
-            (NSEventPhase::NSEventPhaseBegan, TouchPhase::Started),
-            (NSEventPhase::NSEventPhaseChanged, TouchPhase::Moved),
-            (NSEventPhase::NSEventPhaseEnded, TouchPhase::Ended),
-            (NSEventPhase::NSEventPhaseCancelled, TouchPhase::Cancelled),
+            (NSEventPhase::Began, TouchPhase::Started),
+            (NSEventPhase::Changed, TouchPhase::Moved),
+            (NSEventPhase::Ended, TouchPhase::Ended),
+            (NSEventPhase::Cancelled, TouchPhase::Cancelled),
         ];
         for (native_phase, phase) in phases {
             let event = gesture(
@@ -175,8 +168,8 @@ mod tests {
     #[test]
     fn a_rotation_that_may_begin_is_not_delivered() {
         for phase in [
-            NSEventPhase::NSEventPhaseMayBegin,
-            NSEventPhase::NSEventPhaseNone,
+            NSEventPhase::MayBegin,
+            NSEventPhase::None,
         ] {
             assert!(gesture(native(ROTATE, phase), px(600.)).is_none());
         }
@@ -185,7 +178,7 @@ mod tests {
     #[test]
     fn a_smart_magnify_carries_its_place() {
         let event = gesture(
-            native(SMART_MAGNIFY, NSEventPhase::NSEventPhaseNone),
+            native(SMART_MAGNIFY, NSEventPhase::None),
             px(600.),
         );
         let Some(PlatformGesture::SmartMagnify(event)) = event else {
@@ -203,20 +196,20 @@ mod tests {
     #[test]
     fn a_swipe_keeps_appkits_deltas_and_arrives_ended() {
         for (delta, native_phase, phase) in [
-            ((1., 0.), NSEventPhase::NSEventPhaseNone, TouchPhase::Ended),
+            ((1., 0.), NSEventPhase::None, TouchPhase::Ended),
             (
                 (-1., 0.),
-                NSEventPhase::NSEventPhaseEnded,
+                NSEventPhase::Ended,
                 TouchPhase::Ended,
             ),
             (
                 (0., 1.),
-                NSEventPhase::NSEventPhaseBegan,
+                NSEventPhase::Began,
                 TouchPhase::Started,
             ),
             (
                 (0., -1.),
-                NSEventPhase::NSEventPhaseChanged,
+                NSEventPhase::Changed,
                 TouchPhase::Moved,
             ),
         ] {
@@ -245,6 +238,6 @@ mod tests {
     #[test]
     fn other_events_are_left_to_the_rest_of_the_conversion() {
         // NSEventTypeMagnify, the pinch.
-        assert!(gesture(native(30, NSEventPhase::NSEventPhaseBegan), px(600.)).is_none());
+        assert!(gesture(native(30, NSEventPhase::Began), px(600.)).is_none());
     }
 }

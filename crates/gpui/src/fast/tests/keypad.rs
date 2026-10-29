@@ -11,7 +11,7 @@ use std::{cell::RefCell, rc::Rc};
 
 actions!(keypad_test, [Main, Keypad]);
 
-fn bound(keymap: &Keymap, typed: &str) -> Vec<&'static str> {
+fn bound(keymap: &Keymap, typed: &'static str) -> Vec<&'static str> {
     let (bindings, pending) = keymap.bindings_for_input(
         &[Keystroke::parse(typed).unwrap()],
         &[KeyContext::default()],
@@ -96,7 +96,7 @@ impl Render for Button {
     }
 }
 
-fn press(cx: &mut TestAppContext, window: AnyWindowHandle, key: &str) {
+fn press(cx: &mut TestAppContext, window: AnyWindowHandle, key: &'static str) {
     let keystroke = Keystroke::parse(key).unwrap();
     cx.update_window(window, |_, window, cx| {
         window.dispatch_event(

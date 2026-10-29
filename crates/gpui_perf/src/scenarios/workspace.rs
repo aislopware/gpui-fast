@@ -272,8 +272,7 @@ impl crate::Scenario for WorkspaceScenario {
                         )),
                         modifiers: Default::default(),
                         touch_phase: TouchPhase::Moved,
-                        source: gpui::ScrollSource::Pointer,
-                        momentum_phase: None,
+                        ..Default::default()
                     }
                     .to_platform_input(),
                     cx,

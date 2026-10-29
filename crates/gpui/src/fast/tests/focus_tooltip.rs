@@ -133,7 +133,7 @@ impl Setup {
             .unwrap();
     }
 
-    fn press(&mut self, key: &str) {
+    fn press(&mut self, key: &'static str) {
         let keystroke = Keystroke::parse(key).unwrap();
         self.cx
             .update_window(self.window, |_, window, cx| {

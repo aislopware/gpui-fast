@@ -37,6 +37,7 @@ pub(crate) mod inline_boxes;
 pub(crate) mod input_frame;
 pub(crate) mod interactivity;
 pub(crate) mod keyed;
+pub(crate) mod key_conventions;
 pub(crate) mod keypad;
 pub(crate) mod layers;
 pub(crate) mod layout;

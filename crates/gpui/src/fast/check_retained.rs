@@ -872,8 +872,9 @@ struct ListSnapshot {
     last_layout_bounds: Option<Bounds<crate::Pixels>>,
     last_padding: Option<crate::Edges<crate::Pixels>>,
     items: sum_tree::SumTree<crate::ListItem>,
-    logical_scroll_top: Option<crate::ListOffset>,
-    pending_scroll: Option<crate::PendingScroll>,
+    /// Puts the list's scroll anchor back as it was. The anchor's type is the
+    /// list's own, which `elements` names only for div's `ScrollAnchor`.
+    restore_anchor: Box<dyn FnOnce(&mut crate::StateInner)>,
     follow_state: crate::FollowState,
     version: u64,
     tail: crate::fast::list_tail::TailReservation,
@@ -888,8 +889,10 @@ impl ListSnapshot {
             last_layout_bounds: state.last_layout_bounds,
             last_padding: state.last_padding,
             items: state.items.clone(),
-            logical_scroll_top: state.logical_scroll_top,
-            pending_scroll: state.pending_scroll.clone(),
+            restore_anchor: {
+                let anchor = state.scroll_anchor;
+                Box::new(move |state: &mut crate::StateInner| state.scroll_anchor = anchor)
+            },
             follow_state: state.follow_state,
             version: state.version.get(),
             tail: state.fast_tail,
@@ -903,8 +906,7 @@ impl ListSnapshot {
         state.last_layout_bounds = self.last_layout_bounds;
         state.last_padding = self.last_padding;
         state.items = self.items;
-        state.logical_scroll_top = self.logical_scroll_top;
-        state.pending_scroll = self.pending_scroll;
+        (self.restore_anchor)(&mut *state);
         state.follow_state = self.follow_state;
         state.version.set(self.version);
         state.fast_tail = self.tail;

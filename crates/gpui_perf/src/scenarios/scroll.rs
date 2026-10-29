@@ -208,8 +208,7 @@ fn wheel_part(frame: usize, parts: usize) -> PlatformInput {
         delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
         modifiers: Modifiers::default(),
         touch_phase: TouchPhase::Moved,
-        source: gpui::ScrollSource::Pointer,
-        momentum_phase: None,
+        ..Default::default()
     })
 }
 

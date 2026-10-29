@@ -14,14 +14,13 @@
 
 use std::cell::RefCell;
 
-use cocoa::appkit::NSApplication;
-use cocoa::base::{id, nil};
-use cocoa::foundation::{NSInteger, NSPoint, NSRect, NSUInteger};
 use collections::HashMap;
 use gpui::{CursorImage, CursorImageId, CursorStyle};
-use objc::{class, msg_send, sel, sel_impl};
 use objc2::AnyThread;
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2::{class, msg_send};
+use objc2_foundation::{NSInteger, NSPoint, NSRect, NSUInteger};
 use objc2_app_kit::{NSCursor, NSImage};
 use objc2_core_foundation::{CFData, CGSize};
 use objc2_core_graphics::{
@@ -166,7 +165,7 @@ pub(crate) fn set_image(id: CursorImageId, image: Option<CursorImage>) {
 ///
 /// Must run on the AppKit main thread inside an autorelease pool, which is
 /// where `resetCursorRects` is invoked.
-pub(crate) unsafe fn cursor_rect_cursor(image: CursorImageId) -> id {
+pub(crate) unsafe fn cursor_rect_cursor(image: CursorImageId) -> *mut AnyObject {
     let cursor = CURSORS
         .with_borrow(|cursors| cursors.shown.get(&image).map(|(_, cursor)| cursor.clone()))
         .unwrap_or_else(NSCursor::arrowCursor);
@@ -196,16 +195,16 @@ unsafe fn show_now(image: CursorImageId) {
     // each window carries GPUI's state ivar before `get_window_state` reads it;
     // `windows` is an array the application keeps alive for the call.
     unsafe {
-        let app = NSApplication::sharedApplication(nil);
-        let key_window: id = msg_send![app, keyWindow];
-        let main_window: id = msg_send![app, mainWindow];
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let key_window: *mut AnyObject = msg_send![app, keyWindow];
+        let main_window: *mut AnyObject = msg_send![app, mainWindow];
         let cursor_window = [key_window, main_window]
             .into_iter()
             .find(|window| !window.is_null() && is_gpui_window(*window));
-        let windows: id = msg_send![app, windows];
+        let windows: *mut AnyObject = msg_send![app, windows];
         let count: NSUInteger = msg_send![windows, count];
         for index in 0..count {
-            let window: id = msg_send![windows, objectAtIndex: index];
+            let window: *mut AnyObject = msg_send![windows, objectAtIndex: index];
             if !is_gpui_window(window) {
                 continue;
             }
@@ -214,7 +213,7 @@ unsafe fn show_now(image: CursorImageId) {
                 let state = state.lock();
                 (
                     state.native_window,
-                    state.native_view.as_ptr() as id,
+                    state.native_view.as_ptr(),
                     state.cursor_style,
                 )
             };
@@ -241,14 +240,14 @@ unsafe fn show_now(image: CursorImageId) {
 ///
 /// Must run on the AppKit main thread with `window` a live `NSWindow` and
 /// `view` a live view in it.
-unsafe fn pointer_over(window: id, view: id) -> bool {
+unsafe fn pointer_over(window: *mut AnyObject, view: *mut AnyObject) -> bool {
     // SAFETY: the caller guarantees the main thread and live objects; every
     // message here is a plain NSEvent, NSWindow or NSView query.
     unsafe {
         let on_screen: NSPoint = msg_send![class!(NSEvent), mouseLocation];
         let in_front: NSInteger = msg_send![
             class!(NSWindow),
-            windowNumberAtPoint: on_screen
+            windowNumberAtPoint: on_screen,
             belowWindowWithWindowNumber: 0 as NSInteger
         ];
         let number: NSInteger = msg_send![window, windowNumber];
@@ -256,7 +255,8 @@ unsafe fn pointer_over(window: id, view: id) -> bool {
             return false;
         }
         let in_window: NSPoint = msg_send![window, convertPointFromScreen: on_screen];
-        let in_view: NSPoint = msg_send![view, convertPoint: in_window fromView: nil];
+        let in_view: NSPoint =
+            msg_send![view, convertPoint: in_window, fromView: std::ptr::null_mut::<AnyObject>()];
         let bounds: NSRect = msg_send![view, bounds];
         in_view.x >= bounds.origin.x
             && in_view.y >= bounds.origin.y

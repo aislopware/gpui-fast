@@ -4,7 +4,7 @@
 use crate::fast::inline_boxes::InlineBox;
 use crate::fast::layout::Adopted;
 use crate::{
-    App, AvailableSpace, DecorationRun, FontRun, FrameCache, Hsla, LayoutId, LineLayout,
+    App, AvailableSpace, Bounds, DecorationRun, FontRun, FrameCache, Hsla, LayoutId, LineLayout,
     LineLayoutCache, LineLayoutIndex, Pixels, PlatformTextSystem, SharedString, Size,
     StrikethroughStyle, TextLayout, TextLayoutInner, TextOverflow, TextRun, TextStyle,
     TruncateFrom, UnderlineStyle, WhiteSpace, Window, WindowTextSystem, WrappedLine,
@@ -221,23 +221,7 @@ pub(crate) fn layout_text_with_boxes(
     window: &mut Window,
     cx: &mut App,
 ) -> LayoutId {
-    let text_style = crate::fast::text_style::text_style(window);
-    let font_size = text_style.font_size.to_pixels(window.rem_size());
-    let line_height = window.pixel_snap(
-        text_style
-            .line_height
-            .to_pixels(font_size.into(), window.rem_size()),
-    );
-    let inputs = TextMeasureInputs {
-        text,
-        runs: runs.unwrap_or_default(),
-        boxes,
-        text_style,
-        font_size,
-        line_height,
-        font_generation: window.font_generation(),
-        layout: RefCell::new(layout.clone()),
-    };
+    let inputs = measure_inputs(layout, text, runs.unwrap_or_default(), boxes, window);
     window.request_carried_measured_layout(
         inputs,
         adopt_measurement,
@@ -245,6 +229,120 @@ pub(crate) fn layout_text_with_boxes(
         measure_text,
         cx,
     )
+}
+
+/// The inputs of text laid out in the text style in effect, keeping its
+/// measurement in `layout`.
+fn measure_inputs(
+    layout: &TextLayout,
+    text: SharedString,
+    runs: Vec<TextRun>,
+    boxes: Vec<InlineBox>,
+    window: &Window,
+) -> TextMeasureInputs {
+    let text_style = crate::fast::text_style::text_style(window);
+    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let line_height = window.pixel_snap(
+        text_style
+            .line_height
+            .to_pixels(font_size.into(), window.rem_size()),
+    );
+    TextMeasureInputs {
+        text,
+        runs,
+        boxes,
+        text_style,
+        font_size,
+        line_height,
+        font_generation: window.font_generation(),
+        layout: RefCell::new(layout.clone()),
+    }
+}
+
+/// [`TextLayout`]'s prepaint: notes the bounds the text is painted in.
+///
+/// Text should be measured by the time it is prepainted: carried over from
+/// last frame as its layout is requested, or by Taffy as it lays the text's
+/// node out. Should a gap in retention let text reach prepaint without a
+/// measurement (a node no layout computed this frame reaches, say), upstream
+/// panics here. It is measured here instead, as plain text in the text style
+/// in effect at the size it is prepainted at, so that the frame degrades
+/// (the text loses its runs' colors and fonts for a frame) rather than the
+/// app aborting.
+pub(crate) fn prepaint_text(
+    layout: &TextLayout,
+    bounds: Bounds<Pixels>,
+    text: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if layout.0.borrow().is_none() {
+        report_unmeasured(
+            "text reached prepaint unmeasured; measured there as plain text",
+            text,
+        );
+        let inputs = measure_inputs(
+            layout,
+            SharedString::from(text.to_owned()),
+            Vec::new(),
+            Vec::new(),
+            window,
+        );
+        // A node no layout reached has no size: lay the text out unwrapped
+        // rather than a glyph to a line.
+        let (known, available) = if bounds.size.width > Pixels::ZERO {
+            (
+                bounds.size.map(Some),
+                bounds.size.map(AvailableSpace::Definite),
+            )
+        } else {
+            (
+                Size::default(),
+                Size::new(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
+            )
+        };
+        measure_text(&inputs, known, available, window, cx);
+    }
+    if let Some(inner) = layout.0.borrow_mut().as_mut() {
+        inner.bounds = Some(bounds);
+    }
+}
+
+/// Whether [`TextLayout`]'s paint can paint the text: it was measured and
+/// prepainted. Upstream panics when it was not; it is left unpainted instead.
+/// See [`prepaint_text`].
+pub(crate) fn paintable(layout: &TextLayout, text: &str) -> bool {
+    let paintable = layout
+        .0
+        .borrow()
+        .as_ref()
+        .is_some_and(|inner| inner.bounds.is_some());
+    if !paintable {
+        report_unmeasured(
+            "text painted before it was measured and prepainted; not painted",
+            text,
+        );
+    }
+    paintable
+}
+
+/// Whether [`report_unmeasured`] has reported anything in this process.
+static REPORTED_UNMEASURED: AtomicBool = AtomicBool::new(false);
+
+/// Logs text found unmeasured where it should not be: as an error the first
+/// time, and at debug level after that, since a frame that finds it is likely
+/// to be followed by many that find it again.
+fn report_unmeasured(what: &str, text: &str) {
+    const SHOWN_CHARS: usize = 32;
+    let mut shown: String = text.chars().take(SHOWN_CHARS).collect();
+    if text.chars().nth(SHOWN_CHARS).is_some() {
+        shown.push('…');
+    }
+    if REPORTED_UNMEASURED.swap(true, Ordering::Relaxed) {
+        log::debug!("{what}: {shown:?}");
+    } else {
+        log::error!("{what}: {shown:?}");
+    }
 }
 
 /// Takes over the measurement `previous` left, if it stands for `inputs`. See
@@ -1093,8 +1191,8 @@ pub(crate) fn resolve_font(text_system: &crate::TextSystem, font: &crate::Font) 
 }
 
 /// [`TextSystem::resolve_font`]: the font, or else the first of the
-/// fallbacks that resolves — in the weight and style asked for, with the
-/// features asked for, where the fallback family has them.
+/// fallbacks that resolves in the weight and style asked for, with the
+/// features asked for, or else upstream's plain fallback.
 ///
 /// Upstream resolves a fallback as the fallback stack names it, plain: text
 /// asked for in bold came out regular, and with its features — tabular
@@ -1102,7 +1200,15 @@ pub(crate) fn resolve_font(text_system: &crate::TextSystem, font: &crate::Font) 
 /// their proportional widths, and a ticking price changed width, and laid
 /// out its row again, every time it changed.
 fn resolve_font_uncached(text_system: &crate::TextSystem, font: &crate::Font) -> crate::FontId {
-    if let Ok(font_id) = text_system.font_id(font) {
+    if let Some(
+        crate::text_system::CachedFont::Direct(font_id)
+        | crate::text_system::CachedFont::Fallback(font_id),
+    ) = text_system.font_ids_by_font.read().get(font)
+    {
+        return *font_id;
+    }
+    let mut font_error = None;
+    if let Some(font_id) = cached_font_id(text_system, font, font, &mut font_error) {
         return font_id;
     }
     for fallback in &text_system.fallback_font_stack {
@@ -1113,23 +1219,54 @@ fn resolve_font_uncached(text_system: &crate::TextSystem, font: &crate::Font) ->
             weight: font.weight,
             style: font.style,
         };
-        if let Ok(font_id) = text_system.font_id(&as_asked) {
-            return font_id;
-        }
-        if let Ok(font_id) = text_system.font_id(fallback) {
+        if let Some(font_id) = cached_font_id(text_system, &as_asked, font, &mut font_error) {
+            if let Some(error) = font_error {
+                log::warn!("failed to load font {font:?}: {error:#}");
+            }
+            text_system.font_ids_by_font.write().insert(
+                font.clone(),
+                crate::text_system::CachedFont::Fallback(font_id),
+            );
             return font_id;
         }
     }
-    panic!(
-        "failed to resolve font '{}' or any of the fallbacks: {}",
-        font.family,
+    // No fallback has the font as asked: upstream's resolution takes the
+    // first fallback as the stack names it, or panics.
+    text_system.resolve_font_uncached(font)
+}
+
+/// `candidate`'s own font id, looked up once per text system and remembered
+/// in upstream's cache, misses included. Only a miss for the font `asked`
+/// for is reported, as upstream reports only explicitly requested fonts.
+fn cached_font_id(
+    text_system: &crate::TextSystem,
+    candidate: &crate::Font,
+    asked: &crate::Font,
+    font_error: &mut Option<Arc<anyhow::Error>>,
+) -> Option<crate::FontId> {
+    use crate::text_system::CachedFont;
+    let cached = text_system.font_ids_by_font.read().get(candidate).cloned();
+    let cached = cached.unwrap_or_else(|| {
+        let cached = match text_system.platform_text_system.font_id(candidate) {
+            Ok(font_id) => CachedFont::Direct(font_id),
+            Err(error) => CachedFont::Missing(Arc::new(error)),
+        };
         text_system
-            .fallback_font_stack
-            .iter()
-            .map(|fallback| fallback.family.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+            .font_ids_by_font
+            .write()
+            .insert(candidate.clone(), cached.clone());
+        cached
+    });
+    match cached {
+        CachedFont::Direct(font_id) => Some(font_id),
+        CachedFont::Fallback(_) => None,
+        CachedFont::Missing(error) => {
+            if candidate == asked {
+                *font_error = Some(error);
+            }
+            None
+        }
+    }
 }
 
 #[cfg(test)]
