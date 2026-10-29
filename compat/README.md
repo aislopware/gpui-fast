@@ -18,7 +18,7 @@ gpui-pre-sum-tree = { git = "https://github.com/longbridge/gpui-fast" }
 ```
 
 GPUI Kit's `gpui-fast` feature names GPUI Fast's crates.io release instead
-(`gpui-fast`, `gpui-fast-platform`, `gpui-fast-web`, `0.1.10` today), and
+(`gpui-fast`, `gpui-fast-platform`, `gpui-fast-web`, `0.1.12` today), and
 `gpui-fast`, `gpui-fast-platform` and `gpui-fast-web` here stand in for those
 the same way, so that feature builds on this repository too:
 
@@ -35,8 +35,8 @@ upstream's names and versions.
 
 Two things to keep in mind:
 
-- The version is the snapshot GPUI Kit pins, `=0.3.9` today, and the GPUI
-  Fast release it names, `0.1.10`. When GPUI Kit moves to newer ones, move the
+- The version is the snapshot GPUI Kit pins, `=0.3.10` today, and the GPUI
+  Fast release it names, `0.1.12`. When GPUI Kit moves to newer ones, move the
   crates here with them; until then Cargo warns that the patch was not used
   and keeps the crates.io crate.
 - gpui-pre rewrites the `gpui::` paths its macros emit to `::gpui_kit::`, and
