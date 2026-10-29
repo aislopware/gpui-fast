@@ -100,9 +100,7 @@ fn gesture(native: Native, window_height: Pixels) -> Option<PlatformGesture> {
 fn phase(phase: NSEventPhase) -> Option<TouchPhase> {
     if phase.contains(NSEventPhase::Began) {
         Some(TouchPhase::Started)
-    } else if phase
-        .intersects(NSEventPhase::Changed | NSEventPhase::Stationary)
-    {
+    } else if phase.intersects(NSEventPhase::Changed | NSEventPhase::Stationary) {
         Some(TouchPhase::Moved)
     } else if phase.contains(NSEventPhase::Ended) {
         Some(TouchPhase::Ended)
@@ -116,11 +114,11 @@ fn phase(phase: NSEventPhase) -> Option<TouchPhase> {
 #[cfg(test)]
 mod tests {
     use super::{Native, ROTATE, SMART_MAGNIFY, SWIPE, gesture};
-    use objc2_app_kit::NSEventPhase;
     use gpui::{
         Modifiers, PlatformGesture, RotateEvent, SmartMagnifyEvent, SwipeEvent, TouchPhase, point,
         px,
     };
+    use objc2_app_kit::NSEventPhase;
 
     fn native(event_type: u64, phase: NSEventPhase) -> Native {
         Native {
@@ -167,20 +165,14 @@ mod tests {
 
     #[test]
     fn a_rotation_that_may_begin_is_not_delivered() {
-        for phase in [
-            NSEventPhase::MayBegin,
-            NSEventPhase::None,
-        ] {
+        for phase in [NSEventPhase::MayBegin, NSEventPhase::None] {
             assert!(gesture(native(ROTATE, phase), px(600.)).is_none());
         }
     }
 
     #[test]
     fn a_smart_magnify_carries_its_place() {
-        let event = gesture(
-            native(SMART_MAGNIFY, NSEventPhase::None),
-            px(600.),
-        );
+        let event = gesture(native(SMART_MAGNIFY, NSEventPhase::None), px(600.));
         let Some(PlatformGesture::SmartMagnify(event)) = event else {
             panic!("not a smart magnify: {event:?}");
         };
@@ -197,21 +189,9 @@ mod tests {
     fn a_swipe_keeps_appkits_deltas_and_arrives_ended() {
         for (delta, native_phase, phase) in [
             ((1., 0.), NSEventPhase::None, TouchPhase::Ended),
-            (
-                (-1., 0.),
-                NSEventPhase::Ended,
-                TouchPhase::Ended,
-            ),
-            (
-                (0., 1.),
-                NSEventPhase::Began,
-                TouchPhase::Started,
-            ),
-            (
-                (0., -1.),
-                NSEventPhase::Changed,
-                TouchPhase::Moved,
-            ),
+            ((-1., 0.), NSEventPhase::Ended, TouchPhase::Ended),
+            ((0., 1.), NSEventPhase::Began, TouchPhase::Started),
+            ((0., -1.), NSEventPhase::Changed, TouchPhase::Moved),
         ] {
             let event = gesture(
                 Native {

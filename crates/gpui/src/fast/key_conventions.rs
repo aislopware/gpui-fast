@@ -23,12 +23,12 @@ mod tests {
 
     #[test]
     fn ios_keystrokes_follow_the_mac() {
-        let keystroke = Keystroke::parse_with_os("secondary-shift-left", OperatingSystem::Ios)
-            .expect("parses");
+        let keystroke =
+            Keystroke::parse_with_os("secondary-shift-left", OperatingSystem::Ios).expect("parses");
         assert!(keystroke.modifiers.platform && !keystroke.modifiers.control);
         assert_eq!(keystroke.display(OperatingSystem::Ios).to_string(), "⌘⇧←");
-        let linux = Keystroke::parse_with_os("secondary-left", OperatingSystem::Linux)
-            .expect("parses");
+        let linux =
+            Keystroke::parse_with_os("secondary-left", OperatingSystem::Linux).expect("parses");
         assert!(linux.modifiers.control && !linux.modifiers.platform);
     }
 }

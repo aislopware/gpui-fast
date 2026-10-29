@@ -20,13 +20,13 @@ use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send};
-use objc2_foundation::{NSInteger, NSPoint, NSRect, NSUInteger};
 use objc2_app_kit::{NSCursor, NSImage};
 use objc2_core_foundation::{CFData, CGSize};
 use objc2_core_graphics::{
     CGBitmapInfo, CGColorRenderingIntent, CGColorSpace, CGDataProvider, CGImage, CGImageAlphaInfo,
     CGImageByteOrderInfo, kCGColorSpaceSRGB,
 };
+use objc2_foundation::{NSInteger, NSPoint, NSRect, NSUInteger};
 
 use crate::window::{get_window_state, is_gpui_window};
 

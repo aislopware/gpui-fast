@@ -1163,14 +1163,14 @@ pub(crate) fn resolve_font(text_system: &crate::TextSystem, font: &crate::Font) 
 }
 
 /// [`TextSystem::resolve_font`]: the font, or else the first of the
-/// fallbacks that resolves in the weight and style asked for, with the
-/// features asked for, or else upstream's plain fallback.
+/// fallbacks that resolves with the features asked for, or else upstream's
+/// plain fallback.
 ///
-/// Upstream resolves a fallback as the fallback stack names it, plain: text
-/// asked for in bold came out regular, and with its features — tabular
-/// numerals, say — dropped, so digits of a family that isn't installed took
-/// their proportional widths, and a ticking price changed width, and laid
-/// out its row again, every time it changed.
+/// Upstream resolves a fallback as the fallback stack names it, plain: its
+/// features — tabular numerals, say — dropped, so digits of a family that
+/// isn't installed took their proportional widths, and a ticking price
+/// changed width, and laid out its row again, every time it changed. The
+/// fallback's weight and style stay upstream's.
 fn resolve_font_uncached(text_system: &crate::TextSystem, font: &crate::Font) -> crate::FontId {
     if let Some(
         crate::text_system::CachedFont::Direct(font_id)
@@ -1185,11 +1185,8 @@ fn resolve_font_uncached(text_system: &crate::TextSystem, font: &crate::Font) ->
     }
     for fallback in &text_system.fallback_font_stack {
         let as_asked = crate::Font {
-            family: fallback.family.clone(),
             features: font.features.clone(),
-            fallbacks: font.fallbacks.clone(),
-            weight: font.weight,
-            style: font.style,
+            ..fallback.clone()
         };
         if let Some(font_id) = cached_font_id(text_system, &as_asked, font, &mut font_error) {
             if let Some(error) = font_error {

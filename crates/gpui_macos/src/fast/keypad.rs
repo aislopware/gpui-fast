@@ -110,11 +110,7 @@ mod tests {
     #[test]
     fn a_chord_on_the_keypad_keeps_the_keypad_name_and_types_nothing() {
         let _spelling = crate::fast::typed::SPELLING.lock();
-        let keystroke = key_down(
-            0x53,
-            "1",
-            NUMERIC_PAD | NSEventModifierFlags::Command,
-        );
+        let keystroke = key_down(0x53, "1", NUMERIC_PAD | NSEventModifierFlags::Command);
         assert_eq!(keystroke.key, "kp1");
         assert!(keystroke.modifiers.platform);
         assert_eq!(keystroke.key_char, None);

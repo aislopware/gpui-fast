@@ -521,7 +521,7 @@ struct Arrangement {
 impl Render for Arrangement {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let mut rng = StdRng::seed_from_u64(self.seed);
-        let mut random_box = |rng: &mut StdRng| {
+        let random_box = |rng: &mut StdRng| {
             (
                 px(rng.random_range(0.0..400.)),
                 px(rng.random_range(0.0..300.)),

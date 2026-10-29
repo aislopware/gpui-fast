@@ -63,7 +63,7 @@ fn paint_stretch(key: u64, origin: Point<Pixels>, window: &mut Window) {
     let mut rng = StdRng::seed_from_u64(key);
     // Mostly places moving keeps exact, a quarter of a logical pixel apart;
     // now and then one that it doesn't.
-    let mut at = |rng: &mut StdRng, reach: f32| {
+    let at = |rng: &mut StdRng, reach: f32| {
         if rng.random_ratio(1, 8) {
             px(rng.random_range(0.0..reach))
         } else {
