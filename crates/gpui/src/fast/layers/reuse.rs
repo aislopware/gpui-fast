@@ -212,15 +212,18 @@ pub(crate) fn carry_paint_records(
             [range.start.tab_handle_index..range.end.tab_handle_index],
     );
     crate::fast::a11y::reuse_paint(window, range);
-    let next = &mut window.next_frame;
-    let rendered = &mut window.rendered_frame;
     #[cfg(any(test, feature = "test-support"))]
-    for (selector, bounds) in
-        &rendered.debug_bounds_records[range.start.debug_bounds_index..range.end.debug_bounds_index]
     {
-        let moved = Bounds::new(bounds.origin + scrolled, bounds.size);
-        next.record_debug_bounds(selector.clone(), moved);
+        let next = &mut window.next_frame;
+        let rendered = &window.rendered_frame;
+        for (selector, bounds) in &rendered.debug_bounds_records
+            [range.start.debug_bounds_index..range.end.debug_bounds_index]
+        {
+            let moved = Bounds::new(bounds.origin + scrolled, bounds.size);
+            next.record_debug_bounds(selector.clone(), moved);
+        }
     }
+    #[cfg(not(any(test, feature = "test-support")))]
     let _ = scrolled;
     window
         .text_system
