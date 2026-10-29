@@ -19,7 +19,7 @@ Two upstreams feed it:
   longbridge #33 this fork imports zed on top of longbridge's vendor line, not its own:
   #33 replays each zed commit (`script/import-upstream`) from gpui-fast's first import
   (`11a44c4`, zed `7960b2a7`) to `0d78d77` (zed `0bdc70c`), and our imports start from
-  there: the latest is `de241c34` (`zed: import 33156f0d`; see "Conflicts to expect"), and
+  there: the latest is `0522de48` (`zed: import 0373366f`; see "Conflicts to expect"), and
   the first was `8e30b2b` (`zed: import f8c2cc84`, zed #64990, "gpui_apple: Share
   dispatcher and Metal renderer with iOS"). That way a
   longbridge merge and a zed import no longer bring the same zed changes in through two
@@ -975,6 +975,61 @@ In the 33156f0d sync (zed #64624, #65942, #66147, #66152, #66206, #66237, #66281
   for, which longbridge's zed `08cbb88a` sync had dropped for zed #65852's cached fallbacks
   (`caches_resolved_font_fallbacks`); `fast::text` resolves a fallback as longbridge does
   again: with the features asked for, in the fallback's own weight and style.
+
+In the 0373366f sync (zed #65472, `CAMetalDisplayLink` on macOS 14 and later): zed paces a
+window with a `CAMetalDisplayLink`, which hands each update its drawable (`FrameSource::Metal`,
+whose `MetalFrames` pauses the link after an update that drew nothing), keeps the
+`CVDisplayLink` for older systems, and holds the window state in `Rc<Mutex<_>>`. This fork
+keeps a window on the `CVDisplayLink` until `nextDrawable` blocks, the stall zed's change is
+for (`gpui_apple::fast::frame_source`). The link costs every frame of a drawing window about a
+refresh and a half. `frame_latency` on the M1 Max here, on Parsec's 60 Hz virtual display with
+the presented handler for the glass (`GPUI_PRESENTED_AT_CALLBACK=1`), three rounds of each
+build alternating, 988229b0 against this import with the link on every window:
+
+| | `CVDisplayLink` | `CAMetalDisplayLink` |
+| --- | --- | --- |
+| `continuous`: submit → glass, p50 | 11.6–12.1 ms | 38.1–39.5 ms |
+| `flood`: key → glass, p50 | 20.1–21.2 ms | 46.8–47.2 ms |
+| `idle`: key → glass, p50 (p99) | 14.9–17.5 ms (26.0–26.8) | 9.7–11.4 ms (17.0–18.6) |
+| `echo`: key → echo on the glass, p50 (p99) | 31.7–32.1 ms (41.2–41.7) | 13.3–14.4 ms (59.5–61.7) |
+| `animate`: gap between renders, p99 | 18.7 ms | 16.7–16.9 ms |
+| `wake`: wake → render, p50 | 62–88 µs | 94–129 µs |
+
+- The link schedules each update's drawable for the third refresh after it: its
+  `targetTimestamp` lay 16.5 ms out and its `targetPresentationTimestamp` 49.9 ms.
+  `preferredFrameLatency` (2 by default, 1 taken, more capped at 2) moved neither, and a link
+  drawable presented at another time (`presentDrawable:atTime:`, `afterMinimumDuration:`) got
+  no presentation report at all. The link wins only an idle window's first frame and the echo
+  after it, which the fork's immediate frame draws with the link set aside.
+- Once `nextDrawable` has waited more than a refresh on six of the last eight frames, every
+  window of the process moves to its link at its next tick or link start
+  (`fast::frame_park::after_tick`, `before_start`), and new windows start there
+  (`fast::frame_park::frame_source`). `GPUI_METAL_DISPLAY_LINK=1` starts every window on the
+  link, and `=0` never moves one. A run that counted every wait as a stall moved after six
+  ticks and kept 60 renders a second; no Mac here stalls for real (zed saw it on base M4 and
+  M5 chips under macOS 26 and later).
+- On the link, the immediate frame stays. `fast::frame_park::before_immediate_frame` sets the
+  link aside, since the layer gives no drawable while a link drives it; the frame draws into
+  `nextDrawable`, and `after_immediate_frame` attaches a new link. zed's idle pause replaces
+  the frame park there, and the frame waker and `schedule_frame` wake it
+  (`fast::frame_park::wake_link`). The presentation pacer holds back no link update, but each
+  takes in the display's reports (`MetalRenderer::take_presentations`). The backdrop blur skips
+  a frame whose drawable is `framebufferOnly`: the link takes the drawable before
+  `fast::backdrop::prepare_layer` can make it readable.
+- The display's refresh is read in `fast::frame_park::note_refresh`, which `before_start`
+  calls. The root `objc2-quartz-core` gains the `CAMetalDisplayLink` and `objc2-metal`
+  features.
+- With windows on the `CVDisplayLink` until a stall, this import draws as 988229b0 did (two
+  rounds of each build, alternating):
+
+  | | 988229b0 | this import |
+  | --- | --- | --- |
+  | `continuous`: submit → glass, p50 | 11.4–11.6 ms | 11.3–12.8 ms |
+  | `flood`: key → glass, p50 | 19.6–19.8 ms | 19.6–20.4 ms |
+  | `idle`: key → glass, p50 | 18.3–18.6 ms | 15.1–17.8 ms |
+  | `echo`: key → echo on the glass, p50 | 31.4–32.8 ms | 32.1–33.2 ms |
+  | `animate`: gap between renders, p99 | 18.7 ms | 18.6–18.7 ms |
+  | `wake`: wake → render, p50 | 76–82 µs | 74–88 µs |
 
 For our patches: `window.rs` (`paint_glyph_scaled` sits next to gpui-fast's
 `pub(crate) fn should_use_subpixel_rendering`), the root `Cargo.toml` (`gpui_ios` member

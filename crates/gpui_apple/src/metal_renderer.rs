@@ -206,6 +206,7 @@ pub struct MetalRenderer {
     #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
     headless_render_target: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     pub(crate) fast_layers: crate::fast::layers::TileCache,
+    fast_drawable_waits: crate::fast::frame_source::DrawableWaits,
 }
 
 /// Records the frame in `drawable` for the pacer, and hands it to `sink`, once the display
@@ -565,6 +566,7 @@ impl MetalRenderer {
             #[cfg(any(test, feature = "bench-support", feature = "test-support"))]
             headless_render_target: None,
             fast_layers: crate::fast::layers::TileCache::default(),
+            fast_drawable_waits: crate::fast::frame_source::DrawableWaits::default(),
         })
     }
 
@@ -763,6 +765,7 @@ impl MetalRenderer {
                 drawable
             }
             DisplayLinkMode::Detached => {
+                let asked_at = Instant::now();
                 let Some(drawable) = layer.nextDrawable() else {
                     log::error!(
                         "failed to retrieve next drawable, drawable size: {:?}",
@@ -770,6 +773,13 @@ impl MetalRenderer {
                     );
                     return;
                 };
+                if !self.presents_with_transaction {
+                    crate::fast::frame_source::waited(
+                        &mut self.fast_drawable_waits,
+                        asked_at.elapsed(),
+                        self.pacer.refresh(),
+                    );
+                }
                 drawable
             }
         };

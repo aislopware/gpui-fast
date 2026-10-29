@@ -853,7 +853,7 @@ impl MacWindowState {
         {
             return;
         }
-        crate::fast::frame_park::note_refresh(self);
+        crate::fast::frame_park::before_start(self);
         match &mut self.frame_source {
             FrameSource::Metal(metal_frames) => {
                 let Some(layer) = self.renderer.layer() else {
@@ -1139,12 +1139,9 @@ impl MacWindow {
                 background_appearance: WindowBackgroundAppearance::Opaque,
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
-                frame_source: match &metal_frames {
-                    Some(metal_frames) => FrameSource::Metal(metal_frames.clone()),
-                    None => FrameSource::DisplayLink(None),
-                },
+                frame_source: crate::fast::frame_park::frame_source(&metal_frames),
                 immediate_frame_armed: false,
-                fast_frame_park: crate::fast::frame_park::FramePark::default(),
+                fast_frame_park: crate::fast::frame_park::new(&metal_frames),
                 renderer,
                 request_frame_callback: None,
                 event_callback: None,
@@ -3526,7 +3523,7 @@ extern "C" fn step(view: *mut c_void) {
             ..Default::default()
         });
         window_state.lock().request_frame_callback = Some(callback);
-        crate::fast::frame_park::after_tick(&mut window_state.lock());
+        crate::fast::frame_park::after_tick(&window_state);
     }
 }
 

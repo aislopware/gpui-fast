@@ -16,12 +16,15 @@
 //! between two of AppKit's own draws) is not parked, and draws only as the link brings it
 //! back.
 //!
-//! A `CAMetalDisplayLink` (macOS 14 and later) pauses itself after an update that drew
-//! nothing (`MetalFrames`), so it is never parked here; what stays is the immediate frame. The
-//! link hands each update its drawable and the layer gives none while a link drives it, so the
-//! immediate frame sets the link aside, draws into the layer's next drawable, and attaches a
-//! new link after it: an idle window's first frame reaches the glass as soon as it does with
-//! no link, and the frames after it are the link's.
+//! A window takes its frames from a `CVDisplayLink` until the process's windows move to their
+//! `CAMetalDisplayLink` (macOS 14 and later), as `gpui_apple::fast::frame_source` decides: when
+//! `nextDrawable` blocks. The window moves at its next tick, or as its link next starts. A
+//! `CAMetalDisplayLink` pauses itself after an update that drew nothing (`MetalFrames`), so it
+//! is never parked here; what stays is the immediate frame. The link hands each update its
+//! drawable and the layer gives none while a link drives it, so the immediate frame sets the
+//! link aside, draws into the layer's next drawable, and attaches a new link after it: an idle
+//! window's first frame reaches the glass as soon as it does with no link, and the frames
+//! after it are the link's.
 
 use std::{
     ffi::c_void,
@@ -54,6 +57,9 @@ pub(crate) struct FramePark {
     idle_since: Option<Instant>,
     /// The link was stopped because the window was idle, not for any other reason.
     parked: bool,
+    /// The window's `CAMetalDisplayLink`, for when the process's windows move to it (macOS 14
+    /// and later).
+    metal_frames: Option<Rc<MetalFrames>>,
 }
 
 impl FramePark {
@@ -80,9 +86,33 @@ impl FramePark {
     }
 }
 
-/// After a vsync tick's frame request: park the window once it has been idle for
-/// [`PARK_AFTER`].
-pub(crate) fn after_tick(state: &mut MacWindowState) {
+/// A new window's park, which holds its `CAMetalDisplayLink` for later.
+pub(crate) fn new(metal_frames: &Option<Rc<MetalFrames>>) -> FramePark {
+    FramePark {
+        metal_frames: metal_frames.clone(),
+        ..FramePark::default()
+    }
+}
+
+/// What a new window takes its frames from: its `CAMetalDisplayLink` once the process's windows
+/// take theirs (`gpui_apple::fast::frame_source`), else a `CVDisplayLink`.
+pub(crate) fn frame_source(metal_frames: &Option<Rc<MetalFrames>>) -> FrameSource {
+    match metal_frames {
+        Some(metal_frames) if gpui_apple::fast::frame_source::metal_link() => {
+            FrameSource::Metal(metal_frames.clone())
+        }
+        _ => FrameSource::DisplayLink(None),
+    }
+}
+
+/// After a vsync tick's frame request: a window moves to its `CAMetalDisplayLink` once the
+/// process's windows take theirs, and else parks once it has been idle for [`PARK_AFTER`].
+pub(crate) fn after_tick(window_state: &Rc<Mutex<MacWindowState>>) {
+    let mut state = window_state.lock();
+    if moves_to_metal(&state) {
+        state.start_display_link(window_state);
+        return;
+    }
     let drew = !state.renderer.idle_for_a_refresh();
     if state.fast_frame_park.tick(Instant::now(), drew) {
         state.stop_display_link();
@@ -181,10 +211,28 @@ pub(crate) fn wake_link(metal_frames: &Option<Weak<MetalFrames>>) {
     }
 }
 
+/// The window's link is about to start: it takes the display's refresh, and its
+/// `CAMetalDisplayLink` in place of the `CVDisplayLink` once the process's windows take theirs.
+pub(crate) fn before_start(state: &mut MacWindowState) {
+    note_refresh(state);
+    if moves_to_metal(state)
+        && let Some(metal_frames) = &state.fast_frame_park.metal_frames
+    {
+        state.frame_source = FrameSource::Metal(metal_frames.clone());
+    }
+}
+
+/// Whether a window on a `CVDisplayLink` takes its `CAMetalDisplayLink` now.
+fn moves_to_metal(state: &MacWindowState) -> bool {
+    matches!(state.frame_source, FrameSource::DisplayLink(_))
+        && state.fast_frame_park.metal_frames.is_some()
+        && gpui_apple::fast::frame_source::metal_link()
+}
+
 /// The window's display reaches its fastest refresh this often (AppKit:
 /// `NSScreen.minimumRefreshInterval`, a variable-rate panel's fastest), which paces the
 /// renderer's presentation.
-pub(crate) fn note_refresh(state: &mut MacWindowState) {
+fn note_refresh(state: &mut MacWindowState) {
     // SAFETY: `native_window` is the window this state belongs to, alive while it is.
     let screen: *mut AnyObject = unsafe { msg_send![state.native_window, screen] };
     if screen.is_null() {

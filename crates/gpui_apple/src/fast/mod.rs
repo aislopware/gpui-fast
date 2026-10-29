@@ -11,6 +11,7 @@
 pub(crate) mod backdrop;
 pub(crate) mod edge_fade;
 pub mod font_weight;
+pub mod frame_source;
 #[cfg(test)]
 mod glyph_blur;
 pub(crate) mod layers;
