@@ -471,9 +471,10 @@ Added in this fork:
   window's override does not reach. iOS's `App::window_appearance` now reads the scene rather
   than the key window, and an iOS window's appearance observers, which nothing called before,
   hear its style's trait changes. Slopty gives a window the appearance of its terminal's
-  background, as Ghostty does, while its theme follows the application. The test platform keeps
-  a window's own appearance and a system appearance a test sets
-  (`TestAppContext::simulate_system_appearance`). Tests: `fast::tests::window_appearance`.
+  background, as Ghostty does, while its theme follows the application. On the test platform a
+  window follows the application's appearance unless it has its own, as a macOS window does, and
+  a test sets the system's (`TestAppContext::simulate_system_appearance`). Tests:
+  `fast::tests::window_appearance`.
 - fix(gpui): a touch's fling ends once a step of it moves nothing, and a touch outside what
   it scrolls stays a tap (`fast/fling.rs`). `div`'s and `list`'s scroll listeners report
   whether a step moved them and where they are; a custom scroll handler reports nothing and
