@@ -438,6 +438,8 @@ pub trait Platform: 'static {
     /// other platforms.
     fn set_window_appearance(&self, _appearance: Option<WindowAppearance>) {}
 
+    fn on_window_appearance_change(&self, _callback: Box<dyn FnMut()>) {}
+
     /// Returns the window button layout configuration when supported.
     fn button_layout(&self) -> Option<WindowButtonLayout> {
         None
@@ -1296,6 +1298,7 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     fn resize(&mut self, size: Size<Pixels>);
     fn scale_factor(&self) -> f32;
     fn appearance(&self) -> WindowAppearance;
+    fn set_appearance(&self, _appearance: Option<WindowAppearance>) {}
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>>;
     fn mouse_position(&self) -> Point<Pixels>;
     fn modifiers(&self) -> Modifiers;

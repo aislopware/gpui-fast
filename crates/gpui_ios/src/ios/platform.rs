@@ -274,23 +274,11 @@ impl Platform for IosPlatform {
     }
 
     fn window_appearance(&self) -> WindowAppearance {
-        unsafe {
-            let style: i64 = {
-                let app: *mut AnyObject = msg_send![class!(UIApplication), sharedApplication];
-                let key_window: *mut AnyObject = msg_send![app, keyWindow];
-                if key_window.is_null() {
-                    return WindowAppearance::Light;
-                }
-                let trait_collection: *mut AnyObject = msg_send![key_window, traitCollection];
-                msg_send![trait_collection, userInterfaceStyle]
-            };
+        super::appearance::app()
+    }
 
-            // UIUserInterfaceStyle: 0 = unspecified, 1 = light, 2 = dark
-            match style {
-                2 => WindowAppearance::Dark,
-                _ => WindowAppearance::Light,
-            }
-        }
+    fn on_window_appearance_change(&self, callback: Box<dyn FnMut()>) {
+        super::appearance::observe_app(callback);
     }
 
     fn open_url(&self, url: &str) {

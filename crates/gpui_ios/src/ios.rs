@@ -1,6 +1,7 @@
 //! UIKit-backed implementation details for the iOS GPUI platform.
 
 mod a11y;
+pub(crate) mod appearance;
 pub(crate) mod cg_types;
 pub mod composition;
 mod dispatcher;

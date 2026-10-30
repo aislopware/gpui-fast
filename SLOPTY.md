@@ -461,6 +461,19 @@ Added in this fork:
   that reads it is built again when it changes, as one that reads the pointer is when it moves,
   so the view that held work is built again, and does it, once the touch ends. Tests:
   `fast::tests::touch_in_flight`.
+- feat(gpui, gpui_macos, gpui_ios): a window's own appearance (`fast/window_appearance.rs`).
+  `Window::set_appearance` gives one window an appearance apart from the application's, `None`
+  following it again: `NSWindow.appearance` on macOS, `UIWindow.overrideUserInterfaceStyle` on
+  iOS. `Window::appearance` and `observe_window_appearance` report the window's. The
+  application's (`App::window_appearance`) is told by `App::on_window_appearance_change`, which
+  no window's own changes: macOS observes `NSApp.effectiveAppearance` by key-value observing, as
+  Ghostty's `AppDelegate` does, and iOS the window scene's `userInterfaceStyle` trait, which a
+  window's override does not reach. iOS's `App::window_appearance` now reads the scene rather
+  than the key window, and an iOS window's appearance observers, which nothing called before,
+  hear its style's trait changes. Slopty gives a window the appearance of its terminal's
+  background, as Ghostty does, while its theme follows the application. The test platform keeps
+  a window's own appearance and a system appearance a test sets
+  (`TestAppContext::simulate_system_appearance`). Tests: `fast::tests::window_appearance`.
 - fix(gpui): a touch's fling ends once a step of it moves nothing, and a touch outside what
   it scrolls stays a tap (`fast/fling.rs`). `div`'s and `list`'s scroll listeners report
   whether a step moved them and where they are; a custom scroll handler reports nothing and

@@ -1696,6 +1696,10 @@ impl PlatformWindow for MacWindow {
         }
     }
 
+    fn set_appearance(&self, appearance: Option<WindowAppearance>) {
+        crate::fast::appearance::set_window(&self.0, appearance);
+    }
+
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
         let screen: *mut AnyObject = unsafe { msg_send![self.0.lock().native_window, screen] };
         let display_id = display_id_for_screen(screen)?;

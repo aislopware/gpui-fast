@@ -1246,6 +1246,17 @@ impl IosWindow {
         }
     }
 
+    /// Tells GPUI the window's appearance changed.
+    fn tell_appearance(&self) {
+        let callback = self.appearance_changed_callback.borrow_mut().take();
+        if let Some(mut callback) = callback {
+            callback();
+            self.appearance_changed_callback
+                .borrow_mut()
+                .get_or_insert(callback);
+        }
+    }
+
     /// Register this window with the FFI layer after it's been stored.
     /// This must be called after the window is placed at a stable address
     /// (e.g., in a Box or Arc).
@@ -1265,6 +1276,13 @@ impl IosWindow {
                 *(*self.text_input_view).get_mut_ivar::<*mut c_void>(GPUI_WINDOW_IVAR) = window_ptr;
             }
             super::composition::set_root_window(self.root_view, self);
+            // The window's appearance, its own or its scene's, told each time it changes.
+            let view = self.view;
+            super::appearance::observe_style(view, move || {
+                if let Some(window) = window_of_view(view) {
+                    window.tell_appearance();
+                }
+            });
             log::info!(
                 "GPUI iOS: Set window pointer {:p} on view {:p} and text input {:p}",
                 window_ptr,
@@ -2169,14 +2187,13 @@ impl PlatformWindow for IosWindow {
     }
 
     fn appearance(&self) -> WindowAppearance {
-        unsafe {
-            let trait_collection: *mut AnyObject = msg_send![self.view, traitCollection];
-            let style: i64 = msg_send![trait_collection, userInterfaceStyle];
-            match style {
-                2 => WindowAppearance::Dark,
-                _ => WindowAppearance::Light,
-            }
-        }
+        // SAFETY: `self.view` is the live Metal view this window owns, a `UIView`.
+        unsafe { super::appearance::of(self.view) }
+    }
+
+    fn set_appearance(&self, appearance: Option<WindowAppearance>) {
+        // SAFETY: `self.window` is the live `UIWindow` this window owns, on the main thread.
+        unsafe { super::appearance::set_window(self.window, appearance) }
     }
 
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
