@@ -36,6 +36,7 @@ use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
 use std::{
     cell::{Cell, RefCell},
+    collections::VecDeque,
     ffi::c_void,
     ptr::{self, NonNull},
     rc::Rc,
@@ -1004,6 +1005,10 @@ pub(crate) struct IosWindow {
     frame_pacer: RefCell<FramePacer>,
     /// Callback for input events
     input_callback: RefCell<Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>>,
+    /// An event is being handed to GPUI (`dispatch_input`).
+    dispatching: Cell<bool>,
+    /// The events UIKit sent from inside that dispatch, in order, for after it.
+    input_waiting: RefCell<VecDeque<PlatformInput>>,
     /// Callback for active status changes
     active_status_callback: RefCell<Option<Box<dyn FnMut(bool)>>>,
     /// Callback for hover status changes (not really applicable on iOS)
@@ -1025,6 +1030,8 @@ pub(crate) struct IosWindow {
     /// Callback for appearance changes
     appearance_changed_callback: RefCell<Option<Box<dyn FnMut()>>>,
     insets_changed_callback: RefCell<Option<Box<dyn FnMut(WindowInsets)>>>,
+    /// The insets GPUI was last told: UIKit lays the view out far more often than they change.
+    insets_told: RefCell<Option<WindowInsets>>,
     /// The keyboard's last end frame in screen coordinates, while it is shown on this
     /// window's screen.
     keyboard_frame: Cell<Option<ObjcCGRect>>,
@@ -1204,6 +1211,8 @@ impl IosWindow {
                 display_link,
                 frame_pacer: RefCell::new(FramePacer::new(refresh_interval)),
                 input_callback: RefCell::new(None),
+                dispatching: Cell::new(false),
+                input_waiting: RefCell::default(),
                 active_status_callback: RefCell::new(None),
                 hover_status_callback: RefCell::new(None),
                 visibility: RefCell::new(WindowVisibility::Visible),
@@ -1215,6 +1224,7 @@ impl IosWindow {
                 close_callback: RefCell::new(None),
                 appearance_changed_callback: RefCell::new(None),
                 insets_changed_callback: RefCell::new(None),
+                insets_told: RefCell::new(None),
                 keyboard_frame: Cell::new(None),
                 keyboard_height: Cell::new(Pixels::ZERO),
                 mouse_position: Cell::new(Point::default()),
@@ -1675,9 +1685,17 @@ impl IosWindow {
         }
     }
 
+    /// Tells GPUI the insets when they changed. UIKit lays the view out on every layout pass,
+    /// and one runs whenever a native GPUI placed has moved, as GPUI's present commits: told
+    /// each time, GPUI would hear every frame of a scroll over a page, from inside its draw.
     fn notify_insets_changed(&self) {
+        let insets = self.current_insets();
+        if self.insets_told.borrow().as_ref() == Some(&insets) {
+            return;
+        }
         if let Some(callback) = self.insets_changed_callback.borrow_mut().as_mut() {
-            callback(self.current_insets());
+            *self.insets_told.borrow_mut() = Some(insets.clone());
+            callback(insets);
         }
     }
 
@@ -1857,16 +1875,29 @@ impl IosWindow {
     }
 
     /// Hands an event to GPUI. The callback is taken out of its cell for the call, so a
-    /// dispatch that re-enters (GPUI asking the platform for another event on the way) finds
-    /// no borrow to trip over; one registered meanwhile wins over the one taken out.
+    /// dispatch that re-enters finds no borrow to trip over: an event UIKit sends from inside
+    /// it (a touch cancelled as GPUI moves the view it was in, the action of the recogniser
+    /// that followed it) waits for it to return and goes next, in the order it came, never
+    /// dropped. A callback registered meanwhile wins over the one taken out.
     pub(super) fn dispatch_input(&self, event: PlatformInput) {
+        if self.dispatching.get() {
+            self.input_waiting.borrow_mut().push_back(event);
+            return;
+        }
         let taken = self.input_callback.borrow_mut().take();
-        if let Some(mut callback) = taken {
+        let Some(mut callback) = taken else {
+            return;
+        };
+        self.dispatching.set(true);
+        let mut next = Some(event);
+        while let Some(event) = next {
             let _result = callback(event);
-            let mut slot = self.input_callback.borrow_mut();
-            if slot.is_none() {
-                *slot = Some(callback);
-            }
+            next = self.input_waiting.borrow_mut().pop_front();
+        }
+        self.dispatching.set(false);
+        let mut slot = self.input_callback.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(callback);
         }
     }
 

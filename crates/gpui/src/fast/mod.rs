@@ -81,6 +81,7 @@ pub(crate) mod touch_hover;
 pub(crate) mod touch_time;
 pub(crate) mod transition;
 pub(crate) mod value_transition;
+pub(crate) mod window_wait;
 
 #[cfg(test)]
 mod tests;

@@ -2044,33 +2044,29 @@ impl Window {
         platform_window.on_visual_viewport_changed(Box::new({
             let mut cx = cx.to_async();
             move || {
-                handle
-                    .update(&mut cx, |_, window, _| window.refresh())
-                    .log_err();
+                crate::fast::window_wait::update(handle, &mut cx, |_, window, _| window.refresh());
             }
         }));
         platform_window.on_insets_changed(Box::new({
             let mut cx = cx.to_async();
             move |_| {
-                handle
-                    .update(&mut cx, |_, window, _| window.refresh())
-                    .log_err();
+                crate::fast::window_wait::update(handle, &mut cx, |_, window, _| window.refresh());
             }
         }));
         platform_window.on_resize(Box::new({
             let mut cx = cx.to_async();
             move |_, _| {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                crate::fast::window_wait::update(handle, &mut cx, |_, window, cx| {
+                    window.bounds_changed(cx)
+                });
             }
         }));
         platform_window.on_moved(Box::new({
             let mut cx = cx.to_async();
             move || {
-                handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
-                    .log_err();
+                crate::fast::window_wait::update(handle, &mut cx, |_, window, cx| {
+                    window.bounds_changed(cx)
+                });
             }
         }));
         platform_window.on_display_changed(Box::new({
@@ -2096,30 +2092,28 @@ impl Window {
         platform_window.on_button_layout_changed(Box::new({
             let mut cx = cx.to_async();
             move || {
-                handle
-                    .update(&mut cx, |_, window, cx| window.button_layout_changed(cx))
-                    .log_err();
+                crate::fast::window_wait::update(handle, &mut cx, |_, window, cx| {
+                    window.button_layout_changed(cx)
+                });
             }
         }));
         platform_window.on_active_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                handle
-                    .update(&mut cx, |_, window, cx| {
-                        window.active.set(active);
-                        window.modifiers = window.platform_window.modifiers();
-                        window.capslock = window.platform_window.capslock();
-                        window
-                            .activation_observers
-                            .clone()
-                            .retain(|callback| callback(window, cx));
+                crate::fast::window_wait::update(handle, &mut cx, move |_, window, cx| {
+                    window.active.set(active);
+                    window.modifiers = window.platform_window.modifiers();
+                    window.capslock = window.platform_window.capslock();
+                    window
+                        .activation_observers
+                        .clone()
+                        .retain(|callback| callback(window, cx));
 
-                        window.bounds_changed(cx);
-                        window.refresh();
+                    window.bounds_changed(cx);
+                    window.refresh();
 
-                        SystemWindowTabController::update_last_active(cx, window.handle.id);
-                    })
-                    .log_err();
+                    SystemWindowTabController::update_last_active(cx, window.handle.id);
+                });
             }
         }));
         // The platform reports presentation off the main thread; the channel brings each
@@ -2144,34 +2138,21 @@ impl Window {
         platform_window.on_visibility_change(Box::new({
             let mut cx = cx.to_async();
             move |_| {
-                handle
-                    .update(&mut cx, |_, window, cx| {
-                        window.refresh_visibility(cx);
-                    })
-                    .log_err();
+                crate::fast::window_wait::update(handle, &mut cx, |_, window, cx| {
+                    window.refresh_visibility(cx);
+                });
             }
         }));
         platform_window.on_hover_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                handle
-                    .update(&mut cx, |_, window, _| {
-                        window.hovered.set(active);
-                        window.refresh();
-                    })
-                    .log_err();
+                crate::fast::window_wait::update(handle, &mut cx, move |_, window, _| {
+                    window.hovered.set(active);
+                    window.refresh();
+                });
             }
         }));
-        platform_window.on_input({
-            let mut cx = cx.to_async();
-            Box::new(move |event| {
-                crate::prepare_input(handle, &event, &mut cx);
-                handle
-                    .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
-                    .log_err()
-                    .unwrap_or(DispatchEventResult::default())
-            })
-        });
+        platform_window.on_input(crate::fast::window_wait::input(handle, cx.to_async()));
         platform_window.on_hit_test_window_control({
             let mut cx = cx.to_async();
             Box::new(move || {
