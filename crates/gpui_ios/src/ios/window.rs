@@ -1030,6 +1030,8 @@ pub(crate) struct IosWindow {
     /// Callback for appearance changes
     appearance_changed_callback: RefCell<Option<Box<dyn FnMut()>>>,
     insets_changed_callback: RefCell<Option<Box<dyn FnMut(WindowInsets)>>>,
+    /// The insets GPUI was last told: UIKit lays the view out far more often than they change.
+    insets_told: RefCell<Option<WindowInsets>>,
     /// The keyboard's last end frame in screen coordinates, while it is shown on this
     /// window's screen.
     keyboard_frame: Cell<Option<ObjcCGRect>>,
@@ -1222,6 +1224,7 @@ impl IosWindow {
                 close_callback: RefCell::new(None),
                 appearance_changed_callback: RefCell::new(None),
                 insets_changed_callback: RefCell::new(None),
+                insets_told: RefCell::new(None),
                 keyboard_frame: Cell::new(None),
                 keyboard_height: Cell::new(Pixels::ZERO),
                 mouse_position: Cell::new(Point::default()),
@@ -1682,9 +1685,17 @@ impl IosWindow {
         }
     }
 
+    /// Tells GPUI the insets when they changed. UIKit lays the view out on every layout pass,
+    /// and one runs whenever a native GPUI placed has moved, as GPUI's present commits: told
+    /// each time, GPUI would hear every frame of a scroll over a page, from inside its draw.
     fn notify_insets_changed(&self) {
+        let insets = self.current_insets();
+        if self.insets_told.borrow().as_ref() == Some(&insets) {
+            return;
+        }
         if let Some(callback) = self.insets_changed_callback.borrow_mut().as_mut() {
-            callback(self.current_insets());
+            *self.insets_told.borrow_mut() = Some(insets.clone());
+            callback(insets);
         }
     }
 
