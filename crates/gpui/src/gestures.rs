@@ -574,7 +574,7 @@ pub(crate) enum TouchGestureState {
     TouchDragging(ActiveTouch),
 }
 
-struct ActiveTouch {
+pub(crate) struct ActiveTouch {
     id: TouchId,
     start_position: Point<Pixels>,
     /// The latest raw position reported for this touch.
