@@ -169,6 +169,8 @@ pub(crate) mod ambient {
     pub(crate) struct Focus;
     /// Whether the focused element takes text: [`crate::Window::text_input_focused`].
     pub(crate) struct TextInput;
+    /// Whether a touch is in flight: [`crate::Window::touch_in_flight`].
+    pub(crate) struct TouchInFlight;
 }
 
 /// A window's handle on the app's dependency recording, so that reading the

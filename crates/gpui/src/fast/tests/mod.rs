@@ -64,6 +64,7 @@ mod text_smoothing;
 mod tooltip_exit;
 mod tooltip_press;
 mod touch_hover;
+mod touch_in_flight;
 mod touch_time;
 mod transition;
 mod value_transition;

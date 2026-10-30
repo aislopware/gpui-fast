@@ -455,6 +455,12 @@ Added in this fork:
   63 times in a run, once a frame while the chat scrolled over a page. `gpui_ios` now tells the
   insets only when they changed, and keeps an event UIKit sends while a dispatch runs for right
   after it, where it dropped it without a word. Tests: `fast::tests::window_wait`.
+- feat(gpui): `Window::touch_in_flight` says whether a touch is in flight in the window, a
+  finger on it or the fling it threw still coasting (`fast/touch_in_flight.rs`), so an app can
+  hold work that stalls the main thread, a web view to make say, until the touch is over. A view
+  that reads it is built again when it changes, as one that reads the pointer is when it moves,
+  so the view that held work is built again, and does it, once the touch ends. Tests:
+  `fast::tests::touch_in_flight`.
 - fix(gpui): a touch's fling ends once a step of it moves nothing, and a touch outside what
   it scrolls stays a tap (`fast/fling.rs`). `div`'s and `list`'s scroll listeners report
   whether a step moved them and where they are; a custom scroll handler reports nothing and
