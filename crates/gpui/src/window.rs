@@ -2100,7 +2100,7 @@ impl Window {
         platform_window.on_active_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                crate::fast::window_wait::update(handle, &mut cx, |_, window, cx| {
+                crate::fast::window_wait::update(handle, &mut cx, move |_, window, cx| {
                     window.active.set(active);
                     window.modifiers = window.platform_window.modifiers();
                     window.capslock = window.platform_window.capslock();
@@ -2146,7 +2146,7 @@ impl Window {
         platform_window.on_hover_status_change(Box::new({
             let mut cx = cx.to_async();
             move |active| {
-                crate::fast::window_wait::update(handle, &mut cx, |_, window, _| {
+                crate::fast::window_wait::update(handle, &mut cx, move |_, window, _| {
                     window.hovered.set(active);
                     window.refresh();
                 });
