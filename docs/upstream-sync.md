@@ -420,6 +420,17 @@ unchanged, and a new entry needs as good a reason.
   iPhone simulator. GPUI keeps the answer privately in its touch recognizer.
   A view that reads it is built again when it changes, so the view that held
   work does it once the touch is over.
+- `Window::set_appearance` and `App::on_window_appearance_change` are new
+  public API (`fast/window_appearance.rs`), with the defaulted
+  `PlatformWindow::set_appearance` and `Platform::on_window_appearance_change`
+  the backends implement. Upstream sets an appearance only for every window
+  at once (`App::set_window_appearance`). A terminal gives one window the
+  appearance of the background its program paints, as Ghostty does, so the
+  traffic lights, menus and scrollers the platform draws read on it, while
+  the application and its theme keep theirs. A window with its own
+  appearance no longer hears the system's light and dark, so what follows
+  the application needs the application's own change, which upstream reports
+  through no callback.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what

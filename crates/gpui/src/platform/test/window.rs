@@ -46,7 +46,7 @@ pub(crate) struct TestWindowState {
     virtual_keyboard_dismissals: usize,
     moved_callback: Option<Box<dyn FnMut()>>,
     display_changed_callback: Option<Box<dyn FnMut()>>,
-    appearance_change_callback: Option<Box<dyn FnMut()>>,
+    pub(crate) appearance_change_callback: Option<Box<dyn FnMut()>>,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     frame_wake_count: Rc<Cell<usize>>,
     frame_scheduled: bool,
@@ -58,10 +58,11 @@ pub(crate) struct TestWindowState {
     text_input_state_changes: Vec<TextInputStateChange>,
     is_fullscreen: bool,
     scale_factor: f32,
-    appearance: WindowAppearance,
+    pub(crate) appearance: WindowAppearance,
     external_drag_files: Vec<(PathBuf, bool)>,
     start_external_drag_result: bool,
     pub(crate) fast_ime_positions: Vec<Bounds<Pixels>>,
+    pub(crate) fast_appearance: Option<WindowAppearance>,
 }
 
 #[derive(Clone)]
@@ -141,6 +142,7 @@ impl TestWindow {
             external_drag_files: Vec::new(),
             start_external_drag_result: false,
             fast_ime_positions: Vec::new(),
+            fast_appearance: None,
         })))
     }
     pub fn simulate_close(&self) {
@@ -385,7 +387,11 @@ impl PlatformWindow for TestWindow {
     }
 
     fn appearance(&self) -> WindowAppearance {
-        self.0.lock().appearance
+        crate::fast::window_appearance::of_test_window(self)
+    }
+
+    fn set_appearance(&self, appearance: Option<WindowAppearance>) {
+        crate::fast::window_appearance::set_test_window(self, appearance);
     }
 
     fn display(&self) -> Option<std::rc::Rc<dyn crate::PlatformDisplay>> {

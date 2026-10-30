@@ -923,6 +923,7 @@ pub struct App {
     pub(crate) pending_global_notifications: TypeIdHashSet,
     pub(crate) dependencies: crate::fast::dependencies::AppDependencies,
     pub(crate) fast_text_smoothing: crate::fast::text_smoothing::AppTextSmoothing,
+    pub(crate) fast_appearance_observers: crate::fast::window_appearance::AppAppearanceObservers,
     pub(crate) restart_path: Option<PathBuf>,
     pub(crate) restart_arguments: Vec<OsString>,
     pub(crate) layout_id_buffer: Vec<LayoutId>, // We recycle this memory across layout requests.
@@ -1024,6 +1025,7 @@ impl App {
                 pending_global_notifications: Default::default(),
                 dependencies: crate::fast::dependencies::AppDependencies::default(),
                 fast_text_smoothing: crate::fast::text_smoothing::AppTextSmoothing::default(),
+                fast_appearance_observers: Default::default(),
                 observers: SubscriberSet::new(),
                 tracked_entities: FxHashMap::default(),
                 window_invalidators_by_entity: FxHashMap::default(),
@@ -1091,6 +1093,7 @@ impl App {
             }
         }));
 
+        crate::fast::window_appearance::observe_platform(platform.as_ref(), &app);
         platform.on_thermal_state_change(Box::new({
             let app = Rc::downgrade(&app);
             move || {

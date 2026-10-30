@@ -36,6 +36,7 @@ pub(crate) struct TestPlatform {
     pub(crate) active_window: RefCell<Option<TestWindow>>,
     pub(crate) active_cursor: Mutex<CursorStyle>,
     pub(crate) fast_cursor_images: RefCell<crate::fast::cursor::TestCursorImages>,
+    pub(crate) fast_appearance: RefCell<crate::fast::window_appearance::TestAppearance>,
     displays: RefCell<Vec<TestDisplay>>,
     displays_changed_callback: RefCell<Option<Box<dyn FnMut()>>>,
     current_clipboard_item: Mutex<Option<ClipboardItem>>,
@@ -245,6 +246,7 @@ impl TestPlatform {
             screen_capture_sources: Default::default(),
             active_cursor: Default::default(),
             fast_cursor_images: Default::default(),
+            fast_appearance: Default::default(),
             displays: RefCell::new(vec![TestDisplay::new()]),
             displays_changed_callback: Default::default(),
             active_window: Default::default(),
@@ -496,6 +498,10 @@ impl Platform for TestPlatform {
 
     fn on_thermal_state_change(&self, _: Box<dyn FnMut()>) {}
 
+    fn on_window_appearance_change(&self, callback: Box<dyn FnMut()>) {
+        crate::fast::window_appearance::TestAppearance::observe(&self.fast_appearance, callback);
+    }
+
     fn thermal_state(&self) -> ThermalState {
         ThermalState::Nominal
     }
@@ -615,11 +621,16 @@ impl Platform for TestPlatform {
                 .unwrap_or_else(|| Rc::new(TestDisplay::new())),
             renderer,
         );
+        crate::fast::window_appearance::TestAppearance::open(&self.fast_appearance, &window);
         Ok(Box::new(window))
     }
 
     fn window_appearance(&self) -> WindowAppearance {
-        WindowAppearance::Light
+        crate::fast::window_appearance::TestAppearance::current(&self.fast_appearance)
+    }
+
+    fn set_window_appearance(&self, appearance: Option<WindowAppearance>) {
+        crate::fast::window_appearance::TestAppearance::set(&self.fast_appearance, appearance);
     }
 
     fn open_url(&self, url: &str) {

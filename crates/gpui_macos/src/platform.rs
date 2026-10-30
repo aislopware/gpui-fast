@@ -544,6 +544,7 @@ impl Platform for MacPlatform {
                 state.application_created = true;
                 state.activation_policy
             };
+            crate::fast::appearance::app_created(self.1);
             if policy == ActivationPolicy::Accessory {
                 let _: Bool = msg_send![app, setActivationPolicy: native_activation_policy(policy)];
             }
@@ -798,6 +799,10 @@ impl Platform for MacPlatform {
             });
             let _: () = msg_send![app, setAppearance: ns_appearance.as_deref()];
         }
+    }
+
+    fn on_window_appearance_change(&self, callback: Box<dyn FnMut()>) {
+        crate::fast::appearance::observe_app(callback);
     }
 
     fn open_url(&self, url: &str) {
