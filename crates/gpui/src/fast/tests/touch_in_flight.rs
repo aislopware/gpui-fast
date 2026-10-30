@@ -6,9 +6,9 @@
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use crate::{
-    self as gpui, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
-    StatefulInteractiveElement, StyleRefinement, Styled, TestAppContext, TouchEvent, TouchId,
-    TouchPhase, VisualTestContext, Window, div, point, px,
+    self as gpui, AppContext as _, Context, Entity, InteractiveElement, IntoElement, ParentElement,
+    Render, StatefulInteractiveElement, StyleRefinement, Styled, TestAppContext, TouchEvent,
+    TouchId, TouchPhase, VisualTestContext, Window, div, point, px,
 };
 
 /// Says what it read of the touch each time it is built.
