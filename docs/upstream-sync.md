@@ -172,6 +172,14 @@ unchanged, and a new entry needs as good a reason.
   `UIRotationGestureRecognizer`, touch screen or trackpad, is delivered in
   the same units; UIKit has no smart magnify, and iPadOS keeps
   three-finger trackpad swipes for itself.
+- `TouchEvent::timestamp` is a new public field (`fast/touch_time.rs`): when the touch was in
+  its phase, by the platform's clock (`UITouch.timestamp` on iOS), `None` where the platform
+  says nothing (the web, tests). Upstream's recognizer times each touch as it handles it, so a
+  main thread busy when a lift arrives makes every fling a finger threw read as one that had
+  stopped (a lift more than 40 ms after the last move), and moves that waited and came all at
+  once read as faster than the finger was. Only the platform knows when the finger moved, and
+  the event is how it says so. A fling still runs from when its release is handled. Code that
+  builds a `TouchEvent` without `..Default::default()` adds the field.
 - `CursorStyle::Image(CursorImageId)`, `CursorImage`, `CursorImageId`,
   `CURSOR_IMAGE_MAX_SIDE` and `App::set_cursor_image` are new public API
   (`fast/cursor.rs`, `gpui_macos/src/fast/cursor.rs`), with a defaulted

@@ -439,6 +439,12 @@ Added in this fork:
   `..Default::default()` have to add the field. zed's `ScrollEvent::source` tells a touch pan
   (`Touch`) from a wheel or trackpad (`Pointer`); `momentum_phase` still tells the
   platform's momentum from a finger's scrolling, which `source` cannot.
+- fix(gpui): a touch is timed by when it happened (`TouchEvent::timestamp`,
+  `fast/touch_time.rs`), not by when it is handled: `gpui_ios` gives each touch its
+  `UITouch.timestamp`, and a pan handed on from a native's container the newest time of the
+  touches it follows, so a main thread busy between a finger's last move and its lift no longer
+  kills the fling. The fling runs from when the lift is handled. Tests:
+  `fast::tests::touch_time`.
 - fix(gpui): a touch's fling ends once a step of it moves nothing, and a touch outside what
   it scrolls stays a tap (`fast/fling.rs`). `div`'s and `list`'s scroll listeners report
   whether a step moved them and where they are; a custom scroll handler reports nothing and

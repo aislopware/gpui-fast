@@ -53,6 +53,7 @@ fn a_touch_leaves_no_hover() {
             position: at,
             predicted_position: None,
             force: None,
+            timestamp: None,
         };
         cx.update_window(window, |_, window, cx| {
             window.dispatch_event(touch.to_platform_input(), cx);
