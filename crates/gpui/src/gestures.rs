@@ -528,7 +528,7 @@ const VELOCITY_MAX_SAMPLES: usize = 20;
 /// while one is being recognized.
 pub(crate) struct TouchGestureRecognizer {
     tuning: GestureTuning,
-    state: TouchGestureState,
+    pub(crate) state: TouchGestureState,
     pub(crate) momentum: Option<Momentum>,
     last_tap: Option<CompletedTap>,
     pub(crate) fast_fling: crate::fast::fling::Fling,
@@ -550,7 +550,7 @@ pub(crate) enum RecognizedTouchGesture {
     LongPress(LongPressEvent),
 }
 
-enum TouchGestureState {
+pub(crate) enum TouchGestureState {
     Idle,
     /// The touch is still within `touch_slop` of where it started: it can
     /// still resolve into either a tap or a pan.
@@ -574,7 +574,7 @@ enum TouchGestureState {
     TouchDragging(ActiveTouch),
 }
 
-struct ActiveTouch {
+pub(crate) struct ActiveTouch {
     id: TouchId,
     start_position: Point<Pixels>,
     /// The latest raw position reported for this touch.

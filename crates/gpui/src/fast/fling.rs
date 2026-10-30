@@ -47,6 +47,9 @@ pub(crate) struct Fling {
     heard: Option<Heard>,
     /// A momentum tick is scheduled.
     ticking: bool,
+    /// Whether a touch was in flight when the views that read it were last
+    /// told (`fast/touch_in_flight.rs`).
+    pub(crate) in_flight: bool,
 }
 
 /// What the containers a scroll step reached reported.
@@ -139,6 +142,7 @@ pub(crate) fn schedule_tick(window: &mut Window) {
         if window.touch_gestures.has_momentum() {
             schedule_tick(window);
         }
+        crate::fast::touch_in_flight::stamp(window, cx);
     });
 }
 

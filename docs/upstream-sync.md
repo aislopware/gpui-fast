@@ -412,6 +412,14 @@ unchanged, and a new entry needs as good a reason.
   oracle) draws it at the same moment, or a fade drawn a hair short of its
   end in the frame shown is at its end in the one from scratch. Code that
   animates on its own clock reads `frame_time` to be drawn again the same.
+- `Window::touch_in_flight` is new public API (`fast/touch_in_flight.rs`):
+  whether a finger is on the window or the fling it threw still coasts. A
+  main thread busy under a finger is a scroll that stops dead and a fling
+  that freezes, and some work an app does cannot leave the main thread: the
+  first web view a process makes takes WebKit's own start, 730 ms in Slopty's
+  iPhone simulator. GPUI keeps the answer privately in its touch recognizer.
+  A view that reads it is built again when it changes, so the view that held
+  work does it once the touch is over.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what

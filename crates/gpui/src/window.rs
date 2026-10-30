@@ -6151,6 +6151,7 @@ impl Window {
         if self.touch_gestures.has_momentum() {
             self.schedule_touch_momentum_tick();
         }
+        crate::fast::touch_in_flight::stamp(self, cx);
     }
 
     pub(crate) fn dispatch_recognized_touch_gesture(
