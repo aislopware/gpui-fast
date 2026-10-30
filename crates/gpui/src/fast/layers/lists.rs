@@ -2593,10 +2593,12 @@ pub(crate) fn begin_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Gl
     }
     let frame = frame_mut(window, id).unwrap();
     let marker = marker(id, frame);
+    let afresh = frame.mode == Mode::Repaint;
     frame.paint = Some(state);
     window.fast_layers.painting = Some(marker);
     carry_paint_rows(window, id);
     check_hovers(window, id);
+    policy::note_painted_opacity(window, id, afresh);
 }
 
 /// Whether a row the layer `layer` holds was painted by a hover that the

@@ -48,7 +48,13 @@ nodes and primitives are copied from the last frame. A view depends on:
   unless they wrote it themselves as they were built.
 - **Where it is drawn.** Its bounds, content mask, text style and opacity. A
   view that moved is built again, at the layout nodes it kept, and laid out at
-  the size its parent gave it.
+  the size its parent gave it. The opacity is the one prepaint foresees, which
+  an ancestor's hover or drag-over style can make other than the one paint
+  applies, since only paint has the frame's hit test: a view, element or
+  scroll layer drawn again under another opacity than it was painted at is
+  built (or painted) again on the next frame, which is asked for, while one
+  whose opacity is foreseen wrongly the same way every frame, under a `div`
+  without an id that shows a hover, is still drawn again.
 - **The hovers it was painted by**, and interactions inside it: a hover,
   scroll or press that changes how it looks draws it again. Only the
   innermost view it happened in is built again; the views around it are

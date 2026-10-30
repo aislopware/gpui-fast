@@ -293,12 +293,16 @@ fn paint_children_of_layers(
     };
     match prepainted {
         None => f(window, cx),
-        Some(Prepainted::Repaint(painting)) => match bake_background(window) {
-            Some(background) => repaint(window, cx, painting, background, f),
-            None => paint_unbaked(window, cx, painting, f),
-        },
+        Some(Prepainted::Repaint(painting)) => {
+            policy::note_painted_opacity(window, &painting.id, true);
+            match bake_background(window) {
+                Some(background) => repaint(window, cx, painting, background, f),
+                None => paint_unbaked(window, cx, painting, f),
+            }
+        }
         Some(Prepainted::Composite { scroll_offset, .. }) => {
             if let Some(id) = id {
+                policy::note_painted_opacity(window, id, false);
                 crate::fast::layers::reuse::carry_paint(window, id);
                 composite(window, id, scroll_offset);
             }

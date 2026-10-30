@@ -127,6 +127,10 @@ struct Root {
     /// layer is the retention of what it holds (see
     /// [`crate::fast::layers::paint::inside_layer`]).
     in_layer: bool,
+    /// Whether what it painted was drawn again from last frame under an
+    /// opacity other than the one it was painted at, which no later frame
+    /// can draw again from. See [`check_painted_opacity`].
+    stale: bool,
     /// Whether its records were built this frame, rather than taken over
     /// from an earlier one, so that the rests of those nested in it are
     /// this frame's.
@@ -281,7 +285,11 @@ struct ElementContext {
     content_mask: ContentMask<Pixels>,
     /// The edge fade it was drawn in (see [`crate::fast::edge_fade`]).
     fade: u32,
+    /// The opacity prepaint foresaw for it, which it is drawn again under.
     opacity: f32,
+    /// The opacity it was painted at, which paint may find other than the
+    /// one prepaint foresaw. See [`check_painted_opacity`].
+    painted_opacity: f32,
     text_style: Rc<TextStyle>,
     rem_size: Pixels,
 }
@@ -292,7 +300,7 @@ impl ElementContext {
             && self.phase == other.phase
             && self.content_mask == other.content_mask
             && self.fade == other.fade
-            && self.opacity == other.opacity
+            && crate::fast::retained::same_opacity(self.opacity, other.opacity)
             && self.rem_size == other.rem_size
             && same_text_style(&self.text_style, &other.text_style)
     }
@@ -698,7 +706,7 @@ impl ElementRecords {
         let root = &self.roots[root as usize];
         match &root.records {
             RootRecords::Frozen(subtree)
-                if root.paint == Paint::Painted && root.usable && !root.in_layer =>
+                if root.paint == Paint::Painted && root.usable && !root.in_layer && !root.stale =>
             {
                 Some(subtree)
             }
@@ -852,7 +860,7 @@ pub(crate) fn carry_records(
     let start = target.len();
     for root in &source.roots[range.start as usize..range.end as usize] {
         let (records, paint) = match (&root.records, root.paint) {
-            (RootRecords::Frozen(subtree), Paint::Painted) if !root.in_layer => {
+            (RootRecords::Frozen(subtree), Paint::Painted) if !root.in_layer && !root.stale => {
                 (RootRecords::Frozen(subtree.clone()), Paint::Pending)
             }
             _ => (RootRecords::Lost, Paint::Unpainted),
@@ -867,6 +875,7 @@ pub(crate) fn carry_records(
             usable: true,
             fresh: false,
             in_layer: false,
+            stale: false,
             rest: Rest::default(),
             motion: root.motion.saturating_sub(1),
         });
@@ -1850,6 +1859,7 @@ fn leave_placement(
         usable: true,
         fresh: false,
         in_layer: false,
+        stale: false,
         rest,
         motion,
     });
@@ -1913,6 +1923,7 @@ fn context(layout_id: LayoutId, window: &mut Window) -> ElementContext {
         content_mask: window.content_mask(),
         fade: crate::fast::edge_fade::current(window),
         opacity: window.element_opacity,
+        painted_opacity: window.element_opacity,
         text_style: crate::fast::text_style::text_style(window),
         rem_size: window.rem_size(),
     }
@@ -2022,6 +2033,7 @@ fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
             usable: true,
             fresh: true,
             in_layer: false,
+            stale: false,
             rest: Rest::default(),
             motion,
         });
@@ -2194,6 +2206,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
             usable: true,
             fresh: false,
             in_layer: false,
+            stale: false,
             rest: Rest::default(),
             motion,
         });
@@ -2312,7 +2325,7 @@ fn moved_to(
     let old = &nested[0].context;
     if old.bounds.size != context.bounds.size
         || old.phase != context.phase
-        || old.opacity != context.opacity
+        || !crate::fast::retained::same_opacity(old.opacity, context.opacity)
         || old.rem_size != context.rem_size
         || !same_text_style(&old.text_style, &context.text_style)
     {
@@ -2497,6 +2510,7 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
                 Noted::UNKNOWN
             };
             let end = window.paint_index();
+            let opacity = window.element_opacity;
             let elements = &mut window.next_frame.retained.elements;
             let root_start = &elements.roots[root as usize].paint_start;
             let range = PaintAt::between(root_start, &start)..PaintAt::between(root_start, &end);
@@ -2504,6 +2518,7 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
             record.paint_range = range;
             record.paint = Paint::Painted;
             record.noted = noted;
+            record.context.painted_opacity = opacity;
             // Painted, the element needs its style no more, which its record
             // takes over.
             if let Snapshot::Div {
@@ -2538,7 +2553,7 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
 /// Draws the root whose prepaint [`reuse_prepaint`] drew again as far as its
 /// paint goes, moved as the shift at `shift` says, if it moved.
 fn reuse_root_paint(root: u32, shift: u32, window: &mut Window) {
-    let (source, noted) = {
+    let (source, noted, painted_at) = {
         let root = &window.next_frame.retained.elements.roots[root as usize];
         let RootRecords::Frozen(subtree) = &root.records else {
             panic!("a root drawn again has a subtree");
@@ -2548,8 +2563,10 @@ fn reuse_root_paint(root: u32, shift: u32, window: &mut Window) {
         (
             range.start.at(&root.paint_start)..range.end.at(&root.paint_start),
             record.noted,
+            record.context.painted_opacity,
         )
     };
+    check_painted_opacity(painted_at, root, window);
     let start = window.paint_index();
     reuse_paint(source.clone(), noted, shift, window);
     debug_assert!(
@@ -2560,6 +2577,33 @@ fn reuse_root_paint(root: u32, shift: u32, window: &mut Window) {
     let root = &mut window.next_frame.retained.elements.roots[root as usize];
     root.paint_start = start;
     root.paint = Paint::Painted;
+}
+
+/// Checks that what is drawn again from a record painted at `painted_at`,
+/// in the root `root`, is painted at that opacity here.
+///
+/// Prepaint drew it again where it foresaw the opacity it foresaw then, but
+/// an ancestor's hover or drag-over style is known only to paint (see
+/// [`Window::note_painted_opacity`]). Under another, what it copied is
+/// stale, found too late to build it: no later frame draws the root again
+/// from it, and the view it is in is told to be built on the next frame,
+/// which is asked for.
+fn check_painted_opacity(painted_at: f32, root: u32, window: &mut Window) {
+    if crate::fast::retained::same_opacity(painted_at, window.element_opacity) {
+        return;
+    }
+    window.next_frame.retained.elements.roots[root as usize].stale = true;
+    crate::fast::retained::build_next_frame(window);
+}
+
+/// Has no later frame draw the roots `range` of `records` again from what
+/// they painted: copied with a view drawn again from last frame, it was
+/// painted under another opacity than it was painted at (see
+/// [`Window::build_stale_opacity_next_frame`]).
+pub(crate) fn mark_stale(records: &mut ElementRecords, range: Range<u32>) {
+    for root in &mut records.roots[range.start as usize..range.end as usize] {
+        root.stale = true;
+    }
 }
 
 /// Notes that the root `root` is painted into a scroll layer's scene, if it
@@ -2575,14 +2619,16 @@ fn mark_in_layer(root: u32, window: &mut Window) {
 /// moved as the shift at `shift` says, if they moved.
 fn reuse_nested_paint(root: u32, anchor: u32, source_root: u32, shift: u32, window: &mut Window) {
     let anchor = anchor as usize;
-    let (from, nested, noted) = {
+    let (from, nested, noted, painted_at) = {
         let record = &window.next_frame.retained.elements.pending(root)[anchor];
         (
             record.paint_range.clone(),
             record.nested as usize,
             record.noted,
+            record.context.painted_opacity,
         )
     };
+    check_painted_opacity(painted_at, root, window);
     let source = {
         let source_start =
             &window.rendered_frame.retained.elements.roots[source_root as usize].paint_start;

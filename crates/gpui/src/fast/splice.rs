@@ -988,7 +988,7 @@ impl Window {
                 &gap_id,
                 &rebuild,
                 context.content_mask,
-                context.opacity,
+                context.painted_opacity,
                 context.fade,
             );
             // What its element's paint does, inside the view around it.
@@ -1050,6 +1050,11 @@ impl Window {
                 .subtrees_dirty_next_frame
                 .insert(id.clone());
             self.request_animation_frame();
+        }
+        // So is an opacity found other than the one it was painted at (see
+        // [`Window::note_painted_opacity`]).
+        if self.note_painted_opacity(*index) {
+            self.build_stale_opacity_next_frame(*index);
         }
         // The views around it depend on its hovers too, but not as their own.
         self.retained_state

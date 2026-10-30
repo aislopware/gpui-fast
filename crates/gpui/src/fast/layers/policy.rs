@@ -82,6 +82,9 @@ pub(crate) struct LayerPolicy {
     last_offset: Option<Point<Pixels>>,
     /// Where the content in the layer was painted and what it inherited.
     painted_in: Option<LayerContext>,
+    /// The opacity the content was painted at, which paint may find other
+    /// than the one prepaint foresaw. See [`note_painted_opacity`].
+    painted_opacity: f32,
     /// What was decided the last time the container was looked at.
     last_decision: Option<Decision>,
     /// Counts the notifications of the view holding the container.
@@ -130,6 +133,7 @@ struct LayerContext {
     content_size: Size<Pixels>,
     content_mask: ContentMask<Pixels>,
     text_style: TextStyle,
+    /// The opacity prepaint foresaw for the content.
     opacity: f32,
     rem_size: Pixels,
     scale_factor: f32,
@@ -555,6 +559,33 @@ fn covers(
         && wanted.origin.y >= painted.origin.y
         && wanted.right() <= painted.right()
         && wanted.bottom() <= painted.bottom()
+}
+
+/// Records that the content of the container `id`'s layer is painted under
+/// the opacity paint has here: painted `afresh` at it, or else kept from an
+/// earlier frame, at the opacity it was painted at then.
+///
+/// What the layer does was decided in prepaint, in the context prepaint
+/// has, whose opacity is only what prepaint foresees: an ancestor's hover or
+/// drag-over style is known only to paint (see
+/// [`Window::note_painted_opacity`]). Content kept under another opacity
+/// than it was painted at is stale, found too late to paint it again: it is
+/// painted afresh on the next frame, which is asked for.
+pub(crate) fn note_painted_opacity(window: &mut Window, id: &GlobalElementId, afresh: bool) {
+    let opacity = window.element_opacity;
+    let Some(layer) = window.fast_layers.layers.get_mut(id) else {
+        return;
+    };
+    let policy = &mut layer.policy;
+    if policy.painted_in.is_none() {
+        return;
+    }
+    if afresh {
+        policy.painted_opacity = opacity;
+    } else if !crate::fast::retained::same_opacity(policy.painted_opacity, opacity) {
+        policy.painted_in = None;
+        crate::fast::retained::build_next_frame(window);
+    }
 }
 
 /// Keeps the container `id`, whose background could not be baked into its

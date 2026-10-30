@@ -25,6 +25,7 @@ mod global_id;
 mod glyph_blur;
 mod image_evict;
 mod image_mask;
+mod inherited_opacity;
 mod inline_boxes;
 mod invisible;
 mod keyed;

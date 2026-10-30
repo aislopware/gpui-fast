@@ -2500,8 +2500,7 @@ impl Interactivity {
                     }
                 }
 
-                let opacity = crate::fast::retained::push_element_opacity(window, style.opacity);
-                let result = window.with_text_style(style.text_style().cloned(), |window| {
+                window.with_text_style(style.text_style().cloned(), |window| {
                     window.with_content_mask(
                         style.overflow_mask(bounds, window.rem_size()),
                         |window| {
@@ -2513,18 +2512,18 @@ impl Interactivity {
 
                             let scroll_offset =
                                 self.clamp_scroll_position(bounds, &style, window, cx);
-                            let result = crate::fast::rounded_clip::prepaint_children(
-                                &style,
-                                bounds,
-                                window,
-                                |window| f(&style, scroll_offset, hitbox, window, cx),
-                            );
+                            let result = window.with_element_opacity(style.opacity, |window| {
+                                crate::fast::rounded_clip::prepaint_children(
+                                    &style,
+                                    bounds,
+                                    window,
+                                    |window| f(&style, scroll_offset, hitbox, window, cx),
+                                )
+                            });
                             (result, element_state)
                         },
                     )
-                });
-                crate::fast::retained::pop_element_opacity(window, opacity);
-                result
+                })
             },
         )
     }

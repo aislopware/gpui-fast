@@ -169,7 +169,7 @@ pub(crate) enum PaintStatus {
 
 /// What a subtree's prepaint and paint depended on besides what it read: the
 /// place it was drawn in and what it inherited there.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct RetainedContext {
     pub(crate) bounds: Bounds<Pixels>,
     /// Where it was laid out within the device pixel its bounds snap to,
@@ -179,9 +179,21 @@ pub(crate) struct RetainedContext {
     pub(crate) phase: Point<f32>,
     pub(crate) content_mask: ContentMask<Pixels>,
     pub(crate) text_style: TextStyle,
+    /// The opacity prepaint foresaw for it, which it is drawn again under.
     pub(crate) opacity: f32,
+    /// The opacity it was painted at, which paint may find other than the
+    /// one prepaint foresaw. See [`Window::note_painted_opacity`].
+    pub(crate) painted_opacity: f32,
     /// The edge fade it was drawn in (see [`crate::fast::edge_fade`]).
     pub(crate) fade: u32,
+}
+
+/// Whether two opacities are the same, by their bits, so that a NaN opacity
+/// is the same as itself and what is painted at one can still be drawn again
+/// from last frame.
+#[inline(always)]
+pub(crate) fn same_opacity(a: f32, b: f32) -> bool {
+    a.to_bits() == b.to_bits()
 }
 
 /// Gives every subtree of `records` the fade `map` makes of the one it was
@@ -197,6 +209,7 @@ pub(crate) fn refade(records: &mut [RetainedSubtree], map: &mut impl FnMut(u32) 
                 content_mask: context.content_mask,
                 text_style: context.text_style.clone(),
                 opacity: context.opacity,
+                painted_opacity: context.painted_opacity,
                 fade,
             });
         }
@@ -761,7 +774,7 @@ impl Window {
         !crate::fast::layers::paint::inside_layer(self)
             && context.bounds == bounds
             && context.phase == phase
-            && context.opacity == self.element_opacity
+            && same_opacity(context.opacity, self.element_opacity)
             && context.content_mask == self.content_mask()
             && context.fade == crate::fast::edge_fade::current(self)
             && context.text_style == self.text_style()
@@ -1029,8 +1042,54 @@ impl Window {
             self.retained_state.subtrees_dirty_next_frame.insert(id);
             self.request_animation_frame();
         }
+        // What it painted is copied at the opacity it was painted at, and
+        // is stale under another.
+        if self.note_painted_opacity(index) {
+            self.build_stale_opacity_next_frame(index);
+        }
         // Subtrees around this one depend on these hovers too.
         self.add_nested_hovers(&hovers);
+    }
+
+    /// Records that the subtree at `index` of this frame's records is painted
+    /// at the opacity paint has here, saying whether its record held another.
+    ///
+    /// What is drawn again from last frame is decided in prepaint, under the
+    /// opacity the styles around it have there; but an ancestor's hover or
+    /// drag-over style depends on this frame's hit test, which only paint
+    /// has, so prepaint only foresees the opacity paint applies. A record
+    /// keeps both: it is drawn again where prepaint foresees what it foresaw
+    /// then, and what it copies is right only where paint applies what it
+    /// applied then. A hover prepaint never sees, as a `div` without an id
+    /// has, is foreseen wrongly the same way every frame, and the subtree
+    /// under it is still drawn again; one that changed is found here. A view
+    /// built again where it was, in a view drawn from last frame around it
+    /// (see [`crate::fast::splice`]), is prepainted under the one and painted
+    /// under the other.
+    pub(crate) fn note_painted_opacity(&mut self, index: usize) -> bool {
+        let opacity = self.element_opacity;
+        let record = &mut self.next_frame.retained.records[index];
+        if same_opacity(record.context.painted_opacity, opacity) {
+            return false;
+        }
+        Rc::make_mut(&mut record.context).painted_opacity = opacity;
+        true
+    }
+
+    /// Has the subtree at `index` of this frame's records, painted from last
+    /// frame under another opacity than it was painted at, built on the next
+    /// frame, which is asked for: its view is told, and the subtrees and
+    /// elements nested in it, whose paint was copied with its own, are built
+    /// too.
+    pub(crate) fn build_stale_opacity_next_frame(&mut self, index: usize) {
+        let records = &self.next_frame.retained.records;
+        let nested = &records[index + 1..=index + records[index].nested];
+        self.retained_state
+            .subtrees_dirty_next_frame
+            .extend(nested.iter().map(|record| record.id.clone()));
+        let elements = records[index].element_records.clone();
+        crate::fast::element::mark_stale(&mut self.next_frame.retained.elements, elements);
+        build_next_frame(self);
     }
 
     /// Adds the hovers a subtree nested in the one being painted was painted
@@ -1081,6 +1140,7 @@ impl Window {
                     content_mask: ContentMask::default(),
                     text_style: TextStyle::default(),
                     opacity: 1.,
+                    painted_opacity: 1.,
                     fade: crate::fast::edge_fade::NONE,
                 }),
                 dependencies: RenderDependencies::default(),
@@ -1164,6 +1224,7 @@ impl Window {
             content_mask: self.content_mask(),
             text_style: self.text_style(),
             opacity: self.element_opacity,
+            painted_opacity: self.element_opacity,
             fade: crate::fast::edge_fade::current(self),
         };
         let end = self.prepaint_index();
@@ -1253,6 +1314,7 @@ impl Window {
         record.own_hovers = own.into();
         record.dependencies = record.dependencies.union(&dependencies.all);
         record.own_dependencies = record.own_dependencies.union(&dependencies.own);
+        self.note_painted_opacity(index);
     }
 
     /// Takes the hovers read since the last call into `hover_dependencies`,
@@ -1378,6 +1440,17 @@ impl Window {
     }
 }
 
+/// Has the view being drawn built on the next frame, which is asked for, as
+/// [`Window::request_animation_frame`] has it, but with no scroll layer
+/// taking it for an animation of what the layer holds or of the view holding
+/// it (see [`crate::fast::layers::invalidate::owner_animating`]): for what a
+/// frame finds too late to build it.
+pub(crate) fn build_next_frame(window: &Window) {
+    let view = window.current_view();
+    note_animation_frame_request(window, view);
+    window.on_next_frame(move |_, cx| cx.notify(view));
+}
+
 /// Notes that the view `entity` asked to be drawn again on the next frame.
 /// See [`RetainedState::note_notified`].
 #[inline(always)]
@@ -1468,29 +1541,6 @@ pub(crate) fn invalidate_retained_subtrees(window: &mut Window, subtrees: &[Glob
         .retained_state
         .dirty_subtrees
         .extend(subtrees.last().cloned());
-}
-
-/// Multiplies the opacity of what is painted from here on by `opacity`,
-/// returning the opacity to go back to with
-/// [`pop_element_opacity`]. See [`Window::with_element_opacity`].
-///
-/// Opacity only affects what is painted, but a retained subtree inside is
-/// drawn again from what it painted only if it would be painted at the
-/// opacity it was, which prepaint decides.
-#[inline(always)]
-pub(crate) fn push_element_opacity(window: &mut Window, opacity: Option<f32>) -> f32 {
-    window.invalidator.debug_assert_paint_or_prepaint();
-    let previous_opacity = window.element_opacity;
-    if let Some(opacity) = opacity {
-        window.element_opacity = previous_opacity * opacity;
-    }
-    previous_opacity
-}
-
-/// Goes back to the opacity [`push_element_opacity`] returned.
-#[inline(always)]
-pub(crate) fn pop_element_opacity(window: &mut Window, previous_opacity: f32) {
-    window.element_opacity = previous_opacity;
 }
 
 /// Starts prepainting the deferred draw at `deferred_draw_ix` as a part of

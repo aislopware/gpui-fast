@@ -273,7 +273,11 @@ narrows the cost:
 
 A view's prepaint and paint depend on its bounds, its content mask, the text
 style it inherits and its opacity. If any of these differs from last frame,
-its output cannot be copied. If its layout nodes are still valid, it is
+its output cannot be copied. Prepaint only foresees the opacity: an
+ancestor's hover or drag-over style depends on the frame's hit test, which
+paint has. The record keeps both, the opacity prepaint foresaw, which decides
+whether it is drawn again, and the one paint applied, which what is copied
+holds; copied under another, it is built on the next frame. If its layout nodes are still valid, it is
 rebuilt at the nodes it kept and laid out at the size its parent gave it,
 without laying out anything around it again.
 
