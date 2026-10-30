@@ -52,15 +52,16 @@ fn set(window: WindowHandle<Empty>, appearance: Option<WindowAppearance>, cx: &m
 
 #[gpui::test]
 fn a_windows_own_appearance_is_reported_by_it_alone(cx: &mut TestAppContext) {
-    let (dark, dark_told) = observed_window(cx);
+    use WindowAppearance::{Dark, Light};
+    let (own, own_told) = observed_window(cx);
     let (other, other_told) = observed_window(cx);
 
-    set(dark, Some(WindowAppearance::Dark), cx);
-    assert_eq!(appearance(dark, cx), WindowAppearance::Dark);
-    assert_eq!(*dark_told.borrow(), [WindowAppearance::Dark]);
+    set(own, Some(Dark), cx);
+    assert_eq!(appearance(own, cx), Dark);
+    assert_eq!(*own_told.borrow(), [Dark]);
     assert_eq!(
         appearance(other, cx),
-        WindowAppearance::Light,
+        Light,
         "the other window keeps the app's"
     );
     assert!(
@@ -69,25 +70,30 @@ fn a_windows_own_appearance_is_reported_by_it_alone(cx: &mut TestAppContext) {
     );
     assert_eq!(
         cx.update(|cx| cx.window_appearance()),
-        WindowAppearance::Light,
+        Light,
         "the app keeps its own"
     );
 
     // Asking again for what the window has already tells no one.
-    set(dark, Some(WindowAppearance::Dark), cx);
-    assert_eq!(dark_told.borrow().len(), 1);
+    set(own, Some(Dark), cx);
+    assert_eq!(own_told.borrow().len(), 1);
 
-    set(dark, None, cx);
-    assert_eq!(
-        appearance(dark, cx),
-        WindowAppearance::Light,
-        "cleared, it follows the app's again"
-    );
-    assert_eq!(
-        *dark_told.borrow(),
-        [WindowAppearance::Dark, WindowAppearance::Light]
-    );
-    assert!(other_told.borrow().is_empty());
+    // The system turning dark turns the window that follows the app, and
+    // tells only it: the other already wears dark, as its own.
+    cx.simulate_system_appearance(Dark);
+    cx.run_until_parked();
+    assert_eq!(appearance(other, cx), Dark);
+    assert_eq!(*other_told.borrow(), [Dark]);
+    assert_eq!(own_told.borrow().len(), 1);
+
+    // Its own light holds against the dark app, and cleared it is the app's
+    // again.
+    set(own, Some(Light), cx);
+    assert_eq!(appearance(own, cx), Light);
+    set(own, None, cx);
+    assert_eq!(appearance(own, cx), Dark, "cleared, it follows the app's");
+    assert_eq!(*own_told.borrow(), [Dark, Light, Dark]);
+    assert_eq!(*other_told.borrow(), [Dark], "the other heard none of it");
 }
 
 #[gpui::test]

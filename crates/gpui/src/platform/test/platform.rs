@@ -621,6 +621,7 @@ impl Platform for TestPlatform {
                 .unwrap_or_else(|| Rc::new(TestDisplay::new())),
             renderer,
         );
+        crate::fast::window_appearance::TestAppearance::open(&self.fast_appearance, &window);
         Ok(Box::new(window))
     }
 

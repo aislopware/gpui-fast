@@ -92,7 +92,8 @@ impl Window {
 }
 
 /// A test window's appearance: its own where it has one, else the one it
-/// was given (`TestWindow::simulate_appearance_change`).
+/// follows, the application's (or the one
+/// `TestWindow::simulate_appearance_change` gave it).
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub(crate) fn of_test_window(window: &crate::platform::TestWindow) -> WindowAppearance {
     let state = window.0.lock();
@@ -106,27 +107,43 @@ pub(crate) fn set_test_window(
     window: &crate::platform::TestWindow,
     appearance: Option<WindowAppearance>,
 ) {
+    change_test_window(window, |state| state.fast_appearance = appearance);
+}
+
+/// Changes what a test window's appearance is made of, and tells the window
+/// when that changed the appearance it reports.
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+fn change_test_window(
+    window: &crate::platform::TestWindow,
+    change: impl FnOnce(&mut crate::platform::TestWindowState),
+) {
     let before = of_test_window(window);
-    window.0.lock().fast_appearance = appearance;
-    if of_test_window(window) != before {
-        let callback = window.0.lock().appearance_change_callback.take();
-        if let Some(mut callback) = callback {
-            callback();
-            window.0.lock().appearance_change_callback = Some(callback);
-        }
+    change(&mut window.0.lock());
+    if of_test_window(window) == before {
+        return;
+    }
+    let callback = window.0.lock().appearance_change_callback.take();
+    if let Some(mut callback) = callback {
+        callback();
+        window
+            .0
+            .lock()
+            .appearance_change_callback
+            .get_or_insert(callback);
     }
 }
 
 /// The test platform's application appearance: the system's, which a test
 /// sets ([`crate::TestAppContext::simulate_system_appearance`]), the one
-/// [`App::set_window_appearance`] set in its place, and who is told of a
-/// change.
+/// [`App::set_window_appearance`] set in its place, who is told of a change,
+/// and the windows that follow it, as a macOS window follows `NSApp`'s.
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 #[derive(Default)]
 pub(crate) struct TestAppearance {
     system: WindowAppearance,
     set: Option<WindowAppearance>,
     callback: Option<Box<dyn FnMut()>>,
+    windows: Vec<std::rc::Weak<parking_lot::Mutex<crate::platform::TestWindowState>>>,
 }
 
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
@@ -144,13 +161,32 @@ impl TestAppearance {
         this.borrow_mut().callback = Some(callback);
     }
 
-    /// Changes the appearance and tells the platform's observer, as AppKit
-    /// does, when the application's appearance moved.
+    /// A window opens following the application's appearance.
+    pub(crate) fn open(this: &std::cell::RefCell<Self>, window: &crate::platform::TestWindow) {
+        window.0.lock().appearance = Self::current(this);
+        let mut this = this.borrow_mut();
+        this.windows.retain(|window| window.strong_count() > 0);
+        this.windows.push(std::rc::Rc::downgrade(&window.0));
+    }
+
+    /// Changes the application's appearance and, as AppKit does when it
+    /// moved, tells the windows that follow it and the platform's observer.
     fn change(this: &std::cell::RefCell<Self>, change: impl FnOnce(&mut Self)) {
         let before = Self::current(this);
         change(&mut this.borrow_mut());
-        if Self::current(this) == before {
+        let now = Self::current(this);
+        if now == before {
             return;
+        }
+        let windows: Vec<_> = this
+            .borrow()
+            .windows
+            .iter()
+            .filter_map(std::rc::Weak::upgrade)
+            .map(crate::platform::TestWindow)
+            .collect();
+        for window in &windows {
+            change_test_window(window, |state| state.appearance = now);
         }
         let callback = this.borrow_mut().callback.take();
         if let Some(mut callback) = callback {
@@ -165,8 +201,8 @@ impl crate::TestAppContext {
     /// Turns the test platform's system appearance to `appearance`, as the
     /// person switching the system between light and dark does. The
     /// application's appearance follows it unless
-    /// [`App::set_window_appearance`] set one. Test windows keep theirs: a
-    /// test window's appearance is its own, not the application's.
+    /// [`App::set_window_appearance`] set one, and its windows follow the
+    /// application's unless they have their own.
     pub fn simulate_system_appearance(&self, appearance: WindowAppearance) {
         TestAppearance::change(&self.test_platform.fast_appearance, |this| {
             this.system = appearance;
