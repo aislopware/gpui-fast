@@ -1360,6 +1360,7 @@ impl IosWindow {
             position,
             predicted_position,
             touch_force(touch),
+            Some(instant_of_uptime(touch_timestamp(touch))),
         );
     }
 
@@ -1436,7 +1437,8 @@ impl IosWindow {
     }
 
     /// Delivers one touch through GPUI's platform-neutral touch API (gpui core's recognizer
-    /// turns it into taps, pans, long presses and drags).
+    /// turns it into taps, pans, long presses and drags). `at` is when the touch happened,
+    /// which the recognizer times it by; `None` times it as it is handled.
     pub(crate) fn deliver_touch(
         &self,
         id: TouchId,
@@ -1444,6 +1446,7 @@ impl IosWindow {
         position: Point<Pixels>,
         predicted_position: Option<Point<Pixels>>,
         force: Option<f32>,
+        at: Option<Instant>,
     ) {
         self.mouse_position.set(position);
         let event = TouchEvent {
@@ -1452,6 +1455,7 @@ impl IosWindow {
             position,
             predicted_position,
             force,
+            timestamp: at,
         };
         self.dispatch_input(PlatformInput::Touch(event));
     }
@@ -1500,6 +1504,7 @@ impl IosWindow {
                         TouchId(touch.id),
                         touch.phase,
                         Point::new(px(touch.x), px(touch.y)),
+                        None,
                         None,
                         None,
                     );

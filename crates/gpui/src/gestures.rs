@@ -608,7 +608,7 @@ pub(crate) struct Momentum {
     direction: Point<f32>,
     /// Release speed in pixels per second.
     speed: f32,
-    started_at: Instant,
+    pub(crate) started_at: Instant,
     duration: Duration,
     /// Distance already emitted along `direction`, in pixels.
     emitted_distance: f32,
@@ -630,7 +630,7 @@ impl TouchGestureRecognizer {
         &mut self,
         event: &TouchEvent,
     ) -> SmallVec<[RecognizedTouchGesture; 2]> {
-        self.handle_event_at(event, Instant::now())
+        crate::fast::touch_time::handle(self, event)
     }
 
     pub(crate) fn handle_event_at(
@@ -2330,6 +2330,7 @@ mod tests {
             position: point(px(x), px(y)),
             predicted_position: None,
             force: None,
+            timestamp: None,
         }
     }
 }

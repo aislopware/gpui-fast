@@ -44,6 +44,7 @@ use gpui::{
 };
 use objc2::{
     class, msg_send,
+    rc::Retained,
     runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
     sel,
 };
@@ -271,22 +272,28 @@ extern "C" fn container_hand_on(this: *mut AnyObject, _: Sel, pan: *mut AnyObjec
     };
     let id = TouchId(pan as usize as u64);
     let position = to_gpui(at);
+    // The recogniser's action says no time: the touches it follows do.
+    let (began, now) = composition
+        .touch_times()
+        .map_or((None, None), |(began, now)| {
+            (
+                Some(super::events::instant_of_uptime(began)),
+                Some(super::events::instant_of_uptime(now)),
+            )
+        });
+    let deliver = |phase, position, at| window.deliver_touch(id, phase, position, None, None, at);
     match state {
         GESTURE_STATE_BEGAN => {
             let start = to_gpui(ObjcCGPoint {
                 x: at.x - moved.x,
                 y: at.y - moved.y,
             });
-            window.deliver_touch(id, UiTouchPhase::Began, start, None, None);
-            window.deliver_touch(id, UiTouchPhase::Moved, position, None, None);
+            deliver(UiTouchPhase::Began, start, began);
+            deliver(UiTouchPhase::Moved, position, now);
         }
-        GESTURE_STATE_CHANGED => {
-            window.deliver_touch(id, UiTouchPhase::Moved, position, None, None);
-        }
-        GESTURE_STATE_ENDED => {
-            window.deliver_touch(id, UiTouchPhase::Ended, position, None, None);
-        }
-        _ => window.deliver_touch(id, UiTouchPhase::Cancelled, position, None, None),
+        GESTURE_STATE_CHANGED => deliver(UiTouchPhase::Moved, position, now),
+        GESTURE_STATE_ENDED => deliver(UiTouchPhase::Ended, position, now),
+        _ => deliver(UiTouchPhase::Cancelled, position, now),
     }
     if state >= GESTURE_STATE_ENDED {
         // GPUI flings; the container's own deceleration would only swallow the next tap on
@@ -369,6 +376,7 @@ extern "C" fn observer_touches_began(
     };
     let composition = &window.composition;
     for touch in touches_of(touches) {
+        composition.note_touch_began(touch);
         composition
             .active_touches
             .set(composition.active_touches.get() + 1);
@@ -579,6 +587,9 @@ pub(crate) struct WindowComposition {
     responder_native: Cell<Option<NativeId>>,
     active_touches: Cell<usize>,
     touches_on_natives: RefCell<HashSet<usize>>,
+    /// The touches down (and those that ended since the last began), each with when it began:
+    /// the times of a pan handed on (`container_hand_on`).
+    sequence: RefCell<Vec<(Retained<AnyObject>, f64)>>,
     transactional_presents: Cell<usize>,
     plain_presents: Cell<usize>,
 }
@@ -595,6 +606,7 @@ impl WindowComposition {
             responder_native: Cell::new(None),
             active_touches: Cell::new(0),
             touches_on_natives: RefCell::default(),
+            sequence: RefCell::default(),
             transactional_presents: Cell::new(0),
             plain_presents: Cell::new(0),
         })
@@ -606,6 +618,41 @@ impl WindowComposition {
 
     fn touch_position(&self, touch: *mut AnyObject) -> Point<Pixels> {
         super::events::touch_location_in_view(touch, self.metal_view)
+    }
+
+    /// `touch` began: it joins the touches still down, and those that ended leave. An ended
+    /// touch stays until the next one begins, since a pan's last action may come after the
+    /// observer hears its touch end.
+    fn note_touch_began(&self, touch: *mut AnyObject) {
+        // SAFETY: retains the live `UITouch` UIKit passed to the observer; main thread.
+        let Some(retained) = (unsafe { Retained::retain(touch) }) else {
+            return;
+        };
+        let mut sequence = self.sequence.borrow_mut();
+        // UIKit may hand an ended touch's object to a new touch: it is kept once, as the new one.
+        sequence.retain(|(held, _)| {
+            let held = Retained::as_ptr(held).cast_mut();
+            held != touch
+                && !matches!(
+                    super::events::touch_phase(held),
+                    UiTouchPhase::Ended | UiTouchPhase::Cancelled
+                )
+        });
+        sequence.push((retained, super::events::touch_timestamp(touch)));
+    }
+
+    /// When the touches down began, the earliest, and when the newest change to them happened,
+    /// in UIKit's uptime seconds: UIKit stamps a touch with its event's time before any
+    /// recogniser sees the event, so whichever runs first, a pan's action reads the time of
+    /// the change it reports.
+    fn touch_times(&self) -> Option<(f64, f64)> {
+        let sequence = self.sequence.borrow();
+        let began = sequence.iter().map(|(_, began)| *began).reduce(f64::min)?;
+        let newest = sequence
+            .iter()
+            .map(|(touch, _)| super::events::touch_timestamp(Retained::as_ptr(touch).cast_mut()))
+            .reduce(f64::max)?;
+        Some((began, newest))
     }
 
     /// The native whose container holds `view`, if any.

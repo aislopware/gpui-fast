@@ -134,6 +134,9 @@ pub struct TouchEvent {
     pub predicted_position: Option<Point<Pixels>>,
     /// Normalized touch force in `0.0..=1.0`, if the hardware reports it.
     pub force: Option<f32>,
+    /// When the touch was in this phase, by the platform's clock (`UITouch.timestamp` on
+    /// iOS), if the platform says; `None` stands for when the event is handled.
+    pub timestamp: Option<scheduler::Instant>,
 }
 
 impl Sealed for TouchEvent {}

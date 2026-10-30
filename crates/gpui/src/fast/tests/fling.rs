@@ -100,6 +100,7 @@ impl Harness<'_> {
             position: at,
             predicted_position: None,
             force: None,
+            timestamp: None,
         });
     }
 
