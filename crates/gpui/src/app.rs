@@ -84,7 +84,7 @@ pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(200);
 #[doc(hidden)]
 pub struct AppCell {
     app: RefCell<App>,
-    borrow_origin: Cell<Option<(&'static std::panic::Location<'static>, &'static str)>>,
+    pub(crate) borrow_origin: Cell<Option<(&'static std::panic::Location<'static>, &'static str)>>,
 }
 
 impl AppCell {

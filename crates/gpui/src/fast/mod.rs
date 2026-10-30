@@ -35,6 +35,7 @@ pub(crate) mod image_evict;
 pub(crate) mod image_mask;
 pub(crate) mod inline_boxes;
 pub(crate) mod input_frame;
+pub(crate) mod input_wait;
 pub(crate) mod interactivity;
 pub(crate) mod key_conventions;
 pub(crate) mod keyed;

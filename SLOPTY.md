@@ -445,6 +445,13 @@ Added in this fork:
   touches it follows, so a main thread busy between a finger's last move and its lift no longer
   kills the fling. The fling runs from when the lift is handled. Tests:
   `fast::tests::touch_time`.
+- fix(gpui): an input the platform hands in while the app is borrowed waits for the borrow to
+  end (`fast/input_wait.rs`), and the inputs after it wait behind it, so none is dropped and the
+  window hears them in order. Upstream's callback logged `RefCell already borrowed` and dropped
+  it: on iOS, UIKit cancels a touch and sends its recognizer's last action from inside GPUI's
+  draw or a task's update, so a touch's end could be lost. `gpui_ios` keeps an event UIKit sends
+  from inside a dispatch for right after it, where it was dropped. Tests:
+  `fast::tests::input_wait`.
 - fix(gpui): a touch's fling ends once a step of it moves nothing, and a touch outside what
   it scrolls stays a tap (`fast/fling.rs`). `div`'s and `list`'s scroll listeners report
   whether a step moved them and where they are; a custom scroll handler reports nothing and

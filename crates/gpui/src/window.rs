@@ -2162,16 +2162,7 @@ impl Window {
                     .log_err();
             }
         }));
-        platform_window.on_input({
-            let mut cx = cx.to_async();
-            Box::new(move |event| {
-                crate::prepare_input(handle, &event, &mut cx);
-                handle
-                    .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
-                    .log_err()
-                    .unwrap_or(DispatchEventResult::default())
-            })
-        });
+        platform_window.on_input(crate::fast::input_wait::callback(handle, cx.to_async()));
         platform_window.on_hit_test_window_control({
             let mut cx = cx.to_async();
             Box::new(move || {
