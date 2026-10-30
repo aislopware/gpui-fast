@@ -56,7 +56,9 @@ fn deliver(waiting: &Rc<Waiting>, event: PlatformInput) -> DispatchEventResult {
         return dispatch(waiting, event);
     }
     match borrowed {
-        Some(origin) => log::debug!(
+        // Said where it is heard: a platform sending input from inside GPUI's work is
+        // rare, and where the borrow began names the work.
+        Some(origin) => log::info!(
             "a {} input waits for the app, borrowed from {origin}",
             event.kind_name()
         ),
