@@ -61,6 +61,12 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo test -p gpui_windows --features test-support fast::layers -- --nocapture
 
+      # gpui_macos's own: the immediate frame's slot, the frame park, the
+      # cursor and text smoothing.
+      - name: Test gpui_macos
+        if: runner.os == 'macOS'
+        run: cargo test -p gpui_macos
+
       # gpui_ios's pure parts (hardware keys, described input, frame pacing, the
       # keyboard inset) are compiled on the host too, so their tests run here.
       - name: Test gpui_ios on the host

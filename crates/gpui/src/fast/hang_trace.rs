@@ -12,7 +12,9 @@
 //! task poll of [`LONG_POLL`] or more as the foreground journals or drops
 //! it, and every detector poll that drained, sealed or still holds anything:
 //! what it drained (events, the longest of them, boundaries, power
-//! boundaries among them, entries lost), what it sealed and by what, and
+//! boundaries among them, the markers that do no work, entries lost; a
+//! storm of frame signals laps the ring and loses the work between two
+//! drains), what it sealed and by what, and
 //! what stays open. A hang that never reached a report then shows whether
 //! its work was never timed, dropped as a power interruption, never drained,
 //! or drained and never sealed; a monitor that stopped shows as its polls
@@ -80,6 +82,9 @@ pub(crate) struct Drained {
     skipped: usize,
     idle: usize,
     power: usize,
+    signals: usize,
+    frame_states: usize,
+    reentrant: usize,
     lost: u64,
 }
 
@@ -107,9 +112,9 @@ impl Drained {
                     IntervalBoundary::PowerTransition { .. } => drained.power += 1,
                 },
                 ForegroundJournalEntry::Discontinuity { lost } => drained.lost += lost,
-                ForegroundJournalEntry::FrameState(_)
-                | ForegroundJournalEntry::PlatformSignal(_)
-                | ForegroundJournalEntry::ReentrantFrameSkipped { .. } => {}
+                ForegroundJournalEntry::PlatformSignal(_) => drained.signals += 1,
+                ForegroundJournalEntry::FrameState(_) => drained.frame_states += 1,
+                ForegroundJournalEntry::ReentrantFrameSkipped { .. } => drained.reentrant += 1,
             }
         }
         drained
@@ -204,6 +209,15 @@ impl fmt::Display for DrainedLine<'_> {
         if boundaries.iter().any(|(count, _)| *count > 0) {
             f.write_str("; boundaries ")?;
             counts(f, &boundaries)?;
+        }
+        let markers = [
+            (drained.signals, "frame signals"),
+            (drained.frame_states, "frame states"),
+            (drained.reentrant, "re-entrant skips"),
+        ];
+        if markers.iter().any(|(count, _)| *count > 0) {
+            f.write_str("; markers ")?;
+            counts(f, &markers)?;
         }
         if drained.lost > 0 {
             write!(f, "; {} lost", drained.lost)?;
@@ -327,9 +341,10 @@ mod tests {
     use scheduler::{Instant, SpawnTime};
 
     use crate::profiler::journal::{
-        ForegroundEvent, ForegroundJournalEntry, IntervalBoundary, IntervalSealer,
+        ForegroundEvent, ForegroundJournalEntry, IntervalBoundary, IntervalSealer, PlatformSignal,
     };
     use crate::profiler::{TaskTiming, YieldTime};
+    use crate::{FrameRequestSource, WindowId};
 
     use super::{Drained, LONG_POLL, poll_line, task_poll_line};
 
@@ -382,6 +397,12 @@ mod tests {
         let entries = [
             ForegroundJournalEntry::Boundary(IntervalBoundary::PowerTransition { ended_at: start }),
             ForegroundJournalEntry::Event(ForegroundEvent::TaskPoll(hang)),
+            ForegroundJournalEntry::PlatformSignal(PlatformSignal {
+                window_id: WindowId::from(1),
+                signal_at: None,
+                handled_at: hang_end,
+                source: FrameRequestSource::NativeCallback,
+            }),
             ForegroundJournalEntry::Discontinuity { lost: 2 },
         ];
         let drained = Drained::of(&entries);
@@ -391,8 +412,8 @@ mod tests {
             poll_line(&drained, &sealed, &sealer, now).as_deref(),
             Some(
                 format!(
-                    "poll: drained 3 entries (1 events, the longest 600.0 ms task poll at {site}; \
-                     boundaries 1 power; 2 lost); sealed none; open 1 events, the first ended \
+                    "poll: drained 4 entries (1 events, the longest 600.0 ms task poll at {site}; \
+                     boundaries 1 power; markers 1 frame signals; 2 lost); sealed none; open 1 events, the first ended \
                      400.0 ms ago, the longest 600.0 ms task poll at {site}"
                 )
                 .as_str()

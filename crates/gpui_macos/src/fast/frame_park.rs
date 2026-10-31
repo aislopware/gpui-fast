@@ -12,7 +12,16 @@
 //! Waking adds no latency. A parked window's next frame is the immediate frame, drawn as soon
 //! as GPUI wants it, as it is for a window whose link kept running; the link starts again only
 //! after that frame is drawn, so starting it is off the path to the glass, and the frames that
-//! follow keep their vsync pacing. A window the link was stopped for otherwise (hidden, or
+//! follow keep their vsync pacing.
+//!
+//! The immediate frame runs at most once between two ticks, and a run that drew nothing keeps
+//! the slot for the draw after it, as a wake that only ran next-frame callbacks leaves it for
+//! a keystroke's echo a moment later. A run that left GPUI asking for another frame gives the
+//! slot back instead: GPUI asks again when it defers a throttled window's frame (an inactive
+//! window draws at most 30 times a second), and the waker that ask also runs would start the
+//! immediate frame again at once. Kept armed, a throttled window's main queue ran its frame
+//! callback over and over until the throttle let one draw, tens of thousands of times a second
+//! in an inactive window with frames to draw. A window the link was stopped for otherwise (hidden, or
 //! between two of AppKit's own draws) is not parked, and draws only as the link brings it
 //! back.
 //!
@@ -53,6 +62,8 @@ pub(crate) const PARK_AFTER: Duration = Duration::from_millis(100);
 pub(crate) struct FramePark {
     /// GPUI asked for a frame since the last tick.
     wanted: bool,
+    /// GPUI asked for a frame while the immediate frame ran.
+    asked_in_immediate: bool,
     /// The tick since which every tick has been idle.
     idle_since: Option<Instant>,
     /// The link was stopped because the window was idle, not for any other reason.
@@ -83,6 +94,26 @@ impl FramePark {
     /// if [`after_tick`] says so next.
     pub(crate) fn stopped(park: &mut Self) {
         park.parked = false;
+    }
+
+    /// GPUI asked for a frame.
+    fn asked(&mut self) {
+        self.wanted = true;
+        self.asked_in_immediate = true;
+    }
+
+    /// The immediate frame is about to run GPUI's frame callback.
+    fn immediate_frame_began(&mut self) {
+        self.asked_in_immediate = false;
+    }
+
+    /// The immediate frame ran GPUI's frame callback, and `drew` whether a frame began within
+    /// the last refresh: whether the immediate frame may run again before the next tick. Only a
+    /// run that drew nothing and left nothing asked keeps its slot.
+    fn immediate_frame_ended(&mut self, drew: bool) -> bool {
+        let asked = mem::take(&mut self.asked_in_immediate);
+        self.wanted = true;
+        !drew && !asked
     }
 }
 
@@ -125,7 +156,7 @@ pub(crate) fn after_tick(window_state: &Rc<Mutex<MacWindowState>>) {
 /// frame wanted only for next-frame callbacks or to present.
 pub(crate) fn schedule_frame(window_state: &Rc<Mutex<MacWindowState>>) {
     let mut state = window_state.lock();
-    state.fast_frame_park.wanted = true;
+    state.fast_frame_park.asked();
     if !state.fast_frame_park.parked {
         return;
     }
@@ -171,6 +202,7 @@ pub(crate) fn ticking(
 /// The immediate frame is about to draw: a `CAMetalDisplayLink` is set aside, so the frame
 /// takes the layer's next drawable now rather than wait for the link's next update.
 pub(crate) fn before_immediate_frame(state: &mut MacWindowState) {
+    state.fast_frame_park.immediate_frame_began();
     if matches!(state.frame_source, FrameSource::Metal(_)) {
         state.stop_display_link();
     }
@@ -178,12 +210,16 @@ pub(crate) fn before_immediate_frame(state: &mut MacWindowState) {
 
 /// The immediate frame was drawn: a parked window's link starts again, and a
 /// `CAMetalDisplayLink` set aside for it is attached again, for the frames that follow to keep
-/// their vsync pacing.
+/// their vsync pacing. A run that drew nothing and left nothing asked keeps the immediate frame
+/// armed for the draw after it.
 pub(crate) fn after_immediate_frame(
     state: &mut MacWindowState,
     window_state: &Rc<Mutex<MacWindowState>>,
 ) {
-    state.fast_frame_park.wanted = true;
+    let drew = !state.renderer.idle_for_a_refresh();
+    if state.fast_frame_park.immediate_frame_ended(drew) {
+        state.immediate_frame_armed = true;
+    }
     if state.fast_frame_park.parked || matches!(state.frame_source, FrameSource::Metal(_)) {
         state.start_display_link(window_state);
     }
@@ -274,6 +310,54 @@ mod tests {
         let parked_at = parked_at.expect("an idle window stops its link");
         let idle = parked_at.saturating_duration_since(start);
         assert!(idle >= PARK_AFTER && idle < PARK_AFTER + TICK, "{idle:?}");
+    }
+
+    /// A throttled window: GPUI defers its frame until the throttle's interval has passed, and
+    /// each deferral draws nothing, asks for another frame, and wakes the waker, which queues
+    /// another immediate frame on the main queue. A tick arms one run; the wakes it causes find
+    /// the slot given back, so the main queue runs the callback once between two ticks, where it
+    /// ran it until the interval passed.
+    #[test]
+    fn a_deferred_frame_gives_the_immediate_frame_back_to_the_next_tick() {
+        let mut park = FramePark::default();
+        let mut armed = true;
+        let mut queued = 1;
+        let mut runs = 0;
+        while queued > 0 && runs < 1000 {
+            queued -= 1;
+            if !std::mem::take(&mut armed) {
+                continue;
+            }
+            runs += 1;
+            park.immediate_frame_began();
+            park.asked();
+            queued += 1;
+            armed = park.immediate_frame_ended(false);
+        }
+        assert_eq!(runs, 1, "one run between two ticks");
+    }
+
+    /// A run that drew nothing and left nothing asked (a wake that only ran next-frame
+    /// callbacks) keeps the slot for the draw after it; one that drew takes it. A request heard
+    /// before the run began is the run's own, and gives nothing back.
+    #[test]
+    fn only_an_idle_run_keeps_the_immediate_frame() {
+        let mut park = FramePark::default();
+        park.asked();
+        park.immediate_frame_began();
+        assert!(
+            park.immediate_frame_ended(false),
+            "drew nothing, asked nothing"
+        );
+        assert!(park.wanted, "the run counts as a request for the parking");
+        park.immediate_frame_began();
+        assert!(!park.immediate_frame_ended(true), "drew");
+        park.immediate_frame_began();
+        park.asked();
+        assert!(
+            !park.immediate_frame_ended(false),
+            "asked for another frame"
+        );
     }
 
     /// A tick that drew, or a request heard since the last tick, starts the idle time over.
