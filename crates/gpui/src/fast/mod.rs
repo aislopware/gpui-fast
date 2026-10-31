@@ -36,6 +36,8 @@ pub(crate) mod image_mask;
 pub(crate) mod inline_boxes;
 pub(crate) mod input_frame;
 pub(crate) mod interactivity;
+#[cfg(feature = "profiler")]
+pub(crate) mod interval_deadline;
 pub(crate) mod key_conventions;
 pub(crate) mod keyed;
 pub(crate) mod keypad;
