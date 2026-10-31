@@ -292,9 +292,11 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
             hash_tile(&sprite.tile, hasher);
         }
         Primitive::Surface(surface) => {
-            // A surface's pixels come from outside the scene; layers never
-            // hold one (spec §6.5), so it only needs to hash apart.
+            // A surface's pixels come from outside the scene, so it goes to
+            // the overlay (`overlay::split`), never into a tile: it only
+            // needs to hash apart.
             hasher.write_u8(7);
+            hash_f32(surface.opacity, hasher);
             hash_bounds(&surface.bounds, hasher);
             hash_mask(&surface.content_mask, tile, hasher);
         }

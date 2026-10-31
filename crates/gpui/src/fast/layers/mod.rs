@@ -133,7 +133,7 @@ pub(crate) fn for_each_fade(layer: &Layer, mark: &mut impl FnMut(u32)) {
                 crate::scene::Primitive::MonochromeSprite(p) => mark(p.pad),
                 crate::scene::Primitive::SubpixelSprite(p) => mark(p.pad),
                 crate::scene::Primitive::PolychromeSprite(p) => mark(p.pad),
-                crate::scene::Primitive::Surface(_) => {}
+                crate::scene::Primitive::Surface(p) => mark(p.pad),
             }
         }
     }

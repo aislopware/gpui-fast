@@ -109,7 +109,7 @@ fn draws_nothing(primitive: &Primitive) -> bool {
         Primitive::MonochromeSprite(p) => p.color.is_transparent(),
         Primitive::SubpixelSprite(p) => p.color.is_transparent(),
         Primitive::PolychromeSprite(p) => p.opacity <= 0.,
-        Primitive::Surface(_) => false,
+        Primitive::Surface(p) => p.opacity <= 0.,
     }
 }
 
@@ -325,7 +325,10 @@ fn describe_unfaded(primitive: &Primitive) -> String {
                 ..*p
             }
         ),
-        Primitive::Surface(p) => format!("surface {:?} {:?}", p.bounds, p.content_mask),
+        Primitive::Surface(p) => format!(
+            "surface {:?} {:?} opacity {}",
+            p.bounds, p.content_mask, p.opacity
+        ),
     }
 }
 
@@ -393,6 +396,13 @@ impl Window {
     /// lies in.
     pub fn painted_primitives(&self) -> Vec<String> {
         drawn(&self.rendered_frame.scene)
+    }
+
+    /// The surfaces the last frame drew, in the order the scene holds them,
+    /// with the buffer each samples: for a test asking which picture reached
+    /// the frame.
+    pub fn painted_surfaces(&self) -> Vec<crate::PaintSurface> {
+        self.rendered_frame.scene.surfaces.clone()
     }
 }
 

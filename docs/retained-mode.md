@@ -337,8 +337,8 @@ video included. The code is in `crates/gpui/src/fast/edge_fade.rs`.
 - A scroll layer's tiles take the fade around the container, so they move
   under it. A layer whose content sets fades of its own is drawn as content,
   without tiles (docs/scroll-layers.md).
-- Metal draws fades. The wgpu and Direct3D renderers draw everything unfaded,
-  and a `PaintSurface` is never faded.
+- Metal draws fades, a `PaintSurface`'s too. The wgpu and Direct3D renderers
+  draw everything unfaded.
 - `Window::with_rounded_clip(bounds, radius, f)` narrows the content mask to
   `bounds` and cuts every primitive along the corners' arcs, per pixel, with
   an antialiased edge (ported from zui `361ff20`). The clip is two more

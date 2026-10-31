@@ -750,6 +750,17 @@ Added in this fork:
   80 to 128 bytes, no byte added to a sprite); moving it reuses the image's tile, retention
   draws it as from scratch (`fast/tests/image_mask.rs`); Metal matches the CPU mask to 0
   levels, alone and inside a fade and a rounded clip (`gpui_apple` `fast::edge_fade`)
+- feat(gpui, gpui_apple): BGRA surfaces. `Window::paint_surface` takes an `IOSurface`-backed
+  `kCVPixelFormatType_32BGRA` buffer beside the Y′CbCr video formats, sampled as one texture
+  with straight alpha (`bgra_surface_fragment`), so an offscreen renderer hands GPUI the buffer
+  it drew into, with no read-back and no atlas upload: Slopty's animated agent visuals, drawn
+  by wgpu on Metal through a CoreVideo texture cache. A surface now takes its element's
+  opacity and its edge fade as a sprite does (`PaintSurface::{opacity, pad}`; Metal draws
+  both, video included), and a scroll layer draws surfaces in its overlay with the paths,
+  since a tile rasterized from one kept the picture it was rasterized with after the view
+  handed over the next. Tests: `a_surface_takes_its_elements_opacity_and_its_fade`,
+  `a_surface_is_drawn_over_the_tiles_with_the_picture_last_painted`, and in `gpui_apple`
+  `a_bgra_surface_draws_its_straight_alpha_at_its_opacity` and `a_faded_surface_draws_its_fade`
 
 ### Candidates for longbridge
 

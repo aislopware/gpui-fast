@@ -263,6 +263,37 @@ mod tests {
         });
     }
 
+    /// A surface fades as every other kind does, a BGRA one and a Y′CbCr one, at whatever
+    /// opacity it is painted at.
+    #[test]
+    fn a_faded_surface_draws_its_fade() {
+        let side = SIDE as usize;
+        for (what, picture) in [
+            (
+                "BGRA surface",
+                crate::fast::surfaces::pictures::bgra(side, |_, _| [255; 4]),
+            ),
+            (
+                "Y′CbCr surface",
+                crate::fast::surfaces::pictures::ycbcr_white(side),
+            ),
+        ] {
+            renders_faded(what, |scene, fade, _| {
+                scene.insert_faded_primitive(
+                    gpui::PaintSurface {
+                        order: 0,
+                        bounds: sp(0., 0., SIDE as f32, SIDE as f32),
+                        content_mask: everywhere(),
+                        opacity: 1.,
+                        pad: 0,
+                        image_buffer: picture,
+                    },
+                    fade,
+                );
+            });
+        }
+    }
+
     #[test]
     fn a_faded_underline_draws_its_fade() {
         renders_faded("underline", |scene, fade, _| {

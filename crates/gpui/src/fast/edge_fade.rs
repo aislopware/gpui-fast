@@ -11,7 +11,8 @@
 //!
 //! Every primitive kind already has four bytes of padding: `pad` in a
 //! shadow, an underline and the three sprites, and the padding at the end of
-//! a quad's and a path's [`crate::Background`]. A fade is a number in that
+//! a quad's and a path's [`crate::Background`]; a surface, which the GPU
+//! never reads as it lies, carries a `pad` of its own. A fade is a number in that
 //! slot, an index into the window's table of fades, 0 for none, so a fade
 //! adds no byte to any primitive: what retention copies every frame is what
 //! it copied without fades. The table ([`WindowFades`]) holds each fade once;
@@ -623,7 +624,7 @@ pub(crate) fn index_of(primitive: &Primitive) -> u32 {
         Primitive::MonochromeSprite(sprite) => sprite.pad,
         Primitive::SubpixelSprite(sprite) => sprite.pad,
         Primitive::PolychromeSprite(sprite) => sprite.pad,
-        Primitive::Surface(_) => NONE,
+        Primitive::Surface(surface) => surface.pad,
     }
 }
 
@@ -638,9 +639,7 @@ fn slot_of(primitive: &mut Primitive) -> Option<&mut u32> {
         Primitive::MonochromeSprite(sprite) => &mut sprite.pad,
         Primitive::SubpixelSprite(sprite) => &mut sprite.pad,
         Primitive::PolychromeSprite(sprite) => &mut sprite.pad,
-        // A surface is composited by the system's video path, which takes
-        // no fade.
-        Primitive::Surface(_) => return None,
+        Primitive::Surface(surface) => &mut surface.pad,
     })
 }
 
@@ -669,9 +668,8 @@ pub(crate) fn current(window: &Window) -> u32 {
     window.next_frame.scene.fast_painted.fades.current
 }
 
-/// The kinds of primitive that take a fade: all but surfaces, which the
-/// system's video path composites; and backdrop blurs.
-const KINDS: usize = 8;
+/// The kinds of primitive that take a fade: every one, and backdrop blurs.
+const KINDS: usize = 9;
 
 /// A fade painting entered in a scene, and how long each list of
 /// primitives that takes a fade was as it did.
@@ -739,6 +737,7 @@ fn lengths(scene: &Scene) -> [u32; KINDS] {
         scene.monochrome_sprites.len(),
         scene.subpixel_sprites.len(),
         scene.polychrome_sprites.len(),
+        scene.surfaces.len(),
         scene.composition.blurs.len(),
     ]
     .map(|len| len as u32)
@@ -768,6 +767,7 @@ fn map_since(scene: &mut Scene, starts: &[u32; KINDS], map: &mut impl FnMut(u32)
         monochrome,
         subpixel,
         polychrome,
+        surfaces,
         blurs,
     ] = *starts;
     each(&mut scene.shadows, shadows, map, |shadow| &mut shadow.pad);
@@ -786,6 +786,9 @@ fn map_since(scene: &mut Scene, starts: &[u32; KINDS], map: &mut impl FnMut(u32)
     });
     each(&mut scene.polychrome_sprites, polychrome, map, |sprite| {
         &mut sprite.pad
+    });
+    each(&mut scene.surfaces, surfaces, map, |surface| {
+        &mut surface.pad
     });
     each(&mut scene.composition.blurs, blurs, map, |blur| {
         &mut blur.fade
@@ -1734,6 +1737,7 @@ pub(crate) fn mark_scene(scene: &Scene, mark: &mut impl FnMut(u32)) {
     scene.monochrome_sprites.iter().for_each(|p| mark(p.pad));
     scene.subpixel_sprites.iter().for_each(|p| mark(p.pad));
     scene.polychrome_sprites.iter().for_each(|p| mark(p.pad));
+    scene.surfaces.iter().for_each(|p| mark(p.pad));
     scene
         .composition
         .blurs

@@ -5432,6 +5432,8 @@ impl Window {
             order: 0,
             bounds,
             content_mask,
+            opacity: self.element_opacity(), // fast::edge_fade gives `pad` its fade
+            pad: 0,
             image_buffer,
         });
     }

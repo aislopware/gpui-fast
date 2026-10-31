@@ -3055,6 +3055,87 @@ mod policies {
         assert_eq!(layers_demoted(cx, window), 0);
     }
 
+    /// A surface in a layer's content is drawn over the tiles, never rasterized into one: the
+    /// frame shows the picture the content was last painted with, however the tiles were
+    /// rasterized.
+    #[cfg(target_os = "macos")]
+    #[crate::test]
+    fn a_surface_is_drawn_over_the_tiles_with_the_picture_last_painted(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let picture = |side| {
+            let mut buffer = std::ptr::null_mut();
+            // SAFETY: a valid out-pointer CoreVideo fills with a +1 buffer on success.
+            let status = unsafe {
+                objc2_core_video::CVPixelBufferCreate(
+                    None,
+                    side,
+                    side,
+                    objc2_core_video::kCVPixelFormatType_32BGRA,
+                    None,
+                    std::ptr::NonNull::from(&mut buffer),
+                )
+            };
+            assert_eq!(status, objc2_core_video::kCVReturnSuccess);
+            // SAFETY: the buffer CoreVideo created, owned from here.
+            unsafe {
+                objc2_core_foundation::CFRetained::from_raw(std::ptr::NonNull::new(buffer).unwrap())
+            }
+        };
+        let handle = page(cx, false);
+        let window = handle.into();
+        let shown = |cx: &mut TestAppContext,
+                     buffer: &objc2_core_foundation::CFRetained<
+            objc2_core_video::CVPixelBuffer,
+        >| {
+            let buffer = buffer.clone();
+            with_extra(cx, handle, move || {
+                // Square, as the picture is, and tall enough to show
+                // however far the test scrolls.
+                crate::surface(buffer.clone())
+                    .size(px(400.))
+                    .into_any_element()
+            });
+        };
+        let first = picture(16);
+        shown(cx, &first);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        let surfaces = |cx: &mut TestAppContext| {
+            crate::AppContext::update_window(cx, window, |_, window, _| {
+                let layer = window.fast_layers.layers.values().next().expect("a layer");
+                let record = layer.record.as_ref().expect("painted");
+                assert!(
+                    record
+                        .overlay
+                        .iter()
+                        .any(|primitive| matches!(primitive, crate::scene::Primitive::Surface(_))),
+                    "the surface is in the overlay"
+                );
+                assert!(
+                    record
+                        .content
+                        .scenes()
+                        .all(|scene| scene.surfaces.is_empty()),
+                    "and in no tile"
+                );
+                window
+                    .painted_surfaces()
+                    .into_iter()
+                    .map(|surface| surface.image_buffer)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap()
+        };
+        assert_eq!(surfaces(cx), [first], "the frame draws it");
+        let second = picture(16);
+        shown(cx, &second);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(surfaces(cx), [second], "the next picture, not the first");
+        assert_eq!(layers_demoted(cx, window), 0);
+    }
+
     #[crate::test]
     fn churning_content_is_demoted_and_repromoted_after_60_stable_frames(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
