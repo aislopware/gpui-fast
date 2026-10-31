@@ -381,6 +381,31 @@ Merged ahead of longbridge, and not yet merged there:
       with 393 of 600 composited.
     - The face while an answer streams, the terminal, and the other frames: within noise.
 
+- longbridge/gpui-fast#92 at `86219c69` (aislopware #76): a mouse release and a file drag
+  set mouse modality (`fast::misc::mouse_up_modality`), so a release after a key press with
+  the button held, or a file dragged in after typing, still reaches `on_mouse_up`,
+  `on_click` and `on_drop`. It replaces the fork's own file-drag arms in `window.rs`'s
+  modality match (`8758f95f`), which is upstream's again. When longbridge merges it, take
+  theirs and keep that match upstream's.
+- longbridge/gpui-fast#88 at `76c37716` (aislopware #77): kept path shapes in a
+  least-recently-drawn list capped at 2048 shapes and 16 MiB a thread, with one slot for a
+  heavier shape, instead of two generations bounded by count. Its test-support exports share
+  `LayoutStats`'s line in `gpui.rs`. When longbridge merges it, take theirs, exports on that
+  line.
+- longbridge/gpui-fast#91 at `d9fbe8c1` (aislopware #78, tests only): a spliced child left
+  its ancestor's checkpoint stale, so the next idle frame rendered the ancestor again. This
+  fork had fixed both halves in #44 and #45 (a spliced record's dependencies `checked_at`
+  the `Checked` taken before its gaps were built; `copy_prepaint_segment` leaving out the
+  gaps' element states), so only #91's tests came over. When longbridge merges it, keep
+  the fork's `splice.rs` and `dependencies.rs` and take the tests.
+- Open longbridge PRs left out (2026-10-31): #69 and #90 change #30's window composition,
+  which this fork leaves out (below; its own composition has no overlay surface, and routes
+  input to a native by the topmost hitbox); #82 sets `InteractiveText`'s hand by hitboxes,
+  and neither Slopty nor GPUI Kit draws an `InteractiveText`; #85 is Windows-only; #86's
+  dynamic textures copy CPU frames into a texture outside the atlas, where Slopty's streamed
+  pictures already go through `VideoLayer` and `Window::paint_surface`. Slopty's
+  `docs/decisions/tooling.md` has each verdict.
+
 - Window composition, against longbridge #30 (zed#62379, merged in `c22243e` and left out
   here). This fork composes natives its own way (docs/composition.md): under GPUI's single
   drawable, through antialiased holes cut in painter's order. #30 stacks things differently:
