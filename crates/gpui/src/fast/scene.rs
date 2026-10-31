@@ -582,8 +582,9 @@ impl Scene {
 
     /// Everything this finished scene draws, in drawing order, as text two
     /// scenes can be compared by: each primitive with its bounds, clip, colours
-    /// and ordering, and each layer's bounds. Atlas tiles are left out, since
-    /// two windows need not place the same glyph in the same tile.
+    /// and ordering, each surface's buffer, and each layer's bounds. Atlas
+    /// tiles are left out, since two windows need not place the same glyph in
+    /// the same tile.
     #[cfg(test)]
     pub(crate) fn describe(&self) -> Vec<String> {
         let mut lines = Vec::new();
@@ -666,8 +667,34 @@ impl Scene {
                 fade(path.color.pad)
             )
         }));
+        lines.extend(self.surfaces.iter().map(|surface| {
+            format!(
+                "surface {} {:?} {:?} {}{}{}",
+                surface.order,
+                surface.bounds,
+                surface.content_mask,
+                surface.opacity,
+                picture(surface),
+                fade(surface.pad)
+            )
+        }));
         lines
     }
+}
+
+/// Which picture `surface` shows, for the text frames are compared by
+/// ([`Scene::describe`], the retained check): its buffer, so a frame that
+/// shows an older one than a frame drawn afresh does not read the same. Both
+/// frames hold their buffers while they are compared.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+pub(crate) fn picture(surface: &PaintSurface) -> String {
+    format!(" buffer {:p}", std::ptr::from_ref(&*surface.image_buffer))
+}
+
+/// Elsewhere a surface holds no buffer to name.
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+pub(crate) fn picture(_: &PaintSurface) -> String {
+    String::new()
 }
 
 /// What [`Scene::finish`] does: puts every primitive in drawing order.

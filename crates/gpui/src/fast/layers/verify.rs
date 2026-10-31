@@ -326,8 +326,11 @@ fn describe_unfaded(primitive: &Primitive) -> String {
             }
         ),
         Primitive::Surface(p) => format!(
-            "surface {:?} {:?} opacity {}",
-            p.bounds, p.content_mask, p.opacity
+            "surface {:?} {:?} opacity {}{}",
+            p.bounds,
+            p.content_mask,
+            p.opacity,
+            crate::fast::scene::picture(p)
         ),
     }
 }

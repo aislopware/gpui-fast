@@ -761,6 +761,12 @@ Added in this fork:
   handed over the next. Tests: `a_surface_takes_its_elements_opacity_and_its_fade`,
   `a_surface_is_drawn_over_the_tiles_with_the_picture_last_painted`, and in `gpui_apple`
   `a_bgra_surface_draws_its_straight_alpha_at_its_opacity` and `a_faded_surface_draws_its_fade`
+- fix(gpui): the text frames are compared by names the buffer each surface shows. The retained
+  check (`fast/layers/verify.rs`) described a surface by its bounds, clip and opacity only, and
+  `Scene::describe` left surfaces out, so a retained frame that showed an older picture than a
+  frame drawn afresh read the same. Both now carry the buffer (`fast::scene::picture`), which
+  both frames hold while they are compared. Test:
+  `a_frames_description_names_the_buffer_each_surface_shows`
 
 ### Candidates for longbridge
 
