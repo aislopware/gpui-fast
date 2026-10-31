@@ -1033,7 +1033,9 @@ pub(crate) fn record_task_poll(timing: TaskTiming) {
     FOREGROUND_RUNNABLES.with(ForegroundRunnableCounter::finished);
     with_journal(|journal| {
         journal.detect_suspend(timing.end.0);
-        if journal.power_interrupted_since(timing.start) {
+        let fast_dropped = journal.power_interrupted_since(timing.start);
+        crate::fast::hang_trace::task_poll(&timing, fast_dropped);
+        if fast_dropped {
             journal.end_turn(timing.end.0);
             return;
         }
