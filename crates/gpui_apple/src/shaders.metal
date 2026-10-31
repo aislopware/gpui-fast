@@ -912,12 +912,16 @@ fragment float4 path_sprite_fragment(
 struct SurfaceVertexOutput {
   float4 position [[position]];
   float2 texture_position;
+  float opacity [[flat]]; // gpui-fast: the element opacity and the edge fade (fast::edge_fade)
+  uint fade [[flat]];
   float clip_distance [[clip_distance]][4];
 };
 
 struct SurfaceFragmentInput {
   float4 position [[position]];
   float2 texture_position;
+  float opacity [[flat]];
+  uint fade [[flat]];
 };
 
 vertex SurfaceVertexOutput surface_vertex(
@@ -940,6 +944,8 @@ vertex SurfaceVertexOutput surface_vertex(
   return SurfaceVertexOutput{
       device_position,
       texture_position,
+      surface.opacity,
+      surface.pad,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }
 
@@ -951,13 +957,29 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
                                  texture2d<float> cb_cr_texture
                                  [[texture(SurfaceInputIndex_CbCrTexture)]],
                                  constant float4x4 *ycbcr_to_rgb
-                                 [[buffer(SurfaceInputIndex_YCbCrToRgb)]]) {
+                                 [[buffer(SurfaceInputIndex_YCbCrToRgb)]],
+                                 constant EdgeFadeRamps *fades [[buffer(EDGE_FADE_BUFFER)]]) {
   constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
   float4 ycbcr = float4(
       y_texture.sample(texture_sampler, input.texture_position).r,
       cb_cr_texture.sample(texture_sampler, input.texture_position).rg, 1.0);
 
-  return *ycbcr_to_rgb * ycbcr;
+  float4 color = *ycbcr_to_rgb * ycbcr;
+  color.a *= input.opacity * edge_fade(input.position.xy, input.fade, fades);
+  return color;
+}
+
+// gpui-fast: a straight-alpha BGRA surface (fast/surfaces.rs), blended as an
+// image's sprite is.
+fragment float4 bgra_surface_fragment(SurfaceFragmentInput input [[stage_in]],
+                                      texture2d<float> bgra_texture
+                                      [[texture(SurfaceInputIndex_YTexture)]],
+                                      constant EdgeFadeRamps *fades
+                                      [[buffer(EDGE_FADE_BUFFER)]]) {
+  constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
+  float4 color = bgra_texture.sample(texture_sampler, input.texture_position);
+  color.a *= input.opacity * edge_fade(input.position.xy, input.fade, fades);
+  return color;
 }
 
 float4 hsla_to_rgba(Hsla hsla) {

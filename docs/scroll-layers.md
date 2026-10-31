@@ -142,8 +142,8 @@ each frame it then takes one of three paths (`fast::layers::policy::decide`):
   - the background under the viewport is not one opaque solid quad (a
     list's rows are replayed over whatever is under them instead);
   - the content has deferred or anchored elements, a focused input, or
-    surfaces, or something in it (an element, or a view drawn in it) asked
-    for an animation frame this frame or the last;
+    something in it (an element, or a view drawn in it) asked for an
+    animation frame this frame or the last;
   - the view holding the container asked for an animation frame from
     outside the content (a scrollbar fading beside a list, a pulsing
     button): it renders again on every frame the animation runs, and
@@ -225,6 +225,11 @@ show. A list's layer, which replays its rows, draws their paths in order with
 the rest and has no overlay. A table in a rounded frame, whose corner notches are paths under the
 frame's border, composites with only the paths and the border drawn each
 frame.
+
+Surfaces go to the overlay too. A surface's pixels are a picture a view hands
+GPUI from outside the scene, so a tile rasterized from one would keep the
+picture it was rasterized with once the view hands over the next: drawn in the
+frame, it always shows the picture the content was last painted with.
 
 ### Changes inside a list's rows
 

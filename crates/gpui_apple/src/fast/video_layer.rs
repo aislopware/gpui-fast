@@ -295,6 +295,8 @@ impl VideoRenderer {
             order: 0,
             bounds,
             content_mask: ContentMask { bounds },
+            opacity: 1.,
+            pad: 0,
             image_buffer: picture.retain(),
         });
         self.scene.finish();

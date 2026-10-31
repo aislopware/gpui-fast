@@ -57,7 +57,7 @@ pub(crate) struct LayerRecord {
     /// list row drew over the overlay of a row before it. Such content is
     /// drawn into the frame instead.
     pub(crate) has_paths: bool,
-    /// The paths the content painted, and what it drew over them, in
+    /// The paths and surfaces the content painted, and what it drew over them, in
     /// content space, in drawing order: left out of `content`, and drawn
     /// into the frame over the layer's tiles wherever it is composited
     /// (`fast::layers::overlay`).

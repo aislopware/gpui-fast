@@ -118,3 +118,45 @@ fn a_surface_shows_the_buffer_its_view_holds_now() {
     );
     assert_eq!(builds.get(), 3);
 }
+
+struct Faded {
+    buffer: CVPixelBuffer,
+}
+
+impl Render for Faded {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(100.)).child(crate::edge_fade(
+            div()
+                .size(px(100.))
+                .opacity(0.5)
+                .child(surface(self.buffer.clone()).size(px(64.))),
+            crate::EdgeFade::y(px(16.)),
+        ))
+    }
+}
+
+/// A surface is painted as an image is: at the opacity of the element around it, and in the
+/// edge fade it lies in, which the renderer multiplies it by.
+#[test]
+fn a_surface_takes_its_elements_opacity_and_its_fade() {
+    let mut cx = TestAppContext::single();
+    let buffer = buffer();
+    let window = cx.add_window({
+        let buffer = buffer.clone();
+        move |_, _| Faded { buffer }
+    });
+    let surfaces = cx
+        .update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_surfaces()
+        })
+        .unwrap();
+    assert_eq!(surfaces.len(), 1);
+    assert_eq!(surfaces[0].image_buffer, buffer);
+    assert_eq!(surfaces[0].opacity, 0.5);
+    assert_ne!(
+        surfaces[0].pad,
+        crate::fast::edge_fade::NONE,
+        "painted in the fade around it"
+    );
+}

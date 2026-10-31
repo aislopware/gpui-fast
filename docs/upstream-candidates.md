@@ -216,6 +216,11 @@ arrived. Test: `retained::every_view_is_rendered_again_once_fonts_are_added`.
   anything in a scrolled div or list vanished after two wheel scrolls. Tests:
   `a_composited_layer_keeps_its_contents_debug_bounds_where_they_show` and
   `a_composited_list_layer_keeps_its_rows_debug_bounds_where_they_show`.
+- **A surface in a scroll layer (BGRA surfaces). Fix, wanted.** A layer's tiles were
+  rasterized from its surfaces too, and kept the picture they were rasterized with once the
+  view handed over the next buffer, though the scroll-layer notes said surfaces bypass the
+  layer. Surfaces now go to the overlay with the paths. Test:
+  `a_surface_is_drawn_over_the_tiles_with_the_picture_last_painted`.
 
 ### Touch and accessibility
 
@@ -333,6 +338,9 @@ Generic, each with tests in its commit, and each a product question for upstream
   a video surface shows the buffer its view holds.
 - `ea73091`, `a33830d` and `cb82e62` (gpui_apple): 10-bit and 4:4:4 video surfaces, each
   surface sampled by its own Y'CbCr matrix, and video presented through a `VideoLayer`.
+- BGRA surfaces (gpui, gpui_apple): an `IOSurface`-backed BGRA buffer drawn as it lies, with
+  straight alpha, at its element's opacity and in its edge fade, so an offscreen renderer
+  hands GPUI the buffer it drew with no read-back and no atlas upload.
 
 ## Fork-only
 
