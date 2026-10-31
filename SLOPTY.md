@@ -461,6 +461,19 @@ Added in this fork:
   that reads it is built again when it changes, as one that reads the pointer is when it moves,
   so the view that held work is built again, and does it, once the touch ends. Tests:
   `fast::tests::touch_in_flight`.
+- fix(gpui_macos): a throttled window's immediate frame waits for the next tick
+  (`fast/frame_park.rs`). GPUI defers a throttled window's frame (an inactive window draws at
+  most 30 times a second) and asks for another, and the waker that ask runs queued the
+  immediate frame again. A run that drew nothing kept its slot, as a wake that only ran
+  next-frame callbacks keeps it for a keystroke's echo, so the deferred frame ran again at
+  once. An inactive window with frames to draw spun its main queue through the frame callback
+  until the throttle let one draw: about 28,000 callbacks a second in Slopty's e2e app. Each
+  callback journals a frame signal, so the storm lapped the foreground journal's ring between
+  two drains of the hang monitor and lost the hang Slopty's e2e test held for; the hang trace
+  below showed 56,000 entries in 2 s, 37,000 of them lost. A run that leaves GPUI asking for
+  another frame now gives the slot back to the next tick. CI now runs gpui_macos's tests.
+  Tests: `fast::frame_park::tests`. The trace also counts the markers that do no work (frame
+  signals, frame states, re-entrant skips).
 - feat(gpui): the hang monitor traces what it saw, at debug under the `gpui::hang` target
   (`fast/hang_trace.rs`). It traces the monitor starting and every task poll of 100 ms or more,
   journaled or dropped across a sleep or wake. It also traces every detector poll that drained,
