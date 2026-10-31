@@ -1,7 +1,7 @@
 //! Whether the focused element is a text field ([`Window::text_input_focused`]):
 //! a field whose input handler takes text is one, a button or a pane focused
-//! is not, and a view drawn from its last frame that asks is told as it
-//! changes.
+//! is not, the answer is what the platform was last told, and a view drawn
+//! from its last frame that asks is told as it changes.
 
 use crate::{
     AnyWindowHandle, AppContext as _, Bounds, Context, ElementInputHandler, Entity,
@@ -9,7 +9,11 @@ use crate::{
     Pixels, Render, StyleRefinement, Styled as _, TestAppContext, UTF16Selection, Window, canvas,
     div,
 };
-use std::{cell::Cell, ops::Range, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+    rc::Rc,
+};
 
 /// A field that takes text, its input handler registered as it paints.
 struct Field {
@@ -102,7 +106,8 @@ impl EntityInputHandler for Field {
 }
 
 /// The field focused is a text field until the focus leaves it; a button
-/// focused after it is none, before any frame and after one.
+/// focused after it is none once a frame has found it, the platform keeping
+/// its keyboard up until then.
 #[test]
 fn a_focused_element_without_a_text_input_is_no_text_field() {
     let mut cx = TestAppContext::single();
@@ -120,7 +125,7 @@ fn a_focused_element_without_a_text_input_is_no_text_field() {
         assert!(window.text_input_focused(), "the field");
         let button = cx.focus_handle();
         window.focus(&button, cx);
-        assert!(!window.text_input_focused(), "a button, before any frame");
+        assert!(window.text_input_focused(), "a button, before any frame");
         window.draw(cx).clear(cx);
         assert!(!window.text_input_focused(), "a button");
         window.blur(cx);
@@ -170,6 +175,66 @@ fn a_view_asking_for_the_text_field_is_told_as_it_changes() {
     assert_eq!(seen.get(), Some(false), "a button");
 }
 
+/// The focus moved from one field to another between frames, as a tap from
+/// one terminal's pane to another's moves it: the platform's keyboard stays
+/// up, and every frame, the one between included, is told a text field is
+/// focused, so a layout keeping the keyboard's band clear never lets it go.
+#[test]
+fn the_focus_moved_between_two_fields_keeps_a_text_field_focused() {
+    let mut cx = TestAppContext::single();
+    let first = cx.new(|cx| Field {
+        focus_handle: cx.focus_handle(),
+    });
+    let second = cx.new(|cx| Field {
+        focus_handle: cx.focus_handle(),
+    });
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let reader = cx.new(|_| Recorder { seen: seen.clone() });
+    let window = cx.add_window({
+        let (first, second, reader) = (first.clone(), second.clone(), reader.clone());
+        move |_, _| TwoFields {
+            first,
+            second,
+            reader,
+        }
+    });
+    let window = AnyWindowHandle::from(window);
+    let focus_of = |field: &Entity<Field>, cx: &mut TestAppContext| {
+        field.read_with(cx, |field, _| field.focus_handle.clone())
+    };
+    let (first_focus, second_focus) = (focus_of(&first, &mut cx), focus_of(&second, &mut cx));
+    // Each frame builds the recorder again, so it says what the frame was told.
+    let frames = |cx: &mut TestAppContext| {
+        for _ in 0..3 {
+            reader.update(cx, |_, cx| cx.notify());
+            cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+                .unwrap();
+        }
+    };
+    cx.update_window(window, |_, window, cx| window.focus(&first_focus, cx))
+        .unwrap();
+    frames(&mut cx);
+    assert_eq!(seen.borrow().last(), Some(&true), "the first field");
+    seen.borrow_mut().clear();
+
+    cx.update_window(window, |_, window, cx| {
+        window.focus(&second_focus, cx);
+        assert!(
+            window.text_input_focused(),
+            "the second field, before any frame"
+        );
+    })
+    .unwrap();
+    frames(&mut cx);
+    assert_eq!(*seen.borrow(), [true; 3], "every frame after the move");
+    let focused = cx
+        .update_window(window, |_, window, _| {
+            second_focus.is_focused(window) && window.text_input_focused()
+        })
+        .unwrap();
+    assert!(focused, "the second field holds the focus and takes text");
+}
+
 /// Says what it read of the text field each time it is built.
 struct Reader {
     seen: Rc<Cell<Option<bool>>>,
@@ -179,6 +244,36 @@ impl Render for Reader {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.seen.set(Some(window.text_input_focused()));
         div().size_full()
+    }
+}
+
+/// Keeps every answer it read of the text field, one each time it is built.
+struct Recorder {
+    seen: Rc<RefCell<Vec<bool>>>,
+}
+
+impl Render for Recorder {
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        self.seen.borrow_mut().push(window.text_input_focused());
+        div().size_full()
+    }
+}
+
+/// Two fields and a recorder, each cached.
+struct TwoFields {
+    first: Entity<Field>,
+    second: Entity<Field>,
+    reader: Entity<Recorder>,
+}
+
+impl Render for TwoFields {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let cached = StyleRefinement::default().size_full();
+        div()
+            .size_full()
+            .child(self.first.clone().cached(cached.clone()))
+            .child(self.second.clone().cached(cached.clone()))
+            .child(self.reader.clone().cached(cached))
     }
 }
 
