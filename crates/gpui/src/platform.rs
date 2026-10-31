@@ -1530,6 +1530,9 @@ pub trait PlatformHeadlessRenderer {
 
     /// Returns the sprite atlas used by this renderer.
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
+
+    /// Clears each frame to transparent rather than opaque (`fast::test_pixels`).
+    fn fast_set_transparent(&mut self, _transparent: bool) {}
 }
 
 /// Type alias for runnables with metadata.

@@ -15,6 +15,8 @@ pub(crate) mod ime;
 pub(crate) mod keypad;
 pub(crate) mod pasteboard;
 pub(crate) mod scroll;
+#[cfg(all(test, feature = "font-kit"))]
+mod test_pixels;
 #[cfg(feature = "font-kit")]
 pub(crate) mod text_smoothing;
 #[cfg(feature = "font-kit")]
