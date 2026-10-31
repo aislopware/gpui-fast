@@ -3654,7 +3654,7 @@ impl Window {
                     TextInputStateChange::FocusLost
                 });
         }
-        crate::fast::focus::text_input_found(self, previous != focused_text_input, cx);
+        crate::fast::focus::text_input_found(self, previous.is_some(), cx);
 
         self.layout_engine.as_mut().unwrap().clear();
         crate::fast::layout_key::WindowLayout::end_frame(&mut self.fast_layout);

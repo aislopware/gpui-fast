@@ -398,7 +398,9 @@ unchanged, and a new entry needs as good a reason.
   find pasteboard is never redirected. macOS and iOS only.
 - `Window::text_input_focused` is new public API (`fast/focus.rs`): whether
   the focused element is a text field the last frame registered, its input
-  handler taking text. The platform shows its soft keyboard for one, and a
+  handler taking text, as the platform was last told at that frame's end, so
+  the focus moving from one field to another between frames keeps it true.
+  The platform shows its soft keyboard for one, and a
   layout that makes room for the keyboard needs to know when a button or a
   pane took the focus and the keyboard went; GPUI keeps the answer privately
   for the platform. A view that reads it is built again when it changes.

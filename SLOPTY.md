@@ -461,6 +461,13 @@ Added in this fork:
   that reads it is built again when it changes, as one that reads the pointer is when it moves,
   so the view that held work is built again, and does it, once the touch ends. Tests:
   `fast::tests::touch_in_flight`.
+- fix(gpui): `Window::text_input_focused` answers what the platform was last told, whether its
+  soft keyboard is up (`fast/focus.rs`). It answered whether the last frame's text field was
+  still the focused element, so the focus moving from one field to another between frames read
+  false for one frame although the keyboard never went: an iPad layout dropped the keyboard's
+  band for that frame and resized both terminals twice. Views reading it are built again when a
+  frame finds a field where the last found none, or the other way about. Tests:
+  `fast::tests::text_input_focused`.
 - feat(gpui, gpui_macos, gpui_ios): a window's own appearance (`fast/window_appearance.rs`).
   `Window::set_appearance` gives one window an appearance apart from the application's, `None`
   following it again: `NSWindow.appearance` on macOS, `UIWindow.overrideUserInterfaceStyle` on

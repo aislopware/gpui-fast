@@ -207,12 +207,12 @@ fn note(id: FocusId, question: Question, answer: bool, window: &Window) {
     reads.note_state(version);
 }
 
-/// Ends the frame's search for the focused text field: when the field it
-/// found, or found missing, is not the last frame's, the views that asked
+/// Ends the frame's search for the focused text field: when the frame found
+/// one and the last did not, or the other way about, the views that asked
 /// whether a text field is focused saw the last frame's answer, and are built
-/// again in the next.
-pub(crate) fn text_input_found(window: &Window, changed: bool, cx: &mut App) {
-    if changed {
+/// again in the next. A field taking over from another changes no answer.
+pub(crate) fn text_input_found(window: &Window, had_text_input: bool, cx: &mut App) {
+    if had_text_input != window.focused_text_input.is_some() {
         cx.ambient_changed::<ambient::TextInput>();
         window.invalidator.set_dirty(true);
     }
@@ -223,14 +223,16 @@ impl Window {
     /// handler accepts text, for which the platform shows its soft keyboard. A focused button or
     /// pane is not one, so a layout that makes room for the keyboard can let it go.
     ///
-    /// The answer is the last frame's: a view that reads it is built again when the focus moves
-    /// and once a frame has found the focused element to take text or not.
+    /// The answer is what the platform was last told, at the last frame's end: whether its soft
+    /// keyboard is up. The focus moving between frames changes nothing until a frame has found
+    /// the newly focused element to take text or not, as nothing changes for the platform: from
+    /// one field to another the keyboard stays and the answer with it, where asking whether that
+    /// field is still the focused one said no for the frame between. A view that reads it is
+    /// built again once a frame's answer differs from the last.
     pub fn text_input_focused(&self) -> bool {
-        read_focused(self);
         self.retained_state
             .ambient_reads
             .note::<ambient::TextInput>();
-        self.focused_text_input
-            .is_some_and(|id| self.focus == Some(id))
+        self.focused_text_input.is_some()
     }
 }
