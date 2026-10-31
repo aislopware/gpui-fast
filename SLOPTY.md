@@ -489,7 +489,10 @@ Added in this fork:
   presentations, which seal nothing. So a busy, covered app held a hang unreported indefinitely:
   Slopty's e2e hang test lost one that way in a loaded VM. Retained work now waits at most
   `FRAME_DEADLINE`, as a pending frame does, and the first turn to end past it seals the interval
-  idle. Tests: `fast::interval_deadline` and the writer's state-model property.
+  idle. A foreground that went quiet with the interval open (a dirty window whose frame never
+  draws, nothing left to run) ends no turn, so the hang detector closes the interval at its first
+  poll past the deadline, idle where the last work ended; it polls on its own thread, so an idle
+  app does no more work. Tests: `fast::interval_deadline` and the writer's state-model property.
 - fix(gpui): a touch's fling ends once a step of it moves nothing, and a touch outside what
   it scrolls stays a tap (`fast/fling.rs`). `div`'s and `list`'s scroll listeners report
   whether a step moved them and where they are; a custom scroll handler reports nothing and

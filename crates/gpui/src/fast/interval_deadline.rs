@@ -19,11 +19,23 @@
 //! deadline after it ends for the frame it starved, and the two stay in one
 //! interval. Folded polls retain nothing and start no clock: a foreground busy
 //! with only sub-floor polls still seals nothing.
+//!
+//! The writer only acts at a turn end, and a foreground can go quiet with the
+//! interval still open: its window dirty, the frame never drawn, nothing left
+//! to run. No turn ends, so the writer never sees its deadline pass. The hang
+//! detector closes such an interval instead, at its first poll past the
+//! deadline ([`push_entries`]), as idle where the foreground last recorded
+//! work. It polls on its own thread whatever the foreground does, so an idle
+//! app wakes for nothing more. The two sides measure the same deadline from
+//! the same event, so while the foreground still has turns to end the writer
+//! seals first; a turn ending just as the detector polls splits the interval
+//! there, every event whole on one side or the other.
 
 use scheduler::Instant;
 
 use crate::profiler::journal::{
-    FRAME_DEADLINE, ForegroundJournalEntry, ForegroundJournalWriter, IntervalBoundary,
+    FRAME_DEADLINE, ForegroundEvent, ForegroundJournalEntry, ForegroundJournalWriter,
+    FrameSnapshot, IntervalBoundary, IntervalSealer,
 };
 
 /// When the writer's open interval first retained work, if it has.
@@ -62,6 +74,36 @@ pub(crate) fn seal_overdue(writer: &mut ForegroundJournalWriter, ended_at: Insta
     true
 }
 
+/// Seals what `entries` complete, as [`IntervalSealer::push_entries`] does,
+/// and then, at `now`, the interval still open once the first event it holds
+/// ended [`FRAME_DEADLINE`] ago: idle, ended where its last work ended.
+pub(crate) fn push_entries(
+    sealer: &mut IntervalSealer,
+    entries: impl IntoIterator<Item = ForegroundJournalEntry>,
+    now: Instant,
+) -> Vec<FrameSnapshot> {
+    let mut snapshots = sealer.push_entries(entries);
+    if let Some(ended_at) = quiet_since(sealer, now) {
+        snapshots.push(sealer.seal(IntervalBoundary::Idle { ended_at }));
+    }
+    snapshots
+}
+
+/// When the sealer's open interval last recorded work, if its first event
+/// ended [`FRAME_DEADLINE`] or more before `now`.
+fn quiet_since(sealer: &IntervalSealer, now: Instant) -> Option<Instant> {
+    let first = sealer.events.first()?;
+    if now.saturating_duration_since(first.end_time()) < FRAME_DEADLINE {
+        return None;
+    }
+    sealer
+        .events
+        .iter()
+        .map(ForegroundEvent::end_time)
+        .chain(sealer.small_polls.iter().map(|flush| flush.until))
+        .max()
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -69,11 +111,11 @@ mod tests {
     use scheduler::{Instant, SpawnTime};
 
     use crate::WindowId;
-    use crate::profiler::hang::{HangDetector, HangTrigger};
+    use crate::profiler::hang::{HangDetector, HangIncident, HangTrigger};
     use crate::profiler::journal::{
-        FRAME_DEADLINE, ForegroundEvent, ForegroundJournalEntry, TASK_POLL_FLOOR,
-        begin_foreground_turn, foreground_runnable_counter, install_test_foreground_journal,
-        record_present, record_task_poll,
+        FRAME_DEADLINE, ForegroundEvent, ForegroundJournalEntry, IntervalBoundary, IntervalSealer,
+        TASK_POLL_FLOOR, begin_foreground_turn, foreground_runnable_counter,
+        install_test_foreground_journal, record_frame_pending, record_present, record_task_poll,
     };
     use crate::profiler::{PresentTiming, TaskTiming, YieldTime};
 
@@ -150,6 +192,60 @@ mod tests {
             "sealed at the first turn end past the deadline, {:?} after the hang",
             sealed_at.saturating_duration_since(hang_end)
         );
+    }
+
+    /// A hang, and then nothing: the window it kept from drawing is dirty, so
+    /// the writer keeps the interval open at the hang's turn end, and no turn
+    /// ends after it. The detector closes the interval at its first poll past
+    /// the deadline, idle where the hang ended, and reports the hang.
+    #[test]
+    fn a_hang_before_the_foreground_goes_quiet_is_reported_at_the_first_poll_past_the_deadline() {
+        let (journal, _journal_guard) = install_test_foreground_journal(64, 8);
+        let mut collector = journal.collector();
+        let runnables = foreground_runnable_counter();
+        let window_id = WindowId::from(9);
+        let dirty_at = Instant::now();
+        let hang_start = dirty_at + Duration::from_millis(1);
+        let hang_end = hang_start + Duration::from_millis(600);
+
+        record_frame_pending(window_id, dirty_at);
+        runnables.queued();
+        task_poll(hang_start, hang_end);
+        let entries = collector.collect_unseen().entries;
+        assert!(
+            entries
+                .iter()
+                .all(|entry| !matches!(entry, ForegroundJournalEntry::Boundary(_))),
+            "the pending frame keeps the interval open: {entries:?}"
+        );
+
+        let mut sealer = IntervalSealer::new(dirty_at);
+        let just_before = hang_end + FRAME_DEADLINE - Duration::from_micros(1);
+        let early = super::push_entries(&mut sealer, entries, just_before);
+        assert!(early.is_empty(), "nothing closes before the deadline");
+        let snapshots = super::push_entries(&mut sealer, [], hang_end + FRAME_DEADLINE);
+        let [snapshot] = snapshots.as_slice() else {
+            panic!("one interval closes at the deadline: {snapshots:?}");
+        };
+        assert!(
+            matches!(snapshot.boundary, IntervalBoundary::Idle { ended_at } if ended_at == hang_end),
+            "closed idle where the hang ended: {:?}",
+            snapshot.boundary
+        );
+        let incident = HangIncident::detect(snapshot.clone(), THRESHOLD, THRESHOLD)
+            .expect("the hang is reported");
+        assert_eq!(incident.trigger, HangTrigger::Threshold);
+        assert!(
+            matches!(
+                incident.contributors.as_slice(),
+                [ForegroundEvent::TaskPoll(poll)]
+                    if poll.start == hang_start && poll.end.0 == hang_end
+            ),
+            "the hang is the one contributor: {:?}",
+            incident.contributors
+        );
+        let later = super::push_entries(&mut sealer, [], hang_end + FRAME_DEADLINE * 3);
+        assert!(later.is_empty(), "closed once: {later:?}");
     }
 
     /// The deadline is for retained work: polls folded below the floor keep
