@@ -28,7 +28,7 @@ pub(crate) struct TestWindowState {
     platform: Weak<TestPlatform>,
     // TODO: Replace with `Rc`
     sprite_atlas: Arc<dyn PlatformAtlas>,
-    renderer: Option<Box<dyn PlatformHeadlessRenderer>>,
+    pub(crate) renderer: Option<Box<dyn PlatformHeadlessRenderer>>,
     pub(crate) should_close_handler: Option<Box<dyn FnMut() -> bool>>,
     close_callback: Option<Box<dyn FnOnce()>>,
     hit_test_window_control_callback: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
@@ -63,6 +63,7 @@ pub(crate) struct TestWindowState {
     start_external_drag_result: bool,
     pub(crate) fast_ime_positions: Vec<Bounds<Pixels>>,
     pub(crate) fast_appearance: Option<WindowAppearance>,
+    pub(crate) fast_background: WindowBackgroundAppearance,
 }
 
 #[derive(Clone)]
@@ -143,6 +144,7 @@ impl TestWindow {
             start_external_drag_result: false,
             fast_ime_positions: Vec::new(),
             fast_appearance: None,
+            fast_background: WindowBackgroundAppearance::Opaque,
         })))
     }
     pub fn simulate_close(&self) {
@@ -465,7 +467,7 @@ impl PlatformWindow for TestWindow {
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {
-        WindowBackgroundAppearance::Opaque
+        crate::fast::test_pixels::background(self)
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
@@ -478,7 +480,9 @@ impl PlatformWindow for TestWindow {
 
     fn set_app_id(&mut self, _app_id: &str) {}
 
-    fn set_background_appearance(&self, _background: WindowBackgroundAppearance) {}
+    fn set_background_appearance(&self, background: WindowBackgroundAppearance) {
+        crate::fast::test_pixels::set_background(self, background)
+    }
 
     fn set_edited(&mut self, edited: bool) {
         self.0.lock().edited = edited;
@@ -620,6 +624,15 @@ impl PlatformWindow for TestWindow {
         } else {
             anyhow::bail!("render_to_image not available: no HeadlessRenderer configured")
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn fast_render_scene_to_image(
+        &self,
+        scene: &Scene,
+        fast_size: Size<DevicePixels>,
+    ) -> anyhow::Result<RgbaImage> {
+        crate::fast::test_pixels::render_at(self, scene, fast_size)
     }
 
     fn as_test(&mut self) -> Option<&mut TestWindow> {

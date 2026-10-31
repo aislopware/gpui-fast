@@ -166,7 +166,7 @@ impl TestAppContext {
         )
     }
 
-    fn build_with_platform(
+    pub(crate) fn build_with_platform(
         dispatcher: TestDispatcher,
         fn_name: Option<&'static str>,
         background_executor: BackgroundExecutor,

@@ -57,6 +57,7 @@ mod subscriptions;
 mod support;
 mod surface;
 mod tab_stop;
+mod test_pixels;
 mod test_window;
 mod text;
 mod text_input_focused;

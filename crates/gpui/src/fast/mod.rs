@@ -75,6 +75,8 @@ pub(crate) mod stats;
 pub(crate) mod subscriptions;
 pub(crate) mod svg_text;
 #[cfg(any(test, feature = "test-support"))]
+pub(crate) mod test_pixels;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_window;
 pub(crate) mod text;
 pub mod text_smoothing;

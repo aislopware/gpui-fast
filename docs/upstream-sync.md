@@ -220,6 +220,18 @@ unchanged, and a new entry needs as good a reason.
   its renderer's offscreen render, are new. Upstream renders a window only at its display's
   scale; Slopty's visual tests run on a 1x display and keep one Retina golden, so a
   regression that shows only at 2x is caught too.
+- `TestAppContext::build_with_renderer(dispatcher, fn_name, text_system, assets,
+  renderer_factory)` and the defaulted `PlatformHeadlessRenderer::fast_set_transparent`
+  (test-support, `fast/test_pixels.rs`) are new; a test window keeps the background it is given
+  and forwards it to its renderer, and renders at another scale
+  (`fast_render_scene_to_image`). Upstream's test context has a no-op text system, no assets
+  and no renderer, and its constructor that takes a platform is private, so only
+  `HeadlessAppContext`, which has no input simulation and no `VisualTestContext`, draws real
+  pixels; and its test window drew every frame opaque. Slopty renders its whole interface
+  in a test window with Core Text, its icons and the Metal renderer, and compares the picture
+  with the one its app draws (frosted surfaces included), in its test process. Metal's
+  headless renderer forwards the transparency to `update_transparency`; wgpu's keeps
+  drawing opaque.
 - `TextSmoothing`, `App::set_text_smoothing`, `App::text_smoothing`,
   `Window::with_text_smoothing` and `Window::text_smoothing` are new public API
   (`fast/text_smoothing.rs`). Upstream dilates light glyphs on macOS as Core
