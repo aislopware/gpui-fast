@@ -1116,6 +1116,6 @@ Under `slopty/.research/`, Cargo also reads Slopty's `.cargo/config.toml`. Its
 options. Build and format with:
 
 ```sh
-IPHONEOS_DEPLOYMENT_TARGET= cargo test -p gpui --features test-support
+IPHONEOS_DEPLOYMENT_TARGET= cargo test -p gpui --features test-support,profiler
 cargo fmt -- --config-path /path/to/empty/rustfmt.toml
 ```

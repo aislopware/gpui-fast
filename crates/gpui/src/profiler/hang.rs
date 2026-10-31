@@ -1718,11 +1718,14 @@ mod tests {
             ForegroundEvent::View(timing) if timing.phase == ViewPhase::Paint
         )));
 
+        let fast_built_at = parent.start;
         let draw = events
             .iter()
             .rev()
             .find_map(|event| match event {
-                ForegroundEvent::Draw(timing) => Some(*timing),
+                ForegroundEvent::Draw(timing) if timing.draw_start <= fast_built_at => {
+                    Some(*timing)
+                }
                 _ => None,
             })
             .expect("a draw");

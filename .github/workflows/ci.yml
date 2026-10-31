@@ -41,8 +41,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # With the profiler, as an app running GPUI's hang monitor builds it: the
+      # journal's and the hang detector's tests only compile with it. Clippy
+      # below still builds gpui without it.
       - name: Test gpui
-        run: cargo test -p gpui --features test-support
+        run: cargo test -p gpui --features test-support,profiler
 
       - name: Link GPUI Fast with GPUI Pre
         if: runner.os == 'Windows'
@@ -106,3 +109,6 @@ jobs:
 
       - name: Clippy
         run: cargo clippy -p gpui -p gpui_perf --all-targets --features gpui/test-support -- -D warnings
+
+      - name: Clippy with the profiler
+        run: cargo clippy -p gpui --all-targets --features test-support,profiler -- -D warnings
