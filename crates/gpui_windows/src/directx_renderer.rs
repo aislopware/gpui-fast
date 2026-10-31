@@ -46,7 +46,7 @@ pub(crate) struct DirectXRenderer {
     direct_composition: Option<DirectComposition>,
     font_info: &'static FontInfo,
 
-    width: u32,
+    pub(crate) width: u32,
     height: u32,
 
     /// Whether we want to skip drwaing due to device lost events.
@@ -55,6 +55,7 @@ pub(crate) struct DirectXRenderer {
     /// meaning we lost all the allocated gpu textures and scene resources.
     skip_draws: bool,
     pub(crate) fast_frame: crate::fast::frame::FrameState,
+    pub(crate) fast_recovery: crate::fast::device_recovery::RecoveryState,
 }
 
 /// Direct3D objects
@@ -196,6 +197,7 @@ impl DirectXRenderer {
             height: 1,
             skip_draws: false,
             fast_frame: crate::fast::frame::FrameState::default(),
+            fast_recovery: crate::fast::device_recovery::RecoveryState::default(),
         })
     }
 
@@ -338,7 +340,7 @@ impl DirectXRenderer {
         scene: &Scene,
         background_appearance: WindowBackgroundAppearance,
     ) -> Result<()> {
-        if self.skip_draws {
+        if self.skip_draws || !crate::fast::device_recovery::can_draw(self) {
             // skip drawing this frame, we just recovered from a device lost event
             // and so likely do not have the textures anymore that are required for drawing
             return Ok(());
