@@ -470,10 +470,10 @@ impl WindowFrameState {
     }
 }
 
-struct ForegroundJournalWriter {
+pub(crate) struct ForegroundJournalWriter {
     foreground_runnables: ForegroundRunnableCounter,
     publisher: JournalPublisher,
-    turn_depth: usize,
+    pub(crate) turn_depth: usize,
     windows: HashMap<WindowId, WindowFrameState>,
     power: PowerState,
     power_changed_at: Option<Instant>,
@@ -481,6 +481,7 @@ struct ForegroundJournalWriter {
     suspended_time: Option<Duration>,
     retained_since_boundary: bool,
     small_polls: Option<SmallPollFlush>,
+    pub(crate) fast_interval: crate::fast::interval_deadline::OpenInterval,
 }
 
 impl ForegroundJournalWriter {
@@ -496,6 +497,7 @@ impl ForegroundJournalWriter {
             suspended_time: system_suspended_time(),
             retained_since_boundary: false,
             small_polls: None,
+            fast_interval: crate::fast::interval_deadline::OpenInterval::default(),
         }
     }
 
@@ -516,6 +518,9 @@ impl ForegroundJournalWriter {
             return;
         };
         self.turn_depth = turn_depth;
+        if crate::fast::interval_deadline::seal_overdue(self, ended_at) {
+            return;
+        }
         if self.turn_depth > 0
             || self.foreground_runnables.has_runnables()
             || self.has_unexpired_pending_frame(ended_at)
@@ -629,10 +634,14 @@ impl ForegroundJournalWriter {
 
     fn record_event(&mut self, event: ForegroundEvent) {
         self.retained_since_boundary = true;
+        crate::fast::interval_deadline::OpenInterval::retained(
+            &mut self.fast_interval,
+            event.end_time(),
+        );
         self.record_entry(ForegroundJournalEntry::Event(event));
     }
 
-    fn record_entry(&mut self, entry: ForegroundJournalEntry) {
+    pub(crate) fn record_entry(&mut self, entry: ForegroundJournalEntry) {
         let small_polls = self
             .take_small_polls()
             .map(ForegroundEvent::SmallPolls)
@@ -641,6 +650,7 @@ impl ForegroundJournalWriter {
             .publish([small_polls, Some(entry)].into_iter().flatten());
         if matches!(entry, ForegroundJournalEntry::Boundary(_)) {
             self.retained_since_boundary = false;
+            crate::fast::interval_deadline::OpenInterval::sealed(&mut self.fast_interval);
         }
     }
 
@@ -2968,6 +2978,7 @@ mod tests {
         retained_since_boundary: bool,
         small_polls: Option<ModelSmallPolls>,
         entries: Vec<WriterEntry>,
+        fast_retained_at: Option<u64>,
     }
 
     impl ModelWriter {
@@ -2984,11 +2995,13 @@ mod tests {
             self.entries.push(entry);
             if boundary {
                 self.retained_since_boundary = false;
+                self.fast_retained_at = None;
             }
         }
 
         fn record_input(&mut self, at: u64) {
             self.retained_since_boundary = true;
+            self.fast_retained_at = Option::or(self.fast_retained_at, Some(at));
             self.record_entry(WriterEntry::Input(at));
         }
 
@@ -3027,6 +3040,7 @@ mod tests {
             } else {
                 self.pending_frames.remove(&window);
                 self.retained_since_boundary = true;
+                self.fast_retained_at = Option::or(self.fast_retained_at, Some(at));
                 self.record_entry(WriterEntry::Present { window, at });
             }
         }
@@ -3036,6 +3050,12 @@ mod tests {
                 return;
             }
             self.turn_depth -= 1;
+            if self.turn_depth == 0
+                && matches!(self.fast_retained_at, Some(since) if at - since >= 1_000_000)
+            {
+                self.record_entry(WriterEntry::Idle(at));
+                return;
+            }
             if self.turn_depth > 0 || self.runnables > 0 {
                 return;
             }

@@ -475,6 +475,14 @@ Added in this fork:
   window follows the application's appearance unless it has its own, as a macOS window does, and
   a test sets the system's (`TestAppContext::simulate_system_appearance`). Tests:
   `fast::tests::window_appearance`.
+- fix(gpui): a hang is reported while the foreground stays busy (`fast/interval_deadline.rs`).
+  The hang monitor reports an interval once the journal's writer seals it, and an idle seal
+  waited for a turn end with no runnable queued for as long as runnables kept arriving; a
+  covered window that keeps drawing (test builds keep its frames coming) only adds unmeasured
+  presentations, which seal nothing. So a busy, covered app held a hang unreported indefinitely:
+  Slopty's e2e hang test lost one that way in a loaded VM. Retained work now waits at most
+  `FRAME_DEADLINE`, as a pending frame does, and the first turn to end past it seals the interval
+  idle. Tests: `fast::interval_deadline` and the writer's state-model property.
 - fix(gpui): a touch's fling ends once a step of it moves nothing, and a touch outside what
   it scrolls stays a tap (`fast/fling.rs`). `div`'s and `list`'s scroll listeners report
   whether a step moved them and where they are; a custom scroll handler reports nothing and
