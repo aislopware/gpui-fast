@@ -221,6 +221,10 @@ arrived. Test: `retained::every_view_is_rendered_again_once_fonts_are_added`.
   view handed over the next buffer, though the scroll-layer notes said surfaces bypass the
   layer. Surfaces now go to the overlay with the paths. Test:
   `a_surface_is_drawn_over_the_tiles_with_the_picture_last_painted`.
+- **A surface's picture in the text frames are compared by. Fix, wanted.** The retained check
+  described a surface without its buffer, and `Scene::describe` without the surface at all, so
+  a retained frame showing an older picture than one drawn afresh passed. Both now name the
+  buffer. Test: `a_frames_description_names_the_buffer_each_surface_shows`.
 
 ### Touch and accessibility
 

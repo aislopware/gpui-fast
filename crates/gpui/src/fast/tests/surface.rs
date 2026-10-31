@@ -119,6 +119,69 @@ fn a_surface_shows_the_buffer_its_view_holds_now() {
     assert_eq!(builds.get(), 3);
 }
 
+/// The text frames are compared by tells the pictures surfaces show apart, as the retained
+/// check and two windows' comparison need: a frame that shows an older buffer than a frame
+/// drawn afresh does not read the same, and one that shows the same buffer does.
+#[test]
+fn a_frames_description_names_the_buffer_each_surface_shows() {
+    let mut cx = TestAppContext::single();
+    let (first, second) = (buffer(), buffer());
+    let window = cx.add_window({
+        let first = first.clone();
+        move |_, cx| Tiles {
+            picture: cx.new(|_| Picture {
+                buffer: first,
+                builds: Rc::default(),
+            }),
+        }
+    });
+    let picture = window
+        .update(&mut cx, |tiles, _, _| tiles.picture.clone())
+        .unwrap();
+    let described = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            // Each line after its depth.
+            let painted: Vec<String> = window
+                .painted_primitives()
+                .into_iter()
+                .filter(|line| line.contains(" surface "))
+                .collect();
+            let scene: Vec<String> = window
+                .rendered_frame
+                .scene
+                .describe()
+                .into_iter()
+                .filter(|line| line.starts_with("surface"))
+                .collect();
+            (painted, scene)
+        })
+        .unwrap()
+    };
+    let showing_first = described(&mut cx);
+    assert_eq!(showing_first.0.len(), 1, "{showing_first:?}");
+    assert_eq!(showing_first.1.len(), 1, "{showing_first:?}");
+    let swap = |cx: &mut TestAppContext, buffer: &CVPixelBuffer| {
+        picture.update(cx, |picture, cx| {
+            picture.buffer = buffer.clone();
+            cx.notify();
+        });
+    };
+    swap(&mut cx, &second);
+    let showing_second = described(&mut cx);
+    assert_ne!(
+        showing_first.0, showing_second.0,
+        "the retained check's text"
+    );
+    assert_ne!(showing_first.1, showing_second.1, "the scene's text");
+    swap(&mut cx, &first);
+    assert_eq!(
+        described(&mut cx),
+        showing_first,
+        "the same buffer reads the same"
+    );
+}
+
 struct Faded {
     buffer: CVPixelBuffer,
 }
