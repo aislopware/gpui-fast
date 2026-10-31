@@ -87,6 +87,7 @@ impl HangMonitor {
         std::thread::Builder::new()
             .name("HangDetection".to_string())
             .spawn(move || {
+                crate::fast::hang_trace::monitor_started(interval);
                 loop {
                     let (reason, done) = match receiver.recv_timeout(interval) {
                         Ok(Request::Flush { done }) => (HangMonitorPollReason::Flush, Some(done)),

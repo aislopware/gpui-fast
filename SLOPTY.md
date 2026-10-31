@@ -461,6 +461,15 @@ Added in this fork:
   that reads it is built again when it changes, as one that reads the pointer is when it moves,
   so the view that held work is built again, and does it, once the touch ends. Tests:
   `fast::tests::touch_in_flight`.
+- feat(gpui): the hang monitor traces what it saw, at debug under the `gpui::hang` target
+  (`fast/hang_trace.rs`). It traces the monitor starting and every task poll of 100 ms or more,
+  journaled or dropped across a sleep or wake. It also traces every detector poll that drained,
+  sealed or still holds anything: the entries drained, the longest event, the boundaries
+  (power among them), entries lost, what it sealed and by what, and what stays open. Slopty's
+  e2e hang test lost a hang once more after the deadline below, in an idle VM where no power
+  cause applied, and nothing kept the journal to say why. A silent run now says where a hang
+  was lost: never timed, dropped, never drained, or never sealed. Nothing is counted or
+  formatted unless the target is on. Tests: `fast::hang_trace`.
 - fix(gpui): `Window::text_input_focused` answers what the platform was last told, whether its
   soft keyboard is up (`fast/focus.rs`). It answered whether the last frame's text field was
   still the focused element, so the focus moving from one field to another between frames read

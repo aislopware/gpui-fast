@@ -30,6 +30,8 @@ pub(crate) mod frame_time;
 pub mod gesture;
 pub(crate) mod glyph_blur;
 pub(crate) mod glyphs;
+#[cfg(feature = "profiler")]
+pub(crate) mod hang_trace;
 pub(crate) mod headless_atlas;
 pub(crate) mod image_evict;
 pub(crate) mod image_mask;

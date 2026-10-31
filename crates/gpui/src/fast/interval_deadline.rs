@@ -33,6 +33,7 @@
 
 use scheduler::Instant;
 
+use crate::fast::hang_trace;
 use crate::profiler::journal::{
     FRAME_DEADLINE, ForegroundEvent, ForegroundJournalEntry, ForegroundJournalWriter,
     FrameSnapshot, IntervalBoundary, IntervalSealer,
@@ -76,16 +77,19 @@ pub(crate) fn seal_overdue(writer: &mut ForegroundJournalWriter, ended_at: Insta
 
 /// Seals what `entries` complete, as [`IntervalSealer::push_entries`] does,
 /// and then, at `now`, the interval still open once the first event it holds
-/// ended [`FRAME_DEADLINE`] ago: idle, ended where its last work ended.
+/// ended [`FRAME_DEADLINE`] ago: idle, ended where its last work ended. The
+/// poll is traced ([`hang_trace`]).
 pub(crate) fn push_entries(
     sealer: &mut IntervalSealer,
-    entries: impl IntoIterator<Item = ForegroundJournalEntry>,
+    entries: Vec<ForegroundJournalEntry>,
     now: Instant,
 ) -> Vec<FrameSnapshot> {
+    let drained = hang_trace::Drained::count(&entries);
     let mut snapshots = sealer.push_entries(entries);
     if let Some(ended_at) = quiet_since(sealer, now) {
         snapshots.push(sealer.seal(IntervalBoundary::Idle { ended_at }));
     }
+    hang_trace::polled(drained, &snapshots, sealer, now);
     snapshots
 }
 
@@ -223,7 +227,7 @@ mod tests {
         let just_before = hang_end + FRAME_DEADLINE - Duration::from_micros(1);
         let early = super::push_entries(&mut sealer, entries, just_before);
         assert!(early.is_empty(), "nothing closes before the deadline");
-        let snapshots = super::push_entries(&mut sealer, [], hang_end + FRAME_DEADLINE);
+        let snapshots = super::push_entries(&mut sealer, Vec::new(), hang_end + FRAME_DEADLINE);
         let [snapshot] = snapshots.as_slice() else {
             panic!("one interval closes at the deadline: {snapshots:?}");
         };
@@ -244,7 +248,7 @@ mod tests {
             "the hang is the one contributor: {:?}",
             incident.contributors
         );
-        let later = super::push_entries(&mut sealer, [], hang_end + FRAME_DEADLINE * 3);
+        let later = super::push_entries(&mut sealer, Vec::new(), hang_end + FRAME_DEADLINE * 3);
         assert!(later.is_empty(), "closed once: {later:?}");
     }
 
