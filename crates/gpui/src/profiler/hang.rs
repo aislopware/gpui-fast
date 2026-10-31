@@ -228,8 +228,12 @@ impl HangDetector {
                 _ => None,
             });
         }
-        self.sealer
-            .push_entries(drained.entries)
+        let fast_snapshots = crate::fast::interval_deadline::push_entries(
+            &mut self.sealer,
+            drained.entries,
+            Instant::now(),
+        );
+        fast_snapshots
             .into_iter()
             .filter_map(|snapshot| {
                 let mut incident =

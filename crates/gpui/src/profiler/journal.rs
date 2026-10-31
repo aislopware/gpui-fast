@@ -1402,8 +1402,8 @@ impl ForegroundJournalCollector {
 #[derive(Debug)]
 pub struct IntervalSealer {
     interval_start: Instant,
-    events: Vec<ForegroundEvent>,
-    small_polls: Vec<SmallPollFlush>,
+    pub(crate) events: Vec<ForegroundEvent>,
+    pub(crate) small_polls: Vec<SmallPollFlush>,
     dropped_events: u64,
     journal_discontinuous: bool,
 }
@@ -1504,7 +1504,7 @@ impl IntervalSealer {
         }
     }
 
-    fn seal(&mut self, boundary: IntervalBoundary) -> FrameSnapshot {
+    pub(crate) fn seal(&mut self, boundary: IntervalBoundary) -> FrameSnapshot {
         let ended = boundary.end_time();
         let snapshot = FrameSnapshot {
             interval_start: self.interval_start,
