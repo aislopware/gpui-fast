@@ -15,6 +15,25 @@ Two upstreams feed it:
 
 ## History layout
 
+- 2026-11-06: `7f051e5` "Merge longbridge/gpui-fast 5bf7480 (#82, #85, #88, #91, #95-#99,
+  #103) into the fork" brings longbridge's `main` from `7fcd37e6` to `5bf74804`. Every
+  commit was read and the merge was built from our tree plus what was taken (`git merge -s
+  ours --no-commit`, then each taken change applied by hand), so none of longbridge's own
+  adaptations of zed changes we had already adapted were mixed in. Its body lists what was
+  taken and what was left out, with reasons: #97's four zed commits (zed `decd2399`), #82
+  and #95 (`InteractiveText`'s hand by hitboxes, now `fast::interactive_text`), #85 and #98
+  (Windows frame requests), #88 (already here; our test-support `PathCacheStats` export
+  stays, gpui_perf reads it), #91's last round (the late-layout splice fix, ported into
+  `fast::splice` with `splice_late_layout.rs`) and #96 (gpui-pre 0.3.11 snapshots); #86,
+  #99, #90 and #103 left out. `81eb4c5` ("chore: Sync GPUI upstream 4a6121bb0f") then
+  imports zed `4a6121bb0f` (vendor `85d71602`), whose drag cursor (#66540), menu key
+  equivalents (#65744), `Anchored::attach` (#66496) and animated WebP (#66459) help macOS.
+  The vendor line now sits on longbridge's: zed `4a6121bb` is replayed onto longbridge's
+  vendor commit `957e6599` (zed `decd2399`), not onto our own `0522de48`, so the two
+  lines, which had parted at `63cebde`, are one again. `5cfe3b9` ports open #101 (presses
+  on the window chrome go to AppKit) into this fork's composition, `1eaf1ef` ports #103's
+  fix to the Metal atlas (a tile over the 16384-pixel texture limit adds no texture), and
+  `67171c0` moves `compat/` to gpui-pre 0.3.11 and gpui-fast 0.1.13, gpui-kit's pins.
 - Vendor commits hold nothing but zed's copy of the directories `UPSTREAM` lists. Since
   longbridge #33 this fork imports zed on top of longbridge's vendor line, not its own:
   #33 replays each zed commit (`script/import-upstream`) from gpui-fast's first import
@@ -398,13 +417,11 @@ Merged ahead of longbridge, and not yet merged there:
   the `Checked` taken before its gaps were built; `copy_prepaint_segment` leaving out the
   gaps' element states), so only #91's tests came over. When longbridge merges it, keep
   the fork's `splice.rs` and `dependencies.rs` and take the tests.
-- Open longbridge PRs left out (2026-10-31): #69 and #90 change #30's window composition,
-  which this fork leaves out (below; its own composition has no overlay surface, and routes
-  input to a native by the topmost hitbox); #82 sets `InteractiveText`'s hand by hitboxes,
-  and neither Slopty nor GPUI Kit draws an `InteractiveText`; #85 is Windows-only; #86's
-  dynamic textures copy CPU frames into a texture outside the atlas, where Slopty's streamed
-  pictures already go through `VideoLayer` and `Window::paint_surface`. Slopty's
-  `docs/decisions/tooling.md` has each verdict.
+- Open longbridge PRs (2026-11-06, at `5bf74804`): #101 is ported (`5cfe3b9`: a press on
+  the title bar or a window control over a native goes to AppKit, so the window drags and
+  its buttons work); #100 reuses #30's full-scene layers and #102 adds a web wgpu context,
+  both for code this fork does not carry. #69 and #90 (#30's composition) stay out, as
+  below; #82, #85 and #86 have merged and are in the 2026-11-06 sync's verdicts.
 
 - Window composition, against longbridge #30 (zed#62379, merged in `c22243e` and left out
   here). This fork composes natives its own way (docs/composition.md): under GPUI's single
@@ -874,6 +891,53 @@ streaming Markdown message grows its layout, so the views around it are built ag
 
 The `RefreshTable` scenario drew no frames here, retained or not. `gpui_perf --headless
 --verify` painted the same quads retained and from scratch in all 25 simulated scenarios.
+
+## Onicode
+
+Onicode (`aislopware/onicode`) moves from zui to this fork; its study is onicode's
+`.research/gpui-migration.md`. These are the APIs it depends on beyond upstream GPUI, so a
+sync or a cleanup that touches one has to keep it or say what replaces it.
+
+Already on `main`:
+
+- `ImageSource::evict` and `App::peek_asset` (`fast::image_evict`).
+- `ListState::set_tail_reservation`, `offset_for_item` and `tail_reservation_filled`
+  (`fast::list_tail`).
+- `Window::with_rounded_clip` and `with_edge_fade`, `EdgeFade` and `edge_fade`
+  (`fast::edge_fade`). Onicode's own `edge_fade.rs` is rewritten onto this shape.
+- `Window::paint_backdrop_blur` (`fast::backdrop`), `paint_glyph_transformed`
+  (`fast::glyph_blur`), `paint_image_fitted_masked` with `ImageAlphaMask`
+  (`fast::image_mask`) and `on_present` (`fast::present`).
+- `Window::create_native_host`, `NativeHost`, `native_view` and `Window::paint_native`
+  (`fast::composition`): onicode's browser hosts its WKWebView this way, in place of zui's
+  scene overlay.
+- `Window::paint_surface`, for streamed pictures.
+- zed's API as this fork has it: `Window::paint_image(bounds, image_bounds, ..)`,
+  `Window::blur(cx)`, `Modifiers::secondary_key(cx)`, `ScrollEvent` (with `momentum_phase`
+  and `source`) and `gpui_platform::current_headless_renderer() -> Result<..>`.
+
+On branches until they merge, each based on `67171c0`:
+
+- `gpui_tokio`, tracked from zed (`fast/gpui-tokio`): `Tokio::spawn` and the crate's
+  other entry points.
+- Drags start only with the button held and 4 px of travel (`fast/drag-threshold`,
+  `fast::drag`); no new API.
+- An image's intrinsic aspect ratio applies only when a dimension is auto
+  (`fast/image-aspect`, `fast::image_aspect`); no new API.
+- The instance buffer pool shrinks after a large frame, and `GPUI_GPU_STATS=1` writes a
+  GPU memory line every 10 s with `MTLDevice.currentAllocatedSize` (`fast/gpu-stats`,
+  `gpui_apple`'s `fast::instance_pool` and `fast::gpu_stats`).
+- `GPUI_DRAWABLE_COUNT=2` keeps two drawables a window instead of three
+  (`fast/drawable-count`, `gpui_apple`'s `fast::drawable_count`); the default stays three
+  until measured.
+- Native backdrop blur: a GPUI backdrop blur over a native (a frosted menu over a
+  WKWebView) blurs the native too, in the transactional present (`fast/native-backdrop-blur`;
+  `NativeFrame::blurs`, `NativeFrameBlur`, `gpui_macos`'s `fast::native_blur`;
+  `GPUI_NATIVE_BLUR=0` turns it off).
+
+Onicode reaches all of this through gpui-kit's fork, which pins this fork's `rev` and
+patches `gpui-pre` and `gpui-fast` with `compat/`; their versions have to match gpui-kit's
+pins for a build to hold one GPUI.
 
 ## Syncing
 
