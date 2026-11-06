@@ -1479,9 +1479,10 @@ float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades) {
 }
 
 // gpui-fast: backdrop blur (gpui's fast/backdrop.rs, BackdropBlur; gpui_apple's
-// fast/backdrop.rs). Two draws over the region: one keeping destination × (1 − k),
-// one adding the blurred backdrop × k, k being the antialiased rounded rectangle's
-// coverage times the edge fade and the opacity.
+// fast/backdrop.rs). One draw over the region writing mix(destination, blurred, k),
+// the destination read where it lies, k being the antialiased rounded rectangle's
+// coverage times the edge fade and the opacity: monocode's backdrop_composite_fragment,
+// rounded once as its is.
 struct BackdropBlur {
   uint order;
   uint fade;
@@ -1528,20 +1529,16 @@ float backdrop_blur_coverage(BackdropBlurFragmentInput input, constant BackdropB
          edge_fade(input.position.xy, blur.fade, fades);
 }
 
-fragment float4 backdrop_blur_erase_fragment(
-    BackdropBlurFragmentInput input [[stage_in]], constant BackdropBlur *blurs [[buffer(1)]],
-    constant EdgeFadeRamps *fades [[buffer(EDGE_FADE_BUFFER)]]) {
-  return float4(0., 0., 0., backdrop_blur_coverage(input, blurs, fades));
-}
-
 fragment float4 backdrop_blur_fragment(
     BackdropBlurFragmentInput input [[stage_in]], constant BackdropBlur *blurs [[buffer(1)]],
     constant float4 &source_rect [[buffer(3)]],
     texture2d<float> source [[texture(0)]],
-    constant EdgeFadeRamps *fades [[buffer(EDGE_FADE_BUFFER)]]) {
+    constant EdgeFadeRamps *fades [[buffer(EDGE_FADE_BUFFER)]],
+    float4 destination [[color(0)]]) {
   constexpr sampler source_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
   float2 uv = (input.position.xy - source_rect.xy) / source_rect.zw;
-  return source.sample(source_sampler, uv) * backdrop_blur_coverage(input, blurs, fades);
+  return mix(destination, source.sample(source_sampler, uv),
+             backdrop_blur_coverage(input, blurs, fades));
 }
 
 // gpui-fast: blurred glyphs (gpui's fast/glyph_blur.rs; zui 0966d06). The blur's

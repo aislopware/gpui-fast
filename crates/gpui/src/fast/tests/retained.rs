@@ -3447,3 +3447,182 @@ fn a_spliced_view_forgets_the_entities_views_in_it_dropped() {
     assert_eq!(shell_builds.get(), 1, "the shell was spliced throughout");
     assert_eq!(builds.get(), 21);
 }
+
+/// A model a cached view shows, which every keystroke or streamed token
+/// updates and notifies.
+struct Feed {
+    tokens: usize,
+}
+
+/// A cached view showing the [`Feed`]: a sidebar or a tab strip that reads
+/// the conversation it lists, counting its builds.
+struct FeedReader {
+    feed: Entity<Feed>,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for FeedReader {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        div()
+            .size_full()
+            .child(format!("{} tokens", self.feed.read(cx).tokens))
+    }
+}
+
+/// A view that asks for an animation frame each time it is built, as a
+/// spinner in a sidebar row does, counting its builds.
+struct RowSpinner {
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for RowSpinner {
+    fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        window.request_animation_frame();
+        div().size(px(10.))
+    }
+}
+
+/// A cached panel holding a [`RowSpinner`], counting its builds.
+struct RowSpinnerPanel {
+    spinner: Entity<RowSpinner>,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for RowSpinnerPanel {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        div().size_full().child(self.spinner.clone())
+    }
+}
+
+/// A window drawing a [`FeedReader`] and a [`RowSpinnerPanel`] as cached views.
+struct FeedHost {
+    reader: Entity<FeedReader>,
+    panel: Entity<RowSpinnerPanel>,
+}
+
+impl Render for FeedHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let size = || StyleRefinement::default().w(px(100.)).h(px(20.));
+        div()
+            .size(px(300.))
+            .child(self.reader.clone().cached(size()))
+            .child(self.panel.clone().cached(size()))
+    }
+}
+
+/// The builds of a [`FeedHost`]'s reader, panel and spinner.
+struct FeedBuilds {
+    reader: Rc<Cell<usize>>,
+    panel: Rc<Cell<usize>>,
+    spinner: Rc<Cell<usize>>,
+}
+
+impl FeedBuilds {
+    fn get(&self) -> [usize; 3] {
+        [self.reader.get(), self.panel.get(), self.spinner.get()]
+    }
+}
+
+fn feed_window(cx: &mut TestAppContext) -> (WindowHandle<FeedHost>, Entity<Feed>, FeedBuilds) {
+    let builds = FeedBuilds {
+        reader: Rc::default(),
+        panel: Rc::default(),
+        spinner: Rc::default(),
+    };
+    let feed = cx.new(|_| Feed { tokens: 0 });
+    let window = cx.add_window({
+        let feed = feed.clone();
+        let (reader, panel, spinner) = (
+            builds.reader.clone(),
+            builds.panel.clone(),
+            builds.spinner.clone(),
+        );
+        move |_, cx| FeedHost {
+            reader: cx.new(|_| FeedReader {
+                feed,
+                builds: reader,
+            }),
+            panel: cx.new(|cx| RowSpinnerPanel {
+                spinner: cx.new(|_| RowSpinner { builds: spinner }),
+                builds: panel,
+            }),
+        }
+    });
+    cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    (window, feed, builds)
+}
+
+/// Draws a frame of `window` without delivering the platform's next frame,
+/// as a frame drawn for a keystroke between two of the display's is.
+fn draw_between_frames(cx: &mut TestAppContext, window: WindowHandle<FeedHost>) {
+    cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+}
+
+/// A model a cached view reads, updated and notified with no view around
+/// the cached view notified, leaves the cached view drawn from its cache, as
+/// upstream's and monocode's are: streaming into a conversation does not
+/// build the sidebar listing it again. Notified itself, the cached view is
+/// built again and shows the model as it is.
+#[test]
+fn a_cached_view_reading_a_notified_model_stays_cached_until_notified() {
+    let mut cx = TestAppContext::single();
+    let (window, feed, builds) = feed_window(&mut cx);
+    let [reader, ..] = builds.get();
+    for _ in 0..3 {
+        feed.update(&mut cx, |feed, cx| {
+            feed.tokens += 1;
+            cx.notify();
+        });
+        draw_between_frames(&mut cx, window);
+        assert_eq!(
+            builds.get()[0],
+            reader,
+            "the reader is drawn from its cache"
+        );
+    }
+    window
+        .update(&mut cx, |host, _, cx| {
+            host.reader.update(cx, |_, cx| cx.notify())
+        })
+        .unwrap();
+    draw_between_frames(&mut cx, window);
+    assert_eq!(builds.get()[0], reader + 1, "notified, the reader is built");
+}
+
+/// A view that asked for an animation frame inside a cached view is built
+/// again with it when the platform's next frame notifies it, as upstream
+/// builds it. A frame drawn before then for something else draws the cached
+/// view around it from its cache, as upstream does, rather than building it
+/// for the spinner.
+#[test]
+fn a_view_animating_inside_a_cached_view_waits_for_its_frame() {
+    let mut cx = TestAppContext::single();
+    let (window, feed, builds) = feed_window(&mut cx);
+    let [_, panel, spinner] = builds.get();
+    feed.update(&mut cx, |feed, cx| {
+        feed.tokens += 1;
+        cx.notify();
+    });
+    draw_between_frames(&mut cx, window);
+    assert_eq!(
+        builds.get()[1..],
+        [panel, spinner],
+        "the panel stays cached"
+    );
+
+    cx.update_window(window.into(), |_, window, cx| {
+        window.simulate_next_frame(cx);
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        builds.get()[1..],
+        [panel + 1, spinner + 1],
+        "the spinner's frame builds it, and the panel around it"
+    );
+}

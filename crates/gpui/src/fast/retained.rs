@@ -412,19 +412,30 @@ impl RetainedState {
     }
 
     /// Notes the entities notified since the last frame was drawn, replacing
-    /// those noted then, and adds the views that asked for an animation frame
-    /// to them.
+    /// those noted then, and the views that asked for an animation frame with
+    /// them, returning those views that were not notified.
     ///
     /// Such a view is notified by a callback of the next frame the platform
     /// delivers. A frame drawn before then — one drawn for another reason, or
-    /// by a test calling [`Window::draw`] — has to build it again all the same:
-    /// what it drew was for the moment it was drawn, as an animation's is, or
-    /// it read state it wrote while drawing, as a popup placed by what it
-    /// measured does.
-    pub(crate) fn note_notified(&mut self, entities: &mut FxHashSet<EntityId>) {
-        entities.extend(self.animation_requests.get_mut().drain());
+    /// by a test calling [`Window::draw`] — has to build it again all the same
+    /// wherever upstream would: what it drew was for the moment it was drawn,
+    /// as an animation's is, or it read state it wrote while drawing, as a
+    /// popup placed by what it measured does. See
+    /// [`mark_animating_views_dirty`].
+    pub(crate) fn note_notified(
+        &mut self,
+        entities: &FxHashSet<EntityId>,
+    ) -> SmallVec<[EntityId; 4]> {
+        let animating = self
+            .animation_requests
+            .get_mut()
+            .drain()
+            .filter(|entity| !entities.contains(entity))
+            .collect::<SmallVec<_>>();
         self.notified_entities.clear();
         self.notified_entities.extend(entities.iter().copied());
+        self.notified_entities.extend(animating.iter().copied());
+        animating
     }
 }
 
@@ -727,9 +738,12 @@ impl Window {
 
     /// The record the cached view `id` left last frame, if nothing about
     /// this frame rules out drawing it again, as [`Self::reusable_retained`]
-    /// finds it, but for what it read updated without being notified, which
-    /// does not draw a cached view again (see
-    /// [`App::notified_dependencies_changed`]).
+    /// finds it, but for the entities it read, whose changes draw a cached
+    /// view again only under a notified view (see
+    /// [`App::cached_dependencies_changed`]), or when one is a view drawn in
+    /// it notified while this frame draws: upstream builds the cached view
+    /// on the next frame for that, and it is built in this one, drawn after
+    /// the notification, as a view that is not cached is.
     pub(crate) fn reusable_cached(&self, id: &GlobalElementId, cx: &App) -> Option<usize> {
         self.reusable_record(id, cx, true)
     }
@@ -748,7 +762,8 @@ impl Window {
         let index = self.rendered_frame.retained.find(id)?;
         let record = &self.rendered_frame.retained.records[index];
         let changed = if cached {
-            cx.notified_dependencies_changed(&record.dependencies, self.inside_notified_view())
+            cx.cached_dependencies_changed(&record.dependencies, self.inside_notified_view())
+                || self.views_notified_while_drawing(&record.dependencies.entities)
         } else {
             cx.dependencies_changed(&record.dependencies, self.inside_notified_view())
         };
@@ -1391,11 +1406,12 @@ impl Window {
                     .view_path_reversed(entity)
                     .any(|view| notified.contains(&view));
             if record.is_cached() {
-                // A cached view is drawn again for what is notified, or
-                // updated outside drawing under a notified view, not for
-                // what is only written while the window draws. See
-                // `App::notified_dependencies_changed`.
-                if cx.notified_dependencies_changed(&record.own_dependencies, inside_notified)
+                // A cached view is drawn again as upstream's and monocode's
+                // are: when it, or a view drawn in it, is notified (marked
+                // dirty with the views around it), not for an entity it read
+                // being notified, unless under a notified view. See
+                // `App::cached_dependencies_changed`.
+                if cx.cached_dependencies_changed(&record.own_dependencies, inside_notified)
                     || changed_alone()
                 {
                     changed.push(entity);
@@ -1403,16 +1419,19 @@ impl Window {
                 cached.push(index + record.nested);
                 continue;
             }
-            if !cx.dependencies_changed(&record.own_dependencies, inside_notified)
-                && !changed_alone()
-            {
+            // A view inside a cached view is built again when it is notified
+            // itself, or the cached view is built again, as upstream does,
+            // or for what a cached view itself is.
+            if !cached.is_empty() {
+                if cx.cached_dependencies_changed(&record.own_dependencies, inside_notified)
+                    || changed_alone()
+                {
+                    changed.push(entity);
+                }
                 continue;
             }
-            // A view inside a cached view only written while the window
-            // drew is built again only if the cached view is, as upstream
-            // does.
-            if !cached.is_empty()
-                && !cx.notified_dependencies_changed(&record.own_dependencies, inside_notified)
+            if !cx.dependencies_changed(&record.own_dependencies, inside_notified)
+                && !changed_alone()
             {
                 continue;
             }
@@ -1430,6 +1449,26 @@ impl Window {
 
     /// Whether the view being drawn, or one around it, was notified since
     /// the last frame. See [`App::dependencies_changed`].
+    /// Whether a view among `entities`, drawn last frame, was notified while
+    /// this frame draws. See [`Self::reusable_cached`].
+    fn views_notified_while_drawing(&self, entities: &[EntityId]) -> bool {
+        // While the window draws, the invalidator's views are those notified
+        // since it began, for the next frame.
+        let notified = self.invalidator.take_views();
+        let found = !notified.is_empty()
+            && entities.iter().any(|entity| {
+                notified.contains(entity)
+                    && self
+                        .rendered_frame
+                        .dispatch_tree
+                        .view_path_reversed(*entity)
+                        .next()
+                        .is_some()
+            });
+        self.invalidator.replace_views(notified);
+        found
+    }
+
     pub(crate) fn inside_notified_view(&self) -> bool {
         let notified = &self.retained_state.notified_entities;
         !notified.is_empty()
@@ -1437,6 +1476,39 @@ impl Window {
                 .rendered_entity_stack
                 .iter()
                 .any(|entity| notified.contains(entity))
+    }
+}
+
+/// Marks the views that asked for an animation frame, and were not
+/// notified, dirty with the views around them up to the cached view they
+/// are drawn in, which is not marked: a frame drawn before the platform's
+/// next one builds them again where upstream would, and draws a cached
+/// view around them from what it drew, as upstream and monocode do until
+/// the frame's callback notifies them. A sidebar whose row animates is
+/// not built again for a keystroke drawn in between; a cached view that
+/// animates itself is.
+pub(crate) fn mark_animating_views_dirty(window: &mut Window, animating: &[EntityId]) {
+    if animating.is_empty() {
+        return;
+    }
+    let cached = window
+        .rendered_frame
+        .retained
+        .records
+        .iter()
+        .filter(|record| record.is_cached())
+        .filter_map(|record| crate::fast::splice::view_entity(&record.id))
+        .collect::<FxHashSet<_>>();
+    for entity in animating {
+        for view in window
+            .rendered_frame
+            .dispatch_tree
+            .view_path_reversed(*entity)
+        {
+            if (view != *entity && cached.contains(&view)) || !window.dirty_views.insert(view) {
+                break;
+            }
+        }
     }
 }
 

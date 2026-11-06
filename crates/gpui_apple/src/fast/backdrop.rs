@@ -7,12 +7,16 @@
 //! that with `MPSImageGaussianBlur` (a true gaussian; its edges clamp, so a
 //! blur at the window's edge does not darken), and begins the pass again,
 //! marking the holes' interiors as a pass restarted after paths does. It
-//! then draws the blurred backdrop back in two instanced draws per group:
-//! one keeping `destination × (1 − k)` and one adding `blurred × k`, `k`
-//! being each region's antialiased rounded-rectangle coverage times its
-//! edge fade and opacity. The two leave colour and alpha exactly a mix of
-//! the two by `k`, which one draw can't when the drawable is not opaque (a
-//! window over vibrancy, or holes).
+//! then draws the blurred backdrop back in one instanced draw per group,
+//! which reads the destination where it draws (Apple GPUs' framebuffer
+//! fetch) and writes `mix(destination, blurred, k)`, `k` being each
+//! region's antialiased rounded-rectangle coverage times its edge fade and
+//! opacity: colour and alpha exactly a mix of the two by `k`, opaque
+//! drawable or not (a window over vibrancy, or holes), rounded once, as
+//! monocode's `backdrop_composite_fragment` writes its mix. Two blended
+//! draws, keeping `destination × (1 − k)` and adding `blurred × k`, round
+//! twice, and left the antialiased ring of a frosted composer's corners a
+//! level off monocode's.
 //!
 //! What the blur reads is what GPUI drew: a native under a hole is not in
 //! the drawable, and shows through the blurred backdrop unblurred, under
@@ -44,10 +48,10 @@ use objc2::{
 };
 use objc2_foundation::NSString;
 use objc2_metal::{
-    MTLBlendFactor, MTLBlendOperation, MTLBlitCommandEncoder as _, MTLCommandBuffer,
-    MTLCommandEncoder as _, MTLDevice, MTLLibrary, MTLOrigin, MTLPixelFormat, MTLPrimitiveType,
-    MTLRenderCommandEncoder, MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLSize,
-    MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
+    MTLBlitCommandEncoder as _, MTLCommandBuffer, MTLCommandEncoder as _, MTLDevice, MTLLibrary,
+    MTLOrigin, MTLPixelFormat, MTLPrimitiveType, MTLRenderCommandEncoder,
+    MTLRenderPipelineDescriptor, MTLRenderPipelineState, MTLSize, MTLStorageMode, MTLTexture,
+    MTLTextureDescriptor, MTLTextureType, MTLTextureUsage,
 };
 use objc2_quartz_core::CAMetalLayer;
 
@@ -95,10 +99,8 @@ impl Scratch {
 
 /// What a renderer keeps for backdrop blurs.
 pub(crate) struct Backdrop {
-    /// Keeps `destination × (1 − k)`.
-    erase: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
-    /// Adds `blurred × k`.
-    add: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    /// Writes `mix(destination, blurred, k)`.
+    draw: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     /// Whether Metal Performance Shaders run on the device.
     pub(crate) supported: bool,
     scratch: Vec<Scratch>,
@@ -122,39 +124,25 @@ impl Backdrop {
                 .newFunctionWithName(&NSString::from_str(name))
                 .with_context(|| format!("locating function {name}"))
         };
-        let pipeline = |label: &str, fragment: &str, source: MTLBlendFactor| -> Result<_> {
+        let draw = {
             let descriptor = MTLRenderPipelineDescriptor::new();
-            descriptor.setLabel(Some(&NSString::from_str(label)));
+            descriptor.setLabel(Some(&NSString::from_str("backdrop_blur")));
             descriptor.setVertexFunction(Some(&*function("backdrop_blur_vertex")?));
-            descriptor.setFragmentFunction(Some(&*function(fragment)?));
+            descriptor.setFragmentFunction(Some(&*function("backdrop_blur_fragment")?));
             // SAFETY: Index zero is within the pipeline's color attachment array.
             let color = unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
             color.setPixelFormat(format);
-            color.setBlendingEnabled(true);
-            color.setRgbBlendOperation(MTLBlendOperation::Add);
-            color.setAlphaBlendOperation(MTLBlendOperation::Add);
-            color.setSourceRGBBlendFactor(MTLBlendFactor::One);
-            color.setSourceAlphaBlendFactor(MTLBlendFactor::One);
-            color.setDestinationRGBBlendFactor(source);
-            color.setDestinationAlphaBlendFactor(source);
+            // The fragment mixes with the destination it reads itself.
+            color.setBlendingEnabled(false);
             descriptor.setStencilAttachmentPixelFormat(super::occlusion::STENCIL_FORMAT);
             device
                 .newRenderPipelineStateWithDescriptor_error(&descriptor)
-                .with_context(|| format!("creating {label} render pipeline"))
+                .context("creating backdrop_blur render pipeline")?
         };
         // SAFETY: a live MTLDevice.
         let supported = unsafe { MPSSupportsMTLDevice(ptr::from_ref(device).cast()) }.as_bool();
         Ok(Self {
-            erase: pipeline(
-                "backdrop_blur_erase",
-                "backdrop_blur_erase_fragment",
-                MTLBlendFactor::OneMinusSourceAlpha,
-            )?,
-            add: pipeline(
-                "backdrop_blur_add",
-                "backdrop_blur_fragment",
-                MTLBlendFactor::One,
-            )?,
+            draw,
             supported,
             scratch: Vec::new(),
             kernels: Vec::new(),
@@ -482,38 +470,36 @@ fn draw_group(
         copy.width() as f32,
         copy.height() as f32,
     ];
-    for pipeline in [&renderer.fast_backdrop.erase, &renderer.fast_backdrop.add] {
-        encoder.setRenderPipelineState(pipeline);
-        // SAFETY: the unit vertices, the blurs, the viewport and the source rectangle match
-        // the backdrop shaders' layouts and slots; Metal retains the buffers and the
-        // texture, and copies the bytes. The group lies within the blurs written.
-        unsafe {
-            encoder.setVertexBuffer_offset_atIndex(Some(&renderer.unit_vertices), 0, VERTICES);
-            encoder.setVertexBuffer_offset_atIndex(Some(&blurs.buffer), blurs.offset, BLURS);
-            encoder.setFragmentBuffer_offset_atIndex(Some(&blurs.buffer), blurs.offset, BLURS);
-            encoder.setVertexBytes_length_atIndex(
-                ptr::NonNull::from(&pass.viewport_size).cast(),
-                mem::size_of_val(&pass.viewport_size),
-                VIEWPORT_SIZE,
-            );
-            encoder.setFragmentBytes_length_atIndex(
-                ptr::NonNull::from(&source_rect).cast(),
-                mem::size_of_val(&source_rect),
-                SOURCE_RECT,
-            );
-            encoder.setFragmentTexture_atIndex(Some(&blurred), SOURCE_TEXTURE);
-        }
-        super::edge_fade::bind(encoder, fades);
-        // SAFETY: as above.
-        unsafe {
-            encoder.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(
-                MTLPrimitiveType::Triangle,
-                0,
-                6,
-                group.len(),
-                group.start,
-            );
-        }
+    encoder.setRenderPipelineState(&renderer.fast_backdrop.draw);
+    // SAFETY: the unit vertices, the blurs, the viewport and the source rectangle match
+    // the backdrop shaders' layouts and slots; Metal retains the buffers and the
+    // texture, and copies the bytes. The group lies within the blurs written.
+    unsafe {
+        encoder.setVertexBuffer_offset_atIndex(Some(&renderer.unit_vertices), 0, VERTICES);
+        encoder.setVertexBuffer_offset_atIndex(Some(&blurs.buffer), blurs.offset, BLURS);
+        encoder.setFragmentBuffer_offset_atIndex(Some(&blurs.buffer), blurs.offset, BLURS);
+        encoder.setVertexBytes_length_atIndex(
+            ptr::NonNull::from(&pass.viewport_size).cast(),
+            mem::size_of_val(&pass.viewport_size),
+            VIEWPORT_SIZE,
+        );
+        encoder.setFragmentBytes_length_atIndex(
+            ptr::NonNull::from(&source_rect).cast(),
+            mem::size_of_val(&source_rect),
+            SOURCE_RECT,
+        );
+        encoder.setFragmentTexture_atIndex(Some(&blurred), SOURCE_TEXTURE);
+    }
+    super::edge_fade::bind(encoder, fades);
+    // SAFETY: as above.
+    unsafe {
+        encoder.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(
+            MTLPrimitiveType::Triangle,
+            0,
+            6,
+            group.len(),
+            group.start,
+        );
     }
     Ok(true)
 }
@@ -705,6 +691,68 @@ mod tests {
                 assert!(pixel[channel].abs_diff(want) <= 1, "({x}, {y}): {pixel:?}");
             }
         }
+    }
+
+    /// A blur's antialiased rounded corners are the mix of what is under
+    /// them and the blurred backdrop by their coverage, rounded once, as
+    /// monocode's composite writes it: within half a level of the exact mix
+    /// everywhere on the ring. Keeping `destination × (1 − k)` and adding
+    /// `blurred × k` in two draws rounds twice, up to a level off, as a
+    /// frosted composer's corners were. The blurred backdrop is read from
+    /// the same blur drawn with square corners, and the coverage computed as
+    /// the shader computes it.
+    #[test]
+    fn a_blurs_antialiased_corners_mix_what_is_under_them_rounded_once() {
+        let Some(mut renderer) = renderer() else {
+            return;
+        };
+        let bounds = sp(128.5, 40.25, 80., 79.5);
+        let radius = 23.;
+        let draw = |renderer: &mut MetalRenderer, radius: f32| {
+            let mut scene = Scene::default();
+            halves(&mut scene);
+            let mut rounded = blur(bounds, 16.);
+            rounded.corner_radii = Corners::all(ScaledPixels(radius));
+            scene.insert_backdrop_blur(rounded);
+            render(renderer, &mut scene)
+        };
+        let ring = draw(&mut renderer, radius);
+        let square = draw(&mut renderer, 0.);
+        // quad_sdf's coverage at a pixel's centre.
+        let coverage = |x: u32, y: u32, radius: f32| {
+            let half = [bounds.size.width.0 / 2., bounds.size.height.0 / 2.];
+            let center = [bounds.origin.x.0 + half[0], bounds.origin.y.0 + half[1]];
+            let corner = [
+                (x as f32 + 0.5 - center[0]).abs() - half[0] + radius,
+                (y as f32 + 0.5 - center[1]).abs() - half[1] + radius,
+            ];
+            let outside = corner[0].max(0.).hypot(corner[1].max(0.));
+            let distance = outside + corner[0].max(corner[1]).min(0.) - radius;
+            (0.5 - distance).clamp(0., 1.)
+        };
+        let (mut checked, mut worst) = (0, 0f32);
+        for y in 40..121 {
+            for x in 128..210 {
+                // On the arcs, where the square blur covers the pixel whole.
+                let k = coverage(x, y, radius);
+                if k <= 0. || k >= 1. || coverage(x, y, 0.) < 1. {
+                    continue;
+                }
+                for channel in 0..3 {
+                    let under = 255.;
+                    let blurred = f32::from(square.get_pixel(x, y)[channel]);
+                    let exact = under * (1. - k) + blurred * k;
+                    let drawn = f32::from(ring.get_pixel(x, y)[channel]);
+                    worst = worst.max((drawn - exact).abs());
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 100, "{checked} channels on the ring");
+        assert!(
+            worst <= 0.52,
+            "a ring pixel {worst} levels from the exact mix"
+        );
     }
 
     /// Opacity and an edge fade mix the blurred backdrop with what is under

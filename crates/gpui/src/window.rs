@@ -3889,10 +3889,12 @@ impl Window {
 
     fn invalidate_entities(&mut self) {
         let mut views = self.invalidator.take_views();
-        crate::fast::retained::RetainedState::note_notified(&mut self.retained_state, &mut views);
+        let animating =
+            crate::fast::retained::RetainedState::note_notified(&mut self.retained_state, &views);
         for entity in views.drain() {
             self.mark_view_dirty(entity);
         }
+        crate::fast::retained::mark_animating_views_dirty(self, &animating);
         self.invalidator.replace_views(views);
     }
 

@@ -1169,6 +1169,28 @@ alike here (onicode's `docs/onicode/golden.md`):
   last frame keep their phase, so retained frames draw as fresh ones. Test:
   `a_cached_view_placed_off_a_pixels_edge_snaps_from_its_snapped_bounds` (replacing
   `..._snaps_as_in_place`).
+- A cached view caches as upstream's and monocode's do: an entity it reads that is notified,
+  or updated, does not build it again unless a view around it was notified (a listener that
+  hands a model to a cached child and notifies the parent still shows on the next frame), or
+  the entity is a view drawn in it notified while the frame draws (built in that frame rather
+  than the next). The fork had built a cached view for any notified entity it read, so a
+  conversation model notified by every keystroke and streamed token built onicode's cached
+  sidebar, tab strip and project rail on each (`App::cached_dependencies_changed`,
+  `Window::reusable_cached`). A view that asked for an animation frame and is drawn before the
+  platform's frame delivers it is built again up to the cached view around it, which stays
+  drawn from its cache until the frame's callback notifies the view, as upstream draws it
+  (`RetainedState::note_notified`, `fast::retained::mark_animating_views_dirty`); a cached view that
+  animates itself is still built. Tests: `a_cached_view_reading_a_notified_model_stays_cached_until_notified`,
+  `a_view_animating_inside_a_cached_view_waits_for_its_frame`, and upstream's
+  `test_cached_reuse_keeps_entity_subscriptions` counting the frame drawn where upstream counts
+  its root's render (gpui-fast draws the root from last frame), and checking the cached panel
+  is not built.
+- A backdrop blur is drawn in one draw that reads the destination (Apple GPUs' framebuffer
+  fetch) and writes `mix(destination, blurred, k)`, rounded once as monocode's
+  `backdrop_composite_fragment` writes it; the two blended draws before it (`destination ×
+  (1 − k)`, then `+ blurred × k`) rounded twice and left a frosted composer's antialiased
+  corners a level off monocode's. Test: `a_blurs_antialiased_corners_mix_what_is_under_them_rounded_once`
+  (within half a level of the exact mix on the ring; the two draws were 0.89 off).
 
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.

@@ -192,6 +192,12 @@ mod tests {
                     );
                 }
 
+                let fast_frames = |cx: &mut TestAppContext| {
+                    window
+                        .update(cx, |_, window, _| window.layout_stats().frames)
+                        .expect("frames drawn")
+                };
+                let frames_before_notify = fast_frames(cx);
                 let renders_before_notify = root_renders.get();
                 leaf.update(cx, |leaf, cx| {
                     leaf.value = 2;
@@ -200,10 +206,14 @@ mod tests {
                 cx.run_until_parked();
                 let context =
                     format!("deferred child {deferred_child}, deferred panel {deferred_panel}");
-                // gpui-fast's retained mode redraws only the view that read the leaf.
-                let fast_redrew_panel = renders.get() > initial_renders;
+                // Upstream renders its root on every frame it draws; gpui-fast
+                // draws the root, which read nothing that changed, from last
+                // frame, so the frame drawn is counted instead, and the cached
+                // panel, not notified, from its cache, as upstream does.
+                assert_eq!(renders.get(), initial_renders, "{context}");
                 assert!(
-                    root_renders.get() > renders_before_notify || fast_redrew_panel,
+                    root_renders.get() > renders_before_notify
+                        || fast_frames(cx) > frames_before_notify,
                     "leaf notification should redraw: {context}"
                 );
                 // A plain entity read has no dispatch-tree path to invalidate the

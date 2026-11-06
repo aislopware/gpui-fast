@@ -573,39 +573,37 @@ impl App {
 
     /// Whether anything in `dependencies`, read by a cached view
     /// ([`crate::Entity::cached`]) or a view drawn inside one, changed in a
-    /// way that draws the cached view again: one of the entities was
-    /// notified, or, `inside_notified`, updated outside drawing (see
-    /// [`App::dependencies_changed`]), or a global or a versioned state
-    /// changed.
+    /// way that draws the cached view again: a global or a versioned state
+    /// changed, or, `inside_notified`, one of the entities was updated or
+    /// changed outside drawing.
     ///
-    /// An entity written while the window drew does not count (see
-    /// [`note_update`]). Upstream builds a cached view again only when it,
-    /// or a view drawn in it, is notified, or it is drawn somewhere else: a
-    /// view around it rendering again, and writing to what it reads as it
-    /// does, as a view handing its child what to show does on every render,
-    /// does not. Such a write is counted for a view that is not cached
-    /// because upstream renders that view again with the view around it, and
-    /// shows what was written; it never shows it in a cached view that was
-    /// not notified. Drawing a cached view again for less than that never
-    /// draws it from older reads than upstream would.
+    /// An entity notified or updated outside a notified view does not count,
+    /// as upstream's and monocode's cached views have it: such a view is
+    /// built again when it, or a view drawn in it, is notified, which marks
+    /// it dirty with the views around the one notified, or when it is drawn
+    /// somewhere else. A model that every keystroke or streamed token
+    /// notifies, read by a cached sidebar or tab strip, leaves them as they
+    /// were.
     ///
-    /// An entity updated outside drawing without being notified, under a
-    /// view that was notified, still counts, as it always has in this fork:
-    /// a listener that changes a model a cached view shows and notifies only
-    /// the view around it, as a workspace handing a dropped file to a tile's
-    /// composer does, is shown on the next frame rather than whenever the
-    /// cached view happens to be notified next. Upstream would show it late;
-    /// drawing it now is never older than upstream.
-    pub(crate) fn notified_dependencies_changed(
+    /// An entity updated outside drawing under a view that was notified
+    /// still counts: a listener that changes a model a cached view shows and
+    /// notifies only the view around it, as a workspace handing a dropped
+    /// file to a tile's composer does, is shown on the next frame rather than
+    /// whenever the cached view happens to be notified next. Upstream would
+    /// show it late; drawing it now is never older than upstream, and the
+    /// view around it is built again anyway.
+    pub(crate) fn cached_dependencies_changed(
         &self,
         dependencies: &RenderDependencies,
         inside_notified: bool,
     ) -> bool {
-        self.entities.access_log.changed_since(
-            &dependencies.entities,
-            dependencies.updates,
-            inside_notified,
-        ) || self.globals_or_states_changed(dependencies)
+        (inside_notified
+            && self.entities.access_log.changed_since(
+                &dependencies.entities,
+                dependencies.updates,
+                true,
+            ))
+            || self.globals_or_states_changed(dependencies)
     }
 
     fn globals_or_states_changed(&self, dependencies: &RenderDependencies) -> bool {
