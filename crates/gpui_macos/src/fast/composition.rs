@@ -488,10 +488,12 @@ pub(crate) fn send_event(window: &AnyObject, event: *mut AnyObject) -> bool {
 /// window's content view: to the frame view itself, its resize border, or to one of its
 /// controls, such as the titlebar buttons. Such a press belongs to AppKit, as in a window
 /// without natives. Shown to GPUI and recorded as pressed on the native under it, a resize
-/// grabbed where a native reaches the window's edge would leave that press open: AppKit's
-/// live-resize loop takes the drags and the release from the queue itself, so neither
-/// GPUI nor `pressed_on_native` would see it end, and the next click went astray. Ported
-/// from longbridge/gpui-fast#101 (by ohdarling) into this fork's composition.
+/// grabbed where a native reaches the window's edge could leave that press open: AppKit's
+/// live-resize loop can consume the release (it does with a physical mouse on macOS 26.6;
+/// synthetic events still reach `sendEvent:`), so neither GPUI nor `pressed_on_native`
+/// would see the press end, and the next click went astray. A release that does arrive
+/// still clears `pressed_on_native` below. Ported from longbridge/gpui-fast#101 (by
+/// ohdarling, through `6365c72`) into this fork's composition.
 fn hits_window_chrome(window: *mut AnyObject, location: NSPoint) -> bool {
     // SAFETY: `window` is a live NSWindow; main thread. `hitTest:` on the frame view, which
     // has no superview, takes a point in window coordinates.
