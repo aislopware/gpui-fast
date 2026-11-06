@@ -451,7 +451,9 @@ pub(crate) fn send_event(window: &AnyObject, event: *mut AnyObject) -> bool {
             // SAFETY: as above.
             let location: NSPoint = unsafe { msg_send![event, locationInWindow] };
             let position = composition.window_point_to_gpui(location);
-            if composition.hit_map.borrow().native_at(position).is_some() {
+            if composition.hit_map.borrow().native_at(position).is_some()
+                && !hits_window_chrome(window_ptr, location)
+            {
                 composition.pressed_on_native.set(true);
                 show_gpui(&composition, event);
             }
@@ -479,6 +481,35 @@ pub(crate) fn send_event(window: &AnyObject, event: *mut AnyObject) -> bool {
             offer_key_to_gpui(composition.gpui_view, event)
         }
         _ => false,
+    }
+}
+
+/// Whether AppKit hit-tests a press at `location` (window coordinates) outside the
+/// window's content view: to the frame view itself, its resize border, or to one of its
+/// controls, such as the titlebar buttons. Such a press belongs to AppKit, as in a window
+/// without natives. Shown to GPUI and recorded as pressed on the native under it, a resize
+/// grabbed where a native reaches the window's edge would leave that press open: AppKit's
+/// live-resize loop takes the drags and the release from the queue itself, so neither
+/// GPUI nor `pressed_on_native` would see it end, and the next click went astray. Ported
+/// from longbridge/gpui-fast#101 (by ohdarling) into this fork's composition.
+fn hits_window_chrome(window: *mut AnyObject, location: NSPoint) -> bool {
+    // SAFETY: `window` is a live NSWindow; main thread. `hitTest:` on the frame view, which
+    // has no superview, takes a point in window coordinates.
+    unsafe {
+        let content: *mut AnyObject = msg_send![window, contentView];
+        if content.is_null() {
+            return false;
+        }
+        let frame_view: *mut AnyObject = msg_send![content, superview];
+        if frame_view.is_null() {
+            return false;
+        }
+        let target: *mut AnyObject = msg_send![frame_view, hitTest: location];
+        if target.is_null() {
+            return false;
+        }
+        let inside: Bool = msg_send![target, isDescendantOf: content];
+        inside == Bool::NO
     }
 }
 
