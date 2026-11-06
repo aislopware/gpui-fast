@@ -753,6 +753,7 @@ fn a_hole_and_a_blur_of_one_order_are_both_met() {
         .map(|batch| match batch {
             ComposedBatch::Blurs(range) => format!("blurs {range:?}"),
             ComposedBatch::Holes(range) => format!("holes {range:?}"),
+            ComposedBatch::Masks(range) => format!("masks {range:?}"),
             ComposedBatch::Primitives(_) => "primitives".to_owned(),
         })
         .collect();

@@ -261,7 +261,7 @@ fn with_reduced_motion_a_notch_jumps(cx: &mut TestAppContext) {
 /// A horizontal notch is no glide: the list scrolls as upstream's would.
 #[gpui::test]
 fn a_sideways_notch_does_not_glide(cx: &mut TestAppContext) {
-    let mut harness = harness(cx, ListAlignment::Top, false);
+    let harness = harness(cx, ListAlignment::Top, false);
     harness.cx.simulate_event(ScrollEvent {
         position: point(px(10.), px(10.)),
         delta: ScrollDelta::Lines(point(1., -1.)),
