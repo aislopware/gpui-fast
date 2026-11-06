@@ -88,7 +88,7 @@ pub struct RenderSvgParams {
 /// A struct holding everything necessary to render SVGs.
 pub struct SvgRenderer {
     asset_source: Arc<dyn AssetSource>,
-    usvg_options: Arc<usvg::Options<'static>>,
+    pub(crate) usvg_options: Arc<usvg::Options<'static>>,
 }
 
 /// A parsed SVG document that can be rasterized at any scale.
@@ -97,7 +97,7 @@ pub struct SvgRenderer {
 /// [`SvgRenderer::render_parsed`]. Parsing resolves fonts and converts text
 /// to paths, so callers that need to rasterize the same SVG at multiple
 /// scales should retain this value to avoid re-paying the parse cost.
-pub struct ParsedSvg(usvg::Tree);
+pub struct ParsedSvg(pub(crate) usvg::Tree);
 
 /// The size in which to rasterize the SVG.
 #[derive(Clone, Copy)]

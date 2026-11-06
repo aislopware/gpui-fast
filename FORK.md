@@ -961,6 +961,11 @@ did not:
   as for a cursor style). Monocode gave a role-only element no hitbox, so there it kept the
   arrow; here it shows the hand. Tests: `a_control_marked_only_by_its_role_shows_the_pointing_hand`,
   `only_roles_that_are_clicked_take_the_hand`.
+- `SvgRenderer::parse_svg_without_images` (`fast::svg_untrusted`, from monocode's): parses
+  untrusted SVG (onicode's Mermaid diagrams) as `parse_svg` does, with both image resolvers
+  answering nothing, so no `<image>` reads a path or a URL or decodes a data URL, a nested
+  SVG's included, and with no resources directory. Fonts are this renderer's. `usvg_options`
+  and `ParsedSvg`'s tree are `pub(crate)` for it. Test: `untrusted_svg_resolves_no_image`.
 
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.

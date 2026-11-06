@@ -79,6 +79,7 @@ pub(crate) mod stats;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod subscriptions;
 pub(crate) mod svg_text;
+pub(crate) mod svg_untrusted;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_pixels;
 #[cfg(any(test, feature = "test-support"))]
