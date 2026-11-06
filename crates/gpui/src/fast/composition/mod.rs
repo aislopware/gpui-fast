@@ -32,7 +32,7 @@ use crate::{
 };
 
 pub use element::{NativeView, native_view};
-pub use frame::{NativeFrame, NativeFramePlacement};
+pub use frame::{NativeFrame, NativeFrameBlur, NativeFramePlacement};
 pub use hit_map::{NativeHitEntry, NativeHitMap};
 pub use scene::{ComposedBatch, NativePlacement, SceneComposition};
 #[cfg(any(test, feature = "test-support"))]
