@@ -51,6 +51,10 @@ harness = false
 required-features = ["fast"]
 
 [[test]]
+name = "gpui_tokio"
+required-features = ["fast"]
+
+[[test]]
 name = "windows_manifest_coexistence"
 required-features = ["fast", "upstream"]
 
@@ -80,6 +84,7 @@ smol.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
+gpui_tokio.workspace = true
 raw-window-handle.workspace = true
 roxmltree = "0.21"
 
