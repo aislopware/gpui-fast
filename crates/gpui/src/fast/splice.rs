@@ -732,7 +732,7 @@ impl Window {
             let gap_id = gap_record.id.clone();
 
             let segment_start = self.prepaint_index();
-            self.copy_prepaint_segment(
+            let removed_states = self.copy_prepaint_segment(
                 cursor.clone()..gap_range.start.clone(),
                 &gap_ids,
                 &mut dispatch,
@@ -741,6 +741,7 @@ impl Window {
                 next_record..gap.record,
                 &cursor,
                 &segment_start,
+                &removed_states,
                 (segment, index),
                 &mut copied,
             );
@@ -791,11 +792,13 @@ impl Window {
         }
         let segment = gaps.len();
         let segment_start = self.prepaint_index();
-        self.copy_prepaint_segment(cursor.clone()..prepaint_range.end, &gap_ids, &mut dispatch);
+        let removed_states =
+            self.copy_prepaint_segment(cursor.clone()..prepaint_range.end, &gap_ids, &mut dispatch);
         self.copy_records(
             next_record..last + 1,
             &cursor,
             &segment_start,
+            &removed_states,
             (segment, index),
             &mut copied,
         );
@@ -867,7 +870,7 @@ impl Window {
         range: Range<PrepaintStateIndex>,
         gaps: &[&GlobalElementId],
         dispatch: &mut OpenDispatchCopy,
-    ) {
+    ) -> Vec<usize> {
         crate::fast::a11y::reuse_prepaint(self, &range);
         self.next_frame.hitboxes.extend(
             self.rendered_frame.hitboxes[range.start.hitboxes_index..range.end.hitboxes_index]
@@ -880,12 +883,11 @@ impl Window {
                 .iter_mut()
                 .map(|request| request.take()),
         );
-        self.next_frame.accessed_element_states.extend(
-            self.rendered_frame.accessed_element_states[range.start.accessed_element_states_index
-                ..range.end.accessed_element_states_index]
-                .iter()
-                .filter(|(id, _)| !inside_any(id, gaps))
-                .cloned(),
+        let removed_states = copy_state_accesses(
+            &self.rendered_frame.accessed_element_states,
+            range.start.accessed_element_states_index..range.end.accessed_element_states_index,
+            gaps,
+            &mut self.next_frame.accessed_element_states,
         );
         self.text_system()
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
@@ -918,6 +920,7 @@ impl Window {
                 enclosing_retained: EnclosingRetained::default(),
             });
         }
+        removed_states
     }
 
     /// Copies last frame's records `records`, whose prepaint was copied from
@@ -929,6 +932,7 @@ impl Window {
         records: Range<usize>,
         from: &PrepaintStateIndex,
         to: &PrepaintStateIndex,
+        removed_states: &[usize],
         (segment, anchor): (usize, usize),
         copied: &mut Vec<(usize, usize)>,
     ) {
@@ -937,8 +941,20 @@ impl Window {
         copied.reserve(records.len());
         for index in records {
             let record = &source.records[index];
-            let prepaint_range = record.prepaint_range.start.shifted(from, to)
+            let mut prepaint_range = record.prepaint_range.start.shifted(from, to)
                 ..record.prepaint_range.end.shifted(from, to);
+            if !removed_states.is_empty() {
+                // A gap's element state accesses can lie inside a copied
+                // stretch (laid out late, in another view's prepaint), and
+                // are left out of the copy: each boundary of a record copied
+                // with it moves back by the accesses left out before it.
+                let start = record.prepaint_range.start.accessed_element_states_index;
+                let end = record.prepaint_range.end.accessed_element_states_index;
+                prepaint_range.start.accessed_element_states_index -=
+                    removed_states.partition_point(|&removed| removed < start);
+                prepaint_range.end.accessed_element_states_index -=
+                    removed_states.partition_point(|&removed| removed < end);
+            }
             let painted = matches!(record.paint, PaintStatus::Painted { .. });
             let mut copy = copy_record(record, prepaint_range, anchor);
             if !painted {
@@ -1070,6 +1086,35 @@ impl Window {
 /// Whether the element `id` is inside one of the views `views`.
 fn inside_any(id: &GlobalElementId, views: &[&GlobalElementId]) -> bool {
     views.iter().any(|view| id.starts_with(view))
+}
+
+/// Copies last frame's element state accesses `range` of `source` onto
+/// `target`, leaving out those inside one of the `gaps`, which are built
+/// again. Returns the indices, in `source`, of the accesses left out, in
+/// order, for the records copied along to move their boundaries back by
+/// (ported from longbridge/gpui-fast#91's `copy_state_accesses`). A stretch
+/// with no access inside a gap is copied whole.
+fn copy_state_accesses(
+    source: &[(GlobalElementId, std::any::TypeId)],
+    range: Range<usize>,
+    gaps: &[&GlobalElementId],
+    target: &mut Vec<(GlobalElementId, std::any::TypeId)>,
+) -> Vec<usize> {
+    let states = &source[range.clone()];
+    let Some(first) = states.iter().position(|(id, _)| inside_any(id, gaps)) else {
+        target.extend_from_slice(states);
+        return Vec::new();
+    };
+    target.extend_from_slice(&states[..first]);
+    let mut removed = vec![range.start + first];
+    for (offset, state) in states[first + 1..].iter().enumerate() {
+        if inside_any(&state.0, gaps) {
+            removed.push(range.start + first + 1 + offset);
+        } else {
+            target.push(state.clone());
+        }
+    }
+    removed
 }
 
 /// A copy of `record`, with its prepaint at `prepaint_range` in this frame and

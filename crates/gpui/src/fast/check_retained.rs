@@ -771,7 +771,7 @@ impl Shadow {
             pending_effects: cx.pending_effects.len(),
             pending_notifications: cx.pending_notifications.clone(),
             pending_global_notifications: cx.pending_global_notifications.clone(),
-            accessed_entities: std::mem::take(cx.entities.accessed_entities.get_mut()),
+            accessed_entities: cx.entities.take_accessed(),
             stamps: crate::fast::dependencies::ChangeStamps::take(cx),
             thread: crate::fast::layers::invalidate::ThreadNotes::take(),
             lists,
@@ -821,7 +821,7 @@ impl Shadow {
         cx.pending_effects.truncate(self.pending_effects);
         cx.pending_notifications = self.pending_notifications;
         cx.pending_global_notifications = self.pending_global_notifications;
-        *cx.entities.accessed_entities.get_mut() = self.accessed_entities;
+        cx.entities.restore_accessed(self.accessed_entities);
         self.stamps.restore(cx);
         self.thread.restore();
     }

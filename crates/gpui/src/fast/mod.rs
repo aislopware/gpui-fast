@@ -37,6 +37,7 @@ pub(crate) mod image_evict;
 pub(crate) mod image_mask;
 pub(crate) mod inline_boxes;
 pub(crate) mod input_frame;
+pub(crate) mod interactive_text;
 pub(crate) mod interactivity;
 #[cfg(feature = "profiler")]
 pub(crate) mod interval_deadline;
