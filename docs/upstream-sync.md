@@ -407,6 +407,10 @@ unchanged, and a new entry needs as good a reason.
 - An element whose role is clicked (`Role::Button`, `Link`, `Tab`, a menu item and the like)
   shows the pointing hand unless it names a cursor (`fast/role_cursor.rs`, from monocode), so
   it gets a hitbox where upstream gives it none; upstream shows the arrow.
+- A `list` glides through a mouse wheel's notches over the frames after them, monocode's
+  70 ms curve (`fast/wheel_glide.rs`; FORK.md, "Onicode"), where upstream jumps a notch's
+  distance at once. No new API; `App::reduce_motion` keeps upstream's jump, and a test that
+  wheels a list by lines and draws by hand, without running next-frame callbacks, sets it.
 - On Metal a drop shadow is drawn only outside its element, as CSS `box-shadow` is and as
   upstream's `Shadow` documents it, and a dashed border runs three widths on and two off;
   upstream draws a drop shadow under its element too and dashes two on and one off

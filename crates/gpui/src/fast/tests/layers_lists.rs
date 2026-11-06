@@ -5213,6 +5213,10 @@ mod layout_states {
     /// follows its tail, its tall row third from last.
     #[crate::test]
     fn a_tall_row_scrolled_by_lines_keeps_the_state_its_layout_took(cx: &mut TestAppContext) {
+        // A list glides through a wheel's notches over the frames after it
+        // (fast::wheel_glide), which this test does not run; with reduced
+        // motion each notch lands at once.
+        cx.update(|cx| cx.set_reduce_motion(true));
         let delta = ScrollDelta::Lines(point(0., 1.));
         scroll_through_document(cx, ROWS - 3, true, Takes::AsLaidOut, delta, 36);
     }

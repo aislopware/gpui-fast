@@ -563,6 +563,9 @@ Added in this fork:
   whether a step moved them and where they are; a custom scroll handler reports nothing and
   keeps its fling. Upstream's open zed #64534 keeps a scroll gesture with the content it
   started on, which is a different question: its fling still runs out its curve.
+  `div`'s report comes before `fast::layers::wheel`'s guard returns for a step that cannot
+  move it (longbridge #104, merged in `bd0a631` after the report), so a step against the
+  end is heard and ends the fling (`a_fling_into_a_divs_end_stops_there`).
 - fix(gpui): a node's bounds in the accessibility tree are what shows of it, cut to its
   ancestors' content mask (`fast/a11y.rs`), and an a11y press skips a node with nothing
   showing. Upstream reported a node scrolled out of view at its layout bounds, so VoiceOver
@@ -990,6 +993,27 @@ did not:
   shared instance pool counted once; a renderer's entry goes with it. `GPUI_GPU_STATS=1`'s
   line is unchanged. Tests: `the_snapshot_sums_live_renderers`,
   `holdings_add_up_with_the_shared_pool_once`.
+
+Branch `onicode-parity-2` ports the rest (stack-port.md §6 steps 5–8):
+
+- A mouse wheel's notches glide through a `list` (`fast::wheel_glide`, monocode's
+  `WheelGlide`): a vertical `ScrollDelta::Lines` notch is 20 px a line still to travel, and
+  each frame (a next-frame callback, before the frame draws) moves the list by
+  `remaining · (1 − e^(−dt/τ))`, τ 70 ms, `dt` at most 50 ms, landing on the end once within
+  half a pixel. Further notches add to what is left; one the other way drops it first; pixels
+  (a trackpad), a sideways notch, `reset`, `scroll_to_end` and following the tail end it; a
+  bottom-aligned list at its end ends it; with `App::reduce_motion` a notch jumps as upstream's
+  does. Monocode's constants and step verbatim; its clock is the executor's, which is
+  `Instant::now` outside tests. A glide step is the list's own scroll, so scroll layers
+  composite its frames. Tests (`fast/tests/wheel_glide.rs`, layers on and off, each frame
+  against monocode's step): `a_notch_glides_where_trackpad_pixels_land_at_once` (onicode's
+  `wheel_glide_tests.rs`), `a_notch_lands_its_whole_distance_on_monocodes_curve`,
+  `notches_add_to_the_distance_still_to_go`, `a_notch_the_other_way_drops_what_was_left`,
+  `a_late_frame_steps_at_most_fifty_milliseconds`, `with_reduced_motion_a_notch_jumps`,
+  `a_sideways_notch_does_not_glide`, `a_bottom_aligned_list_at_its_end_ends_the_glide`,
+  `scrolling_to_the_end_or_resetting_ends_the_glide`. `layers_lists`'
+  `a_tall_row_scrolled_by_lines_keeps_the_state_its_layout_took` runs with reduced motion, as
+  it scrolls by notches without running the frames a glide takes.
 
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.

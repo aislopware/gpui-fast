@@ -65,7 +65,7 @@ pub(crate) struct StateInner {
     pub(crate) last_padding: Option<Edges<Pixels>>,
     pub(crate) items: SumTree<ListItem>,
     pub(crate) scroll_anchor: Option<ScrollAnchor>,
-    alignment: ListAlignment,
+    pub(crate) alignment: ListAlignment,
     overdraw: Pixels,
     reset: bool,
     #[allow(clippy::type_complexity)]
@@ -76,6 +76,7 @@ pub(crate) struct StateInner {
     pub(crate) follow_state: FollowState,
     pub(crate) version: crate::fast::dependencies::StateVersion,
     pub(crate) fast_tail: crate::fast::list_tail::TailReservation,
+    pub(crate) fast_glide: Option<crate::fast::wheel_glide::WheelGlide>,
 }
 
 #[derive(Clone, Copy)]
@@ -330,6 +331,7 @@ impl ListState {
             follow_state: FollowState::default(),
             version: crate::fast::dependencies::StateVersion::default(),
             fast_tail: crate::fast::list_tail::TailReservation::default(),
+            fast_glide: None,
         })));
         state.splice(0..0, item_count);
         state
@@ -364,6 +366,7 @@ impl ListState {
             state.reset = true;
             state.measuring_behavior.reset();
             state.set_scroll_anchor(None);
+            state.fast_glide = None;
             state.scrollbar_drag_start_height = None;
             state.items.summary().count
         };
@@ -609,6 +612,7 @@ impl ListState {
     pub fn scroll_to_end(&self) {
         let state = &mut *self.0.borrow_mut();
         crate::fast::layers::lists::note_scrolled_to_end(state);
+        state.fast_glide = None;
         let item_count = state.items.summary().count;
         state.set_scroll_anchor(Some(ListOffset {
             item_ix: item_count,
@@ -632,6 +636,7 @@ impl ListState {
                 state.follow_state = FollowState::Normal;
             }
             FollowMode::Tail => {
+                state.fast_glide = None;
                 state.follow_state = FollowState::Tail { is_following: true };
                 if matches!(mode, FollowMode::Tail) {
                     let item_count = state.items.summary().count;
@@ -892,7 +897,7 @@ impl StateInner {
         scroll_top.item_ix..cursor.start().count + 1
     }
 
-    fn scroll(
+    pub(crate) fn scroll(
         &mut self,
         scroll_top: &ListOffset,
         height: Pixels,
@@ -1743,6 +1748,10 @@ impl Element for List {
         let mut accumulated_scroll_delta = ScrollDelta::default();
         window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
             if phase == DispatchPhase::Bubble && hitbox_id.should_handle_scroll(window) {
+                let fast_glide = (scroll_top, height, current_view);
+                if crate::fast::wheel_glide::glides(&list_state, event, fast_glide, window, cx) {
+                    return;
+                }
                 accumulated_scroll_delta = accumulated_scroll_delta.coalesce(event.delta);
                 let pixel_delta = accumulated_scroll_delta.pixel_delta(px(20.));
                 let fast_top = list_state.logical_scroll_top();

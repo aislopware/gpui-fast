@@ -94,6 +94,7 @@ pub(crate) mod touch_in_flight;
 pub(crate) mod touch_time;
 pub(crate) mod transition;
 pub(crate) mod value_transition;
+pub(crate) mod wheel_glide;
 pub(crate) mod window_appearance;
 pub(crate) mod window_wait;
 

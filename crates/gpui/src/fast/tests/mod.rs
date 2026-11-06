@@ -77,6 +77,7 @@ mod touch_in_flight;
 mod touch_time;
 mod transition;
 mod value_transition;
+mod wheel_glide;
 mod wheel_notifies;
 mod window_appearance;
 mod window_wait;
