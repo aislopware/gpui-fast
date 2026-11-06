@@ -344,6 +344,15 @@ impl TileCache {
         }
     }
 
+    /// The bytes its tile and pooled textures take on the GPU, for
+    /// `fast::gpu_stats`.
+    pub(crate) fn resident_bytes(&self) -> usize {
+        let held = self.tiles.values().filter_map(|tile| tile.texture.as_ref());
+        held.chain(&self.pool)
+            .map(|texture| crate::fast::gpu_stats::allocated(&texture.texture))
+            .sum()
+    }
+
     /// Releases every tile and texture, as when the drawable's size or scale
     /// changes, or the GPU fails.
     pub(crate) fn clear(&mut self) {
