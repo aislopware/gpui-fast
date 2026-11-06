@@ -31,10 +31,8 @@ use std::mem;
 use smallvec::SmallVec;
 
 use crate::{
-    App, Bounds, Hitbox, Interactivity, ListOffset, Pixels, Point, ScrollEvent, Style, TouchEvent,
-    TouchPhase, Window,
+    App, Bounds, Hitbox, ListOffset, Pixels, Point, ScrollEvent, TouchEvent, TouchPhase, Window,
     gestures::{Momentum, RecognizedTouchGesture, TouchGestureRecognizer, scroll_event},
-    size,
 };
 
 /// What the fling in progress has learnt of what it scrolls.
@@ -146,28 +144,11 @@ pub(crate) fn schedule_tick(window: &mut Window) {
     });
 }
 
-/// How far a `div` scrolls, as its prepaint clamps its offset
-/// (`Interactivity::clamp_scroll_position`), taken where it paints its scroll
-/// listener.
-pub(crate) fn scroll_max(
-    interactivity: &Interactivity,
-    bounds: Bounds<Pixels>,
-    style: &Style,
-    window: &Window,
-) -> Point<Pixels> {
-    let padding = style
-        .padding
-        .to_pixels(bounds.size.into(), window.rem_size())
-        .map(|edge| window.pixel_snap(*edge));
-    let padded = interactivity.content_size
-        + size(padding.left + padding.right, padding.top + padding.bottom);
-    Point::from(padded - bounds.size)
-        .map(|max| (max * 100.).round() / 100.)
-        .max(&Point::default())
-}
-
-/// A `div`'s scroll listener moved its offset from `old` to `new`: whether its
-/// content moved is whether the two differ once clamped as its prepaint will.
+/// A `div`'s scroll listener would move its offset from `old` to `new`, its
+/// content scrolling up to `max` (`fast::layers::wheel::scroll_max`): whether
+/// its content moved is whether the two differ once clamped as its prepaint
+/// will. It reports before `fast::layers::wheel::moves` returns early for a
+/// step that moves nothing, which is the step that ends a fling.
 pub(crate) fn scrolled_by(
     window: &mut Window,
     hitbox: &Hitbox,
