@@ -1043,6 +1043,38 @@ mod list {
         composited
     }
 
+    /// A window zoomed 1.25 on a 1x display (`fast::content_zoom`) paints at
+    /// a scale factor of 1.25, as one on a 1.25x display does: its list's
+    /// layer draws what drawing without layers draws, by fractional deltas.
+    #[crate::test]
+    fn list_matches_layers_off_at_a_content_zoom_of_1_25(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let mut composited = 0;
+        for seed in 0..2 {
+            let (with_layers, _) = page(cx, ListState::new(300, ListAlignment::Top, px(50.)));
+            let (without_layers, _) = page(cx, ListState::new(300, ListAlignment::Top, px(50.)));
+            let windows: [AnyWindowHandle; 2] = [with_layers.into(), without_layers.into()];
+            for window in windows {
+                let scale = with_window(cx, window, |window, cx| {
+                    window.set_content_zoom(1.25, cx);
+                    window.scale_factor() / window.platform_window.scale_factor()
+                });
+                assert_eq!(scale, 1.25);
+                draw(cx, window);
+            }
+            composited += compare_with_layers_off(
+                cx,
+                windows[0],
+                windows[1],
+                &fractional_deltas(seed, 120),
+                &format!("zoomed 1.25, seed {seed}"),
+            );
+        }
+        assert!(composited > 100, "the layer was composited ({composited})");
+    }
+
     #[crate::test]
     fn list_matches_layers_off_at_a_fractional_scale_aligned_top(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {

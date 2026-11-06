@@ -83,6 +83,20 @@ impl NativeHitMap {
         (!occluded).then_some(entry.id)
     }
 
+    /// The hit map in a window's platform coordinates, `zoom` times its own
+    /// (`fast::content_zoom`).
+    pub(crate) fn zoomed(mut self, zoom: f32) -> Self {
+        if zoom == 1. {
+            return self;
+        }
+        let out = |bounds: &mut Bounds<Pixels>| *bounds = bounds.map(|v| v * zoom);
+        for entry in &mut self.entries {
+            out(&mut entry.visible);
+            entry.occluders.iter_mut().for_each(out);
+        }
+        self
+    }
+
     /// Whether no native takes the pointer anywhere.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()

@@ -416,6 +416,13 @@ unchanged, and a new entry needs as good a reason.
   pressure empties the atlases, which upstream only ever grows but for an image's removal, and
   every window is drawn afresh, since a cleared atlas reuses its texture slots and a frame
   drawn from the last would sample them. Metal's atlas and the headless one implement it.
+- `Window::content_zoom` and `Window::set_content_zoom` are new public API
+  (`fast/content_zoom.rs`, from monocode; FORK.md, "Onicode"): an interface scale setting
+  zooms everything a window draws, hard-coded pixel sizes included, as a browser zooms a page;
+  upstream's `rem_size` reaches only what is sized in rems. A zoomed window's `Pixels` are the
+  platform's divided by the zoom, so input, IME rectangles, `resize`, `show_window_menu`,
+  `insets`, `visual_viewport_bounds` and native placement are mapped where they cross, and
+  `native_hit_map` and `presented_natives` read platform coordinates. At zoom 1 nothing changes.
 - On Metal a drop shadow is drawn only outside its element, as CSS `box-shadow` is and as
   upstream's `Shadow` documents it, and a dashed border runs three widths on and two off;
   upstream draws a drop shadow under its element too and dashes two on and one off

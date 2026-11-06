@@ -279,13 +279,17 @@ impl Window {
         self.next_frame.scene.insert_native(placement);
     }
 
+    /// What the platform shows the rendered frame's natives by, in its own
+    /// coordinates: a window zoomed by `fast::content_zoom` places them at its
+    /// display's scale and its unzoomed size, and takes the pointer by them in
+    /// unzoomed points.
     pub(crate) fn native_present(&self) -> NativePresent {
         let scene = &self.rendered_frame.scene;
-        let frame = NativeFrame::new(scene, self.scale_factor(), self.viewport_size);
-        let hit_map = Rc::new(NativeHitMap::new(
-            &scene.composition,
-            &self.rendered_frame.hitboxes,
-        ));
+        let scale = crate::fast::content_zoom::platform_scale(self);
+        let viewport = crate::fast::content_zoom::size_out(self, self.viewport_size);
+        let frame = NativeFrame::new(scene, scale, viewport);
+        let hit_map = NativeHitMap::new(&scene.composition, &self.rendered_frame.hitboxes);
+        let hit_map = Rc::new(hit_map.zoomed(self.content_zoom()));
         let keyboard = self.focus.and_then(|focus| {
             scene
                 .composition
@@ -336,12 +340,13 @@ impl Window {
         present_scene(self);
     }
 
-    /// Where the natives take the pointer, as of the last present.
+    /// Where the natives take the pointer, as of the last present, in the
+    /// platform's coordinates: a window's own times its content zoom.
     pub fn native_hit_map(&self) -> Option<Rc<NativeHitMap>> {
         self.composition.presented_hit_map.clone()
     }
 
-    /// The natives the last present showed.
+    /// The natives the last present showed, in the platform's coordinates.
     pub fn presented_natives(&self) -> Option<&NativeFrame> {
         self.composition.presented.as_ref()
     }

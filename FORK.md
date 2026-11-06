@@ -1027,6 +1027,29 @@ Branch `onicode-parity-2` ports the rest (stack-port.md §6 steps 5–8):
   120 frames. Tests: `the_frame_after_a_clear_uploads_what_it_draws`,
   `a_clear_drops_the_scroll_layers`; (`gpui_apple`)
   `a_cleared_atlas_holds_no_texture_and_builds_again`.
+- `Window::content_zoom()` and `Window::set_content_zoom(zoom, cx)` (`fast::content_zoom`,
+  monocode's interface zoom, clamped to 0.25..=4): layout runs against a viewport `zoom` times
+  smaller and painting at a scale factor `zoom` times larger (`bounds_changed` reads them so),
+  so the drawable keeps its size. As monocode's: input positions and pixel scroll deltas are
+  divided by the zoom (`fast::window_wait`'s dispatch), as are the pointer read on a resize and
+  the point an IME asks a character at; the IME's rectangles (`bounds_for_range`,
+  `selected_bounds`, so `update_ime_position`) are multiplied, as are `resize` and
+  `show_window_menu`. Beyond monocode, for what this fork adds: gestures, long presses, touch
+  drags and back gestures are divided too; `insets()`, `visual_viewport_bounds()` and
+  `fully_visible_bounds()` are in the window's coordinates; iOS's
+  `selection_bounds_for_range` is multiplied; natives are placed at the display's scale and
+  take the pointer in the platform's points (`native_present`: `NativeFrame` and
+  `NativeHitMap::zoomed`, so `presented_natives` and `native_hit_map` read platform
+  coordinates); `render_to_image_at` keeps the zoom. Unchanged, and so in the platform's
+  coordinates: `Window::bounds`, `set_traffic_light_position`, and Linux's input region and
+  client inset; a cursor image keeps its size in screen points, as the system's cursors do. The
+  scene and the accessibility tree are in device pixels, so they need nothing, and scroll
+  layers raster at the zoomed scale and are dropped when it changes. Tests
+  (`fast/tests/content_zoom.rs`): `a_zoomed_window_lays_out_smaller_and_paints_larger`,
+  `a_zoomed_window_hit_tests_the_platforms_points`, `a_zoomed_window_scrolls_by_its_own_pixels`,
+  `a_zoomed_window_resizes_by_its_own_size`, `a_zoomed_windows_ime_rects_are_the_platforms`,
+  `a_zoomed_window_places_natives_in_the_platforms_points`; (`layers_lists`)
+  `list_matches_layers_off_at_a_content_zoom_of_1_25`.
 
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.

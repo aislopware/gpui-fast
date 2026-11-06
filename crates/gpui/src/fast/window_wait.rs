@@ -123,12 +123,16 @@ fn blocked(cx: &AsyncApp) -> Blocked {
 }
 
 /// `event` through `window`, as upstream's callback dispatched it: the frame
-/// it needs drawn first, then the event.
+/// it needs drawn first, then the event, its positions mapped into the
+/// window's zoomed coordinates (`fast::content_zoom`).
 fn dispatch(window: AnyWindowHandle, cx: &AsyncApp, event: PlatformInput) -> DispatchEventResult {
     let mut cx = cx.clone();
     crate::prepare_input(window, &event, &mut cx);
     window
-        .update(&mut cx, |_, window, cx| window.dispatch_event(event, cx))
+        .update(&mut cx, |_, window, cx| {
+            let event = crate::fast::content_zoom::unzoomed(event, window);
+            window.dispatch_event(event, cx)
+        })
         .log_err()
         .unwrap_or_default()
 }

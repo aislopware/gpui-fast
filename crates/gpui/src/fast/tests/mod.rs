@@ -9,6 +9,7 @@ mod cached_layout;
 mod cached_snapping;
 mod check_retained;
 mod composition;
+mod content_zoom;
 mod cursor;
 mod dependencies;
 mod dispatch;

@@ -1250,6 +1250,7 @@ pub struct Window {
     pub(crate) composition: crate::fast::composition::WindowComposition,
     pub(crate) text_style_stack: crate::fast::text_style::TextStyleStack,
     pub(crate) fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache,
+    pub(crate) fast_content_zoom: crate::fast::content_zoom::ContentZoom,
     pub(crate) fast_text_smoothing: crate::fast::text_smoothing::WindowTextSmoothing,
     pub(crate) fast_edge_fade: crate::fast::edge_fade::WindowFades,
     pub(crate) fast_layers: crate::fast::layers::WindowLayers,
@@ -1282,7 +1283,7 @@ pub struct Window {
     pub(crate) mouse_hit_test: HitTest,
     modifiers: Modifiers,
     capslock: Capslock,
-    scale_factor: f32,
+    pub(crate) scale_factor: f32,
     pub(crate) bounds_observers: SingleSubscriberSet<AnyObserver>,
     appearance: WindowAppearance,
     pub(crate) appearance_observers: SingleSubscriberSet<AnyObserver>,
@@ -2356,6 +2357,7 @@ impl Window {
             composition: crate::fast::composition::WindowComposition::default(),
             text_style_stack: crate::fast::text_style::TextStyleStack::default(),
             fast_glyph_bounds: crate::fast::glyphs::GlyphBoundsCache::default(),
+            fast_content_zoom: crate::fast::content_zoom::ContentZoom::default(),
             fast_text_smoothing: crate::fast::text_smoothing::WindowTextSmoothing::new(cx),
             fast_edge_fade: crate::fast::edge_fade::WindowFades::default(),
             fast_layers: crate::fast::layers::WindowLayers::default(),
@@ -3034,9 +3036,7 @@ impl Window {
     /// the platform window, then notifies observers. Normally called automatically
     /// by the platform's resize callback, but exposed publicly for test infrastructure.
     pub fn bounds_changed(&mut self, cx: &mut App) {
-        self.scale_factor = self.platform_window.scale_factor();
-        self.viewport_size = self.platform_window.content_size();
-        self.mouse_position = self.platform_window.mouse_position();
+        crate::fast::content_zoom::bounds_changed(self);
 
         self.refresh();
 
@@ -3118,7 +3118,7 @@ impl Window {
 
     /// Returns the regions of this window obscured by system UI and the keyboard.
     pub fn insets(&self) -> WindowInsets {
-        self.platform_window.insets()
+        crate::fast::content_zoom::insets_in(self.platform_window.insets(), self)
     }
 
     /// Renders the current frame's scene to a texture and returns the pixel data as an RGBA image.
@@ -3154,7 +3154,8 @@ impl Window {
 
     /// Set the content size of the window.
     pub fn resize(&mut self, size: Size<Pixels>) {
-        self.platform_window.resize(size);
+        let fast_size = crate::fast::content_zoom::size_out(self, size);
+        self.platform_window.resize(fast_size);
     }
 
     /// Returns whether or not the window is currently fullscreen
@@ -3199,7 +3200,8 @@ impl Window {
     /// During drawing this is a consistent frame snapshot. Outside drawing it
     /// reflects the latest platform sample, not a synchronous geometry query.
     pub fn visual_viewport_bounds(&self) -> Bounds<Pixels> {
-        self.platform_window.visual_viewport_bounds()
+        let fast_bounds = self.platform_window.visual_viewport_bounds();
+        crate::fast::content_zoom::bounds_in(fast_bounds, self)
     }
 
     /// Returns a conservative rectangle avoiding platform-known obscured content.
@@ -3207,7 +3209,8 @@ impl Window {
     /// Intersects the visual viewport with the full layout area inset by system
     /// safe areas and keyboard occlusion. Unknown overlays cannot be excluded.
     pub fn fully_visible_bounds(&self) -> Bounds<Pixels> {
-        let insets = self.platform_window.insets().effective();
+        let insets = crate::fast::content_zoom::insets_in(self.platform_window.insets(), self)
+            .effective();
         let viewport = self.viewport_size();
         let left = insets.left.max(Pixels::ZERO).min(viewport.width);
         let top = insets.top.max(Pixels::ZERO).min(viewport.height);
@@ -3260,7 +3263,8 @@ impl Window {
 
     /// Opens the native title bar context menu, useful when implementing client side decorations (Wayland and X11)
     pub fn show_window_menu(&self, position: Point<Pixels>) {
-        self.platform_window.show_window_menu(position)
+        let fast_position = crate::fast::content_zoom::point_out(self, position);
+        self.platform_window.show_window_menu(fast_position)
     }
 
     /// Handle window movement for Linux and macOS.
