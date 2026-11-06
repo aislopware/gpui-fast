@@ -11,6 +11,7 @@ mod composition;
 mod cursor;
 mod dependencies;
 mod dispatch;
+mod drag;
 mod edge_fade;
 mod element;
 mod element_bench;

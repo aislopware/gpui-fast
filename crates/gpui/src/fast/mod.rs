@@ -21,6 +21,7 @@ pub mod composition;
 pub mod cursor;
 pub(crate) mod dependencies;
 pub(crate) mod dispatch;
+pub(crate) mod drag;
 pub(crate) mod edge_fade;
 pub(crate) mod element;
 pub(crate) mod fling;
