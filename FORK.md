@@ -966,6 +966,13 @@ did not:
   answering nothing, so no `<image>` reads a path or a URL or decodes a data URL, a nested
   SVG's included, and with no resources directory. Fonts are this renderer's. `usvg_options`
   and `ParsedSvg`'s tree are `pub(crate)` for it. Test: `untrusted_svg_resolves_no_image`.
+- `gpui_apple::fast::gpu_stats::snapshot()`: the GPU memory the process's renderers hold, for
+  an application's own memory log, in place of monocode's `gpu_memory()`. `Holdings` (now
+  public, with a `renderers` count) sums what each live renderer last published, at most once
+  a second after a frame (`PUBLISH_INTERVAL`), with the device's total read live and the
+  shared instance pool counted once; a renderer's entry goes with it. `GPUI_GPU_STATS=1`'s
+  line is unchanged. Tests: `the_snapshot_sums_live_renderers`,
+  `holdings_add_up_with_the_shared_pool_once`.
 
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.
