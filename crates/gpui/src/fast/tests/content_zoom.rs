@@ -5,10 +5,10 @@
 use std::{cell::Cell, cell::RefCell, ops::Range, rc::Rc};
 
 use crate::{
-    Bounds, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
-    InteractiveElement as _, IntoElement, ListAlignment, ListState, Modifiers, ParentElement as _,
-    Pixels, Point, Render, ScrollDelta, ScrollEvent, StatefulInteractiveElement as _, Styled as _,
-    TestAppContext, UTF16Selection, VisualTestContext, Window, canvas,
+    Bounds, Context, ElementInputHandler, EntityInputHandler, FocusHandle, InteractiveElement as _,
+    IntoElement, ListAlignment, ListState, Modifiers, ParentElement as _, Pixels, Point, Render,
+    ScrollDelta, ScrollEvent, StatefulInteractiveElement as _, Styled as _, TestAppContext,
+    UTF16Selection, VisualTestContext, Window, canvas,
     composition::{NativeHost, NativeHostOptions, native_view},
     div, list, point, px, rgb, size,
 };
@@ -81,8 +81,7 @@ fn page(cx: &mut TestAppContext) -> (Rc<Cell<usize>>, ListState, &mut VisualTest
 #[crate::test]
 fn a_zoomed_window_lays_out_smaller_and_paints_larger(cx: &mut TestAppContext) {
     let (_, _, cx) = page(cx);
-    let (viewport, scale) =
-        cx.update(|window, _| (window.viewport_size(), window.scale_factor()));
+    let (viewport, scale) = cx.update(|window, _| (window.viewport_size(), window.scale_factor()));
     zoom(cx, ZOOM);
     let (zoomed_viewport, zoomed_scale, content_zoom) = cx.update(|window, _| {
         (
@@ -96,7 +95,10 @@ fn a_zoomed_window_lays_out_smaller_and_paints_larger(cx: &mut TestAppContext) {
     assert_eq!(zoomed_scale, scale * ZOOM);
     let device =
         |size: crate::Size<Pixels>, scale: f32| size.map(|v| (f32::from(v) * scale).round());
-    assert_eq!(device(zoomed_viewport, zoomed_scale), device(viewport, scale));
+    assert_eq!(
+        device(zoomed_viewport, zoomed_scale),
+        device(viewport, scale)
+    );
 
     zoom(cx, 10.);
     assert_eq!(cx.update(|window, _| window.content_zoom()), 4.);
@@ -114,7 +116,11 @@ fn a_zoomed_window_hit_tests_the_platforms_points(cx: &mut TestAppContext) {
     zoom(cx, ZOOM);
 
     cx.simulate_click(point(px(240.), px(240.)), Modifiers::none());
-    assert_eq!(clicks.get(), 0, "(192, 192) in the window: beside the button");
+    assert_eq!(
+        clicks.get(),
+        0,
+        "(192, 192) in the window: beside the button"
+    );
     cx.simulate_click(point(px(260.), px(260.)), Modifiers::none());
     assert_eq!(clicks.get(), 1, "(208, 208) in the window: on the button");
     cx.simulate_click(point(px(310.), px(310.)), Modifiers::none());
@@ -149,7 +155,10 @@ fn a_zoomed_window_resizes_by_its_own_size(cx: &mut TestAppContext) {
     let (platform, viewport) = cx.update(|window, cx| {
         window.resize(size(px(400.), px(300.)));
         window.bounds_changed(cx);
-        (window.platform_window.content_size(), window.viewport_size())
+        (
+            window.platform_window.content_size(),
+            window.viewport_size(),
+        )
     });
     assert_eq!(platform, size(px(500.), px(375.)));
     assert_eq!(viewport, size(px(400.), px(300.)));
@@ -342,7 +351,10 @@ fn a_zoomed_window_places_natives_in_the_platforms_points(cx: &mut TestAppContex
     });
     let (placement, hit_map) = cx.update(|window, _| {
         let natives = window.presented_natives().expect("a present");
-        (natives.placements[0].clone(), window.native_hit_map().unwrap())
+        (
+            natives.placements[0].clone(),
+            window.native_hit_map().unwrap(),
+        )
     });
     let platform = Bounds::new(point(px(12.5), px(12.5)), size(px(125.), px(125.)));
     assert_eq!(placement.bounds, platform);

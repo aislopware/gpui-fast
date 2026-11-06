@@ -3209,8 +3209,8 @@ impl Window {
     /// Intersects the visual viewport with the full layout area inset by system
     /// safe areas and keyboard occlusion. Unknown overlays cannot be excluded.
     pub fn fully_visible_bounds(&self) -> Bounds<Pixels> {
-        let insets = crate::fast::content_zoom::insets_in(self.platform_window.insets(), self)
-            .effective();
+        let insets =
+            crate::fast::content_zoom::insets_in(self.platform_window.insets(), self).effective();
         let viewport = self.viewport_size();
         let left = insets.left.max(Pixels::ZERO).min(viewport.width);
         let top = insets.top.max(Pixels::ZERO).min(viewport.height);
