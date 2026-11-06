@@ -1226,12 +1226,12 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         tab_index,
         tab_group,
         tab_stop: _,
+        override_role,
         // What accessibility reads is drawn only while it is active, when
         // nothing is drawn again from last frame.
         a11y_action_listeners: _,
         a11y_synthetic_children: _,
         report_active_descendant_focus: _,
-        override_role: _,
         aria: _,
         #[cfg(any(feature = "inspector", debug_assertions))]
             source_location: _,
@@ -1249,6 +1249,7 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         && base_style.overflow.x != Some(Overflow::Scroll)
         && base_style.overflow.y != Some(Overflow::Scroll)
         && base_style.mouse_cursor.is_none()
+        && crate::fast::role_cursor::of(*override_role).is_none()
         && focus_style.is_none()
         && in_focus_style.is_none()
         && focus_visible_style.is_none()

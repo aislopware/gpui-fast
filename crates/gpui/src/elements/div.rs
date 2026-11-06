@@ -3653,6 +3653,7 @@ impl Interactivity {
                 }
             }
         }
+        crate::fast::role_cursor::fill(&mut style, self.override_role);
 
         if let Some(hitbox) = hitbox {
             if let Some(drag) = cx.active_drag.take() {

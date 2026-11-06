@@ -68,6 +68,7 @@ pub(crate) mod radial_gradient;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod render_at;
 pub(crate) mod retained;
+pub(crate) mod role_cursor;
 pub(crate) mod rounded_clip;
 pub(crate) mod scene;
 pub(crate) mod scroll;

@@ -51,6 +51,7 @@ mod path_cache;
 mod present;
 mod retained;
 mod retained_bench;
+mod role_cursor;
 mod rounded_clip;
 mod scene_order;
 mod scroll;

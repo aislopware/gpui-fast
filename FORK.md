@@ -952,6 +952,15 @@ did not:
   onicode is the fork's one consumer and wants 3:2 everywhere, and a per-quad rhythm would
   widen `Quad` for every renderer. Metal only, as above. Test (`gpui_apple`):
   `a_dashed_border_runs_three_widths_on_and_two_off`.
+- An element with a role that is clicked (button, link, tab, list box option, menu item and
+  its check box and radio kinds, check box, radio button, switch, combo box, tree item) shows
+  the pointing hand unless it names a cursor of its own (`fast::role_cursor`, from monocode's
+  `Interactivity::role_cursor`). The hook fills the computed style's `mouse_cursor`, so the
+  element gets a hitbox for it and paints it as it would a `.cursor_pointer()`; such an
+  element is no longer drawn again from last frame on its own (`fast::element`'s plainness,
+  as for a cursor style). Monocode gave a role-only element no hitbox, so there it kept the
+  arrow; here it shows the hand. Tests: `a_control_marked_only_by_its_role_shows_the_pointing_hand`,
+  `only_roles_that_are_clicked_take_the_hand`.
 
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.
