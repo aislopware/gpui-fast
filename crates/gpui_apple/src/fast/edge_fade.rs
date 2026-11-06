@@ -29,6 +29,7 @@ const EMPTY: [EdgeFadeRamps; 1] = [EdgeFadeRamps {
     outer_clip: [0.; 4],
     outer_radii: [0.; 4],
     outer_radii_y: [0.; 4],
+    shape: [0.; 4],
 }];
 
 /// Writes `scene`'s table of fades into the frame's instances.
@@ -138,6 +139,23 @@ mod tests {
         ramps: EdgeFadeRamps,
         draw: impl FnOnce(&mut Scene, u32, &MetalRenderer),
     ) {
+        renders_as(
+            what,
+            ramps,
+            |x, y| ramps.alpha_at(point(ScaledPixels(x), ScaledPixels(y))),
+            draw,
+        );
+    }
+
+    /// Draws white in `ramps` over black, and requires every pixel to be as
+    /// bright as `expected` says at its centre, to within the rounding of 8
+    /// bits.
+    fn renders_as(
+        what: &str,
+        ramps: EdgeFadeRamps,
+        expected: impl Fn(f32, f32) -> f32,
+        draw: impl FnOnce(&mut Scene, u32, &MetalRenderer),
+    ) {
         if objc2_metal::MTLCreateSystemDefaultDevice().is_none() {
             eprintln!("skipped: no Metal device");
             return;
@@ -160,10 +178,7 @@ mod tests {
         let mut worst = 0;
         for y in 4..SIDE as usize - 4 {
             for x in 4..SIDE as usize - 4 {
-                let alpha = ramps.alpha_at(point(
-                    ScaledPixels(x as f32 + 0.5),
-                    ScaledPixels(y as f32 + 0.5),
-                ));
+                let alpha = expected(x as f32 + 0.5, y as f32 + 0.5);
                 let expected = (alpha * 255.).round() as i32;
                 let actual = i32::from(pixels[(y * SIDE as usize + x) * 4]);
                 worst = worst.max((actual - expected).abs());
@@ -454,6 +469,79 @@ mod tests {
         let mut unmasked = mask;
         unmasked.mask_shape[1] = 0.;
         assert!(!unmasked.fades());
+    }
+
+    fn saturate(value: f32) -> f32 {
+        value.clamp(0., 1.)
+    }
+
+    fn quad_over_all(scene: &mut Scene, fade: u32, _: &MetalRenderer) {
+        scene.insert_faded_primitive(quad(sp(0., 0., SIDE as f32, SIDE as f32), white()), fade);
+    }
+
+    /// A linear fade combined by the lesser ramp (`gpui::EdgeFade::linear`,
+    /// `min_combined`) draws what monocode's `edge_fade_fragment` does over
+    /// the same region: `min(top, bottom)` or `min(left, right)` of
+    /// `saturate(distance in / width)`, here with widths that overlap.
+    #[test]
+    fn a_linear_min_fade_draws_monocodes_mask() {
+        let region = sp(0., 0., SIDE as f32, SIDE as f32);
+        let side = SIDE as f32;
+        let vertical = gpui::EdgeFade::new(Edges {
+            top: px(40.),
+            bottom: px(30.),
+            ..Edges::default()
+        })
+        .linear()
+        .min_combined()
+        .ramps_over(region, 1.);
+        renders_as(
+            "vertical",
+            vertical,
+            |_, y| saturate(y / 40.).min(saturate((side - y) / 30.)),
+            quad_over_all,
+        );
+        let horizontal = gpui::EdgeFade::new(Edges {
+            left: px(20.),
+            right: px(50.),
+            ..Edges::default()
+        })
+        .linear()
+        .min_combined()
+        .ramps_over(region, 1.);
+        renders_as(
+            "horizontal",
+            horizontal,
+            |x, _| saturate(x / 20.).min(saturate((side - x) / 50.)),
+            quad_over_all,
+        );
+        // Its top and bottom inside an eased fade's left and right, as fades
+        // nest edge by edge, each edge keeping its shape.
+        let mut nested = ramps();
+        for slot in [1, 3] {
+            nested.edge[slot] = vertical.edge[slot];
+            nested.rate[slot] = vertical.rate[slot];
+            nested.start[slot] = vertical.start[slot];
+            nested.shape[slot] = vertical.shape[slot];
+        }
+        renders_in("linear in eased", nested, quad_over_all);
+    }
+
+    /// A raw ramp along x (`gpui::EdgeFade::ramp_x`) draws what monocode's
+    /// `text_reveal_fragment` does: `saturate((end - x) / (end - start))`,
+    /// its stops from the region's left in either order and past its edges.
+    #[test]
+    fn a_raw_ramp_draws_monocodes_text_reveal() {
+        let region = sp(0., 0., SIDE as f32, SIDE as f32);
+        for (start, end) in [(-12., 50.), (80., -6.), (10., 30.)] {
+            let ramps = gpui::EdgeFade::ramp_x(px(start), px(end)).ramps_over(region, 1.);
+            renders_as(
+                &format!("reveal {start}..{end}"),
+                ramps,
+                |x, _| saturate((end - x) / (end - start)),
+                quad_over_all,
+            );
+        }
     }
 
     /// No fade, or an index past the table's end, draws a primitive whole.

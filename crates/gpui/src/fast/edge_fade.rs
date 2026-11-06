@@ -40,6 +40,14 @@
 //! out to whole device pixels, as a clip's is, so moving what fades by whole
 //! device pixels moves its edges exactly.
 //!
+//! A fade can instead be drawn as CSS draws a `linear-gradient` mask, as
+//! monocode's GPUI (onicode's base) does ([`EdgeFade::linear`],
+//! [`EdgeFade::min_combined`], [`EdgeFade::ramp_x`]): its ramps left linear,
+//! the two edges of an axis taking the lesser of their ramps rather than
+//! their product, and its region rounded to whole device pixels as a quad's
+//! bounds are rather than snapped out. Each edge carries its shape with its
+//! ramp ([`EdgeFadeRamps::shape`]), so fades of both kinds nest edge by edge.
+//!
 //! Fades nest edge by edge: a list fading at its top and bottom holds rows
 //! whose titles fade at the right, and a title fades at all three. Two fades
 //! of one edge can't be told as one ramp; the one reaching further in wins,
@@ -116,6 +124,39 @@ pub struct EdgeFade {
     pub width: Edges<Pixels>,
     /// How faint each edge gets, from 0, not at all, to 1, faded to nothing.
     pub depth: Edges<f32>,
+    /// How each ramp runs from the edge to a width in.
+    pub curve: EdgeFadeCurve,
+    /// How the two edges of an axis fade together where both reach.
+    pub combine: EdgeFadeCombine,
+    /// A raw linear ramp along x, `(start, end)`: whole at `start`, nothing
+    /// at `end`, each measured from the region's left edge, in either order
+    /// and wherever they lie, past the region's edges too
+    /// ([`EdgeFade::ramp_x`]). It takes the place of the left or the right
+    /// edge's ramp, the one it falls toward; `depth` leaves it as it is.
+    pub ramp_x: Option<(Pixels, Pixels)>,
+}
+
+/// How an [`EdgeFade`]'s ramps run from the edge to a width in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EdgeFadeCurve {
+    /// Eased with smoothstep, leaving the content at full strength without a
+    /// crease.
+    #[default]
+    Smooth,
+    /// Linear, as a CSS `linear-gradient` mask runs between two stops.
+    Linear,
+}
+
+/// How the two edges of an axis of an [`EdgeFade`] fade together where both
+/// reach, a region narrower than their widths.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EdgeFadeCombine {
+    /// The product of the two ramps.
+    #[default]
+    Product,
+    /// The lesser of the two, as one CSS gradient mask with a stop pair at
+    /// each end draws them.
+    Min,
 }
 
 impl EdgeFade {
@@ -124,7 +165,37 @@ impl EdgeFade {
         Self {
             width: width.into(),
             depth: Edges::all(1.),
+            ..Self::default()
         }
+    }
+
+    /// A raw linear ramp along x and nothing else: whole at `start`, nothing
+    /// at `end`, both measured from the left edge of the region faded, in
+    /// either order and anywhere, past its edges too, so the first and last
+    /// frames of a reveal can show nothing and everything. It draws
+    /// `clamp((end - x) / (end - start), 0, 1)`, as monocode's text reveal
+    /// does; `start == end` cuts sharply there.
+    pub fn ramp_x(start: Pixels, end: Pixels) -> Self {
+        Self {
+            ramp_x: Some((start, end)),
+            ..Self::default().linear().min_combined()
+        }
+    }
+
+    /// This fade with its ramps linear rather than eased: from `1 - depth` at
+    /// the edge straight to whole a width in. Its region is the element's
+    /// bounds rounded to whole device pixels, as the element's own quad is,
+    /// rather than snapped out to them.
+    pub fn linear(mut self) -> Self {
+        self.curve = EdgeFadeCurve::Linear;
+        self
+    }
+
+    /// This fade with the two edges of each axis taking the lesser of their
+    /// ramps where both reach, rather than their product.
+    pub fn min_combined(mut self) -> Self {
+        self.combine = EdgeFadeCombine::Min;
+        self
     }
 
     /// The top and bottom edges fade over `width`: a scrolling list or
@@ -174,6 +245,28 @@ impl EdgeFade {
             bottom: part(hidden.bottom, self.width.bottom),
             left: part(hidden.left, self.width.left),
         })
+    }
+
+    /// The ramps of this fade over `region`, in device pixels at
+    /// `scale_factor`.
+    pub(crate) fn ramps(&self, region: Bounds<ScaledPixels>, scale_factor: f32) -> EdgeFadeRamps {
+        let linear = self.curve == EdgeFadeCurve::Linear;
+        let mut ramps =
+            EdgeFadeRamps::shaped(region, self.width.scale(scale_factor), self.depth, linear);
+        if let Some((start, end)) = self.ramp_x {
+            let left = region.left().0;
+            ramps.set_stops_x(left + start.0 * scale_factor, left + end.0 * scale_factor);
+        }
+        let mut shape = if linear { 1. } else { 0. };
+        if self.combine == EdgeFadeCombine::Min {
+            shape += 2.;
+        }
+        for slot in 0..4 {
+            if ramps.rate[slot] != 0. {
+                ramps.shape[slot] = shape;
+            }
+        }
+        ramps
     }
 }
 
@@ -353,11 +446,13 @@ fn fade_in(window: &mut Window, bounds: Bounds<Pixels>, fade: EdgeFade) -> u32 {
 /// The index [`Window::with_edge_fade`] enters for `fade` around `bounds`,
 /// or `None` when it fades nothing and painting stays in the fade around.
 fn entered(window: &mut Window, bounds: Bounds<Pixels>, fade: EdgeFade) -> Option<u32> {
-    let ramps = EdgeFadeRamps::new(
-        window.cover_bounds(bounds),
-        fade.width.scale(window.scale_factor()),
-        fade.depth,
-    );
+    let region = match fade.curve {
+        EdgeFadeCurve::Smooth => window.cover_bounds(bounds),
+        // Laid out as CSS lays a mask over the element: over its bounds
+        // rounded to device pixels, as its own quad's are.
+        EdgeFadeCurve::Linear => window.snap_bounds(bounds),
+    };
+    let ramps = fade.ramps(region, window.scale_factor());
     if !ramps.fades() {
         return None;
     }
@@ -1011,8 +1106,11 @@ pub(crate) fn compose_index(fades: &mut WindowFades, outer: u32, own: u32) -> u3
 /// For the left, top, right and bottom edges in that order, the ramp at a
 /// pixel is `start + rate × (coordinate − edge)`, the coordinate being the
 /// pixel centre's `x` at the left and right and `y` at the top and bottom,
-/// clamped to 0..1 and eased with smoothstep; what is drawn is multiplied
-/// by all four. An edge that does not fade has a rate of 0 and a start of 1.
+/// clamped to 0..1 and eased with smoothstep, or left linear where the
+/// edge's `shape` says; what is drawn is multiplied by the left and right
+/// ramps together and the top and bottom ones together, each pair by its
+/// product, or by the lesser of the two where either edge's `shape` says.
+/// An edge that does not fade has a rate of 0 and a start of 1.
 ///
 /// What is drawn is also multiplied by how much of the pixel lies inside
 /// the rounded rectangle `clip` with corners `radii` across and `radii_y`
@@ -1059,6 +1157,10 @@ pub struct EdgeFadeRamps {
     pub outer_radii: [f32; 4],
     /// The second rounded clip's vertical corner radii.
     pub outer_radii_y: [f32; 4],
+    /// Each edge's shape: 0 for a ramp eased with smoothstep and multiplied
+    /// by the opposite edge's, plus 1 for a linear ramp, plus 2 for the
+    /// lesser of it and the opposite edge's in place of their product.
+    pub shape: [f32; 4],
 }
 
 impl Default for EdgeFadeRamps {
@@ -1082,6 +1184,7 @@ impl EdgeFadeRamps {
         outer_clip: [0.; 4],
         outer_radii: [0.; 4],
         outer_radii_y: [0.; 4],
+        shape: [0.; 4],
     };
 
     /// Whether any edge fades, the clip cuts anything, or the mask masks.
@@ -1239,6 +1342,17 @@ impl EdgeFadeRamps {
         width: Edges<ScaledPixels>,
         depth: Edges<f32>,
     ) -> Self {
+        Self::shaped(region, width, depth, false)
+    }
+
+    /// [`Self::new`]'s ramps, eased, or `linear`: then each runs straight
+    /// from `1 - depth` at the edge to whole a width in.
+    pub(crate) fn shaped(
+        region: Bounds<ScaledPixels>,
+        width: Edges<ScaledPixels>,
+        depth: Edges<f32>,
+        linear: bool,
+    ) -> Self {
         let mut ramps = Self::NONE;
         let edges = [
             (region.left().0, width.left.0, depth.left, 1.),
@@ -1251,7 +1365,11 @@ impl EdgeFadeRamps {
                 continue;
             }
             // At the edge the eased ramp is `1 - depth`; a width in, it is 1.
-            let start = unsmoothstep(1. - depth.min(1.));
+            let start = if linear {
+                1. - depth.min(1.)
+            } else {
+                unsmoothstep(1. - depth.min(1.))
+            };
             let mut rate = (1. - start) / width;
             // Whole a width in, not a rounding short of it.
             while start + rate * width < 1. {
@@ -1267,20 +1385,47 @@ impl EdgeFadeRamps {
         ramps
     }
 
-    /// One ramp of these: its edge, rate and start.
-    fn ramp(&self, slot: usize) -> (f32, f32, f32) {
-        (self.edge[slot], self.rate[slot], self.start[slot])
+    /// Sets the left or the right ramp to run linearly from whole at the
+    /// device pixel coordinate `start` to nothing at `end`: the right one
+    /// when it falls toward the right, the left one when toward the left.
+    fn set_stops_x(&mut self, start: f32, end: f32) {
+        if !(start.is_finite() && end.is_finite()) {
+            return;
+        }
+        // The ramp is `(end - x) / (end - start)`; at no distance, a cut a
+        // millionth of a pixel wide.
+        let span = end - start;
+        let rate = if span.abs() >= 1e-6 {
+            -1. / span
+        } else if span < 0. {
+            1e6
+        } else {
+            -1e6
+        };
+        let slot = if rate < 0. { 2 } else { 0 };
+        self.set_ramp(slot, (end, rate, 0., 0.));
     }
 
-    fn set_ramp(&mut self, slot: usize, (edge, rate, start): (f32, f32, f32)) {
+    /// One ramp of these: its edge, rate, start and shape.
+    fn ramp(&self, slot: usize) -> (f32, f32, f32, f32) {
+        (
+            self.edge[slot],
+            self.rate[slot],
+            self.start[slot],
+            self.shape[slot],
+        )
+    }
+
+    fn set_ramp(&mut self, slot: usize, (edge, rate, start, shape): (f32, f32, f32, f32)) {
         self.edge[slot] = edge;
         self.rate[slot] = rate;
         self.start[slot] = start;
+        self.shape[slot] = shape;
     }
 
     /// How far a ramp reaches in from its side, along the inward direction:
     /// where it reaches 1, signed so that further in is larger.
-    fn reach((edge, rate, start): (f32, f32, f32)) -> f32 {
+    fn reach((edge, rate, start, _): (f32, f32, f32, f32)) -> f32 {
         (edge + (1. - start) / rate) * rate.signum()
     }
 
@@ -1358,13 +1503,24 @@ impl EdgeFadeRamps {
     /// How strongly a pixel centred at `point` is drawn, as the renderers
     /// work it out.
     pub fn alpha_at(&self, point: Point<ScaledPixels>) -> f32 {
-        let faded: f32 = (0..4)
-            .map(|slot| {
-                let coordinate = if slot % 2 == 0 { point.x.0 } else { point.y.0 };
-                let (edge, rate, start) = self.ramp(slot);
-                smoothstep((start + rate * (coordinate - edge)).clamp(0., 1.))
-            })
-            .product();
+        let ramp = |slot: usize| {
+            let coordinate = if slot % 2 == 0 { point.x.0 } else { point.y.0 };
+            let (edge, rate, start, shape) = self.ramp(slot);
+            let ramp = (start + rate * (coordinate - edge)).clamp(0., 1.);
+            if shape % 2. >= 1. {
+                ramp
+            } else {
+                smoothstep(ramp)
+            }
+        };
+        let axis = |a: usize, b: usize| {
+            if self.shape[a].max(self.shape[b]) >= 2. {
+                ramp(a).min(ramp(b))
+            } else {
+                ramp(a) * ramp(b)
+            }
+        };
+        let faded = axis(0, 2) * axis(1, 3);
         faded * self.coverage_at(point) * self.mask_at(point)
     }
 
@@ -1410,6 +1566,7 @@ impl EdgeFadeRamps {
                 key[slot] = self.edge[slot].to_bits();
                 key[4 + slot] = self.rate[slot].to_bits();
                 key[8 + slot] = self.start[slot].to_bits();
+                key[45 + slot] = self.shape[slot].to_bits();
             }
             if self.clips() {
                 key[12 + slot] = self.clip[slot].to_bits();
@@ -1462,7 +1619,7 @@ impl EdgeFadeRamps {
 }
 
 /// How many words a fade is told apart by ([`EdgeFadeRamps::key`]).
-const KEY_LEN: usize = 45;
+const KEY_LEN: usize = 49;
 
 /// The bits a fade is told apart by.
 type FadeKey = [u32; KEY_LEN];
@@ -1904,6 +2061,15 @@ pub(crate) fn describe_ramps(ramps: &EdgeFadeRamps) -> String {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+impl EdgeFade {
+    /// The ramps this fade draws over `region`, in device pixels at
+    /// `scale_factor`, as a window works them out: for renderer tests.
+    pub fn ramps_over(&self, region: Bounds<ScaledPixels>, scale_factor: f32) -> EdgeFadeRamps {
+        self.ramps(region, scale_factor)
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 impl Scene {
     /// The ramps of the fade `id` stands for in this finished scene.
     pub fn edge_fade_ramps(&self, id: u32) -> Option<EdgeFadeRamps> {
@@ -2132,5 +2298,145 @@ mod tests {
         let third = fades.intern(&a);
         fades.sweep(&[true, true, true]);
         assert_eq!(fades.ramps(third), Some(&a), "kept while referred to");
+    }
+
+    fn saturate(value: f32) -> f32 {
+        value.clamp(0., 1.)
+    }
+
+    /// Every pixel centre of `region` and a band of 8 around it.
+    fn centres(region: Bounds<ScaledPixels>) -> impl Iterator<Item = (f32, f32)> {
+        let (left, top) = (region.left().0 as i32 - 8, region.top().0 as i32 - 8);
+        let (right, bottom) = (region.right().0 as i32 + 8, region.bottom().0 as i32 + 8);
+        (top..bottom)
+            .flat_map(move |y| (left..right).map(move |x| (x as f32 + 0.5, y as f32 + 0.5)))
+    }
+
+    fn assert_matches(
+        what: &str,
+        ramps: &EdgeFadeRamps,
+        region: Bounds<ScaledPixels>,
+        expected: impl Fn(f32, f32) -> f32,
+    ) {
+        for (x, y) in centres(region) {
+            let (actual, expected) = (ramps.alpha_at(at(x, y)), expected(x, y));
+            assert!(
+                (actual - expected).abs() < 1e-5,
+                "{what} at ({x}, {y}): {actual}, monocode draws {expected}"
+            );
+        }
+    }
+
+    /// A linear fade combined by the lesser ramp draws monocode's
+    /// `edge_fade_fragment`: `min(top, bottom)` over a vertical region,
+    /// `min(left, right)` over a horizontal one, each ramp
+    /// `saturate(distance in / width)`, inside the region where both
+    /// widths overlap too.
+    #[test]
+    fn a_linear_min_fade_draws_monocodes_mask() {
+        let region = Bounds {
+            origin: at(100., 200.),
+            size: size(ScaledPixels(120.), ScaledPixels(30.)),
+        };
+        let (x0, y0, w, h) = (100., 200., 120., 30.);
+        let vertical = EdgeFade::new(Edges {
+            top: px(24.),
+            bottom: px(16.),
+            ..Edges::default()
+        })
+        .linear()
+        .min_combined();
+        let ramps = vertical.ramps(region, 1.);
+        assert_eq!(ramps.shape, [0., 3., 0., 3.]);
+        assert_matches("vertical", &ramps, region, |_, y| {
+            let y = y - y0;
+            saturate(y / 24.).min(saturate((h - y) / 16.))
+        });
+        let side = EdgeFade::new(Edges {
+            left: px(20.),
+            right: px(90.),
+            ..Edges::default()
+        })
+        .linear()
+        .min_combined();
+        assert_matches("side", &side.ramps(region, 1.), region, |x, _| {
+            let x = x - x0;
+            saturate(x / 20.).min(saturate((w - x) / 90.))
+        });
+        // At a scale of 2, widths are in logical pixels and the ramps in
+        // device pixels.
+        let doubled = vertical.ramps(region, 2.);
+        assert_matches("doubled", &doubled, region, |_, y| {
+            let y = y - y0;
+            saturate(y / 48.).min(saturate((h - y) / 32.))
+        });
+        // Multiplied rather than the lesser, where the two overlap.
+        let product = EdgeFade::y(px(24.)).linear().ramps(region, 1.);
+        assert_matches("product", &product, region, |_, y| {
+            let y = y - y0;
+            saturate(y / 24.) * saturate((h - y) / 24.)
+        });
+    }
+
+    /// A raw ramp along x draws monocode's `text_reveal_fragment`,
+    /// `saturate((end - x) / (end - start))`, its stops measured from the
+    /// region's left in either order and past its edges.
+    #[test]
+    fn a_raw_ramp_draws_monocodes_text_reveal() {
+        let region = Bounds {
+            origin: at(100., 200.),
+            size: size(ScaledPixels(64.), ScaledPixels(20.)),
+        };
+        for (start, end) in [(-10., 50.), (70., -6.), (8., 40.), (-30., -1.), (80., 120.)] {
+            let ramps = EdgeFade::ramp_x(px(start), px(end)).ramps(region, 1.);
+            assert!(ramps.fades());
+            assert_matches(&format!("{start}..{end}"), &ramps, region, |x, _| {
+                saturate((end - (x - 100.)) / (end - start))
+            });
+        }
+        let cut = EdgeFade::ramp_x(px(20.), px(20.)).ramps(region, 1.);
+        assert_eq!(cut.alpha_at(at(119.5, 210.)), 1.);
+        assert_eq!(cut.alpha_at(at(120.5, 210.)), 0.);
+    }
+
+    /// Fades of either kind nest edge by edge, each edge keeping its shape:
+    /// a linear vertical fade inside an eased horizontal one draws the
+    /// lesser of its two ramps times the product of the other two.
+    #[test]
+    fn shapes_nest_edge_by_edge() {
+        let outer = EdgeFadeRamps::new(region(), widths(20.), Edges::all(1.));
+        let inner_region = Bounds {
+            origin: at(150., 250.),
+            size: size(ScaledPixels(200.), ScaledPixels(40.)),
+        };
+        let inner = EdgeFade::new(Edges {
+            top: px(30.),
+            bottom: px(30.),
+            ..Edges::default()
+        })
+        .linear()
+        .min_combined()
+        .ramps(inner_region, 1.);
+        let both = outer.within(&inner);
+        assert_eq!(both.shape, [0., 3., 0., 3.]);
+        for (x, y) in [(110.5, 260.5), (300.5, 270.5), (495.5, 285.5)] {
+            let eased = |value: f32| smoothstep(saturate(value));
+            let across = eased((x - 100.) / 20.) * eased((500. - x) / 20.);
+            let down = saturate((y - 250.) / 30.).min(saturate((290. - y) / 30.));
+            assert!(
+                (both.alpha_at(at(x, y)) - across * down).abs() < 1e-5,
+                "({x}, {y})"
+            );
+        }
+        let mut fades = WindowFades::default();
+        let eased = EdgeFade::y(px(30.)).ramps(inner_region, 1.);
+        let linear = EdgeFade::y(px(30.)).linear().ramps(inner_region, 1.);
+        assert_ne!(
+            fades.intern(&eased),
+            fades.intern(&linear),
+            "a shape is its own fade"
+        );
+        let moved = both.moved(at(5., 7.), &outer, &outer);
+        assert_eq!(moved.shape, both.shape, "a ramp moves with its shape");
     }
 }

@@ -966,6 +966,23 @@ did not:
   answering nothing, so no `<image>` reads a path or a URL or decodes a data URL, a nested
   SVG's included, and with no resources directory. Fonts are this renderer's. `usvg_options`
   and `ParsedSvg`'s tree are `pub(crate)` for it. Test: `untrusted_svg_resolves_no_image`.
+- Edge fades drawn as monocode draws its marker groups, a CSS `linear-gradient` mask:
+  `EdgeFade::linear()` (`EdgeFadeCurve::Linear`) leaves each ramp linear, from `1 - depth`
+  at the edge to whole a width in, over the element's bounds rounded to device pixels as its
+  quad's are; `EdgeFade::min_combined()` (`EdgeFadeCombine::Min`) takes the lesser of an
+  axis's two ramps rather than their product; `EdgeFade::ramp_x(start, end)` is monocode's
+  text reveal, `saturate((end - x) / (end - start))` with stops from the left edge in either
+  order and past the bounds. `EdgeFade::y(w).linear().min_combined()` is monocode's
+  `edge_fade_marker`, `EdgeFade::new(Edges { left, right, .. }).linear().min_combined()` its
+  `side_fade_marker`. Each table entry gains `EdgeFadeRamps::shape` (per edge: +1 linear, +2
+  lesser of the axis), carried with its ramp, so fades of both kinds nest edge by edge
+  (`shaders.metal`'s `edge_fade`). The defaults (smoothstep, product, snapped out) draw as
+  before. Not matched: monocode mixes a snapshot of the whole group, so where translucent
+  fills overlap inside a ramp it fades their composite and this fades each primitive; and it
+  leaves what is drawn past the group's region whole where this keeps fading it. Tests
+  (`gpui`): `a_linear_min_fade_draws_monocodes_mask`, `a_raw_ramp_draws_monocodes_text_reveal`,
+  `shapes_nest_edge_by_edge`; (`gpui_apple`, on the GPU against monocode's formulas): the
+  first two again.
 - `gpui_apple::fast::gpu_stats::snapshot()`: the GPU memory the process's renderers hold, for
   an application's own memory log, in place of monocode's `gpu_memory()`. `Holdings` (now
   public, with a `renderers` count) sums what each live renderer last published, at most once

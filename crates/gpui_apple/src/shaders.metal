@@ -54,6 +54,7 @@ struct EdgeFadeRamps {
   float4 outer_clip;
   float4 outer_radii;
   float4 outer_radii_y;
+  float4 shape;
 };
 float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades);
 
@@ -1425,8 +1426,10 @@ float rounded_clip_distance(float2 position, float4 rect, float4 rx, float4 ry) 
 
 // gpui-fast: how strongly a pixel centred at `position` is drawn under the
 // fade `fade` indexes (gpui's fast/edge_fade.rs): each edge's ramp, linear
-// in the coordinate along its axis, clamped and eased with smoothstep, the
-// four multiplied. No fade, or a slot past the table's end, draws it whole.
+// in the coordinate along its axis, clamped and eased with smoothstep, or
+// left linear where its shape has 1; each axis's two multiplied, or the
+// lesser taken where either's shape has 2 (monocode's CSS mask), and the
+// axes multiplied. No fade, or a slot past the table's end, draws it whole.
 float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades) {
   uint slot = fade & 0xffffu;
   if (slot == 0u || slot >= as_type<uint>(fades[0].edge.x)) {
@@ -1434,8 +1437,10 @@ float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades) {
   }
   EdgeFadeRamps ramps = fades[slot];
   float4 ramp = saturate(ramps.start + ramps.rate * (position.xyxy - ramps.edge));
-  ramp = ramp * ramp * (3. - 2. * ramp);
-  float alpha = ramp.x * ramp.y * ramp.z * ramp.w;
+  ramp = select(ramp * ramp * (3. - 2. * ramp), ramp, fmod(ramps.shape, float4(2.)) >= 1.);
+  float2 axes = select(ramp.xy * ramp.zw, min(ramp.xy, ramp.zw),
+                       max(ramps.shape.xy, ramps.shape.zw) >= 2.);
+  float alpha = axes.x * axes.y;
   if (ramps.clip.z > ramps.clip.x) {
     // The rounded clip (zui 361ff20), and the one around it it does not lie
     // inside (overflow's padding edges, longbridge/gpui-fast#76): the

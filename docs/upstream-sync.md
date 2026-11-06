@@ -389,6 +389,14 @@ unchanged, and a new entry needs as good a reason.
   composer grows without rasterizing the image again. The mask rides in the
   fade table, not in 40 more bytes on every image sprite as in zui; an entry
   grows from 80 to 128 bytes. Only Metal draws it.
+- `EdgeFade`'s `curve`, `combine` and `ramp_x` fields, `EdgeFadeCurve`, `EdgeFadeCombine`,
+  `EdgeFade::linear`, `min_combined` and `ramp_x`, and `EdgeFadeRamps::shape` are new public
+  API (`fast/edge_fade.rs`; FORK.md, "Onicode"), with `EdgeFade::ramps_over` for renderer
+  tests (test-support). Onicode keeps monocode's interface pixel-exact, and monocode fades a
+  group as a CSS `linear-gradient` mask does: linear ramps, the lesser of an axis's two, and a
+  reveal whose stops lie past the label's bounds; upstream has no edge fade at all, and this
+  fork's eases and multiplies. Each edge's shape rides in the fade table beside its ramp; an
+  entry grows from 192 to 208 bytes. Only Metal draws it.
 - `Window::paint_backdrop_blur` is new public API, with `BackdropBlur`,
   `Scene::backdrop_blurs`, `Scene::insert_backdrop_blur` and
   `ComposedBatch::Blurs` (`fast/backdrop.rs`, `gpui_apple/src/fast/backdrop.rs`;
