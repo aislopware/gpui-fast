@@ -252,9 +252,10 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
       // used by browsers, but also avoids dashes from different segments
       // overlapping when dash size is smaller than the border width.
       //
-      // Dash pattern: (2 * border width) dash, (1 * border width) gap
-      const float dash_length_per_width = 2.0;
-      const float dash_gap_per_width = 1.0;
+      // gpui-fast (monocode): (3 * border width) dash, (2 * border width) gap,
+      // the rhythm WebKit gives a dashed border, in place of 2:1.
+      const float dash_length_per_width = 3.0;
+      const float dash_gap_per_width = 2.0;
       const float dash_period_per_width = dash_length_per_width + dash_gap_per_width;
 
       // Since the dash size is determined by border width, the density of
@@ -577,6 +578,11 @@ fragment float4 shadow_fragment(ShadowFragmentInput input [[stage_in]],
     float element_distance = quad_sdf(input.position.xy, shadow.element_bounds,
                                       shadow.element_corner_radii);
     alpha *= saturate(0.5 - element_distance);
+  } else {
+    // gpui-fast (monocode): a drop shadow is drawn only outside its element,
+    // as CSS box-shadow is, so it never tints a translucent element from below.
+    alpha *= saturate(0.5 + quad_sdf(input.position.xy, shadow.element_bounds,
+                                     shadow.element_corner_radii));
   }
 
   return input.color *

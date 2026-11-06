@@ -21,6 +21,8 @@ pub(crate) mod instance_pool;
 pub(crate) mod layers;
 pub(crate) mod occlusion;
 pub(crate) mod paths;
+#[cfg(test)]
+mod shader_parity;
 pub(crate) mod surfaces;
 #[cfg(feature = "font-kit")]
 pub(crate) mod text_system;

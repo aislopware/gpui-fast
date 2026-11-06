@@ -933,6 +933,26 @@ Merged since (they were branches on `67171c0`):
   WKWebView) blurs the native too, in the transactional present (`NativeFrame::blurs`, `NativeFrameBlur`, `gpui_macos`'s `fast::native_blur`;
   `GPUI_NATIVE_BLUR=0` turns it off).
 
+For monocode's interface, which onicode keeps pixel-exact (onicode's
+`.research/monocode/stack-port.md`, §1 and §6 steps 2–3; monocode's GPUI is a patched zed
+`93d74566`), branch `onicode-parity` ports what its renderer and elements do that this fork
+did not:
+
+- A drop shadow is drawn only outside its element (monocode's `shaders.metal`), as CSS
+  `box-shadow` is: `shadow_fragment` multiplies a drop shadow by `saturate(0.5 + d)`, `d`
+  the pixel's signed distance from the element's rounded rectangle, as an inset shadow is
+  already clipped to the inside. It is the default, not an option: upstream's `Shadow`
+  documents a drop shadow as "rendered outside the element", `paint_drop_shadows` hands every
+  drop shadow its element's bounds, and under an opaque fill nothing changes; only a
+  translucent or unfilled element stops showing its own shadow through it. Metal only:
+  `gpui_wgpu` and `gpui_windows` still draw it under the element. Test (`gpui_apple`):
+  `a_drop_shadow_is_drawn_only_outside_its_element`.
+- A dashed border runs three border widths on and two off, WebKit's rhythm and monocode's, in
+  place of zed's two on and one off. A constant pair in `quad_fragment`, not an option:
+  onicode is the fork's one consumer and wants 3:2 everywhere, and a per-quad rhythm would
+  widen `Quad` for every renderer. Metal only, as above. Test (`gpui_apple`):
+  `a_dashed_border_runs_three_widths_on_and_two_off`.
+
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.
 
