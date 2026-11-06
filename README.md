@@ -1,5 +1,12 @@
 # GPUI Fast
 
+> [!NOTE]
+> **aislopware/gpui-fast** is the GPUI that [onicode](https://github.com/aislopware/onicode) renders with:
+> [longbridge/gpui-fast](https://github.com/longbridge/gpui-fast) plus zed imports ahead of longbridge, native
+> composition for embedded WebKit, presentation reports and pacing, scroll layers, edge fades, backdrop blur, and
+> many retained-mode and macOS fixes. Onicode pins a rev on `main`. Upstream changes are read one by one and taken
+> by intent, never merged blindly; [FORK.md](FORK.md) records every sync, what the fork carries and why.
+
 A performance-focused fork of [Zed's GPUI](https://gpui.rs) with incremental rendering and native window composition. [v0.1.0](https://github.com/longbridge/gpui-fast/releases/tag/v0.1.0) is available on crates.io. The project remains experimental.
 
 - **Retained Mode** reuses unchanged views, layout nodes and text measurements.

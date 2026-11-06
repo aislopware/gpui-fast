@@ -1,10 +1,11 @@
-# Slopty's fork of gpui-fast
+# aislopware/gpui-fast
 
 `aislopware/gpui-fast` is [longbridge/gpui-fast](https://github.com/longbridge/gpui-fast)
-(GPUI with Retained Mode) plus what Slopty needs from GPUI: the iOS backend, video
-surfaces, presentation reports and pacing, and a few smaller features. It replaces the
-zed fork (`aislopware/zed`) Slopty used before. Everything lives on `main`; there is no
-separate branch for our commits.
+(GPUI with Retained Mode) plus what [onicode](https://github.com/aislopware/onicode) needs from
+GPUI: native composition for its browser, presentation reports and pacing, scroll layers,
+edge fades, backdrop blur and many smaller fixes. Onicode is its only consumer. Everything lives
+on `main`, and onicode pins a rev on it; there are no integration branches. The tip before
+onicode is tagged `archive/main-pre-onicode`.
 
 Two upstreams feed it:
 
@@ -916,28 +917,24 @@ Already on `main`:
   `Window::blur(cx)`, `Modifiers::secondary_key(cx)`, `ScrollEvent` (with `momentum_phase`
   and `source`) and `gpui_platform::current_headless_renderer() -> Result<..>`.
 
-On branches until they merge, each based on `67171c0`:
+Merged since (they were branches on `67171c0`):
 
-- `gpui_tokio`, tracked from zed (`fast/gpui-tokio`): `Tokio::spawn` and the crate's
+- `gpui_tokio`, tracked from zed: `Tokio::spawn` and the crate's
   other entry points.
-- Drags start only with the button held and 4 px of travel (`fast/drag-threshold`,
-  `fast::drag`); no new API.
+- Drags start only with the button held and 4 px of travel (`fast::drag`); no new API.
 - An image's intrinsic aspect ratio applies only when a dimension is auto
-  (`fast/image-aspect`, `fast::image_aspect`); no new API.
+  (`fast::image_aspect`); no new API.
 - The instance buffer pool shrinks after a large frame, and `GPUI_GPU_STATS=1` writes a
-  GPU memory line every 10 s with `MTLDevice.currentAllocatedSize` (`fast/gpu-stats`,
-  `gpui_apple`'s `fast::instance_pool` and `fast::gpu_stats`).
+  GPU memory line every 10 s with `MTLDevice.currentAllocatedSize` (`gpui_apple`'s `fast::instance_pool` and `fast::gpu_stats`).
 - `GPUI_DRAWABLE_COUNT=2` keeps two drawables a window instead of three
-  (`fast/drawable-count`, `gpui_apple`'s `fast::drawable_count`); the default stays three
+  (`gpui_apple`'s `fast::drawable_count`); the default stays three
   until measured.
 - Native backdrop blur: a GPUI backdrop blur over a native (a frosted menu over a
-  WKWebView) blurs the native too, in the transactional present (`fast/native-backdrop-blur`;
-  `NativeFrame::blurs`, `NativeFrameBlur`, `gpui_macos`'s `fast::native_blur`;
+  WKWebView) blurs the native too, in the transactional present (`NativeFrame::blurs`, `NativeFrameBlur`, `gpui_macos`'s `fast::native_blur`;
   `GPUI_NATIVE_BLUR=0` turns it off).
 
-Onicode reaches all of this through gpui-kit's fork, which pins this fork's `rev` and
-patches `gpui-pre` and `gpui-fast` with `compat/`; their versions have to match gpui-kit's
-pins for a build to hold one GPUI.
+Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
+(onicode's `Cargo.toml`), so its graph holds one GPUI.
 
 ## Syncing
 
@@ -1238,15 +1235,3 @@ application: build the example with `--features menu-test` and launch it with
 `examples/ios/src/menu_test.rs`). It checks that UIKit built the menus, that a picked command
 reaches the focused view's action through the responder chain and an unavailable one is
 refused, and that a key command pressed with its chord's modifiers goes through the keymap.
-
-## Building inside Slopty's checkout
-
-Under `slopty/.research/`, Cargo also reads Slopty's `.cargo/config.toml`. Its
-`IPHONEOS_DEPLOYMENT_TARGET` makes `aws-lc-sys` (a dev-dependency through
-`reqwest_client`) reject the host compiler, and Slopty's `rustfmt.toml` asks for nightly
-options. Build and format with:
-
-```sh
-IPHONEOS_DEPLOYMENT_TARGET= cargo test -p gpui --features test-support,profiler
-cargo fmt -- --config-path /path/to/empty/rustfmt.toml
-```

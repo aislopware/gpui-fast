@@ -4,7 +4,7 @@
 //! than a `CAMetalDisplayLink` update does. The link schedules each update's drawable for the
 //! third refresh after the update (its `targetPresentationTimestamp`), whatever
 //! `preferredFrameLatency` asks, where a tick's frame shows at the first refresh its
-//! compositor deadline allows; `SLOPTY.md` ("In the 0373366f sync") has the numbers. On some
+//! compositor deadline allows; `FORK.md` ("In the 0373366f sync") has the numbers. On some
 //! Macs, though, `nextDrawable` blocks for two refreshes on every frame (base M4 and M5 chips
 //! under macOS 26 and later, zed #65472), which holds a window to half the display's rate.
 //!
