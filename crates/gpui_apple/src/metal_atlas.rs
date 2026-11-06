@@ -37,6 +37,15 @@ impl MetalAtlas {
     ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
         Some(self.0.lock().backend.texture(id)?.metal_texture.clone())
     }
+
+    /// Its textures, for `crate::fast::gpu_stats`.
+    pub(crate) fn fast_textures(&self) -> Vec<Retained<ProtocolObject<dyn MTLTexture>>> {
+        let state = self.0.lock();
+        let backend = &state.backend;
+        let all = backend.monochrome_textures.textures.iter();
+        let all = all.chain(&backend.polychrome_textures.textures).flatten();
+        all.map(|texture| texture.metal_texture.clone()).collect()
+    }
 }
 
 struct MetalAtlasTextures {

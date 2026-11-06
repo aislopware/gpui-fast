@@ -13,8 +13,10 @@ pub(crate) mod backdrop;
 pub(crate) mod edge_fade;
 pub mod font_weight;
 pub mod frame_source;
+pub(crate) mod gpu_stats;
 #[cfg(test)]
 mod glyph_blur;
+pub(crate) mod instance_pool;
 pub(crate) mod layers;
 pub(crate) mod occlusion;
 pub(crate) mod paths;

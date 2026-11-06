@@ -160,6 +160,17 @@ impl Backdrop {
         })
     }
 
+    /// The bytes its scratch textures take on the GPU, for `fast::gpu_stats`.
+    pub(crate) fn resident_bytes(&self) -> usize {
+        let textures = self
+            .scratch
+            .iter()
+            .flat_map(|pair| [&pair.copy, &pair.blurred]);
+        textures
+            .map(|texture| super::gpu_stats::allocated(texture))
+            .sum()
+    }
+
     /// Notes whether the frame `scene` draws a blur, releasing what blurs
     /// keep after a run of frames without one.
     pub(crate) fn begin_frame(&mut self, scene: &Scene) {

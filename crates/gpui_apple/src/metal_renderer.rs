@@ -79,13 +79,15 @@ pub fn new_renderer(
 pub struct InstanceBufferPool {
     buffer_size: usize,
     buffers: Vec<InstanceBuffer>,
+    fast_shrink: crate::fast::instance_pool::Shrink,
 }
 
 impl Default for InstanceBufferPool {
     fn default() -> Self {
         Self {
-            buffer_size: 2 * 1024 * 1024,
+            buffer_size: crate::fast::instance_pool::DEFAULT_BUFFER_SIZE,
             buffers: Vec::new(),
+            fast_shrink: crate::fast::instance_pool::Shrink::default(),
         }
     }
 }
@@ -102,6 +104,25 @@ impl InstanceBufferPool {
     pub(crate) fn reset(&mut self, buffer_size: usize) {
         self.buffer_size = buffer_size;
         self.buffers.clear();
+        self.fast_shrink = crate::fast::instance_pool::Shrink::default();
+    }
+
+    /// Notes the instance bytes a window's frame wrote, shrinking the pooled buffers after a
+    /// run of frames that fit in half of them (`crate::fast::instance_pool`). Buffers of the
+    /// old size still in flight are dropped when they are released.
+    pub(crate) fn fast_note_frame(&mut self, written: usize) {
+        let shrink = &mut self.fast_shrink;
+        if let Some(size) =
+            crate::fast::instance_pool::Shrink::note_frame(shrink, self.buffer_size, written)
+        {
+            log::info!("decreased instance buffer size to {size}");
+            self.reset(size);
+        }
+    }
+
+    /// Its pooled buffers and their size, for `crate::fast::gpu_stats`.
+    pub(crate) fn fast_stats(&self) -> (usize, usize) {
+        (self.buffers.len(), self.buffer_size)
     }
 
     pub(crate) fn acquire(
@@ -193,7 +214,7 @@ pub struct MetalRenderer {
     bgra_surfaces_pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     pub(crate) unit_vertices: Retained<ProtocolObject<dyn MTLBuffer>>,
     pub(crate) instance_buffer_pool: Arc<Mutex<InstanceBufferPool>>,
-    sprite_atlas: Arc<MetalAtlas>,
+    pub(crate) sprite_atlas: Arc<MetalAtlas>,
     /// The textures of each frame still on the GPU, released on this thread once it is done
     /// (`fast::surfaces`). Before the cache, so they drop before it.
     surfaces_in_flight: crate::fast::surfaces::SurfacesInFlight,
@@ -209,6 +230,7 @@ pub struct MetalRenderer {
     headless_render_target: Option<Retained<ProtocolObject<dyn MTLTexture>>>,
     pub(crate) fast_layers: crate::fast::layers::TileCache,
     fast_drawable_waits: crate::fast::frame_source::DrawableWaits,
+    pub(crate) fast_gpu_stats: crate::fast::gpu_stats::GpuStats,
 }
 
 /// Records the frame in `drawable` for the pacer, and hands it to `sink`, once the display
@@ -578,6 +600,7 @@ impl MetalRenderer {
             headless_render_target: None,
             fast_layers: crate::fast::layers::TileCache::default(),
             fast_drawable_waits: crate::fast::frame_source::DrawableWaits::default(),
+            fast_gpu_stats: crate::fast::gpu_stats::GpuStats::default(),
         })
     }
 
@@ -894,6 +917,9 @@ impl MetalRenderer {
         );
 
         let instance_buffer_pool = self.instance_buffer_pool.clone();
+        let written = writer.fast_written();
+        instance_buffer_pool.lock().fast_note_frame(written);
+        crate::fast::gpu_stats::after_frame(self);
         let frame_resources = Cell::new(Some(writer.finish()));
         let block = RcBlock::new(
             move |_: ptr::NonNull<ProtocolObject<dyn MTLCommandBuffer>>| {
@@ -2704,6 +2730,12 @@ impl InstanceBufferWriter {
         self.filled.push((filled, self.offset));
         self.offset = 0;
         Ok(())
+    }
+
+    /// The instance bytes written so far, across every buffer the frame filled.
+    pub(crate) fn fast_written(&self) -> usize {
+        let filled = self.filled.iter().map(|(_, written)| written);
+        filled.sum::<usize>() + self.offset
     }
 
     pub(crate) fn finish(self) -> InstanceBuffer {
