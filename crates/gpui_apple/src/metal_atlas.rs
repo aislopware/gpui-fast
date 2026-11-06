@@ -127,6 +127,7 @@ impl MetalAtlasTextures {
             }
         }
 
+        crate::fast::atlas::ensure_fits(size)?;
         let texture = self.push_texture(size, texture_kind)?;
         texture.allocate(size).context("allocating atlas tile")
     }
