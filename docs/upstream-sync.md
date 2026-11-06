@@ -400,6 +400,17 @@ unchanged, and a new entry needs as good a reason.
   native's hole is, so retention, paint layers and list layers carry it; a
   scroll container whose content blurs draws without its tiles. Only Metal
   draws it, with Metal Performance Shaders; elsewhere nothing is drawn.
+- `NativeFrame::blurs` and `NativeFrameBlur` are new public API, with
+  `MacNativeHost::blur_views` for tests (`fast/composition/frame.rs`,
+  `gpui_macos/src/fast/native_blur.rs`; docs/composition.md, "Over a native"),
+  ported from zui (<https://github.com/zeronsh/zui> `b8f3465` and its PR #5;
+  Apache-2.0, by Wing and the zui contributors; the notice is in the module's
+  documentation). A backdrop blur reads GPUI's drawable, which is transparent
+  where a native shows, so a frosted menu over a web page left the page sharp.
+  The presented frame names each blur over a native, and macOS blurs the native
+  under it with a private `CABackdropLayer` between the natives and GPUI's
+  layer, in the transaction that moves the hole. `NativeFrame` is composition's
+  own type, so the field changes nothing of upstream's.
 - `gpui_platform::set_clipboard_pasteboard`, with `gpui_macos`'s and
   `gpui_ios`'s, is new public API (`gpui_macos/src/fast/pasteboard.rs`,
   `gpui_platform/src/fast/clipboard.rs`, `gpui_ios`'s platform). Upstream's
