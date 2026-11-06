@@ -35,7 +35,7 @@ float blur_along_x(float x, float y, float sigma, float corner,
 float4 over(float4 below, float4 above);
 float radians(float degrees);
 float4 fill_color(Background background, float2 position, Bounds_ScaledPixels bounds,
-  float4 solid_color, float4 color0, float4 color1);
+  float4 solid_color, float4 color0, float4 color1, float2 frame_offset);
 
 // gpui-fast: edge fades (gpui's fast/edge_fade.rs, EdgeFadeRamps). Entry 0
 // of the table holds, in the bits of its first float, how many entries the
@@ -57,6 +57,10 @@ struct EdgeFadeRamps {
   float4 shape;
 };
 float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades);
+// gpui-fast: what a drawn position adds to be the frame's: a layer tile's
+// frame origin, in the table header's `rate.xy` (fast/layers/raster.rs);
+// zero when drawing the frame.
+float2 dither_offset(constant EdgeFadeRamps *fades) { return fades[0].rate.xy; }
 
 struct GradientColor {
   float4 solid;
@@ -128,7 +132,8 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
                               [[buffer(EDGE_FADE_BUFFER)]]) {
   Quad quad = quads[input.quad_id];
   float4 background_color = fill_color(quad.background, input.position.xy, quad.bounds,
-    input.background_solid, input.background_color0, input.background_color1);
+    input.background_solid, input.background_color0, input.background_color1,
+    dither_offset(fades));
   float4 fade = float4(1., 1., 1., edge_fade(input.position.xy, quad.background.pad, fades));
 
   bool unrounded = quad.corner_radii.top_left == 0.0 &&
@@ -873,7 +878,8 @@ fragment float4 path_rasterization_fragment(
     path_bounds,
     gradient_color.solid,
     gradient_color.color0,
-    gradient_color.color1
+    gradient_color.color1,
+    dither_offset(fades)
   );
   // Premultiplied: the fade scales every channel.
   return float4(color.rgb * color.a * alpha, alpha * color.a) *
@@ -1296,7 +1302,8 @@ float4 fast_radial_gradient(Background background, float2 position,
 float4 fill_color(Background background,
                       float2 position,
                       Bounds_ScaledPixels bounds,
-                      float4 solid_color, float4 color0, float4 color1) {
+                      float4 solid_color, float4 color0, float4 color1,
+                      float2 frame_offset) {
   float4 color;
 
   switch (background.tag) {
@@ -1350,7 +1357,8 @@ float4 fill_color(Background background,
       // ±2/255 for RGB (enough for dark-on-dark compositing),
       // ±3/255 for alpha (needs more because alpha × dark color = tiny steps).
       {
-        float2 seed = position * 0.6180339887; // golden ratio spread
+        // gpui-fast: seeded at the frame position, a layer tile's too.
+        float2 seed = (position + frame_offset) * 0.6180339887; // golden ratio spread
         float r1 = fract(sin(dot(seed, float2(12.9898, 78.233))) * 43758.5453);
         float r2 = fract(sin(dot(seed, float2(39.3460, 11.135))) * 24634.6345);
         float tri = r1 + r2 - 1.0; // triangular PDF, range [-1, +1]

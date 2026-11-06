@@ -496,8 +496,8 @@ mod tests {
     use std::sync::Arc;
 
     use gpui::{
-        Bounds, ContentMask, Corners, DevicePixels, Hsla, LayerMask, LayerMaskCut, Quad,
-        ScaledPixels, Scene, point, rgba, size,
+        Bounds, ContentMask, Corners, DevicePixels, Edges, GroupFade, Hsla, LayerMask,
+        LayerMaskCut, Quad, ScaledPixels, Scene, point, rgba, size,
     };
     use image::RgbaImage;
     use parking_lot::Mutex;
@@ -849,5 +849,249 @@ mod tests {
         let low = image.get_pixel(90, 146).0;
         near(20, 146, low);
         assert!(low[2] > 60 && low[0] == 0, "{low:?}");
+    }
+
+    /// monocode's group fade alpha at `local` in a region of `region`:
+    /// `edge_fade_fragment`'s top and bottom ramps, or its left and right
+    /// ones (each `saturate(distance / width)`, the lesser of the two), or
+    /// `text_reveal_fragment`'s `saturate((end - x) / (end - start))`. Its
+    /// fades go to nothing at the edge, a depth of 1.
+    fn monocode_alpha(local: (f32, f32), region: (f32, f32), fade: &GroupFade) -> f32 {
+        if let Some((start, end)) = fade.ramp_x {
+            return saturate((end - local.0) / (end - start));
+        }
+        let ramp = |distance: f32, width: f32| {
+            if width > 0. {
+                saturate(distance / width)
+            } else {
+                1.
+            }
+        };
+        if fade.width.left > 0. || fade.width.right > 0. {
+            ramp(local.0, fade.width.left).min(ramp(region.0 - local.0, fade.width.right))
+        } else {
+            ramp(local.1, fade.width.top).min(ramp(region.1 - local.1, fade.width.bottom))
+        }
+    }
+
+    fn group_fade(width: Edges<f32>, ramp_x: Option<(f32, f32)>) -> LayerMask {
+        LayerMask::group_fade(GroupFade {
+            width,
+            depth: Edges::all(1.),
+            ramp_x,
+        })
+    }
+
+    /// A group: a fill over `bounds` reaching past its right edge, which the
+    /// fade leaves as drawn, and a white bar over the fill, as a label over
+    /// its pill.
+    fn group_content(scene: &mut Scene, bounds: Bounds<ScaledPixels>, color: u32) {
+        let (x, y) = (bounds.origin.x.0, bounds.origin.y.0);
+        let (width, height) = (bounds.size.width.0, bounds.size.height.0);
+        scene.insert_primitive(quad(sp(x, y, width + 12., height), color));
+        scene.insert_primitive(quad(
+            sp(x + 8., y + height / 3., width - 16., 10.),
+            0xffffffff,
+        ));
+    }
+
+    /// `image`'s pixel at `(x, y)` in 0..1.
+    fn at(image: &RgbaImage, x: u32, y: u32) -> [f32; 4] {
+        image.get_pixel(x, y).0.map(|c| f32::from(c) / 255.)
+    }
+
+    /// Checks `masked` against `mix(before, after, alpha)` inside `bounds`
+    /// and `after` elsewhere: exactly where alpha is 0 or 1 or outside, and
+    /// within a level of 255 between, as the mix rounds once.
+    fn check_mix(
+        masked: &RgbaImage,
+        before: &RgbaImage,
+        after: &RgbaImage,
+        bounds: Bounds<ScaledPixels>,
+        alpha: impl Fn((f32, f32)) -> f32,
+    ) {
+        for (x, y, pixel) in masked.enumerate_pixels() {
+            let centre = (x as f32 + 0.5, y as f32 + 0.5);
+            let inside = bounds.contains(&point(ScaledPixels(centre.0), ScaledPixels(centre.1)));
+            let a = if inside {
+                alpha((centre.0 - bounds.origin.x.0, centre.1 - bounds.origin.y.0))
+            } else {
+                1.
+            };
+            let (below, above) = (at(before, x, y), at(after, x, y));
+            let tolerance = if a == 0. || a == 1. { 0 } else { 1 };
+            for channel in 0..4 {
+                let want = (mix(below[channel], above[channel], a) * 255.).round() as i32;
+                let got = i32::from(pixel[channel]);
+                assert!(
+                    (got - want).abs() <= tolerance,
+                    "({x}, {y}) channel {channel}: {got}, not {want} (alpha {a})"
+                );
+            }
+        }
+    }
+
+    /// A group faded as one equals monocode's snapshot mix on every pixel:
+    /// what was under the region before the group, mixed with what the
+    /// group drew over it by monocode's alpha, top and bottom, left and
+    /// right, or the text reveal's ramp; what the group draws past the region
+    /// is left as drawn.
+    #[test]
+    fn a_group_fade_mixes_the_group_into_what_was_under_it_as_monocode() {
+        let Some(mut renderer) = renderer() else {
+            return;
+        };
+        let (page, fill) = (0x336699ffu32, 0xe08020ffu32);
+        let bounds = sp(20., 16., 160., 208.);
+        let region = (160., 208.);
+        let mut scene = Scene::default();
+        scene.insert_primitive(quad(sp(0., 0., W as f32, H as f32), page));
+        let before = render(&mut renderer, &mut scene);
+        let mut scene = Scene::default();
+        scene.insert_primitive(quad(sp(0., 0., W as f32, H as f32), page));
+        group_content(&mut scene, bounds, fill);
+        let after = render(&mut renderer, &mut scene);
+        let none = Edges::default();
+        for mask in [
+            group_fade(
+                Edges {
+                    top: 24.,
+                    bottom: 40.,
+                    ..none
+                },
+                None,
+            ),
+            group_fade(
+                Edges {
+                    left: 30.,
+                    right: 50.,
+                    ..none
+                },
+                None,
+            ),
+            group_fade(none, Some((40., 120.))),
+            group_fade(none, Some((120., 40.))),
+        ] {
+            let mut scene = Scene::default();
+            scene.insert_primitive(quad(sp(0., 0., W as f32, H as f32), page));
+            scene.insert_layer_mask(cut(true, bounds, mask, 1.));
+            group_content(&mut scene, bounds, fill);
+            scene.insert_layer_mask(cut(false, bounds, mask, 1.));
+            let masked = render(&mut renderer, &mut scene);
+            let fade = mask.fade.unwrap();
+            check_mix(&masked, &before, &after, bounds, |local| {
+                monocode_alpha(local, region, &fade)
+            });
+        }
+    }
+
+    /// The ends of a group fade: a reveal whose ramp lies wholly left of the
+    /// region shows nothing of the group, what was under it exactly, and one
+    /// wholly right of it the whole group exactly, as monocode's first and
+    /// last frames of a text reveal do.
+    #[test]
+    fn a_group_fade_at_its_ends_shows_nothing_or_the_whole_group() {
+        let Some(mut renderer) = renderer() else {
+            return;
+        };
+        let (page, fill) = (0x336699ffu32, 0xe08020ffu32);
+        let bounds = sp(20., 16., 160., 208.);
+        let draw = |renderer: &mut MetalRenderer, mask: Option<LayerMask>, group: bool| {
+            let mut scene = Scene::default();
+            scene.insert_primitive(quad(sp(0., 0., W as f32, H as f32), page));
+            if let Some(mask) = mask {
+                scene.insert_layer_mask(cut(true, bounds, mask, 1.));
+            }
+            if group {
+                group_content(&mut scene, bounds, fill);
+            }
+            if let Some(mask) = mask {
+                scene.insert_layer_mask(cut(false, bounds, mask, 1.));
+            }
+            render(renderer, &mut scene)
+        };
+        let before = draw(&mut renderer, None, false);
+        let after = draw(&mut renderer, None, true);
+        let hidden = draw(
+            &mut renderer,
+            Some(group_fade(Edges::default(), Some((-20., -10.)))),
+            true,
+        );
+        let shown = draw(
+            &mut renderer,
+            Some(group_fade(Edges::default(), Some((300., 310.)))),
+            true,
+        );
+        check_mix(&hidden, &before, &after, bounds, |_| 0.);
+        check_mix(&shown, &before, &after, bounds, |_| 1.);
+    }
+
+    /// A group fade nested in another mixes its group into what the outer
+    /// group drew under it, and the outer one mixes the result, the inner
+    /// group's mix included, into the page.
+    #[test]
+    fn nested_group_fades_mix_inside_out() {
+        let Some(mut renderer) = renderer() else {
+            return;
+        };
+        let page = 0x336699ffu32;
+        let outer = sp(20., 16., 160., 208.);
+        let inner = sp(40., 60., 100., 80.);
+        let none = Edges::default();
+        let outer_mask = group_fade(
+            Edges {
+                top: 24.,
+                bottom: 40.,
+                ..none
+            },
+            None,
+        );
+        let inner_mask = group_fade(
+            Edges {
+                left: 30.,
+                right: 20.,
+                ..none
+            },
+            None,
+        );
+        let draw = |renderer: &mut MetalRenderer, outer_cut: bool, inner_cut: bool, stage: u8| {
+            let mut scene = Scene::default();
+            scene.insert_primitive(quad(sp(0., 0., W as f32, H as f32), page));
+            if stage == 0 {
+                return render(renderer, &mut scene);
+            }
+            if outer_cut {
+                scene.insert_layer_mask(cut(true, outer, outer_mask, 1.));
+            }
+            scene.insert_primitive(quad(outer, 0x20a040ff));
+            if stage > 1 {
+                if inner_cut {
+                    scene.insert_layer_mask(cut(true, inner, inner_mask, 1.));
+                }
+                group_content(&mut scene, inner, 0xe08020ff);
+                if inner_cut {
+                    scene.insert_layer_mask(cut(false, inner, inner_mask, 1.));
+                }
+            }
+            if outer_cut {
+                scene.insert_layer_mask(cut(false, outer, outer_mask, 1.));
+            }
+            render(renderer, &mut scene)
+        };
+        let page_only = draw(&mut renderer, false, false, 0);
+        let outer_fill = draw(&mut renderer, false, false, 1);
+        let unfaded = draw(&mut renderer, false, false, 2);
+        // The inner fade alone, as the outer group drew it, is the outer
+        // group's `after`.
+        let inner_only = draw(&mut renderer, false, true, 2);
+        let inner_fade = inner_mask.fade.unwrap();
+        check_mix(&inner_only, &outer_fill, &unfaded, inner, |local| {
+            monocode_alpha(local, (100., 80.), &inner_fade)
+        });
+        let both = draw(&mut renderer, true, true, 2);
+        let outer_fade = outer_mask.fade.unwrap();
+        check_mix(&both, &page_only, &inner_only, outer, |local| {
+            monocode_alpha(local, (160., 208.), &outer_fade)
+        });
     }
 }

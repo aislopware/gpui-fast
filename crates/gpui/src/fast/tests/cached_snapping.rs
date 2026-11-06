@@ -1,7 +1,9 @@
-//! A view drawn cached (`cached`), laid out on its own and placed at its
-//! bounds, must paint what it paints laid out in place: caching is a way to
-//! draw less, not a way to draw otherwise. An application may well draw a
-//! view cached in one frame and in place in the next.
+//! A view drawn cached (`cached`) is laid out on its own and placed at its
+//! bounds, snapped, as upstream's and monocode's are. Where those bounds lie
+//! on whole device pixels it paints what it paints laid out in place, ties
+//! included; where layout put it off a pixel's edge, what it holds snaps
+//! from its snapped bounds, as monocode drew it, and may lie a device pixel
+//! from where it lies in place.
 
 use super::element_oracle::GlyphBoxTextSystem;
 use crate::{
@@ -98,10 +100,17 @@ fn a_cached_view_snaps_what_sticks_out_of_it_as_in_place() {
 }
 
 /// The header is centred half a device pixel off a pixel's edge: cached, it
-/// is drawn at its bounds, snapped, and what it holds must snap from where
-/// layout put it all the same.
+/// is laid out from its bounds, snapped, as monocode's cached views are, so
+/// what it holds lies where it lies in place moved by the half pixel its
+/// bounds snapped away; drawn twice cached, it draws alike.
 #[test]
-fn a_cached_view_placed_off_a_pixels_edge_snaps_as_in_place() {
+fn a_cached_view_placed_off_a_pixels_edge_snaps_from_its_snapped_bounds() {
     let [cached, in_place] = painted(10., 20.5);
+    assert_ne!(cached, in_place, "cached, the header snaps from its bounds");
+    let [again, _] = painted(10., 20.5);
+    assert_eq!(cached, again);
+    // A whole device pixel lower, the column's half pixel is gone: cached
+    // and in place agree.
+    let [cached, in_place] = painted(10., 21.);
     assert_eq!(cached, in_place);
 }

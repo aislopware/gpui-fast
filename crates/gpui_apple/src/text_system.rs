@@ -830,8 +830,11 @@ mod tests {
         assert!(!layout.runs.is_empty());
     }
 
+    /// A line's first run is set a hair larger, at `next_up(size)`, as upstream and monocode
+    /// set it (FORK.md, onicode-parity-3), and a leading BOM's run, which inserts no text,
+    /// does not count as that first run.
     #[test]
-    fn test_layout_line_sets_a_lone_run_at_its_exact_size() {
+    fn test_layout_line_sets_a_lone_run_a_hair_larger_as_monocode() {
         use core_foundation::attributed_string::CFMutableAttributedString;
         use core_foundation::base::{CFRange, TCFType};
         use core_foundation::string::CFString;
@@ -846,7 +849,7 @@ mod tests {
         for size in [11., 17., 22.] {
             let exact = fonts.0.read().fonts[font_id.0]
                 .native_font()
-                .clone_with_font_size(size as f64);
+                .clone_with_font_size(f32::next_up(size) as f64);
             let mut string = CFMutableAttributedString::new();
             string.replace_str(&CFString::new(text), CFRange::init(0, 0));
             let range = CFRange::init(0, string.char_len());

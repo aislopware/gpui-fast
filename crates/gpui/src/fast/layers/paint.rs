@@ -496,12 +496,38 @@ pub(crate) fn insert_layer(
     }
     let viewports = viewports(window);
     let overlay = record.overlay.clone();
+    if blurred_over(window, viewport) {
+        // Tiles are one draw order: a blur over them would read content
+        // that drawn directly is ordered above it. The content, standing,
+        // is drawn into the frame in its painting order instead.
+        let content = record.content.clone();
+        draw_into_frame(window, content.operations(), translation);
+        insert_overlay(window, &overlay, translation, viewports);
+        let stats = &mut window.layout_engine.as_mut().unwrap().retention.stats;
+        stats.layer_frames_composited += 1;
+        stats.layer_frames_blurred_over += 1;
+        policy::note_work(window, id, 0.);
+        return;
+    }
     insert_tile_quads(&mut window.next_frame.scene, layer, viewport, translation);
     insert_overlay(window, &overlay, translation, viewports);
     let stats = &mut window.layout_engine.as_mut().unwrap().retention.stats;
     stats.layer_frames_composited += 1;
     stats.tiles_dirtied += dirtied as u64;
     policy::note_work(window, id, 0.);
+}
+
+/// Whether a blur of the last frame reads from `viewport`: the frame drew a
+/// blur there, and one drawn there again reads what is under it in draw
+/// order, which tiles, all of one order, do not keep. A blur appearing over
+/// a composited layer reads its tiles on that one frame.
+fn blurred_over(window: &Window, viewport: Bounds<ScaledPixels>) -> bool {
+    window
+        .rendered_frame
+        .scene
+        .backdrop_blurs()
+        .iter()
+        .any(|blur| blur.reach().intersects(&viewport))
 }
 
 /// Inserts into `scene` the quads of the tiles of `layer` that show in

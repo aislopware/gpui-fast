@@ -98,6 +98,10 @@ pub struct LayoutStats {
     /// Scroll container frames drawn by compositing a scroll layer's cached
     /// tiles at the new offset, without prepainting or painting its content.
     pub layer_frames_composited: u64,
+    /// Of the frames composited, those that drew the layer's standing
+    /// content into the frame instead of its tiles, because the last frame
+    /// blurred over its viewport (`fast::backdrop`).
+    pub layer_frames_blurred_over: u64,
     /// Scroll container frames whose content was painted into its scroll
     /// layer again, because it changed or scrolled past the painted region.
     pub layer_frames_repainted: u64,

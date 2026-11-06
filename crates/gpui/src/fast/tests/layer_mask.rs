@@ -728,3 +728,185 @@ fn every_quad_over_a_masks_region_is_met_on_its_side_of_the_cuts() {
         }
     }
 }
+
+/// Rows of which every fifth is faded as one group by [`crate::edge_fade_by`],
+/// its fade worked out from its laid out width, in a scroll container or a
+/// list.
+struct GroupFaded {
+    scroll: ScrollHandle,
+    list: Option<crate::ListState>,
+}
+
+fn group_faded_row(ix: usize) -> AnyElement {
+    let row = div()
+        .h(px(20.))
+        .bg(hsla(ix as f32 / 60., 0.5, 0.5, 1.))
+        .child(format!("row {ix}"));
+    if ix % 5 == 2 {
+        crate::edge_fade_by(row, |bounds, _, _| {
+            crate::EdgeFade::x(bounds.size.width / 4.).linear()
+        })
+        .group()
+        .into_any_element()
+    } else {
+        row.into_any_element()
+    }
+}
+
+impl Render for GroupFaded {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let page = div().size_full().bg(hsla(0., 0., 1., 1.));
+        match &self.list {
+            Some(state) => page.child(
+                crate::list(state.clone(), |ix, _, _| group_faded_row(ix))
+                    .w(px(300.))
+                    .h(px(200.)),
+            ),
+            None => page.child(
+                div().w(px(300.)).h(px(200.)).child(
+                    div()
+                        .id("scrolled")
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll)
+                        .children((0..60).map(group_faded_row)),
+                ),
+            ),
+        }
+    }
+}
+
+/// A group fade inside a scroll container or a list draws, frame by frame
+/// as it scrolls, what the window without scroll layers draws: a scroll
+/// container's content is kept off its tiles, which would hold the group
+/// over the layer's background alone, and a list draws its rows' cuts again
+/// with them.
+#[test]
+fn a_group_fade_inside_a_scroll_layer_draws_as_without_layers() {
+    let mut cx = text_cx();
+    for list in [false, true] {
+        let new = |cx: &mut TestAppContext| {
+            cx.add_window(move |_, _| GroupFaded {
+                scroll: ScrollHandle::new(),
+                list: list.then(|| {
+                    crate::ListState::new(60, crate::ListAlignment::Top, px(0.)).measure_all()
+                }),
+            })
+        };
+        let (layered, direct) = (new(&mut cx), new(&mut cx));
+        for (window, layers) in [(layered, true), (direct, false)] {
+            with_window(&mut cx, window.into(), |window, cx| {
+                window.set_scroll_layers(layers);
+                window.draw(cx).clear(cx);
+            });
+        }
+        for frame in 0..30 {
+            let dy = if frame < 20 { -13. } else { 17. };
+            let expected = wheel_and_draw(&mut cx, direct.into(), dy);
+            let actual = wheel_and_draw(&mut cx, layered.into(), dy);
+            assert_eq!(actual, expected, "list {list}, frame {frame}");
+            assert!(
+                expected.iter().any(|line| line.contains("layer mask")),
+                "list {list}, frame {frame} fades a group"
+            );
+        }
+        let stats = with_window(&mut cx, layered.into(), |window, _| window.layout_stats());
+        if !list {
+            assert_eq!(stats.layer_frames_composited, 0, "{stats:?}");
+        }
+    }
+}
+
+/// A box faded as one group by [`crate::edge_fade_by`], or each primitive
+/// by itself without `.group()`.
+struct FadedBox {
+    group: bool,
+    fade: crate::EdgeFade,
+}
+
+impl Render for FadedBox {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let fade = self.fade;
+        let faded = crate::edge_fade_by(
+            div()
+                .size_full()
+                .bg(hsla(0.6, 0.8, 0.5, 1.))
+                .child(div().w(px(40.)).h(px(10.)).bg(hsla(0., 0., 1., 1.))),
+            move |bounds, _, _| crate::EdgeFade {
+                width: crate::Edges {
+                    left: bounds.size.width / 4.,
+                    ..fade.width
+                },
+                ..fade
+            },
+        );
+        div().size_full().bg(hsla(0., 0., 0., 1.)).child(
+            div()
+                .absolute()
+                .top(px(10.))
+                .left(px(20.))
+                .w(px(120.))
+                .h(px(40.))
+                .child(if self.group { faded.group() } else { faded }),
+        )
+    }
+}
+
+fn draw_faded_box(group: bool, fade: crate::EdgeFade) -> (Vec<LayerMaskCut>, usize, f32) {
+    let mut cx = text_cx();
+    let window = cx.add_window(move |_, _| FadedBox { group, fade });
+    with_window(&mut cx, window.into(), |window, cx| {
+        window.draw(cx).clear(cx);
+        let scene = window.painted_scene();
+        (
+            scene.layer_masks().to_vec(),
+            scene.edge_fades().len(),
+            window.scale_factor(),
+        )
+    })
+}
+
+/// `edge_fade_by(..).group()` brackets its child between the two cuts of a
+/// group fade over the child's laid out bounds, the fade worked out from
+/// them (a left ramp a quarter of the width), in device pixels; without
+/// `.group()` it fades each primitive by itself and cuts nothing. A fade
+/// whose every edge has no depth, or no width, fades nothing: whole, the
+/// one end, it draws the group as painted, with no cut, as a depth of 1 at
+/// the edge reaches the other end, nothing.
+#[test]
+fn edge_fade_by_fades_a_group_over_its_laid_out_bounds() {
+    let fade = crate::EdgeFade::new(crate::Edges::default()).linear();
+    let (cuts, _, scale) = draw_faded_box(true, fade);
+    assert_eq!(cuts.len(), 2, "{cuts:?}");
+    let (begin, end) = (&cuts[0], &cuts[1]);
+    assert!(begin.begin && !end.begin && begin.id == end.id);
+    let bounds = sp(20. * scale, 10. * scale, 120. * scale, 40. * scale);
+    assert_eq!(begin.bounds, bounds);
+    let group = begin.mask.fade.expect("a group fade");
+    assert_eq!(group.width.left, 30. * scale);
+    assert_eq!(group.depth.left, 1.);
+    assert_eq!(
+        (group.width.top, group.width.right, group.width.bottom),
+        (0., 0., 0.)
+    );
+    assert_eq!(group.ramp_x, None);
+    assert_eq!(begin.mask.mode(), 6);
+    assert!(begin.mask.fade.is_some() && !begin.mask.clears());
+
+    let (cuts, fades, _) = draw_faded_box(false, fade);
+    assert!(cuts.is_empty(), "{cuts:?}");
+    assert!(fades > 1, "the primitives fade by themselves");
+
+    let shallow = fade.depth(crate::Edges::all(0.));
+    let (cuts, _, _) = draw_faded_box(true, shallow);
+    assert!(cuts.is_empty(), "no depth fades nothing: {cuts:?}");
+    assert!(!crate::GroupFade::from_edge_fade(&shallow, 2.).fades());
+
+    let reveal = crate::EdgeFade::ramp_x(px(10.), px(50.));
+    let (cuts, _, scale) = draw_faded_box(true, reveal);
+    let group = cuts[0].mask.fade.expect("a group fade");
+    assert_eq!(group.ramp_x, Some((10. * scale, 50. * scale)));
+    assert_eq!(cuts[0].mask.mode(), 7);
+}

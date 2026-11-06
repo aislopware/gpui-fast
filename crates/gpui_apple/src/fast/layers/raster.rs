@@ -3,10 +3,13 @@
 //! to the layer's baked background, with the frame's pipelines and a
 //! viewport the size of the tile.
 //!
-//! All position-dependent shading is relative to each primitive's own bounds,
-//! and the tile is a whole number of device pixels from the content's
-//! origin, so a tile holds exactly the pixels the content would have drawn
-//! over the same background in the window.
+//! All position-dependent shading is relative to each primitive's own bounds
+//! but the linear gradients' dither, seeded at the frame position as
+//! monocode's is: a tile's table of fades carries where the frame shows it
+//! (`edge_fade::write_tile`). The tile is a whole number of device pixels
+//! from the content's origin, so a tile holds exactly the pixels the content
+//! would have drawn over the same background in the window, there. A cached
+//! tile the layer scrolls keeps the dither of where it was rasterized.
 //!
 //! The tiles are encoded in a command buffer of their own, committed before
 //! the frame's. Metal runs a queue's command buffers in the order they are
@@ -109,6 +112,15 @@ fn encode(
         .context("creating the tiles' command buffer")?;
     command_buffer.setLabel(Some(ns_string!("scroll_layer_tiles")));
 
+    // Where the frame shows each tile, which seeds its gradients' dither.
+    let origins: collections::FxHashMap<(LayerKey, TileCoord), [f32; 2]> = scene
+        .polychrome_sprites
+        .iter()
+        .filter_map(|sprite| {
+            let tile = decode_layer_tile(sprite.tile.texture_id, sprite.tile.tile_id)?;
+            Some((tile, [sprite.bounds.origin.x.0, sprite.bounds.origin.y.0]))
+        })
+        .collect();
     let mut result = Ok(());
     // `planned` is sorted by layer: each layer's tile scenes come from one
     // walk over its content.
@@ -124,7 +136,17 @@ fn encode(
                 debug_assert!(false, "a planned tile was not prepared");
                 continue;
             };
-            let bindings = match write_instances(&tile_scene, &mut writer) {
+            let origin = origins
+                .get(&(layer.key, *tile))
+                .copied()
+                .unwrap_or_default();
+            let bindings = write_instances(&tile_scene, &mut writer).and_then(|bindings| {
+                Ok(InstanceBindings {
+                    fades: crate::fast::edge_fade::write_tile(&tile_scene, &mut writer, origin)?,
+                    ..bindings
+                })
+            });
+            let bindings = match bindings {
                 Ok(bindings) => bindings,
                 Err(error) => {
                     result = Err(error);

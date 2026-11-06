@@ -1963,12 +1963,15 @@ impl<V: View> ViewElement<V> {
                     note_rendered(window, cx, entity_id, start);
                     let render = recording.rendered(cx);
                     let root = element.request_layout(window, cx);
-                    // Laid out on its own, it snaps as it would in place.
+                    // Laid out on its own from its snapped bounds, as
+                    // upstream's and monocode's cached views are: what it
+                    // holds snaps from there, not from where it lies in its
+                    // device pixel in place (FORK.md, "Onicode").
                     window
                         .layout_engine
                         .as_mut()
                         .unwrap()
-                        .place_root(root, phase);
+                        .place_root(root, Point::default());
                     element.layout_as_root(bounds.size.into(), window, cx);
                     element.prepaint_at(bounds.origin, window, cx);
                     // Kept so that the view can be built again on its own

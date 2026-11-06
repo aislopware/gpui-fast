@@ -1091,8 +1091,10 @@ alike here (onicode's `docs/onicode/golden.md`):
 
 - CoreText shapes the first run of a line at `f32::next_up(size)`, as zed and monocode do
   (`break_ligature` starts true in `gpui_apple`'s `text_system.rs`): the font CoreText caches
-  at the exact size spaces 11 pt SF Medium and Semibold 0.19 px narrower over a label. Test
-  (`gpui_apple`, `font-kit`): `the_first_run_is_shaped_a_float_step_above_its_size`.
+  at the exact size spaces 11 pt SF Medium and Semibold 0.19 px narrower over a label. Tests
+  (`gpui_apple`, `font-kit`): `the_first_run_is_shaped_a_float_step_above_its_size`,
+  `test_layout_line_sets_a_lone_run_a_hair_larger_as_monocode` (which had asserted the exact
+  size).
 - `edge_fade_by(child, |bounds, window, cx| EdgeFade)`: an edge fade worked out from the
   bounds its child lays out in that frame, for fades that follow a scroll position (onicode's
   sidebar and live transcript). Test: `a_fade_worked_out_by_a_closure_draws_the_frame_its_content_lays_out`.
@@ -1104,7 +1106,15 @@ alike here (onicode's `docs/onicode/golden.md`):
   edge, whole a width in) or monocode's text reveal `saturate((end - x) / (end - start))`.
   Translucent overlaps fade as their composite, and what the group paints past its region is
   left whole, as in monocode. Onicode's transcript, live phase, sidebar list, tab labels and
-  particle titles use it.
+  particle titles use it. Tests: `edge_fade_by_fades_a_group_over_its_laid_out_bounds` (the
+  cuts, the fade worked out from the laid out bounds in device pixels, per-primitive fading
+  without `.group()`, no cut for a fade of no depth), `a_group_fade_inside_a_scroll_layer_draws_as_without_layers`
+  (a scroll container and a list, frame by frame against a window without layers), and in
+  `gpui_apple`, against monocode's `edge_fade_fragment` and `text_reveal_fragment` written out
+  in Rust on every pixel: `a_group_fade_mixes_the_group_into_what_was_under_it_as_monocode`
+  (top and bottom, left and right, the reveal both ways, what the group draws past the region
+  left as drawn), `a_group_fade_at_its_ends_shows_nothing_or_the_whole_group` (alpha 0 and 1,
+  exact) and `nested_group_fades_mix_inside_out`.
 - `Window::paint_backdrop_blur_whole`: a blur drawn at full strength whatever the element
   opacity, as monocode's marker blur is; a surface fading in fades its tint and content over
   it. Test: `a_whole_blur_ignores_the_element_opacity`.
@@ -1118,10 +1128,24 @@ alike here (onicode's `docs/onicode/golden.md`):
   of one order share a pass only with those drawn after as many quads (waves are gone).
   Tests: `a_blur_reads_the_quads_of_its_order_painted_before_it`, the seeded
   `every_quad_over_a_masks_region_is_met_on_its_side_of_the_cuts` (now checking each cut's
-  quads). Not kept: `a_blur_over_a_scroll_layer_leaves_it_compositing` compares a layered
-  window with a direct one; a scroll layer's rows share one order, so a blur over the list
-  reads the rows beside its region that direct drawing orders above it (as monocode did). It
-  fails until the two are reconciled; see onicode's report.
+  quads).
+- A scroll layer the last frame blurred over (a blur's reach meets its viewport) draws its
+  standing content into the frame (`draw_into_frame`) instead of compositing its tiles
+  (`fast::layers::paint::blurred_over`, `LayoutStats::layer_frames_blurred_over`). Tiles are
+  one draw order, and a blur ordered as monocode's marker reads what beside its region is
+  ordered below it, so a blur over tiles would read rows that drawn directly lie above it. No
+  ordering of the tiles keeps both: what the blur must not read is a row's primitives in its
+  reach but outside its region whose direct order is at or above the blur's, known only from
+  the frame's bounds tree, which a composited layer does not fill; splitting tiles around the
+  blur's order would rasterize per blur. The content is not painted again, only replayed into
+  the frame, as a list's rows are every frame; the rule needs the last frame's blurs because a
+  layer composites before the blurs painted after it are known, so on the one frame a blur
+  first appears over a composited layer it reads the tiles. Cost, from
+  `scroll_frame_gpu_cost` (M-series, 1800x1200, 125 rows of 40 glyphs in view, release): the
+  GPU draws a frame directly in a median 244.5 µs against 177.8 µs through tiles, and encodes
+  it in 15.6 µs against 13.3 µs; the core inserts the visible primitives into the bounds tree
+  as a list layer does. Test: `a_blur_over_a_scroll_layer_draws_the_standing_content_into_the_frame`
+  (replacing `a_blur_over_a_scroll_layer_leaves_it_compositing`).
 - A rounded padding edge (`fast::rounded_clip`) covers whole device pixels along its straight
   edges, as the rectangular content mask does (`cover_bounds`), so only its corners are
   antialiased; and a quad or blur that fills the edge at its corners or rounder (a clipped
@@ -1130,10 +1154,21 @@ alike here (onicode's `docs/onicode/golden.md`):
   overflow left them (`rounded_clip::uncut_fade`). Test: `what_fills_a_rounded_padding_edge_is_not_cut_again`.
 - A linear gradient's dither is seeded by the pixel's position in the frame, monocode's
   (zed `93d7456`), not its position in the quad: avatars and buttons dither as recorded. A
-  scroll layer's tiles then dither in tile space: `gpui_apple`'s
-  `tiles_composited_in_place_equal_the_content_drawn_directly` and
-  `tiles_of_negative_coordinates_composite_like_positive_ones` fail on their gradient until
-  tiles are seeded in frame space or the seed goes back; see onicode's report.
+  scroll layer's tile is seeded at where the frame composites it: its table of fades carries
+  the tile's frame origin in its header's `rate.xy` (`gpui_apple`'s `edge_fade::write_tile`,
+  `dither_offset` in `shaders.metal`), so a tile composited in place draws what the frame drawn
+  directly does (`tiles_composited_in_place_equal_the_content_drawn_directly`,
+  `tiles_of_negative_coordinates_composite_like_positive_ones`). A cached tile the layer then
+  scrolls keeps the dither of where it was rasterized, up to 2 levels in a gradient's pixels.
+- A view drawn cached (`AnyView::cached`) is laid out on its own from its snapped bounds, as
+  upstream's and monocode's are (`place_root` at phase zero in the `ViewLayout::Cached`
+  branch), reverting the half of `f95c1d7` that placed it at its phase in place: onicode's
+  activity tiles are cached views centred half a device pixel off a pixel's edge at 125%, and
+  monocode drew their icons a device pixel higher than in place. Ties still snap toward the
+  pixel below on either side of zero, and views rebuilt at their bounds inside a view drawn from
+  last frame keep their phase, so retained frames draw as fresh ones. Test:
+  `a_cached_view_placed_off_a_pixels_edge_snaps_from_its_snapped_bounds` (replacing
+  `..._snaps_as_in_place`).
 
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.

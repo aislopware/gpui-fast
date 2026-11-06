@@ -3,30 +3,19 @@
 //! behind it.
 //!
 //! [`Window::paint_backdrop_blur`] places a [`BackdropBlur`] in the scene at
-//! its place in painter's order, as a native's placement is placed
-//! (`fast::composition`): it takes the next draw order over what it reads
-//! from (the region and the blur's reach around it), inside a paint layer
-//! it moves the rest of the layer above itself, and it is a paint operation
-//! of its own, so retention draws it again from last frame with the
-//! primitives around it. A renderer meets it in [`Scene::composed_batches`]
-//! as [`ComposedBatch::Blurs`] between the primitive batches drawn below it
+//! its place in painter's order, as monocode placed its marker quad: it
+//! takes the next draw order over what its region overlaps, after the quads
+//! of that order painted before it, inside a paint layer it moves the rest
+//! of the layer above itself, and it is a paint operation of its own, so
+//! retention draws it again from last frame with the primitives around it.
+//! A renderer meets it in [`Scene::composed_batches`] as
+//! [`ComposedBatch::Blurs`] between the primitive batches drawn below it
 //! and those drawn over it: it copies what it drew so far under the region
 //! (and the blur's reach around it), blurs that, and draws it back clipped
 //! to the region's rounded corners, faded as an edge fade or rounded clip
 //! around it says, and as opaque as the element opacity it was painted
-//! with.
-//!
-//! Each blur ending the renderer's pass costs a store and a load of the
-//! whole drawable, so blurs of one radius share a pass break where they
-//! can: a blur joins the draw order of an earlier one (a wave) when that
-//! order is above everything its own region overlaps, so nothing between
-//! the two is drawn under its region. When the wave's order is below the
-//! blur's own, what was drawn between them inside the blur's reach but
-//! outside its region (another frosted surface's fill, three standard
-//! deviations off) is missing from the edge of its blur; nothing under its
-//! region ever is. Its region alone goes in the bounds tree, so what is
-//! painted after it beside its region is not lifted above it, and a column
-//! of frosted badges in a transcript is one wave rather than a chain.
+//! with. What is painted beside the region, in its reach, is read when its
+//! order is below the blur's, as monocode's blur read it.
 //!
 //! Where a blur lies over a native's hole, GPUI's drawable holds nothing
 //! of the native to blur: the presented frame hands the blur to the
@@ -38,17 +27,18 @@
 //! layer's own background, not over what the frame draws under it, so a
 //! layer whose content paints a blur is drawn without its tiles, as one
 //! whose content places a native is. A list's layer, which draws its rows
-//! again into the frame, draws their blurs again too.
+//! again into the frame, draws their blurs again too. Tiles are one draw
+//! order, so a blur reading over them would read content that drawn
+//! directly is ordered above it: a layer that the last frame blurred over
+//! draws its content into the frame instead (`fast::layers::paint`).
 //!
 //! Ported from zui (<https://github.com/zeronsh/zui>, the backdrop blur in
 //! `crates/gpui/src/{window,scene}.rs` and `crates/gpui_macos`, at
 //! `361ff20`; Apache-2.0, by Wing and the zui contributors; zui is a fork of
 //! Zed's GPUI). Changed from zui: the blur is a paint operation ordered as
 //! natives' holes are, not a list ordered by its paint layer with an
-//! invisible shadow to split batches; it is ordered over everything it
-//! reads, so that rows a scroll layer draws as tiles and rows drawn into
-//! the frame are read alike; blurs share pass breaks, where zui ends the
-//! pass once per blur; its edge is antialiased; it takes the edge fade and
+//! invisible shadow to split batches; it is ordered as monocode's marker
+//! quad; its edge is antialiased; it takes the edge fade and
 //! rounded clip around it and the element opacity.
 //!
 //! [`ComposedBatch::Blurs`]: crate::fast::composition::ComposedBatch::Blurs
@@ -178,12 +168,9 @@ impl Scene {
         &self.composition.blurs
     }
 
-    /// Places a backdrop blur: it takes the next draw order over what it
-    /// reads from, its [`BackdropBlur::reach`], so that everything painted
-    /// before it there is drawn before it; or joins blurs of its radius
-    /// drawn at an order between what its region overlaps and that, so
-    /// that they share one copy of what is under them (see the module).
-    /// Inside a paint layer, whose primitives share one order, the rest of
+    /// Places a backdrop blur: it takes the next draw order over what its
+    /// region overlaps, after the quads of that order painted before it
+    /// (see the module). Inside a paint layer, whose primitives share one order, the rest of
     /// the layer is moved above it.
     pub fn insert_backdrop_blur(&mut self, mut blur: BackdropBlur) {
         let bounds = blur.clipped_bounds();

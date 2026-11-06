@@ -38,6 +38,25 @@ pub(crate) fn write(scene: &Scene, writer: &mut InstanceBufferWriter) -> Result<
     writer.write(if table.is_empty() { &EMPTY } else { table })
 }
 
+/// [`write`] for a layer tile whose top-left corner the frame shows at
+/// `frame_origin`: the header's `rate.xy` holds it, which the shaders add to
+/// a drawn position to seed the gradient dither at the frame position, so a
+/// tile dithers as the frame drawn directly does where it was rasterized.
+pub(crate) fn write_tile(
+    scene: &Scene,
+    writer: &mut InstanceBufferWriter,
+    frame_origin: [f32; 2],
+) -> Result<InstanceBinding> {
+    let mut table = if scene.edge_fades().is_empty() {
+        EMPTY.to_vec()
+    } else {
+        scene.edge_fades().to_vec()
+    };
+    table[0].rate[0] = frame_origin[0];
+    table[0].rate[1] = frame_origin[1];
+    writer.write(&table)
+}
+
 /// Binds `fades` for the fragment shaders of `encoder`'s draws.
 pub(crate) fn bind(encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>, fades: &InstanceBinding) {
     // SAFETY: the fragment shaders read the table of fades at this slot; Metal retains the

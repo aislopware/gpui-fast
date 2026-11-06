@@ -395,13 +395,20 @@ fn scroll_both(inside: bool) -> LayoutStats {
     stats
 }
 
-/// A frosted popover over a scroll container blurs the layer's tiles as
-/// they are composited under it: the layer keeps compositing.
+/// A frosted popover over a scroll container reads what is under it in
+/// draw order, as monocode's did, which the layer's tiles, all of one
+/// order, do not keep: the layer stands, its content not painted again,
+/// and is drawn into the frame instead of its tiles on every frame the
+/// popover was over it, each drawing what the window without layers draws.
 #[test]
-fn a_blur_over_a_scroll_layer_leaves_it_compositing() {
+fn a_blur_over_a_scroll_layer_draws_the_standing_content_into_the_frame() {
     let stats = scroll_both(false);
     if crate::fast::layers::COMPILED {
         assert!(stats.layer_frames_composited > 0, "{stats:?}");
+        assert_eq!(
+            stats.layer_frames_blurred_over, stats.layer_frames_composited,
+            "{stats:?}"
+        );
     }
 }
 
