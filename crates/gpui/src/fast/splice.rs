@@ -842,6 +842,13 @@ impl Window {
                 layout = None;
             }
         }
+        // The union only grows: a view that is spliced frame after frame would
+        // keep every entity the views in it ever read, and replay them all on
+        // every frame. Those that were released cannot change, so they go.
+        let previous_dependencies = &self.rendered_frame.retained.records[previous].dependencies;
+        if !dependencies.shares_entities_with(previous_dependencies) {
+            dependencies = dependencies.without_released_entities(cx);
+        }
         let record = &mut target.records[index];
         record.prepaint_range = start..end;
         record.nested = nested;
