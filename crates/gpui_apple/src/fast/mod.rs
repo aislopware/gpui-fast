@@ -14,9 +14,9 @@ pub(crate) mod drawable_count;
 pub(crate) mod edge_fade;
 pub mod font_weight;
 pub mod frame_source;
-pub mod gpu_stats;
 #[cfg(test)]
 mod glyph_blur;
+pub mod gpu_stats;
 pub(crate) mod instance_pool;
 pub(crate) mod layers;
 pub(crate) mod occlusion;

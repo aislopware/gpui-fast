@@ -202,7 +202,7 @@ pub(crate) fn note_test_drag(recorded: &mut TestDragPromises, promises: &[FilePr
     recorded.0.extend_from_slice(promises);
 }
 
-#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
+#[cfg(test)]
 impl crate::platform::TestWindow {
     /// The file promises this window's drags handed to the platform so far.
     pub(crate) fn external_drag_promises(&self) -> Vec<FilePromise> {

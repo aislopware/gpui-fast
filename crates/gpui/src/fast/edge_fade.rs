@@ -1504,7 +1504,11 @@ impl EdgeFadeRamps {
     /// work it out.
     pub fn alpha_at(&self, point: Point<ScaledPixels>) -> f32 {
         let ramp = |slot: usize| {
-            let coordinate = if slot % 2 == 0 { point.x.0 } else { point.y.0 };
+            let coordinate = if slot.is_multiple_of(2) {
+                point.x.0
+            } else {
+                point.y.0
+            };
             let (edge, rate, start, shape) = self.ramp(slot);
             let ramp = (start + rate * (coordinate - edge)).clamp(0., 1.);
             if shape % 2. >= 1. {

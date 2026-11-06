@@ -3122,10 +3122,8 @@ impl Interactivity {
                         }
 
                         let mut pending_mouse_down = pending_mouse_down.borrow_mut();
-                        if crate::fast::drag::forget_released_press(
-                            &mut pending_mouse_down,
-                            event,
-                        ) {
+                        if crate::fast::drag::forget_released_press(&mut pending_mouse_down, event)
+                        {
                             return;
                         }
                         if let Some(mouse_down) = pending_mouse_down.clone()
