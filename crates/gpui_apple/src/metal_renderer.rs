@@ -324,7 +324,7 @@ impl MetalRenderer {
         // Support direct-to-display rendering if the window is not transparent
         // https://developer.apple.com/documentation/metal/managing-your-game-window-for-metal-in-macos
         layer.setOpaque(!transparent);
-        layer.setMaximumDrawableCount(3);
+        layer.setMaximumDrawableCount(crate::fast::drawable_count::drawable_count());
         // Allow texture reading for visual tests and UI automation screenshots
         // (captures without ScreenCaptureKit). Only debug builds pay the
         // presentation cost, even when `test-support` is compiled in.

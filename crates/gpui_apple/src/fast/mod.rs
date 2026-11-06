@@ -10,6 +10,7 @@
 
 pub(crate) mod atlas;
 pub(crate) mod backdrop;
+pub(crate) mod drawable_count;
 pub(crate) mod edge_fade;
 pub mod font_weight;
 pub mod frame_source;
