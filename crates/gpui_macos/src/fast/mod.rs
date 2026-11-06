@@ -13,6 +13,7 @@ pub(crate) mod cursor;
 pub(crate) mod gesture;
 pub(crate) mod ime;
 pub(crate) mod keypad;
+pub(crate) mod native_blur;
 pub(crate) mod pasteboard;
 pub(crate) mod scroll;
 #[cfg(all(test, feature = "font-kit"))]

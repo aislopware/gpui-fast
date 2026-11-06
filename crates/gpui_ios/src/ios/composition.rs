@@ -956,9 +956,11 @@ impl IosWindow {
         composition.first_responder_changed();
         *composition.hit_map.borrow_mut() = present.hit_map.clone();
         let frame = &present.frame;
-        let changes_natives = !frame
+        // iOS does not blur natives under a backdrop blur, so a frame that changes only
+        // the blurs over them is presented as any other.
+        let changes_natives = frame
             .changes_since(&composition.presented.borrow())
-            .is_empty();
+            .moves_natives();
         let mut renderer = self.renderer.lock();
         let layer_changes = renderer.layer().is_some_and(|layer| {
             layer.isOpaque() == frame.any_hole || layer.isHidden() != frame.covers_window

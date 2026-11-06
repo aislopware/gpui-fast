@@ -28,6 +28,12 @@
 //! painted after it beside its region is not lifted above it, and a column
 //! of frosted badges in a transcript is one wave rather than a chain.
 //!
+//! Where a blur lies over a native's hole, GPUI's drawable holds nothing
+//! of the native to blur: the presented frame hands the blur to the
+//! platform ([`crate::fast::composition::NativeFrameBlur`]), and macOS
+//! blurs the native under GPUI's layer there with a backdrop layer, in the
+//! transaction that moves the hole (`gpui_macos::fast::native_blur`).
+//!
 //! A scroll container's tiles hold content as it was drawn over the
 //! layer's own background, not over what the frame draws under it, so a
 //! layer whose content paints a blur is drawn without its tiles, as one
@@ -98,8 +104,9 @@ impl Window {
     /// The blur is clipped by the content mask, faded by an edge fade or
     /// rounded clip around it, and as opaque as the element opacity. Only
     /// Metal draws it: elsewhere nothing is drawn, so paint a translucent
-    /// fill over it, which the blur only softens where it is drawn. A blur
-    /// inside a scroll container keeps the container off its scroll layer.
+    /// fill over it, which the blur only softens where it is drawn. Over a
+    /// native view, macOS blurs the native too. A blur inside a scroll
+    /// container keeps the container off its scroll layer.
     ///
     /// This method should only be called as part of the paint phase of
     /// element drawing.

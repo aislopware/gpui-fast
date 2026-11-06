@@ -43,6 +43,7 @@ mod list_tail;
 mod live_region;
 mod mask;
 mod misc;
+mod native_blur;
 mod number_shaping;
 mod oracle;
 mod path_cache;

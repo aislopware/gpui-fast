@@ -7,7 +7,9 @@
 //! stacking; GPUI's Metal layer, on top, has a hole cut wherever a native shows. A frame
 //! that changes any of that is presented inside one explicit `CATransaction` with the
 //! container changes, with the layer presenting with the transaction, so the hole and the
-//! native move on the same refresh; other frames are presented as before.
+//! native move on the same refresh; other frames are presented as before. A backdrop blur
+//! over a native is shown as a backdrop view among the containers (`fast::native_blur`),
+//! changed in the same transaction.
 //!
 //! Input follows GPUI's hit test, published per presented frame as a
 //! [`NativeHitMap`]: the GPUI view answers `hitTest:` with nil where a native is the
@@ -48,6 +50,8 @@ use gpui::WindowBackgroundAppearance;
 
 use crate::window::MacWindow;
 
+use super::native_blur::{NativeBlurs, native_z};
+
 /// Objective-C's `nil`, for the views and responders passed and returned here.
 const NIL: *mut AnyObject = std::ptr::null_mut();
 
@@ -78,6 +82,8 @@ pub(crate) struct WindowComposition {
     hosts: RefCell<HashMap<NativeId, Weak<MacNativeHost>>>,
     hit_map: RefCell<Rc<NativeHitMap>>,
     presented: RefCell<NativeFrame>,
+    /// The backdrop views blurring natives under the blurs over them.
+    blurs: RefCell<NativeBlurs>,
     /// The native GPUI's focus asked the keyboard for in the last present.
     keyboard: Cell<Option<NativeId>>,
     /// A mouse button went down on a native, which gets the drag and the release.
@@ -170,7 +176,7 @@ impl WindowComposition {
         let changes = frame.changes_since(&presented);
         for placement in changes.placed {
             if let Some(host) = self.host(placement.id) {
-                self.place(&host, placement, frame.placements.len());
+                self.place(&host, placement);
             }
         }
         for native in changes.hidden {
@@ -181,10 +187,17 @@ impl WindowComposition {
                 }
             }
         }
+        if let Some(blurs) = changes.blurs {
+            self.blurs
+                .borrow_mut()
+                .apply(blurs, self.gpui_view, |bounds| {
+                    self.frame_in_content_view(bounds)
+                });
+        }
     }
 
     /// Gives a native's container and content their frames and stacking, and shows it.
-    fn place(&self, host: &MacNativeHost, placement: &NativeFramePlacement, count: usize) {
+    fn place(&self, host: &MacNativeHost, placement: &NativeFramePlacement) {
         let content_frame = NSRect::new(
             NSPoint::new(
                 f64::from(placement.bounds.origin.x - placement.visible.origin.x),
@@ -202,7 +215,7 @@ impl WindowComposition {
             let () =
                 msg_send![host.container, setFrame: self.frame_in_content_view(placement.visible)];
             let layer: *mut AnyObject = msg_send![host.container, layer];
-            let () = msg_send![layer, setZPosition: placement.rank as f64 - count as f64 - 1.];
+            let () = msg_send![layer, setZPosition: native_z(placement.rank)];
             if let Some(content) = *host.content.borrow() {
                 let () = msg_send![content, setFrame: content_frame];
             }
@@ -269,6 +282,15 @@ impl MacNativeHost {
             .map(|composition| composition.hit_map.borrow().clone())
     }
 
+    /// The backdrop views (`NSView *`) blurring the window's natives under backdrop
+    /// blurs, shown or hidden for reuse, in the order of the last frame's blurs, for
+    /// tests.
+    pub fn blur_views(&self) -> Vec<*mut AnyObject> {
+        self.composition
+            .upgrade()
+            .map_or_else(Vec::new, |composition| composition.blurs.borrow().views())
+    }
+
     fn set_content(&self, view: *mut AnyObject) {
         // SAFETY: `view` is a live view the caller vouched for; main thread. The container
         // retains its subview; the host keeps its own reference until replaced or dropped.
@@ -285,7 +307,7 @@ impl MacNativeHost {
         if let Some(composition) = self.composition.upgrade() {
             let presented = composition.presented.borrow();
             if let Some(placement) = presented.placement(self.id) {
-                composition.place(self, placement, presented.placements.len());
+                composition.place(self, placement);
             }
         }
     }
@@ -647,6 +669,7 @@ impl MacWindow {
                 hosts: RefCell::default(),
                 hit_map: RefCell::default(),
                 presented: RefCell::default(),
+                blurs: RefCell::default(),
                 keyboard: Cell::new(None),
                 pressed_on_native: Cell::new(false),
                 moving_focus: Cell::new(false),

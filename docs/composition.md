@@ -10,7 +10,8 @@ The code: `crates/gpui/src/fast/composition/` (the model, platform-neutral),
 `crates/gpui_apple/src/metal_renderer.rs` (holes and the blend),
 `crates/gpui_apple/src/fast/video_layer.rs` (`VideoLayer`),
 `crates/gpui_macos/src/fast/composition.rs` and `crates/gpui_ios/src/ios/composition.rs`
-(the platforms). Hooks in upstream files are one-liners and are allowlisted in
+(the platforms), `crates/gpui_macos/src/fast/native_blur.rs` (natives blurred under a
+backdrop blur). Hooks in upstream files are one-liners and are allowlisted in
 `script/upstream-allowlist`.
 
 ## The model
@@ -63,7 +64,10 @@ hides a native, or flips the GPUI layer's opacity, is *transactional*: inside on
 their frames, `zPosition`s and visibility, and the transaction commits, so the hole and the
 native reach the glass on the same refresh. Containers are added once and never removed or
 re-added while their host lives (a web view that leaves its window reloads its process),
-and they are stacked by `zPosition` below GPUI's layer, never by reordering subviews.
+and they are stacked by `zPosition` below GPUI's layer, never by reordering subviews: on
+macOS the native of rank `r` is at `−1 / (r + 2)`, in (−½, 0) whatever the number of
+natives, so a container whose rank did not change keeps its place when a native is placed
+above it.
 
 **Pointer.** The hit map lists, topmost first, each native's visible rect and the rects of
 hitboxes inserted after its own (the occluders): `native_at(p)` is the native whose hitbox
@@ -191,7 +195,9 @@ Slopty pins this fork's `main`, where composition was merged, and depends on `gp
 | Model, retained replay, focus, hit map against GPUI's hit test, covers-window | `cargo test -p gpui --lib fast::tests::composition` |
 | Retained-mode oracle with natives in panels, clipped and faded containers and list rows | `cargo test -p gpui --lib fast::tests::oracle` (and with `GPUI_VIEW_RETENTION=0`) |
 | Holes composited with natives under them against one pass drawing the natives | `cargo test -p gpui_apple --lib composition_tests` |
-| macOS window: containers, hit testing, transactional frames, pointer and focus both ways, video without GPUI frames | `cargo test -p gpui_perf --test composition_macos` |
+| Blurs over natives in the presented frame: placement, stacking, clipped corners, retained replay, no change when nothing changed | `cargo test -p gpui --lib fast::tests::native_blur` |
+| macOS window: containers, hit testing, transactional frames, pointer and focus both ways, video without GPUI frames, a frosted menu's backdrop view | `cargo test -p gpui_perf --test composition_macos` |
+| A frosted menu blurs the native under it on the glass (and the negative control) | `GPUI_NATIVE_BLUR_PIXEL_TEST=1 cargo test -p gpui_perf --test composition_macos`, then with `GPUI_NATIVE_BLUR=0`, which must fail |
 | Same refresh, live (and the negative control) | `COMPOSITION_LIVE=1 GPUI_PRESENTED_AT_CALLBACK=1 cargo test -p gpui_perf --release --test composition_macos`, then with `GPUI_COMPOSITION_TRANSACTIONS=0` |
 | iOS simulator: root view, safe area, containers, hit testing, transactional frames, focus both ways | see below |
 
@@ -420,12 +426,68 @@ loads the whole drawable: about 0.1 ms of GPU time at this size. zui pays both p
 With waves, twenty frosted badges, or a popover, composer and tooltip, cost one break and
 one gaussian: 0.3 ms of GPU time over their opaque branch.
 
+### Over a native
+
+GPUI's drawable is transparent in a native's hole, so the Metal blur alone would blur the
+GPUI content around a web page and leave the page sharp. Each presented `NativeFrame`
+also lists the blurs that lie over the part that shows of a native drawn under them
+(`NativeFrame::blurs`, `NativeFrameBlur`): the region that shows, in logical pixels, its
+corners (clamped to half its shorter side, square where the content mask cut them off),
+its radius, its element opacity, and how many natives are drawn under it. They are
+computed in `fast/composition/frame.rs` from the finished scene, so a frame drawn again from
+the last one, moved, through a scroll layer or not, lists the same blurs, and
+`NativeFrame::changes_since` reports them only when they differ, which makes the frame
+transactional like a moving native.
+
+On macOS (`gpui_macos/src/fast/native_blur.rs`, ported from zui `b8f3465` and its PR #5)
+each is shown in a `GPUINativeBlurView` in the window's content view, among the containers
+under the GPUI view. Its layer is a `CABackdropLayer` with a `gaussianBlur` `CAFilter`
+(`inputRadius` the blur's standard deviation in points, edges normalised, sampled at ¼,
+½ or full resolution as the radius allows), clipped by `cornerRadius` and `maskedCorners`,
+at the element opacity, and it answers no hit test. The window server fills it with what
+is composited behind it in the window, live: a page that scrolls or plays under a still
+menu stays blurred without a GPUI frame.
+
+- **Stacking.** A blur over `k` natives sits between the containers of rank `k − 1` and
+  `k` (`zPosition` between `−1 / (k + 1)` and `−1 / (k + 2)`; blurs of one gap in draw
+  order), so a native drawn over a menu is not blurred by it, and GPUI's layer goes over
+  all of it as before.
+- **The hole's edge.** GPUI still blurs its own content with Metal, including what it drew
+  over the native under the menu. Where that is opaque it hides the native blur; inside the
+  hole it is transparent and the blurred native shows. At the hole's edge the window shows
+  `blur(G) + (1 − blur(α_G)) × blur(N)` where blurring the composite would give
+  `blur(G + (1 − α_G) × N)`; the two differ only where the native changes within a blur
+  radius of the edge, and there softly. No sharp seam appears, because both sides are
+  blurred.
+- **Same refresh.** The views are changed inside the frame's `CATransaction`, with the
+  containers and GPUI's drawable presented with the transaction, so a blur, its hole and
+  its menu move on one refresh. A frame whose blurs did not change opens no transaction
+  for them and touches no view; a view whose blur did not change is not touched either.
+  A window without natives builds no `NativeFrame`, so it pays nothing.
+- **Why the private class.** The public within-window `NSVisualEffectView` may blur a cached
+  image of the view hierarchy that leaves out layer-hosted content such as a web view's, and
+  lays a material tint the app cannot remove under its own fill; zui tried it before moving
+  to `CABackdropLayer` (`e116f2e`). Where `CABackdropLayer` or `CAFilter` is missing the
+  view class is not registered and the blur covers GPUI's content alone, as before.
+  `GPUI_NATIVE_BLUR=0` turns the native blur off.
+
+`-[CALayer renderInContext:]` and `CARenderer` do not draw a backdrop layer, so no headless
+test sees the native blurred. `composition_macos` checks the view, its layer, its stacking
+and that an unchanged frame is plain; with `GPUI_NATIVE_BLUR_PIXEL_TEST=1` it lays the menu
+over a native of 4-point black and white stripes and reads the window back from the window
+server (`CGWindowListCreateImage` of its own window, which needs no Screen Recording
+permission and never prompts): across the menu the grey level's deviation must fall under a
+tenth of what it is on the native beside the menu.
+
 ## Limits and what is left
 
-- **A blur over a native** blurs GPUI's content around the hole but not the native: the
-  native shows through the hole sharp. zui blurs natives with a private `CABackdropLayer`
-  per blur; that is not ported. A blur reading near a native ordered above it may read the
-  native's cleared interior as transparent.
+- **A blur over a native** is blurred by the window server on macOS only; on iOS the
+  native shows through the hole sharp (a `UIView` with a backdrop layer would do it, and
+  is not built). The native blur takes no edge fade or rounded clip around the blur, rounds
+  every corner it keeps by the largest radius, and covers only the blur's region, not its
+  reach: what the native shows just outside the region is not gathered into its edge,
+  where GPUI's Metal blur gathers its own content. A blur reading near a native ordered
+  above it may read the native's cleared interior as transparent.
 - **Blurs elsewhere**: the wgpu and Direct3D renderers draw no blur.
 - **Translucent natives** (`NativeHostOptions::opaque = false`) are drawn as if opaque:
   what GPUI painted under a native is cleared by its hole. A native faded by element

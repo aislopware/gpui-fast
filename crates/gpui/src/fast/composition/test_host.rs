@@ -13,7 +13,7 @@ use std::{
 use anyhow::Result;
 
 use super::{
-    NativeFrame, NativeFramePlacement, NativeHostParams, NativeId, NativePresent,
+    NativeFrame, NativeFrameBlur, NativeFramePlacement, NativeHostParams, NativeId, NativePresent,
     PlatformNativeHost,
 };
 
@@ -28,6 +28,11 @@ pub(crate) struct TestComposition {
     pub(crate) plain_presents: usize,
     /// The keyboard target of the last present.
     pub(crate) keyboard: Option<NativeId>,
+    /// The blurs over natives the platform shows, as of the last present that
+    /// changed them.
+    pub(crate) blurs: Vec<NativeFrameBlur>,
+    /// Presents that changed the blurs over natives.
+    pub(crate) blur_updates: usize,
 }
 
 impl TestComposition {
@@ -63,6 +68,10 @@ impl TestComposition {
                 host.calls.set(host.calls.get() + 1);
                 host.hidden.set(true);
             }
+        }
+        if let Some(blurs) = changes.blurs {
+            self.blur_updates += 1;
+            self.blurs = blurs.to_vec();
         }
         self.keyboard = present.keyboard;
         self.presented = present.frame.clone();
