@@ -100,12 +100,15 @@ pub(crate) struct Backdrop {
     /// Adds `blurred × k`.
     add: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
     /// Whether Metal Performance Shaders run on the device.
-    supported: bool,
+    pub(crate) supported: bool,
     scratch: Vec<Scratch>,
     kernels: Vec<(f32, Retained<AnyObject>)>,
     blur_free_frames: u32,
     /// Whether the window's drawables were made readable for a blur.
     readable: bool,
+    /// What layer masks keep (`fast::layer_mask`), which read the drawable
+    /// as blurs do and share their kernels.
+    pub(crate) masks: super::layer_mask::Masks,
 }
 
 impl Backdrop {
@@ -157,6 +160,7 @@ impl Backdrop {
             kernels: Vec::new(),
             blur_free_frames: 0,
             readable: false,
+            masks: super::layer_mask::Masks::new(device, library, format)?,
         })
     }
 
@@ -166,15 +170,17 @@ impl Backdrop {
             .scratch
             .iter()
             .flat_map(|pair| [&pair.copy, &pair.blurred]);
-        textures
+        let scratch: usize = textures
             .map(|texture| super::gpu_stats::allocated(texture))
-            .sum()
+            .sum();
+        scratch + self.masks.resident_bytes()
     }
 
     /// Notes whether the frame `scene` draws a blur, releasing what blurs
     /// keep after a run of frames without one.
     pub(crate) fn begin_frame(&mut self, scene: &Scene) {
-        if !scene.backdrop_blurs().is_empty() {
+        self.masks.begin_frame(scene);
+        if !scene.backdrop_blurs().is_empty() || !scene.layer_masks().is_empty() {
             self.blur_free_frames = 0;
             return;
         }
@@ -243,7 +249,7 @@ impl Backdrop {
     }
 
     /// The gaussian kernel of standard deviation `sigma`.
-    fn kernel(
+    pub(crate) fn kernel(
         &mut self,
         device: &ProtocolObject<dyn MTLDevice>,
         sigma: f32,
@@ -282,11 +288,12 @@ impl Backdrop {
 }
 
 /// Makes the drawables of `layer` readable before the drawable for `scene`
-/// is taken if `scene` draws a blur, and write-only again after a run of
-/// frames without one.
+/// is taken if `scene` draws a blur or a layer mask, and write-only again
+/// after a run of frames without one.
 pub(crate) fn prepare_layer(renderer: &mut MetalRenderer, layer: &CAMetalLayer, scene: &Scene) {
     let backdrop = &mut renderer.fast_backdrop;
-    let blurs = !scene.backdrop_blurs().is_empty() && backdrop.supported;
+    let blurs = (!scene.backdrop_blurs().is_empty() && backdrop.supported)
+        || !scene.layer_masks().is_empty();
     if blurs && !backdrop.readable {
         layer.setFramebufferOnly(false);
         backdrop.readable = true;

@@ -75,6 +75,11 @@ fn drawing_order(scene: &Scene) -> Vec<(char, u32)> {
                     .iter()
                     .map(|blur| ('b', blur.order)),
             ),
+            ComposedBatch::Masks(range) => drawn.extend(
+                scene.layer_masks()[range]
+                    .iter()
+                    .map(|cut| ('m', cut.order)),
+            ),
         }
     }
     drawn

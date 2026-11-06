@@ -49,6 +49,7 @@ pub(crate) mod interval_deadline;
 pub(crate) mod key_conventions;
 pub(crate) mod keyed;
 pub(crate) mod keypad;
+pub(crate) mod layer_mask;
 pub(crate) mod layers;
 pub(crate) mod layout;
 pub(crate) mod layout_bounds;

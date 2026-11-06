@@ -423,6 +423,14 @@ unchanged, and a new entry needs as good a reason.
   platform's divided by the zoom, so input, IME rectangles, `resize`, `show_window_menu`,
   `insets`, `visual_viewport_bounds` and native placement are mapped where they cross, and
   `native_hit_map` and `presented_natives` read platform coordinates. At zoom 1 nothing changes.
+- `Window::begin_layer_mask`, `end_layer_mask` and `with_layer_mask` are new public API, with
+  `LayerMask`, `LayerMaskCut`, `Scene::insert_layer_mask`, `Scene::layer_masks` and
+  `ComposedBatch::Masks` (`fast/layer_mask.rs`, `gpui_apple/src/fast/layer_mask.rs`, from
+  monocode; FORK.md, "Onicode"): a group of painting is drawn into its region cleared and laid
+  back over what was under it through CSS-style gradient stops, optionally with Haze's blurs
+  and darkening, as CSS `mask-image` lays an element; upstream has no group compositing.
+  `PaintOperation` has a `LayerMask` variant. Only Metal draws the mask; elsewhere the group is
+  drawn as painted.
 - On Metal a drop shadow is drawn only outside its element, as CSS `box-shadow` is and as
   upstream's `Shadow` documents it, and a dashed border runs three widths on and two off;
   upstream draws a drop shadow under its element too and dashes two on and one off

@@ -59,6 +59,8 @@ enum Drawn {
     /// [`crate::fast::edge_fade::moved_fade`]).
     Primitive(Primitive, Option<crate::EdgeFadeRamps>),
     Blur(BackdropBlur),
+    /// A layer mask's cut (`fast::layer_mask`).
+    Mask(crate::fast::layer_mask::LayerMaskCut),
 }
 
 impl Drawn {
@@ -67,6 +69,7 @@ impl Drawn {
         match self {
             Drawn::Primitive(primitive, _) => clipped(primitive),
             Drawn::Blur(blur) => blur.reach(),
+            Drawn::Mask(cut) => cut.clipped_bounds(),
         }
     }
 
@@ -90,6 +93,15 @@ impl Drawn {
                 blur.blur_radius,
                 blur.opacity,
                 crate::fast::edge_fade::describe(scene, blur.fade),
+            ),
+            Drawn::Mask(cut) => format!(
+                "layer mask {} {:?} {:?} {:?} {:?} {}",
+                if cut.begin { "begin" } else { "end" },
+                cut.bounds,
+                cut.content_mask,
+                cut.corner_radii,
+                cut.mask,
+                cut.scale,
             ),
         }
     }
@@ -158,9 +170,9 @@ fn expand_layer(
                 size: bounds.size,
             }),
             Operation::EndLayer => scratch.pop_layer(),
-            // Content placing a native or a blur is never composited from
+            // Content placing a native, a blur or a mask is never composited from
             // tiles.
-            Operation::Native(_) | Operation::Backdrop(_) => {}
+            Operation::Native(_) | Operation::Backdrop(_) | Operation::LayerMask(_) => {}
         }
     }
     scratch.finish();
@@ -206,7 +218,14 @@ fn expanded_sequence(scene: &Scene) -> Vec<Drawn> {
     let mut first_tiles: Vec<(usize, LayerKey)> = Vec::new();
     let mut sequence = Vec::new();
     let mut blurs = scene.backdrop_blurs().iter().peekable();
+    let mut masks = scene.layer_masks().iter().peekable();
     for (order, primitive) in ordered_sequence(scene) {
+        while let Some(cut) = masks.next_if(|cut| cut.order <= order) {
+            while let Some(blur) = blurs.next_if(|blur| blur.order < cut.order) {
+                sequence.push(Drawn::Blur(*blur));
+            }
+            sequence.push(Drawn::Mask(*cut));
+        }
         while let Some(blur) = blurs.next_if(|blur| blur.order <= order) {
             sequence.push(Drawn::Blur(*blur));
         }
@@ -234,6 +253,12 @@ fn expanded_sequence(scene: &Scene) -> Vec<Drawn> {
             continue;
         }
         sequence.push(Drawn::Primitive(primitive, None));
+    }
+    for cut in masks {
+        while let Some(blur) = blurs.next_if(|blur| blur.order < cut.order) {
+            sequence.push(Drawn::Blur(*blur));
+        }
+        sequence.push(Drawn::Mask(*cut));
     }
     sequence.extend(blurs.map(|blur| Drawn::Blur(*blur)));
     for (at, key) in first_tiles.into_iter().rev() {
@@ -454,6 +479,7 @@ pub(crate) fn sourced(scene: &Scene) -> Vec<Sourced> {
             }
             Operation::Primitive(primitive) => Drawn::Primitive(primitive, None),
             Operation::Backdrop(blur) => Drawn::Blur(blur),
+            Operation::LayerMask(cut) => Drawn::Mask(cut),
             Operation::StartLayer(_) | Operation::EndLayer | Operation::Native(_) => continue,
         };
         push_sourced(&mut out, scene, drawn, Source::Operation(index));

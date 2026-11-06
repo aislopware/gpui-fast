@@ -255,6 +255,7 @@ pub(crate) fn replay(scene: &mut Scene, range: Range<usize>, previous: &Scene) {
                 crate::fast::composition::scene::replay(scene, placement)
             }
             PaintOperation::Backdrop(blur) => crate::fast::backdrop::replay(scene, blur),
+            PaintOperation::LayerMask(cut) => crate::fast::layer_mask::replay(scene, cut),
         }
     }
     // Each operation is drawn again as one, so the keyed stretches inside
@@ -315,6 +316,7 @@ pub(crate) enum Operation {
     EndLayer,
     Native(crate::fast::composition::NativePlacement),
     Backdrop(crate::fast::backdrop::BackdropBlur),
+    LayerMask(crate::fast::layer_mask::LayerMaskCut),
 }
 
 /// The paint operations of `scene`, finished or not, in painting order,
@@ -329,6 +331,7 @@ pub(crate) fn operations(scene: &Scene) -> impl Iterator<Item = Operation> + '_ 
             PaintOperation::EndLayer => Operation::EndLayer,
             PaintOperation::Native(placement) => Operation::Native((**placement).clone()),
             PaintOperation::Backdrop(blur) => Operation::Backdrop(**blur),
+            PaintOperation::LayerMask(cut) => Operation::LayerMask(**cut),
         })
 }
 
@@ -608,6 +611,9 @@ impl Scene {
                 )),
                 crate::PaintOperation::Backdrop(blur) => {
                     lines.push(crate::fast::backdrop::describe(self, blur))
+                }
+                crate::PaintOperation::LayerMask(cut) => {
+                    lines.push(crate::fast::layer_mask::describe(cut))
                 }
             }
         }

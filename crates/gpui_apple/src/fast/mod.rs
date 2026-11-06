@@ -18,6 +18,7 @@ pub mod frame_source;
 mod glyph_blur;
 pub mod gpu_stats;
 pub(crate) mod instance_pool;
+pub(crate) mod layer_mask;
 pub(crate) mod layers;
 pub(crate) mod occlusion;
 pub(crate) mod paths;

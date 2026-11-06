@@ -1132,8 +1132,8 @@ impl MetalRenderer {
                     self.draw_holes(range, instance_bindings, viewport_size, &command_encoder);
                     continue;
                 }
-                // Frames with blurs are drawn by fast::paths.
-                ComposedBatch::Blurs(_) => continue,
+                // Frames with blurs or layer masks are drawn by fast::paths.
+                ComposedBatch::Blurs(_) | ComposedBatch::Masks(_) => continue,
             };
             match batch {
                 PrimitiveBatch::Shadows(range) => {

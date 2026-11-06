@@ -75,7 +75,11 @@ pub(crate) fn draw_primitives_to_texture(
     viewport_size: Size<DevicePixels>,
     surface_textures: &mut Vec<CFRetained<CVMetalTexture>>,
 ) -> Result<Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>>> {
-    if scene.paths.is_empty() && scene.backdrop_blurs().is_empty() && binds::upstream_loop() {
+    if scene.paths.is_empty()
+        && scene.backdrop_blurs().is_empty()
+        && scene.layer_masks().is_empty()
+        && binds::upstream_loop()
+    {
         return Ok(None);
     }
     // Planning walks every batch, sprites one by one; a frame without paths
@@ -151,7 +155,7 @@ pub(crate) fn draw_primitives_to_texture(
                 );
                 continue;
             }
-            ComposedBatch::Blurs(range) => {
+            cut @ (ComposedBatch::Blurs(_) | ComposedBatch::Masks(_)) => {
                 let pass = super::backdrop::Pass {
                     command_buffer: &command_buffer,
                     texture,
@@ -159,15 +163,25 @@ pub(crate) fn draw_primitives_to_texture(
                     viewport_size,
                 };
                 // On an error the pass is ended.
-                let restarted = super::backdrop::draw(
-                    renderer,
-                    scene,
-                    range,
-                    &instance_bindings.fast_blurs,
-                    &instance_bindings.fades,
-                    &pass,
-                    &mut command_encoder,
-                )?;
+                let restarted = match cut {
+                    ComposedBatch::Blurs(range) => super::backdrop::draw(
+                        renderer,
+                        scene,
+                        range,
+                        &instance_bindings.fast_blurs,
+                        &instance_bindings.fades,
+                        &pass,
+                        &mut command_encoder,
+                    )?,
+                    ComposedBatch::Masks(range) => super::layer_mask::draw(
+                        renderer,
+                        scene,
+                        range,
+                        &pass,
+                        &mut command_encoder,
+                    )?,
+                    ComposedBatch::Primitives(_) | ComposedBatch::Holes(_) => false,
+                };
                 if restarted {
                     binds.forget();
                     if let Some(interiors) = &interiors {

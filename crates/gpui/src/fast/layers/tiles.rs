@@ -69,9 +69,9 @@ pub(crate) fn tile_hashes(
                     });
                 }
             }
-            // Content placing a native or a blur is never composited from
+            // Content placing a native, a blur or a mask is never composited from
             // tiles (see `overlay::lift`).
-            Operation::Native(_) | Operation::Backdrop(_) => {}
+            Operation::Native(_) | Operation::Backdrop(_) | Operation::LayerMask(_) => {}
         }
     }
     hashers
@@ -111,9 +111,9 @@ pub(crate) fn part_tile_hashes(
             }
             Operation::StartLayer(_) => hasher.write_u8(1),
             Operation::EndLayer => hasher.write_u8(2),
-            // A row placing a native or a blur is drawn into the frame,
+            // A row placing a native, a blur or a mask is drawn into the frame,
             // never from tiles.
-            Operation::Native(_) | Operation::Backdrop(_) => {}
+            Operation::Native(_) | Operation::Backdrop(_) | Operation::LayerMask(_) => {}
         }
     }
     let hash = hasher.finish();

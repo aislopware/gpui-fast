@@ -207,6 +207,7 @@ pub(crate) enum PaintOperation {
     EndLayer,
     Native(Box<crate::fast::composition::NativePlacement>),
     Backdrop(Box<crate::fast::backdrop::BackdropBlur>),
+    LayerMask(Box<crate::fast::layer_mask::LayerMaskCut>),
 }
 
 #[derive(Clone)]

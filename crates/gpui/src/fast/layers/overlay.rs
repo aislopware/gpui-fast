@@ -127,8 +127,12 @@ pub(crate) fn split(operations: &[Operation]) -> Option<(Vec<Operation>, Vec<Pri
 /// `Err(content)` when it places a native, which the frame's scene places and
 /// a tile never does: such content is drawn into the frame.
 pub(crate) fn lift(content: Scene) -> Result<(Scene, Rc<[Primitive]>), Box<Scene>> {
-    // Nor does it draw a blur over what the frame draws under the layer.
-    if !content.composition.placements.is_empty() || !content.composition.blurs.is_empty() {
+    // Nor does it draw a blur over what the frame draws under the layer,
+    // or lay a masked group back over it.
+    if !content.composition.placements.is_empty()
+        || !content.composition.blurs.is_empty()
+        || !content.composition.masks.is_empty()
+    {
         return Err(Box::new(content));
     }
     if content.paths.is_empty() && content.surfaces.is_empty() {
@@ -144,8 +148,8 @@ pub(crate) fn lift(content: Scene) -> Result<(Scene, Rc<[Primitive]>), Box<Scene
             Operation::Primitive(primitive) => rest.insert_primitive(primitive),
             Operation::StartLayer(bounds) => rest.push_layer(bounds),
             Operation::EndLayer => rest.pop_layer(),
-            // Content placing a native or a blur returned above.
-            Operation::Native(_) | Operation::Backdrop(_) => {}
+            // Content placing a native, a blur or a mask returned above.
+            Operation::Native(_) | Operation::Backdrop(_) | Operation::LayerMask(_) => {}
         }
     }
     rest.finish();

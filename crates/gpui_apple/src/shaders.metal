@@ -1599,3 +1599,103 @@ float glyph_blur_alpha(float2 tile_position, float4 tile, float sigma,
   }
   return accum / max(total, 1e-6);
 }
+
+// gpui-fast: layer masks (gpui's fast/layer_mask.rs, gpui_apple's fast/layer_mask.rs;
+// FORK.md, Onicode), monocode's project_background_mask and
+// project_background_fragment verbatim. Mode 0 clears the region once its backdrop was
+// copied; 1 to 5 lay the group back through CSS's stops, with Haze from 3.
+struct LayerMaskParams {
+  float2 origin;
+  float2 size;
+  float2 region_origin;
+  float2 region_size;
+  float2 viewport_size;
+  float radii[4];
+  float mode;
+  float opacity;
+  float scale;
+  float padding;
+};
+
+struct LayerMaskVertexOutput {
+  float4 position [[position]];
+};
+
+vertex LayerMaskVertexOutput layer_mask_vertex(uint vertex_id [[vertex_id]],
+                                               constant LayerMaskParams *params [[buffer(0)]]) {
+  float2 unit = float2(float(vertex_id == 1 || vertex_id == 4 || vertex_id == 5),
+                       float(vertex_id == 2 || vertex_id == 3 || vertex_id == 5));
+  float2 position = params->origin + unit * params->size;
+  LayerMaskVertexOutput output;
+  output.position =
+      float4(position / params->viewport_size * float2(2., -2.) + float2(-1., 1.), 0., 1.);
+  return output;
+}
+
+// Exact gradient stops from index.css. Normalized in the current pane, so a
+// resize never stretches a previously cropped/faded image.
+float layer_mask_stops(float y, bool empty, bool haze) {
+  if (!empty) {
+    if (haze) return 1. - saturate((y - 0.18) / 0.58);
+    if (y <= 0.18) return 1.;
+    if (y <= 0.32) return mix(1., 0.61, (y - 0.18) / 0.14);
+    if (y <= 0.47) return mix(0.61, 0.32, (y - 0.32) / 0.15);
+    if (y <= 0.62) return mix(0.32, 0.11, (y - 0.47) / 0.15);
+    return mix(0.11, 0., saturate((y - 0.62) / 0.10));
+  }
+  if (y <= 0.19) return 1.;
+  if (haze) {
+    if (y <= 0.30) return mix(1., 0.94, (y - 0.19) / 0.11);
+    if (y <= 0.42) return mix(0.94, 0.72, (y - 0.30) / 0.12);
+    if (y <= 0.54) return mix(0.72, 0.42, (y - 0.42) / 0.12);
+    if (y <= 0.66) return mix(0.42, 0.16, (y - 0.54) / 0.12);
+    if (y <= 0.78) return mix(0.16, 0.04, (y - 0.66) / 0.12);
+    return mix(0.04, 0., saturate((y - 0.78) / 0.12));
+  }
+  if (y <= 0.30) return mix(1., 0.79, (y - 0.19) / 0.11);
+  if (y <= 0.42) return mix(0.79, 0.50, (y - 0.30) / 0.12);
+  if (y <= 0.54) return mix(0.50, 0.20, (y - 0.42) / 0.12);
+  if (y <= 0.64) return mix(0.20, 0.05, (y - 0.54) / 0.10);
+  return mix(0.05, 0., saturate((y - 0.64) / 0.08));
+}
+
+fragment float4 layer_mask_fragment(LayerMaskVertexOutput input [[stage_in]],
+                                    texture2d<float> before [[texture(0)]],
+                                    texture2d<float> artwork [[texture(1)]],
+                                    texture2d<float> soft [[texture(2)]],
+                                    texture2d<float> strong [[texture(3)]],
+                                    constant LayerMaskParams *params [[buffer(0)]]) {
+  // Begin by clearing this layer after its original backdrop was captured.
+  // This keeps blur and alpha masks off the desktop, composer and transcript.
+  if (params->mode == 0.) return float4(0.);
+  uint2 pixel = uint2(input.position.xy - params->origin);
+  float2 local = input.position.xy - params->region_origin;
+  float y = local.y / params->region_size.y;
+  bool haze = params->mode >= 3.;
+  bool empty = params->mode != 2. && params->mode != 4.;
+  float4 layer = artwork.read(pixel);
+  if (haze) {
+    float soft_mask = saturate((y - 0.18) / (empty ? 0.42 : 0.52));
+    float strong_mask = saturate((y - (empty ? 0.28 : 0.22)) / (empty ? 0.48 : 0.54));
+    float4 blurred = soft.read(pixel) * soft_mask;
+    layer = blurred + layer * (1. - blurred.a);
+    blurred = strong.read(pixel) * strong_mask;
+    layer = blurred + layer * (1. - blurred.a);
+    float darken;
+    if (!empty) darken = saturate((y - 0.15) / 0.61) * 0.70;
+    else if (y <= 0.38) darken = saturate((y - 0.16) / 0.22) * 0.26;
+    else if (y <= 0.55) darken = mix(0.26, 0.55, (y - 0.38) / 0.17);
+    else darken = mix(0.55, 0.78, saturate((y - 0.55) / 0.20));
+    // The repeating line is one CSS pixel in every three, regardless of DPI.
+    if (fmod(local.y / params->scale, 3.) < 1.) darken = 1. - (1. - darken) * 0.64;
+    layer = float4(float3(23. / 255.) * darken, darken) + layer * (1. - darken);
+  }
+  float2 half_size = params->region_size * 0.5;
+  uint corner_index = local.y < half_size.y ? (local.x < half_size.x ? 0 : 1)
+                                           : (local.x < half_size.x ? 3 : 2);
+  float radius = params->radii[corner_index];
+  float2 corner = abs(local - half_size) - half_size + radius;
+  float distance = length(max(corner, float2(0.))) + min(max(corner.x, corner.y), 0.) - radius;
+  layer *= layer_mask_stops(y, empty, haze) * params->opacity * saturate(0.5 - distance);
+  return layer + before.read(pixel) * (1. - layer.a);
+}

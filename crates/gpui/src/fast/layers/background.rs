@@ -55,6 +55,14 @@ pub(crate) fn bake_operations(
                 }
                 continue;
             }
+            // A mask clears its region and lays its group back over what
+            // was there: nor does it.
+            Operation::LayerMask(cut) => {
+                if cut.clipped_bounds().intersects(&viewport) {
+                    return None;
+                }
+                continue;
+            }
             Operation::StartLayer(_) | Operation::EndLayer => continue,
         };
         let visible = visible_bounds(&primitive);

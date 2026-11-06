@@ -1050,6 +1050,38 @@ Branch `onicode-parity-2` ports the rest (stack-port.md §6 steps 5–8):
   `a_zoomed_window_resizes_by_its_own_size`, `a_zoomed_windows_ime_rects_are_the_platforms`,
   `a_zoomed_window_places_natives_in_the_platforms_points`; (`layers_lists`)
   `list_matches_layers_off_at_a_content_zoom_of_1_25`.
+- `Window::begin_layer_mask(bounds, corner_radii, LayerMask)`, `Window::end_layer_mask()`
+  and `Window::with_layer_mask` (`fast::layer_mask`, `gpui_apple`'s `fast::layer_mask`;
+  monocode's project background, which it marks with two invisible quads of reserved border
+  hues): everything painted between the two is drawn into the region cleared and laid back
+  over what was under it through `LayerMask::project_background(empty, haze, preview,
+  opacity)`, monocode's `background_mask_marker` arguments. Each end is a `LayerMaskCut` paint
+  operation ordered as a backdrop blur is (`Scene::insert_layer_mask`, `Scene::layer_masks`,
+  `ComposedBatch::Masks`; at one draw order a mask's cut goes before blurs and holes); a begin
+  and its end pair by id, so masks apart that share draw orders draw in one pass break, and a
+  begin never ended is dropped. Retention replays both cuts; content placing one is drawn
+  without its scroll layer's tiles, as content placing a blur is, and list rows replay theirs.
+  On Metal a begin copies the region (the cut's bounds in its content mask, in whole pixels
+  inward) and clears it; the end copies the group, blurs it with `MPSImageGaussianBlur` at
+  monocode's soft and strong sigmas times the scale for Haze, and draws
+  `project_background_fragment` verbatim (`layer_mask_fragment` in `shaders.metal`: the CSS
+  stop tables, the blurs faded in, the darkening and its line one CSS pixel in three, the four
+  radii, the opacity), blending off. Textures are per nesting depth, sized to the region, and
+  go after 120 frames without a mask; the drawable is made readable as for a blur. Differences
+  from monocode: the cut's bounds are snapped to device pixels as every quad's are; the
+  element opacity is not applied to the mask (the group's own primitives carry it, as in
+  monocode); without Metal Performance Shaders Haze draws without its blurs; the first frame
+  with a mask on a write-only drawable, and every renderer but Metal, draw the group as
+  painted. The app's two canvases call `begin_layer_mask` and `end_layer_mask` in place of the
+  marker quads. Tests (`fast/tests/layer_mask.rs`):
+  `a_mask_brackets_its_group_between_what_it_covers_and_what_follows`,
+  `masks_pair_by_id_apart_or_nested`, `an_unended_mask_and_a_stray_end_draw_nothing`,
+  `a_mask_drawn_again_lies_as_drawn_afresh`, `content_that_masks_is_drawn_without_tiles`,
+  `a_masks_mode_and_blurs_are_monocodes`, and the seeded
+  `every_quad_over_a_masks_region_is_met_on_its_side_of_the_cuts`; (`gpui_apple`, pixels
+  against monocode's fragment written out in Rust) `a_mask_draws_monocodes_stops_and_corners`,
+  `haze_draws_monocodes_darkening_and_line`, `haze_blurs_the_group_toward_the_bottom`,
+  `nested_masks_and_masks_apart_draw_their_own_groups`.
 
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.

@@ -768,7 +768,9 @@ pub(crate) fn shift_operations(
                 shift.layer(bounds).map(ShiftedOperation::StartLayer)
             }
             PaintOperation::EndLayer => Some(ShiftedOperation::EndLayer),
-            PaintOperation::Native(_) | PaintOperation::Backdrop(_) => None,
+            PaintOperation::Native(_)
+            | PaintOperation::Backdrop(_)
+            | PaintOperation::LayerMask(_) => None,
         };
         let Some(shifted) = shifted else {
             moved.truncate(start);

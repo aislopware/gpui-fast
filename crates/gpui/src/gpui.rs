@@ -151,7 +151,11 @@ pub use fast::subscriptions::SubscriptionCounts;
 pub use fast::text_smoothing::TextSmoothing;
 pub use fast::transition::StateTransition;
 pub use fast::value_transition::{ValueTransition, ValueTransitionState};
-pub use fast::{backdrop::BackdropBlur, image_mask::ImageAlphaMask};
+pub use fast::{
+    backdrop::BackdropBlur,
+    image_mask::ImageAlphaMask,
+    layer_mask::{LayerMask, LayerMaskCut},
+};
 pub use geometry::*;
 pub use gestures::*;
 pub use global::*;

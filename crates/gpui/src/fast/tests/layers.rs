@@ -273,6 +273,7 @@ fn insert_operations(scene: &mut Scene, operations: &[crate::fast::scene::Operat
             Operation::EndLayer => scene.pop_layer(),
             Operation::Native(placement) => scene.insert_native(placement.clone()),
             Operation::Backdrop(blur) => scene.insert_backdrop_blur(*blur),
+            Operation::LayerMask(cut) => scene.insert_layer_mask(*cut),
         }
     }
 }

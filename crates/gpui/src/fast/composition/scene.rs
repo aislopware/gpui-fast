@@ -70,6 +70,12 @@ pub struct SceneComposition {
     /// The draw orders blurs were drawn at this frame, each with its blur
     /// radius's bits: where a blur may join others (`fast::backdrop`).
     pub(crate) waves: Vec<(DrawOrder, u32)>,
+    /// Every layer mask's cuts painted this frame (`fast::layer_mask`).
+    pub masks: Vec<crate::fast::layer_mask::LayerMaskCut>,
+    /// The begins of the masks still open, innermost last.
+    pub(crate) open_masks: Vec<crate::fast::layer_mask::LayerMaskCut>,
+    /// How many masks were begun this frame: the next one's id.
+    pub(crate) mask_ids: u32,
 }
 
 impl SceneComposition {
@@ -77,12 +83,13 @@ impl SceneComposition {
         self.placements.sort_by_key(|placement| placement.order);
         self.holes.sort_by_key(|hole| hole.order);
         self.blurs.sort_by_key(|blur| blur.order);
+        crate::fast::layer_mask::sort(&mut self.masks, &mut self.open_masks);
     }
 }
 
 /// Moves the rest of the innermost open paint layer of `scene`, if any,
-/// above what was just placed in it: a native or a backdrop blur, which the
-/// layer's primitives painted after it are drawn over.
+/// above what was just placed in it: a native, a backdrop blur or a layer
+/// mask's cut, which the layer's primitives painted after it are drawn over.
 pub(crate) fn lift_open_layer(scene: &mut Scene) {
     if !scene.layer_stack.is_empty()
         && let Some(layer_bounds) = scene.open_layer_bounds()
@@ -100,6 +107,9 @@ pub(crate) fn clear(scene: &mut Scene) {
     scene.composition.holes.clear();
     scene.composition.blurs.clear();
     scene.composition.waves.clear();
+    scene.composition.masks.clear();
+    scene.composition.open_masks.clear();
+    scene.composition.mask_ids = 0;
 }
 
 /// Places a native again as the last frame placed it, as [`Scene::replay`] does.
@@ -119,6 +129,11 @@ pub enum ComposedBatch {
     /// drawn over what the batches before them drew, after one copy of it
     /// (see `fast::backdrop`).
     Blurs(Range<usize>),
+    /// Layer masks' cuts: `scene.layer_masks()[range]`, of one draw order,
+    /// whose regions are apart: each begin copies what the batches before
+    /// it drew in its region and clears it, each end draws the group back
+    /// over that copy through its mask (see `fast::layer_mask`).
+    Masks(Range<usize>),
 }
 
 impl Scene {
@@ -151,7 +166,8 @@ impl Scene {
                 }
                 PaintOperation::Primitive(_)
                 | PaintOperation::Native(_)
-                | PaintOperation::Backdrop(_) => {}
+                | PaintOperation::Backdrop(_)
+                | PaintOperation::LayerMask(_) => {}
             }
         }
         None
@@ -167,10 +183,12 @@ impl Scene {
             pending: None,
             next_hole: 0,
             next_blur: 0,
+            next_mask: 0,
         }
     }
 
-    /// Whether any primitive or hole is drawn at an order above `order`.
+    /// Whether any primitive, hole, blur or mask is drawn at an order above
+    /// `order`.
     pub(crate) fn draws_above(&self, order: DrawOrder) -> bool {
         let above = |last: Option<DrawOrder>| last.is_some_and(|last| last > order);
         above(self.shadows.last().map(|primitive| primitive.order))
@@ -195,6 +213,7 @@ impl Scene {
             || above(self.surfaces.last().map(|primitive| primitive.order))
             || above(self.composition.holes.last().map(|hole| hole.order))
             || above(self.composition.blurs.last().map(|blur| blur.order))
+            || above(self.composition.masks.last().map(|cut| cut.order))
     }
 }
 
@@ -205,31 +224,54 @@ struct ComposedBatches<'a, I> {
     pending: Option<PrimitiveBatch>,
     next_hole: usize,
     next_blur: usize,
+    next_mask: usize,
+}
+
+/// What a primitive batch is split around. At one draw order a mask's cut
+/// goes first, then the blurs, then the holes.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Cut {
+    Mask,
+    Blur,
+    Hole,
 }
 
 impl<I: Iterator<Item = PrimitiveBatch>> ComposedBatches<'_, I> {
-    /// The order of the next hole, or of the next blur when it comes first,
-    /// and whether it is the blur. A blur goes before a hole of its order,
-    /// as [`Self::holes`] stops at it.
-    fn next_cut(&self) -> Option<(DrawOrder, bool)> {
-        let hole = self
-            .scene
-            .composition
-            .holes
-            .get(self.next_hole)
-            .map(|hole| hole.order);
-        let blur = self
-            .scene
-            .composition
-            .blurs
-            .get(self.next_blur)
-            .map(|blur| blur.order);
-        match (hole, blur) {
-            (Some(hole), Some(blur)) if blur <= hole => Some((blur, true)),
-            (Some(hole), _) => Some((hole, false)),
-            (None, Some(blur)) => Some((blur, true)),
-            (None, None) => None,
+    /// The order of the next cut, and what it is.
+    fn next_cut(&self) -> Option<(DrawOrder, Cut)> {
+        let composition = &self.scene.composition;
+        let mask = composition.masks.get(self.next_mask).map(|cut| cut.order);
+        let blur = composition.blurs.get(self.next_blur).map(|blur| blur.order);
+        let hole = composition.holes.get(self.next_hole).map(|hole| hole.order);
+        [(mask, Cut::Mask), (blur, Cut::Blur), (hole, Cut::Hole)]
+            .into_iter()
+            .filter_map(|(order, cut)| Some((order?, cut)))
+            .min()
+    }
+
+    /// The cut batch `cut` names, from the next of its kind.
+    fn cut(&mut self, cut: Cut, first_order: Option<DrawOrder>, shadows: bool) -> ComposedBatch {
+        match cut {
+            Cut::Mask => self.masks(),
+            Cut::Blur => self.blurs(),
+            Cut::Hole => self.holes(first_order, move |order, hole| {
+                order < hole || (shadows && order == hole)
+            }),
         }
+    }
+
+    /// The masks' cuts from the next of its draw order.
+    fn masks(&mut self) -> ComposedBatch {
+        let masks = &self.scene.composition.masks;
+        let start = self.next_mask;
+        let order = masks[start].order;
+        let end = start
+            + masks[start..]
+                .iter()
+                .take_while(|cut| cut.order == order)
+                .count();
+        self.next_mask = end;
+        ComposedBatch::Masks(start..end)
     }
 
     /// The blurs from the next of its draw order.
@@ -246,26 +288,24 @@ impl<I: Iterator<Item = PrimitiveBatch>> ComposedBatches<'_, I> {
         ComposedBatch::Blurs(start..end)
     }
 
-    /// The holes from the next, up to the next blur and those `goes_first`
-    /// says are not drawn after `first_order`.
+    /// The holes from the next, up to the next blur or mask and those
+    /// `goes_first` says are not drawn after `first_order`.
     fn holes(
         &mut self,
         first_order: Option<DrawOrder>,
         goes_first: impl Fn(DrawOrder, DrawOrder) -> bool,
     ) -> ComposedBatch {
-        let holes = &self.scene.composition.holes;
-        let blur = self
-            .scene
-            .composition
-            .blurs
-            .get(self.next_blur)
-            .map(|blur| blur.order);
+        let composition = &self.scene.composition;
+        let holes = &composition.holes;
+        let blur = composition.blurs.get(self.next_blur).map(|blur| blur.order);
+        let mask = composition.masks.get(self.next_mask).map(|cut| cut.order);
         let start = self.next_hole;
         let end = start
             + holes[start..]
                 .iter()
                 .take_while(|hole| {
                     blur.is_none_or(|blur| hole.order < blur)
+                        && mask.is_none_or(|mask| hole.order < mask)
                         && first_order.is_none_or(|first| !goes_first(first, hole.order))
                 })
                 .count();
@@ -279,26 +319,23 @@ impl<I: Iterator<Item = PrimitiveBatch>> Iterator for ComposedBatches<'_, I> {
 
     fn next(&mut self) -> Option<ComposedBatch> {
         let Some(batch) = self.pending.take().or_else(|| self.batches.next()) else {
-            // What is left after every primitive: the remaining holes and
-            // blurs, in order.
-            let (_, blur) = self.next_cut()?;
-            if blur {
-                return Some(self.blurs());
-            }
-            return Some(self.holes(None, |_, _| false));
+            // What is left after every primitive: the remaining cuts, in
+            // order.
+            let (_, cut) = self.next_cut()?;
+            return Some(self.cut(cut, None, false));
         };
-        let Some((cut_order, blur)) = self.next_cut() else {
+        let Some((cut_order, cut)) = self.next_cut() else {
             return Some(ComposedBatch::Primitives(batch));
         };
         let order_at = |index| batch_order(self.scene, &batch, index);
         let len = batch_len(&batch);
         // A hole is drawn as its native would be as a quad: after the shadows of its own
         // order, which draw beyond their bounds, and before everything else of its order.
-        // A blur is drawn after everything ordered below it and before everything else.
-        let shadows = matches!(batch, PrimitiveBatch::Shadows(_));
-        let goes_first = move |order: DrawOrder, cut: DrawOrder| {
-            order < cut || (!blur && shadows && order == cut)
-        };
+        // A blur or a mask's cut is drawn after everything ordered below it and before
+        // everything else.
+        let shadows = cut == Cut::Hole && matches!(batch, PrimitiveBatch::Shadows(_));
+        let goes_first =
+            move |order: DrawOrder, cut: DrawOrder| order < cut || (shadows && order == cut);
         let below = partition_point(len, |index| goes_first(order_at(index), cut_order));
         if below == len {
             return Some(ComposedBatch::Primitives(batch));
@@ -310,10 +347,7 @@ impl<I: Iterator<Item = PrimitiveBatch>> Iterator for ComposedBatches<'_, I> {
             return Some(ComposedBatch::Primitives(first));
         }
         self.pending = Some(batch);
-        if blur {
-            return Some(self.blurs());
-        }
-        Some(self.holes(Some(first_order), goes_first))
+        Some(self.cut(cut, Some(first_order), shadows))
     }
 }
 

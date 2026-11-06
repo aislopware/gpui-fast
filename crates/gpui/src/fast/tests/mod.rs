@@ -36,6 +36,7 @@ mod interactive_text;
 mod invisible;
 mod keyed;
 mod keypad;
+mod layer_mask;
 mod layers;
 mod layers_lists;
 mod layers_oracle;

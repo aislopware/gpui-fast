@@ -1666,6 +1666,9 @@ fn drawn_alike(a: &Row, b: &Row) -> bool {
                     Operation::Backdrop(blur) => {
                         *blur = crate::fast::backdrop::translate(blur, to_row);
                     }
+                    Operation::LayerMask(cut) => {
+                        *cut = crate::fast::layer_mask::translate(cut, to_row);
+                    }
                 }
                 operation
             })
@@ -1690,6 +1693,7 @@ fn row_scene(operations: Vec<Operation>) -> Scene {
             Operation::EndLayer => scene.pop_layer(),
             Operation::Native(placement) => scene.insert_native(placement),
             Operation::Backdrop(blur) => scene.insert_backdrop_blur(blur),
+            Operation::LayerMask(cut) => scene.insert_layer_mask(cut),
         }
     }
     scene
@@ -2939,6 +2943,9 @@ pub(crate) fn end_paint_rows(window: &mut Window, cx: &mut App, id: Option<&Glob
                 Operation::Backdrop(blur) => {
                     *blur = crate::fast::backdrop::translate(blur, to_content);
                     blur.fade = relocation.index(&mut window.fast_edge_fade, blur.fade);
+                }
+                Operation::LayerMask(cut) => {
+                    *cut = crate::fast::layer_mask::translate(cut, to_content);
                 }
             }
         }

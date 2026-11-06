@@ -742,6 +742,11 @@ pub(crate) fn draw_into_frame(
                 blur.fade = crate::fast::edge_fade::compose_index(fades, outer, fade);
                 scene.insert_backdrop_blur(blur);
             }
+            Operation::LayerMask(cut) => {
+                let mut cut = crate::fast::layer_mask::translate(&cut, delta);
+                cut.content_mask.bounds = cut.content_mask.bounds.intersect(&viewport);
+                scene.insert_layer_mask(cut);
+            }
         }
     }
 }
@@ -1023,6 +1028,9 @@ fn translated_scene(
                 let mut blur = crate::fast::backdrop::translate(&blur, delta);
                 blur.fade = relocation.index(fades, blur.fade);
                 translated.insert_backdrop_blur(blur)
+            }
+            Operation::LayerMask(cut) => {
+                translated.insert_layer_mask(crate::fast::layer_mask::translate(&cut, delta))
             }
         }
     }
