@@ -663,8 +663,8 @@ pub(crate) enum FrameSource {
 
 pub(crate) struct MacWindowState {
     handle: AnyWindowHandle,
-    foreground_executor: ForegroundExecutor,
-    background_executor: BackgroundExecutor,
+    pub(crate) foreground_executor: ForegroundExecutor,
+    pub(crate) background_executor: BackgroundExecutor,
     pub(crate) native_window: *mut AnyObject,
     pub(crate) native_view: NonNull<AnyObject>,
     blurred_view: Option<*mut AnyObject>,
@@ -691,8 +691,8 @@ pub(crate) struct MacWindowState {
     appearance_changed_callback: Option<Box<dyn FnMut()>>,
     input_handler: Option<PlatformInputHandler>,
     last_key_equivalent: Option<KeyDownEvent>,
-    last_left_mouse_down_event: Option<Retained<AnyObject>>,
-    synthetic_drag_counter: usize,
+    pub(crate) last_left_mouse_down_event: Option<Retained<AnyObject>>,
+    pub(crate) synthetic_drag_counter: usize,
     traffic_light_position: Option<Point<Pixels>>,
     traffic_light_frames: Option<TrafficLightFrames>,
     pre_fullscreen_traffic_light_frames: Option<TrafficLightFrames>,
@@ -1117,6 +1117,7 @@ impl MacWindow {
                 registerForDraggedTypes:
                     &*NSArray::from_slice(&[NSFilenamesPboardType])
             ];
+            crate::fast::file_promise::register_drag_types(native_window);
             let () = msg_send![
                 native_window,
                 setReleasedWhenClosed: Bool::NO
@@ -2321,7 +2322,12 @@ impl PlatformWindow for MacWindow {
     }
 
     fn start_external_drag(&self, payload: &ExternalDragPayload) -> bool {
-        let ExternalDragPayload::Files(paths) = payload;
+        let paths = match payload {
+            ExternalDragPayload::Files(paths) => paths,
+            ExternalDragPayload::Promises(promises) => {
+                return crate::fast::file_promise::start_drag(&self.0, promises);
+            }
+        };
         if paths.entries().is_empty() {
             log::warn!("start_external_drag declined: no paths");
             return false;
@@ -3832,7 +3838,8 @@ extern "C" fn dragging_entered(
     let is_source_window = is_drag_from_this_window(this, dragging_info);
     let window_state = unsafe { get_window_state(this) };
     let position = drag_event_position(&window_state, dragging_info);
-    let paths = external_paths_from_event(dragging_info);
+    let paths = external_paths_from_event(dragging_info)
+        .or_else(|| crate::fast::file_promise::promised_paths(dragging_info));
     if let Some(event) = paths.map(|paths| FileDropEvent::Entered { position, paths })
         && send_file_drop_event(window_state, event)
     {
@@ -3875,6 +3882,12 @@ extern "C" fn perform_drag_operation(
 ) -> Bool {
     let window_state = unsafe { get_window_state(this) };
     let position = drag_event_position(&window_state, dragging_info);
+    if external_paths_from_event(dragging_info).is_none()
+        && let Some(accepted) =
+            crate::fast::file_promise::receive(&window_state, dragging_info, position)
+    {
+        return accepted.to_objc();
+    }
     send_file_drop_event(window_state, FileDropEvent::Submit { position }).to_objc()
 }
 
@@ -3988,7 +4001,7 @@ async fn synthetic_drag(
 
 /// Sends the specified FileDropEvent using `PlatformInput::FileDrop` to the window
 /// state and updates the window state according to the event passed.
-fn send_file_drop_event(
+pub(crate) fn send_file_drop_event(
     window_state: Rc<Mutex<MacWindowState>>,
     file_drop_event: FileDropEvent,
 ) -> bool {

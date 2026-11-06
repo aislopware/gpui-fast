@@ -735,6 +735,8 @@ impl ExternalPaths {
 pub enum ExternalDragPayload {
     /// Real on-disk paths, handed to the platform as an outbound file drag.
     Files(FileDragPaths),
+    /// Files written only once a drop target accepts them (`fast::file_promise`).
+    Promises(Vec<crate::fast::file_promise::FilePromise>),
 }
 
 /// Paths handed to the platform for a native file drag. Directory metadata is

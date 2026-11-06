@@ -689,7 +689,9 @@ impl WaylandClientStatePtr {
             return false;
         };
 
-        let ExternalDragPayload::Files(paths) = payload;
+        let ExternalDragPayload::Files(paths) = payload else {
+            return false;
+        };
         let uri_list = file_uri_list(paths);
         if uri_list.is_empty() {
             return false;

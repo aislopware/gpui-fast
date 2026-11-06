@@ -24,6 +24,7 @@ pub(crate) mod dispatch;
 pub(crate) mod drag;
 pub(crate) mod edge_fade;
 pub(crate) mod element;
+pub(crate) mod file_promise;
 pub(crate) mod fling;
 pub(crate) mod focus;
 pub(crate) mod focus_tooltip;

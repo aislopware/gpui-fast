@@ -61,6 +61,7 @@ pub(crate) struct TestWindowState {
     pub(crate) appearance: WindowAppearance,
     external_drag_files: Vec<(PathBuf, bool)>,
     start_external_drag_result: bool,
+    pub(crate) fast_drag_promises: crate::fast::file_promise::TestDragPromises,
     pub(crate) fast_ime_positions: Vec<Bounds<Pixels>>,
     pub(crate) fast_appearance: Option<WindowAppearance>,
     pub(crate) fast_background: WindowBackgroundAppearance,
@@ -142,6 +143,7 @@ impl TestWindow {
             appearance: WindowAppearance::Light,
             external_drag_files: Vec::new(),
             start_external_drag_result: false,
+            fast_drag_promises: crate::fast::file_promise::TestDragPromises::default(),
             fast_ime_positions: Vec::new(),
             fast_appearance: None,
             fast_background: WindowBackgroundAppearance::Opaque,
@@ -661,6 +663,9 @@ impl PlatformWindow for TestWindow {
         match payload {
             crate::ExternalDragPayload::Files(paths) => {
                 state.external_drag_files.extend_from_slice(paths.entries());
+            }
+            crate::ExternalDragPayload::Promises(promises) => {
+                crate::fast::file_promise::note_test_drag(&mut state.fast_drag_promises, promises)
             }
         }
         state.start_external_drag_result

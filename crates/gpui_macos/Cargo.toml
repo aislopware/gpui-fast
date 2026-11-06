@@ -42,12 +42,12 @@ image.workspace = true
 itertools.workspace = true
 log.workspace = true
 objc2.workspace = true
-objc2-app-kit = { workspace = true, features = ["NSCursor", "objc2-core-graphics", "objc2-uniform-type-identifiers"] }
+objc2-app-kit = { workspace = true, features = ["NSCursor", "NSFilePromiseProvider", "NSFilePromiseReceiver", "objc2-core-graphics", "objc2-uniform-type-identifiers"] }
 objc2-core-foundation = { workspace = true, features = ["CFData"] }
 objc2-core-graphics = { workspace = true, features = ["CGColor", "CGColorSpace", "CGDataProvider", "CGImage", "objc2"] }
 objc2-core-media = { workspace = true, optional = true }
 objc2-core-video = { workspace = true, features = ["CVHostTime"] }
-objc2-foundation.workspace = true
+objc2-foundation = { workspace = true, features = ["FoundationErrors", "NSOperation", "NSProgress", "block2"] }
 objc2-quartz-core.workspace = true
 objc2-screen-capture-kit = { workspace = true, optional = true }
 objc2-uniform-type-identifiers.workspace = true
@@ -58,7 +58,7 @@ scheduler.workspace = true
 semver.workspace = true
 smallvec.workspace = true
 strum.workspace = true
-uuid.workspace = true
+uuid = { workspace = true, features = ["v4"] }
 
 # The macOS test-only window implementation depends on test-only APIs from both
 # GPUI and the extracted renderer. A dependency does not inherit this crate's

@@ -10,6 +10,7 @@
 pub(crate) mod appearance;
 pub(crate) mod backdrop;
 pub(crate) mod cursor;
+pub(crate) mod file_promise;
 pub(crate) mod gesture;
 pub(crate) mod ime;
 pub(crate) mod keypad;

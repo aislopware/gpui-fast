@@ -128,6 +128,7 @@ pub use fast::check_retained::RetainedCheck;
 pub use fast::composition;
 pub use fast::cursor::{CURSOR_IMAGE_MAX_SIDE, CursorImage, CursorImageId};
 pub use fast::edge_fade::{EdgeFade, EdgeFadeElement, EdgeFadeRamps, edge_fade};
+pub use fast::file_promise::{FilePromise, FilePromiseWrite, PromiseCancelled, PromiseProgress};
 pub use fast::focus_tooltip::{TOOLTIP_WARM_FOR, TooltipPlacement};
 pub use fast::gesture::{
     InteractiveGestures, PlatformGesture, RotateEvent, SmartMagnifyEvent, SwipeEvent,

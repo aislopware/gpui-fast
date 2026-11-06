@@ -16,6 +16,7 @@ mod edge_fade;
 mod element;
 mod element_bench;
 mod element_oracle;
+mod file_promise;
 mod fling;
 mod focus;
 mod focus_notify;
