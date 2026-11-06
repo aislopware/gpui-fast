@@ -397,6 +397,20 @@ unchanged, and a new entry needs as good a reason.
   reveal whose stops lie past the label's bounds; upstream has no edge fade at all, and this
   fork's eases and multiplies. Each edge's shape rides in the fade table beside its ramp; an
   entry grows from 192 to 208 bytes. Only Metal draws it.
+- `SvgRenderer::parse_svg_without_images` is new public API (`fast/svg_untrusted.rs`, from
+  monocode): SVG an agent writes (onicode's Mermaid diagrams) must not read a file or decode
+  a data URL through an `<image>`, and `parse_svg` resolves both. `usvg_options` and
+  `ParsedSvg`'s tree are `pub(crate)` for it.
+- `gpui_apple::fast::gpu_stats::snapshot`, `Holdings` and `PUBLISH_INTERVAL` are new public
+  API (FORK.md, "Onicode"): an application's own memory log reads what the process's
+  renderers hold on the GPU, which upstream does not measure at all.
+- An element whose role is clicked (`Role::Button`, `Link`, `Tab`, a menu item and the like)
+  shows the pointing hand unless it names a cursor (`fast/role_cursor.rs`, from monocode), so
+  it gets a hitbox where upstream gives it none; upstream shows the arrow.
+- On Metal a drop shadow is drawn only outside its element, as CSS `box-shadow` is and as
+  upstream's `Shadow` documents it, and a dashed border runs three widths on and two off;
+  upstream draws a drop shadow under its element too and dashes two on and one off
+  (`shaders.metal`; FORK.md, "Onicode").
 - `Window::paint_backdrop_blur` is new public API, with `BackdropBlur`,
   `Scene::backdrop_blurs`, `Scene::insert_backdrop_blur` and
   `ComposedBatch::Blurs` (`fast/backdrop.rs`, `gpui_apple/src/fast/backdrop.rs`;
