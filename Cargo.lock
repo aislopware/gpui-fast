@@ -2715,14 +2715,14 @@ dependencies = [
 
 [[package]]
 name = "gpui-fast"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "gpui",
 ]
 
 [[package]]
 name = "gpui-fast-platform"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "gpui",
  "gpui_platform",
@@ -2730,7 +2730,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-fast-web"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "gpui_web",
 ]
@@ -2807,7 +2807,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "gpui",
 ]
@@ -2988,7 +2988,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-macros"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "gpui_macros",
 ]
@@ -3021,7 +3021,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-platform"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "gpui",
  "gpui_platform",
@@ -3038,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-reqwest-client"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "reqwest_client",
 ]
@@ -3086,7 +3086,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-sum-tree"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "sum_tree",
 ]
@@ -3144,7 +3144,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pre-web"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "gpui_web",
 ]
