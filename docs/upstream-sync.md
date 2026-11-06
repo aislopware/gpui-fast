@@ -411,6 +411,11 @@ unchanged, and a new entry needs as good a reason.
   70 ms curve (`fast/wheel_glide.rs`; FORK.md, "Onicode"), where upstream jumps a notch's
   distance at once. No new API; `App::reduce_motion` keeps upstream's jump, and a test that
   wheels a list by lines and draws by hand, without running next-frame callbacks, sets it.
+- `App::clear_sprite_atlases` and the defaulted `PlatformAtlas::clear` are new public API
+  (`fast/atlas_clear.rs`, from monocode; FORK.md, "Onicode"): an application under memory
+  pressure empties the atlases, which upstream only ever grows but for an image's removal, and
+  every window is drawn afresh, since a cleared atlas reuses its texture slots and a frame
+  drawn from the last would sample them. Metal's atlas and the headless one implement it.
 - On Metal a drop shadow is drawn only outside its element, as CSS `box-shadow` is and as
   upstream's `Shadow` documents it, and a dashed border runs three widths on and two off;
   upstream draws a drop shadow under its element too and dashes two on and one off

@@ -1859,6 +1859,9 @@ pub trait PlatformAtlas {
     ) -> Result<Option<AtlasTile>>;
     fn remove(&self, key: &AtlasKey);
 
+    /// Drops every tile and texture (`App::clear_sprite_atlases`, fast::atlas_clear).
+    fn clear(&self) {}
+
     #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
     fn contains(&self, _key: &AtlasKey) -> bool {
         false
@@ -1986,6 +1989,10 @@ impl PlatformAtlas for HeadlessAtlas {
 
     fn remove(&self, key: &AtlasKey) {
         self.0.lock().remove(key);
+    }
+
+    fn clear(&self) {
+        crate::fast::headless_atlas::clear(&mut self.0.lock());
     }
 
     #[cfg(any(test, feature = "test-support", feature = "bench-support"))]

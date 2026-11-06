@@ -93,4 +93,53 @@ mod tests {
             .expect("a small tile is kept");
         assert_eq!(small.texture_id.index, 0);
     }
+
+    /// Clearing the atlas (`PlatformAtlas::clear`, gpui's `fast::atlas_clear`)
+    /// drops its textures: a tile of before names a texture no longer there,
+    /// and a key inserted again builds its tile again, in a texture of its own.
+    #[test]
+    fn a_cleared_atlas_holds_no_texture_and_builds_again() {
+        use gpui::{AtlasKey, PlatformAtlas as _};
+        use objc2_metal::{MTLDevice as _, MTLGPUFamily};
+        use std::borrow::Cow;
+
+        let Some(device) = objc2_metal::MTLCreateSystemDefaultDevice() else {
+            return;
+        };
+        let shared = cfg!(target_os = "ios") || device.supportsFamily(MTLGPUFamily::Apple1);
+        let atlas = crate::metal_atlas::MetalAtlas::new(device, shared);
+        let key = |id: usize| {
+            AtlasKey::Image(gpui::RenderImageParams {
+                image_id: gpui::ImageId(id),
+                frame_index: 0,
+            })
+        };
+        let builds = std::cell::Cell::new(0);
+        let insert = |key: AtlasKey| {
+            let size = tile(64, 64);
+            let bytes = vec![0u8; 64 * 64 * 4];
+            atlas
+                .get_or_insert_with(key, &mut || {
+                    builds.set(builds.get() + 1);
+                    Ok(Some((size, Cow::Owned(bytes.clone()))))
+                })
+                .expect("inserting a tile")
+                .expect("the tile is kept")
+        };
+        let tiles: Vec<_> = (0..3).map(|id| insert(key(id))).collect();
+        assert_eq!(builds.get(), 3);
+        insert(key(0));
+        assert_eq!(builds.get(), 3, "a kept tile is not built again");
+        assert!(atlas.metal_texture(tiles[0].texture_id).is_some());
+        assert_eq!(atlas.fast_textures().len(), 1);
+
+        atlas.clear();
+        assert!(atlas.fast_textures().is_empty(), "no texture is held");
+        assert!(atlas.metal_texture(tiles[0].texture_id).is_none());
+
+        let again = insert(key(0));
+        assert_eq!(builds.get(), 4, "a key inserted again is built again");
+        assert!(atlas.metal_texture(again.texture_id).is_some());
+        assert_eq!(atlas.fast_textures().len(), 1);
+    }
 }

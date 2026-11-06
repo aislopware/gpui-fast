@@ -15,6 +15,7 @@
 //! root one by one, in `gpui.rs`.
 
 pub(crate) mod a11y;
+pub(crate) mod atlas_clear;
 pub(crate) mod backdrop;
 pub mod check_retained;
 pub mod composition;

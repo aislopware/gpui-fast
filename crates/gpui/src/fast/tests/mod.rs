@@ -3,6 +3,7 @@
 mod a11y;
 mod a11y_bounds;
 mod animation_end;
+mod atlas_clear;
 mod backdrop;
 mod cached_layout;
 mod cached_snapping;

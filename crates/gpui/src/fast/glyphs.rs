@@ -463,6 +463,13 @@ impl GlyphBoundsCache {
     pub(crate) fn finish_frame(&mut self) {
         self.frame += 1;
     }
+
+    /// Forgets the tiles kept, which a cleared sprite atlas no longer holds
+    /// (`fast::atlas_clear`); the glyphs' sizes stay, as their rasterization
+    /// does.
+    pub(crate) fn forget_tiles(&mut self) {
+        self.frame += 1;
+    }
 }
 
 /// Begins painting `run` of `layout` with `painter`, and returns the size of

@@ -67,6 +67,14 @@ impl PlatformAtlas for MetalAtlas {
     fn remove(&self, key: &AtlasKey) {
         self.0.lock().remove(key);
     }
+
+    fn clear(&self) {
+        // fast::atlas_clear: frames still on the GPU hold their own texture references.
+        self.0.lock().clear(|textures| {
+            drop(textures.monochrome_textures.drain());
+            drop(textures.polychrome_textures.drain());
+        });
+    }
 }
 
 impl AtlasBackend for MetalAtlasTextures {

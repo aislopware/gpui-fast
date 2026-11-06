@@ -1014,6 +1014,19 @@ Branch `onicode-parity-2` ports the rest (stack-port.md §6 steps 5–8):
   `scrolling_to_the_end_or_resetting_ends_the_glide`. `layers_lists`'
   `a_tall_row_scrolled_by_lines_keeps_the_state_its_layout_took` runs with reduced motion, as
   it scrolls by notches without running the frames a glide takes.
+- `App::clear_sprite_atlases()` (`fast::atlas_clear`, monocode's): empties every window's
+  sprite atlas through the new defaulted `PlatformAtlas::clear` (Metal drops both texture
+  lists, frames on the GPU keeping their own references; the headless atlas empties with its
+  tile ids counting on; wgpu and DirectX keep theirs) and refreshes every window. What a frame
+  drawn from the last one would name (retained views, keyed paint, splices) is drawn afresh by
+  the refresh; each cleared window also drops its scroll layers, whose rows keep their scenes,
+  and forgets `fast::glyphs`' tile per glyph (`GlyphBoundsCache::forget_tiles`). A window
+  mid-update is skipped, as monocode's. The app's memory-pressure policy calls it with
+  `gpui_apple::fast::gpu_stats::snapshot()` in place of monocode's `gpu_memory()`; monocode's
+  `trim()` has no counterpart, as the instance pool shrinks itself and idle scratch goes after
+  120 frames. Tests: `the_frame_after_a_clear_uploads_what_it_draws`,
+  `a_clear_drops_the_scroll_layers`; (`gpui_apple`)
+  `a_cleared_atlas_holds_no_texture_and_builds_again`.
 
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.
