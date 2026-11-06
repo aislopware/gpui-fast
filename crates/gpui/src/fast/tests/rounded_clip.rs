@@ -503,3 +503,82 @@ fn a_quad_painted_in_a_rounded_clip_keeps_its_background() {
         "{painted:?}"
     );
 }
+
+/// A rounded card clipping its overflow, holding a fill and a border overlay
+/// at its own radius, as a popover's glass and border are, and a square
+/// badge in its corner.
+struct Overlaid;
+
+impl Render for Overlaid {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let overlay = || {
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .rounded(px(8.))
+        };
+        div().size_full().child(
+            div()
+                .relative()
+                .mt(px(20.))
+                .ml(px(10.))
+                .w(px(100.))
+                .h(px(60.))
+                .overflow_hidden()
+                .rounded(px(8.))
+                .child(overlay().bg(hsla(0.6, 0.5, 0.5, 1.)))
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size(px(20.))
+                        .bg(hsla(0.1, 0.5, 0.5, 1.)),
+                )
+                .child(overlay().border_1().border_color(hsla(0., 0., 0., 0.5))),
+        )
+    }
+}
+
+/// What fills a rounded padding edge at its corners is not cut along it again, so its
+/// outer pixels are antialiased once, at its own edge, as monocode drew a clipped card's
+/// fill and border; what does not fill it, a square badge in its corner, is cut.
+#[test]
+fn what_fills_a_rounded_padding_edge_is_not_cut_again() {
+    let mut cx = text_cx();
+    let window = cx.add_window(|_, _| Overlaid);
+    cx.test_window(window.into())
+        .simulate_scale_factor_change(2.);
+    with_window(&mut cx, window.into(), |window, cx| {
+        window.draw(cx).clear(cx);
+        let scene = &window.rendered_frame.scene;
+        let card = Bounds::new(
+            point(ScaledPixels(20.), ScaledPixels(40.)),
+            crate::size(ScaledPixels(200.), ScaledPixels(120.)),
+        );
+        let cut = |quad: &crate::Quad| {
+            scene
+                .edge_fade_ramps(quad.background.pad)
+                .is_some_and(|ramps| ramps.clip == [20., 40., 220., 160.])
+        };
+        // The fill, and the border overlay, drawn as strips around its hollow middle.
+        let badge_width = ScaledPixels(40.);
+        let fills: Vec<_> = scene
+            .quads
+            .iter()
+            .filter(|quad| {
+                quad.bounds.size.width != badge_width && card.contains(&quad.bounds.origin)
+            })
+            .collect();
+        assert!(fills.len() >= 2, "{fills:#?}");
+        assert!(fills.iter().all(|quad| !cut(quad)), "{fills:#?}");
+        let badge = scene
+            .quads
+            .iter()
+            .find(|quad| quad.bounds.size.width == badge_width)
+            .expect("the badge");
+        assert!(cut(badge));
+    });
+}

@@ -129,6 +129,7 @@ pub use fast::composition;
 pub use fast::cursor::{CURSOR_IMAGE_MAX_SIDE, CursorImage, CursorImageId};
 pub use fast::edge_fade::{
     EdgeFade, EdgeFadeCombine, EdgeFadeCurve, EdgeFadeElement, EdgeFadeRamps, edge_fade,
+    edge_fade_by,
 };
 pub use fast::file_promise::{FilePromise, FilePromiseWrite, PromiseCancelled, PromiseProgress};
 pub use fast::focus_tooltip::{TOOLTIP_WARM_FOR, TooltipPlacement};
@@ -154,7 +155,7 @@ pub use fast::value_transition::{ValueTransition, ValueTransitionState};
 pub use fast::{
     backdrop::BackdropBlur,
     image_mask::ImageAlphaMask,
-    layer_mask::{LayerMask, LayerMaskCut},
+    layer_mask::{GroupFade, LayerMask, LayerMaskCut},
 };
 pub use geometry::*;
 pub use gestures::*;

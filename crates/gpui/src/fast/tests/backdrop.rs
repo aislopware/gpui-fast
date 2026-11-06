@@ -516,9 +516,10 @@ fn a_blurs_radius_is_scaled_to_device_pixels() {
         window.draw(cx).clear(cx);
         let blur = window.rendered_frame.scene.backdrop_blurs()[0];
         assert_eq!(blur.blur_radius, ScaledPixels(5.25));
+        // Three standard deviations, rounded up, and two pixels: monocode's bleed.
         assert_eq!(
             blur.reach().origin.x,
-            blur.bounds.origin.x - ScaledPixels(17.)
+            blur.bounds.origin.x - ScaledPixels(18.)
         );
     });
 }
@@ -692,14 +693,16 @@ fn blurs_whose_regions_are_apart_share_one_copy() {
             let fill = scene.quads.iter().find(over).expect("a badge's fill");
             assert!(fill.order > order);
         }
-        // The labels beside the badges, painted before them, are under them.
+        // The labels beside the badges, painted before them, are ordered no higher: as
+        // monocode drew text of its marker quad's order over the marker, those of the blurs'
+        // order are drawn over them, the rest under.
         let labels = scene.monochrome_sprites.iter().filter(|sprite| {
             !blurs
                 .iter()
                 .any(|blur| blur.bounds.intersects(&sprite.bounds))
         });
         assert!(labels.clone().count() > 0);
-        assert!(labels.clone().all(|sprite| sprite.order < order));
+        assert!(labels.clone().all(|sprite| sprite.order <= order));
     });
 }
 
@@ -736,6 +739,7 @@ fn a_hole_and_a_blur_of_one_order_are_both_met() {
         corner_radii: Corners::default(),
         blur_radius: ScaledPixels(8.),
         opacity: 1.,
+        quads_before: 0,
     });
     scene.insert_primitive(crate::Quad {
         bounds: device(0.),
@@ -758,4 +762,115 @@ fn a_hole_and_a_blur_of_one_order_are_both_met() {
         })
         .collect();
     assert_eq!(kinds, ["blurs 0..1", "holes 0..1", "primitives"]);
+}
+
+/// A surface fading in over a blur drawn whole: at 0.3 opacity, or at none.
+struct WholeBlur {
+    opacity: f32,
+}
+
+impl Render for WholeBlur {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .relative()
+            .size_full()
+            .bg(hsla(0.6, 0.5, 0.5, 1.))
+            .child(
+                div()
+                    .absolute()
+                    .top(px(10.))
+                    .left(px(10.))
+                    .w(px(100.))
+                    .h(px(60.))
+                    .opacity(self.opacity)
+                    .child(
+                        canvas(
+                            |_, _, _| {},
+                            |bounds, _, window, _| {
+                                window.paint_backdrop_blur_whole(
+                                    bounds,
+                                    Corners::all(px(8.)),
+                                    px(12.),
+                                )
+                            },
+                        )
+                        .size_full(),
+                    ),
+            )
+    }
+}
+
+/// `paint_backdrop_blur_whole` draws its blur at full strength whatever
+/// the element opacity, monocode's marker blur, even where the surface is
+/// not drawn at all yet; `paint_backdrop_blur` takes the opacity.
+#[test]
+fn a_whole_blur_ignores_the_element_opacity() {
+    let mut cx = text_cx();
+    for opacity in [0.3, 0.] {
+        let window = cx.add_window(move |_, _| WholeBlur { opacity });
+        with_window(&mut cx, window.into(), |window, cx| {
+            window.draw(cx).clear(cx);
+            let blurs = window.rendered_frame.scene.backdrop_blurs();
+            assert_eq!(blurs.len(), 1, "at {opacity}");
+            assert_eq!(blurs[0].opacity, 1., "at {opacity}");
+        });
+    }
+}
+
+/// A blur is drawn as monocode drew its marker quad: after the quads of its
+/// draw order painted before it, beside its region in its reach, and before
+/// those of its order painted after it.
+#[test]
+fn a_blur_reads_the_quads_of_its_order_painted_before_it() {
+    let mut scene = crate::Scene::default();
+    let device = |x: f32, y: f32, w: f32, h: f32| {
+        Bounds::new(
+            point(ScaledPixels(x), ScaledPixels(y)),
+            crate::size(ScaledPixels(w), ScaledPixels(h)),
+        )
+    };
+    let everywhere = crate::ContentMask {
+        bounds: device(0., 0., 400., 400.),
+    };
+    let quad = |scene: &mut crate::Scene, bounds, step: f32| {
+        scene.insert_primitive(crate::Quad {
+            bounds,
+            content_mask: everywhere,
+            corner_radii: Corners {
+                top_left: ScaledPixels(step),
+                ..Corners::default()
+            },
+            ..Default::default()
+        })
+    };
+    quad(&mut scene, device(0., 0., 400., 400.), 0.);
+    quad(&mut scene, device(120., 0., 20., 20.), 1.);
+    scene.insert_backdrop_blur(crate::fast::backdrop::BackdropBlur {
+        order: 0,
+        fade: 0,
+        bounds: device(0., 0., 100., 100.),
+        content_mask: everywhere,
+        corner_radii: Corners::default(),
+        blur_radius: ScaledPixels(8.),
+        opacity: 1.,
+        quads_before: 0,
+    });
+    quad(&mut scene, device(140., 0., 20., 20.), 2.);
+    scene.finish();
+    let blur = scene.backdrop_blurs()[0];
+    assert_eq!(blur.quads_before, 1);
+    let mut met = Vec::new();
+    for batch in scene.composed_batches() {
+        match batch {
+            ComposedBatch::Primitives(crate::PrimitiveBatch::Quads(range)) => met.extend(
+                scene.quads[range]
+                    .iter()
+                    .map(|quad| (quad.corner_radii.top_left.0 as i32, quad.order)),
+            ),
+            ComposedBatch::Blurs(_) => met.push((-1, blur.order)),
+            other => panic!("unexpected batch {other:?}"),
+        }
+    }
+    let order = blur.order;
+    assert_eq!(met, vec![(0, 1), (1, order), (-1, order), (2, order)]);
 }

@@ -980,9 +980,9 @@ did not:
   `side_fade_marker`. Each table entry gains `EdgeFadeRamps::shape` (per edge: +1 linear, +2
   lesser of the axis), carried with its ramp, so fades of both kinds nest edge by edge
   (`shaders.metal`'s `edge_fade`). The defaults (smoothstep, product, snapped out) draw as
-  before. Not matched: monocode mixes a snapshot of the whole group, so where translucent
-  fills overlap inside a ramp it fades their composite and this fades each primitive; and it
-  leaves what is drawn past the group's region whole where this keeps fading it. Tests
+  before. Per primitive, where translucent fills overlap inside a ramp, this fades each
+  of them, and it keeps fading what is drawn past the region; `onicode-parity-3`'s group fade
+  (below) draws monocode's snapshot mix where that shows. Tests
   (`gpui`): `a_linear_min_fade_draws_monocodes_mask`, `a_raw_ramp_draws_monocodes_text_reveal`,
   `shapes_nest_edge_by_edge`; (`gpui_apple`, on the GPU against monocode's formulas): the
   first two again.
@@ -1059,7 +1059,8 @@ Branch `onicode-parity-2` ports the rest (stack-port.md §6 steps 5–8):
   over what was under it through `LayerMask::project_background(empty, haze, preview,
   opacity)`, monocode's `background_mask_marker` arguments. Each end is a `LayerMaskCut` paint
   operation ordered as a backdrop blur is (`Scene::insert_layer_mask`, `Scene::layer_masks`,
-  `ComposedBatch::Masks`; at one draw order a mask's cut goes before blurs and holes); a begin
+  `ComposedBatch::Masks`; at one draw order a mask's cut goes before blurs and holes drawn
+  after as many of its quads, see `onicode-parity-3`); a begin
   and its end pair by id, so masks apart that share draw orders draw in one pass break, and a
   begin never ended is dropped. Retention replays both cuts; content placing one is drawn
   without its scroll layer's tiles, as content placing a blur is, and list rows replay theirs.
@@ -1084,6 +1085,55 @@ Branch `onicode-parity-2` ports the rest (stack-port.md §6 steps 5–8):
   against monocode's fragment written out in Rust) `a_mask_draws_monocodes_stops_and_corners`,
   `haze_draws_monocodes_darkening_and_line`, `haze_blurs_the_group_toward_the_bottom`,
   `nested_masks_and_masks_apart_draw_their_own_groups`.
+
+Branch `onicode-parity-3` makes onicode's golden images, recorded on monocode's GPUI, draw
+alike here (onicode's `docs/onicode/golden.md`):
+
+- CoreText shapes the first run of a line at `f32::next_up(size)`, as zed and monocode do
+  (`break_ligature` starts true in `gpui_apple`'s `text_system.rs`): the font CoreText caches
+  at the exact size spaces 11 pt SF Medium and Semibold 0.19 px narrower over a label. Test
+  (`gpui_apple`, `font-kit`): `the_first_run_is_shaped_a_float_step_above_its_size`.
+- `edge_fade_by(child, |bounds, window, cx| EdgeFade)`: an edge fade worked out from the
+  bounds its child lays out in that frame, for fades that follow a scroll position (onicode's
+  sidebar and live transcript). Test: `a_fade_worked_out_by_a_closure_draws_the_frame_its_content_lays_out`.
+- Group fades, monocode's marker groups: `EdgeFadeElement::group()` and
+  `Window::with_group_fade(bounds, EdgeFade, f)` draw what `f` paints as one group faded
+  through the fade's linear ramps (`GroupFade`, `LayerMask::group_fade`, `layer_mask_fragment`
+  modes 6 and 7): the begin cut copies the region without clearing it, and the end draws
+  `mix(before, after, alpha)` over it, `alpha` the least of the edge ramps (`1 - depth` at the
+  edge, whole a width in) or monocode's text reveal `saturate((end - x) / (end - start))`.
+  Translucent overlaps fade as their composite, and what the group paints past its region is
+  left whole, as in monocode. Onicode's transcript, live phase, sidebar list, tab labels and
+  particle titles use it.
+- `Window::paint_backdrop_blur_whole`: a blur drawn at full strength whatever the element
+  opacity, as monocode's marker blur is; a surface fading in fades its tint and content over
+  it. Test: `a_whole_blur_ignores_the_element_opacity`.
+- A backdrop blur and a layer mask's cut are ordered and drawn as monocode drew its marker
+  quad: a blur takes the order above what its region overlaps (no longer above all it reads),
+  reads `ceil(3σ) + 2` around it, monocode's bleed, and copies exactly that region
+  (`gpui_apple`'s scratch `QUANTUM` is 1, so the gaussian's clamped edge is the region's, as
+  monocode's MPS copy is). At its order it is drawn after the shadows and after the quads of
+  that order painted before it (`BackdropBlur::quads_before`, `LayerMaskCut::quads_before`,
+  `ComposedBatches` splitting a quad batch there), before everything else of the order; blurs
+  of one order share a pass only with those drawn after as many quads (waves are gone).
+  Tests: `a_blur_reads_the_quads_of_its_order_painted_before_it`, the seeded
+  `every_quad_over_a_masks_region_is_met_on_its_side_of_the_cuts` (now checking each cut's
+  quads). Not kept: `a_blur_over_a_scroll_layer_leaves_it_compositing` compares a layered
+  window with a direct one; a scroll layer's rows share one order, so a blur over the list
+  reads the rows beside its region that direct drawing orders above it (as monocode did). It
+  fails until the two are reconciled; see onicode's report.
+- A rounded padding edge (`fast::rounded_clip`) covers whole device pixels along its straight
+  edges, as the rectangular content mask does (`cover_bounds`), so only its corners are
+  antialiased; and a quad or blur that fills the edge at its corners or rounder (a clipped
+  card's own fill, glass and border overlay) is drawn in the fade around the edge rather than
+  cut along it again, so its outer pixels are antialiased once, as monocode's rectangular
+  overflow left them (`rounded_clip::uncut_fade`). Test: `what_fills_a_rounded_padding_edge_is_not_cut_again`.
+- A linear gradient's dither is seeded by the pixel's position in the frame, monocode's
+  (zed `93d7456`), not its position in the quad: avatars and buttons dither as recorded. A
+  scroll layer's tiles then dither in tile space: `gpui_apple`'s
+  `tiles_composited_in_place_equal_the_content_drawn_directly` and
+  `tiles_of_negative_coordinates_composite_like_positive_ones` fail on their gradient until
+  tiles are seeded in frame space or the seed goes back; see onicode's report.
 
 Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
 (onicode's `Cargo.toml`), so its graph holds one GPUI.

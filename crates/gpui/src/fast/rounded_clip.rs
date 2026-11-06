@@ -50,15 +50,19 @@ impl Shape {
                 ScaledPixels(f32::from((radius - vertical).max(Pixels::ZERO)) * scale),
             )
         };
-        // The edges on the 1/64 device pixel grid the shift module reads as
-        // exact: one laid out a whole number of pixels away from another then
-        // lies exactly that far, not off by the float noise of where each was
-        // added up, so a layer moved by whole pixels keeps its clip's entry.
-        let snap = |v: Pixels| ScaledPixels(((f32::from(v) * scale) * 64.).round() / 64.);
-        let left = snap(bounds.origin.x + widths.left);
-        let top = snap(bounds.origin.y + widths.top);
-        let right = snap(bounds.origin.x + bounds.size.width - widths.right).max(left);
-        let bottom = snap(bounds.origin.y + bounds.size.height - widths.bottom).max(top);
+        // The edges cover the device pixels they cross, as the rectangular content mask an
+        // element clips to does (`Window::cover_bounds`): a straight edge cuts whole pixels and
+        // only the corners are antialiased, as monocode's rectangular overflow cut them
+        // (FORK.md, "Onicode"). Each is first put on the 1/64 device pixel grid the shift
+        // module reads as exact, so that float noise in where it was added up neither moves
+        // it a pixel nor keeps a layer moved by whole pixels from keeping its clip's entry.
+        let grid = |v: Pixels| ((f32::from(v) * scale) * 64.).round() / 64.;
+        let floor = |v: Pixels| ScaledPixels(grid(v).floor());
+        let ceil = |v: Pixels| ScaledPixels(grid(v).ceil());
+        let left = floor(bounds.origin.x + widths.left);
+        let top = floor(bounds.origin.y + widths.top);
+        let right = ceil(bounds.origin.x + bounds.size.width - widths.right).max(left);
+        let bottom = ceil(bounds.origin.y + bounds.size.height - widths.bottom).max(top);
         Some(Self {
             bounds: Bounds {
                 origin: point(left, top),
@@ -96,6 +100,26 @@ impl Shape {
             corners.map(|radius| radius.width.0),
             corners.map(|radius| radius.height.0),
         )
+    }
+
+    /// Whether the rounded rectangle `bounds` with circular corners `radii`
+    /// lies inside this edge: as large, to a 64th of a pixel, and as round
+    /// or rounder at every corner.
+    fn holds(&self, bounds: Bounds<ScaledPixels>, radii: Corners<ScaledPixels>) -> bool {
+        const SLACK: f32 = 1. / 64.;
+        let near = |a: ScaledPixels, b: ScaledPixels| (a.0 - b.0).abs() <= SLACK;
+        let rounder = |radius: ScaledPixels, edge: Size<ScaledPixels>| {
+            radius.0 + SLACK >= edge.width.0.max(edge.height.0)
+        };
+        !self.bounds.is_empty()
+            && near(bounds.origin.x, self.bounds.origin.x)
+            && near(bounds.origin.y, self.bounds.origin.y)
+            && near(bounds.size.width, self.bounds.size.width)
+            && near(bounds.size.height, self.bounds.size.height)
+            && rounder(radii.top_left, self.radii.top_left)
+            && rounder(radii.top_right, self.radii.top_right)
+            && rounder(radii.bottom_right, self.radii.bottom_right)
+            && rounder(radii.bottom_left, self.radii.bottom_left)
     }
 
     /// CPU reference for testing the geometric intersection independently of
@@ -162,7 +186,64 @@ fn within<R>(
     else {
         return f(window);
     };
-    crate::fast::edge_fade::with_ramps(window, &shape.ramps(), f)
+    use crate::fast::edge_fade;
+    let around = edge_fade::current(window);
+    let inner = edge_fade::entered_ramps(window, &shape.ramps());
+    if inner == edge_fade::NONE {
+        return f(window);
+    }
+    window
+        .fast_edge_fade
+        .padding_edges
+        .push((shape, inner, around));
+    edge_fade::enter(&mut window.next_frame.scene, inner);
+    let result = f(window);
+    edge_fade::leave(&mut window.next_frame.scene);
+    window.fast_edge_fade.padding_edges.pop();
+    result
+}
+
+/// `quad`, drawn in the fade around the rounded padding edge it is painted
+/// inside when it fills that edge (see [`uncut_fade`]).
+pub(crate) fn uncut_quad(window: &mut Window, mut quad: crate::Quad) -> crate::Quad {
+    if let Some(fade) = uncut_fade(window, quad.bounds, quad.corner_radii) {
+        quad.background.pad = fade;
+    }
+    quad
+}
+
+/// The fade a rounded rectangle painted now is drawn in, when the rounded
+/// padding edge it is painted inside does not cut it: one filling the edge
+/// at its corners or rounder, as a clipped element's fill, glass or border
+/// overlay drawn at its own radius does. Such a shape is drawn in the fade
+/// around the edge, and antialiased once, at its own edge, as monocode drew
+/// it (FORK.md, "Onicode"); cut again along the same curve its outer pixels
+/// would be covered twice over. `None` when it is drawn in the fade
+/// painting is in.
+pub(crate) fn uncut_fade(
+    window: &mut Window,
+    bounds: Bounds<ScaledPixels>,
+    radii: Corners<ScaledPixels>,
+) -> Option<u32> {
+    let current = crate::fast::edge_fade::current(window);
+    let &(shape, entered, around) = window.fast_edge_fade.padding_edges.last()?;
+    if entered != current || !shape.holds(bounds, radii) {
+        return None;
+    }
+    if around != crate::fast::edge_fade::NONE {
+        return Some(around);
+    }
+    // Drawn in no fade, yet stamped, so that closing the edge's fade leaves it be: a clip
+    // around the whole plane.
+    const FAR: f32 = 1.0e7;
+    let everywhere = crate::EdgeFadeRamps::NONE.rounded(
+        Bounds::new(
+            point(ScaledPixels(-FAR), ScaledPixels(-FAR)),
+            size(ScaledPixels(2. * FAR), ScaledPixels(2. * FAR)),
+        ),
+        Corners::default(),
+    );
+    Some(window.fast_edge_fade.intern(&everywhere))
 }
 
 #[cfg(any(test, feature = "test-support"))]

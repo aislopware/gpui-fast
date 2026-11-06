@@ -79,6 +79,10 @@ pub struct BackdropBlur {
     /// How opaque the blurred backdrop is drawn over what is under it, from
     /// the element opacity it was painted with.
     pub opacity: f32,
+    /// How many quads of its draw order are drawn before it: those painted
+    /// before it, as monocode drew its marker quad after them (FORK.md,
+    /// "Onicode"). Everything else of its order but shadows is drawn over it.
+    pub quads_before: u32,
 }
 
 impl BackdropBlur {
@@ -91,7 +95,7 @@ impl BackdropBlur {
     /// deviations around, where the blur still gathers from.
     pub fn reach(&self) -> Bounds<ScaledPixels> {
         self.clipped_bounds()
-            .dilate(ScaledPixels((self.blur_radius.0 * 3.).ceil() + 1.))
+            .dilate(ScaledPixels((self.blur_radius.0 * 3.).ceil() + 2.))
     }
 }
 
@@ -116,20 +120,52 @@ impl Window {
         corner_radii: Corners<Pixels>,
         blur_radius: Pixels,
     ) {
-        self.invalidator.debug_assert_paint();
         let opacity = self.element_opacity();
+        self.place_backdrop_blur(bounds, corner_radii, blur_radius, opacity);
+    }
+
+    /// Paints a backdrop blur as [`Window::paint_backdrop_blur`] does, but
+    /// whole whatever the element opacity it is painted in, as monocode's
+    /// marker blur is drawn (FORK.md, "Onicode"): a surface fading in or out
+    /// fades its tint, border and content over a blur at full strength, and
+    /// eases the blur's radius itself where the blur should come and go.
+    /// Edge fades and rounded clips around it still apply.
+    ///
+    /// This method should only be called as part of the paint phase of
+    /// element drawing.
+    pub fn paint_backdrop_blur_whole(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        blur_radius: Pixels,
+    ) {
+        self.place_backdrop_blur(bounds, corner_radii, blur_radius, 1.);
+    }
+
+    fn place_backdrop_blur(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        blur_radius: Pixels,
+        opacity: f32,
+    ) {
+        self.invalidator.debug_assert_paint();
         if blur_radius <= Pixels::ZERO || opacity <= 0. {
             return;
         }
         let scale_factor = self.scale_factor();
+        let snapped = self.snap_bounds(bounds);
+        let scaled_corners = corner_radii.scale(scale_factor);
         let blur = BackdropBlur {
             order: 0,
-            fade: crate::fast::edge_fade::current(self),
-            bounds: self.snap_bounds(bounds),
+            fade: crate::fast::rounded_clip::uncut_fade(self, snapped, scaled_corners)
+                .unwrap_or_else(|| crate::fast::edge_fade::current(self)),
+            bounds: snapped,
             content_mask: self.snapped_content_mask(),
-            corner_radii: corner_radii.scale(scale_factor),
+            corner_radii: scaled_corners,
             blur_radius: blur_radius.scale(scale_factor),
             opacity,
+            quads_before: 0,
         };
         self.next_frame.scene.insert_backdrop_blur(blur);
     }
@@ -154,29 +190,15 @@ impl Scene {
         if bounds.is_empty() || blur.opacity <= 0. {
             return;
         }
-        let radius = blur.blur_radius.0.to_bits();
-        let waves = &mut self.composition.waves;
-        blur.order =
-            self.primitive_bounds
-                .insert_reading(&blur.reach(), bounds, |natural, covered| {
-                    let same = || {
-                        waves
-                            .iter()
-                            .filter(|wave| wave.1 == radius)
-                            .map(|wave| wave.0)
-                    };
-                    // A wave at or past the natural order reads all this blur
-                    // reads; one below it but above all its region overlaps misses
-                    // only what was drawn after the wave around the region.
-                    let joined = same()
-                        .filter(|order| *order >= natural)
-                        .min()
-                        .or_else(|| same().filter(|order| *order > covered).max());
-                    joined.unwrap_or_else(|| {
-                        waves.push((natural, radius));
-                        natural
-                    })
-                });
+        // Above what its region overlaps, as monocode orders its marker quad: what is painted
+        // beside the region, in the blur's reach, is read when it is ordered below the blur, or
+        // at its order and painted before it, as monocode's quad batch drew it.
+        blur.order = self.primitive_bounds.insert(bounds);
+        blur.quads_before = self
+            .quads
+            .iter()
+            .filter(|quad| quad.order == blur.order)
+            .count() as u32;
         crate::fast::composition::scene::lift_open_layer(self);
         self.composition.blurs.push(blur);
         crate::fast::scene::push(self, PaintOperation::Backdrop(Box::new(blur)));

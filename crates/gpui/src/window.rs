@@ -5017,6 +5017,7 @@ impl Window {
             border_widths: snapped_border_widths,
             border_style: quad.border_style,
         };
+        let quad = crate::fast::rounded_clip::uncut_quad(self, quad);
 
         if !quad.background.is_transparent() {
             self.next_frame.scene.insert_primitive(quad);

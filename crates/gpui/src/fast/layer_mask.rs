@@ -30,14 +30,19 @@
 //! [`ComposedBatch::Masks`]: crate::fast::composition::ComposedBatch::Masks
 
 use crate::{
-    Bounds, ContentMask, Corners, DrawOrder, PaintOperation, Pixels, Point, ScaledPixels, Scene,
-    Window,
+    Bounds, ContentMask, Corners, DrawOrder, EdgeFade, Edges, PaintOperation, Pixels, Point,
+    ScaledPixels, Scene, Window,
 };
 
 /// How a [`Window::begin_layer_mask`] group is laid back over what was
-/// under it: monocode's project background mask.
+/// under it: monocode's project background mask, or its group fade.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LayerMask {
+    /// A group fade ([`Window::with_group_fade`]) rather than the project
+    /// background: the region is not cleared, and the group is mixed back
+    /// into what was under it by the fade's alpha. The fields below go
+    /// unused.
+    pub fade: Option<GroupFade>,
     /// The stops of a project with no session yet, which keep more of the
     /// image lower down; otherwise a session's, which fade it sooner.
     pub empty: bool,
@@ -55,6 +60,7 @@ impl LayerMask {
     /// arguments, without `begin`).
     pub fn project_background(empty: bool, haze: bool, preview: bool, opacity: f32) -> Self {
         Self {
+            fade: None,
             empty,
             haze,
             preview,
@@ -62,9 +68,24 @@ impl LayerMask {
         }
     }
 
+    /// A group fade's mask: see [`Window::with_group_fade`].
+    pub fn group_fade(fade: GroupFade) -> Self {
+        Self {
+            fade: Some(fade),
+            empty: false,
+            haze: false,
+            preview: false,
+            opacity: 1.,
+        }
+    }
+
     /// monocode's mode: 1 empty and 2 not, without Haze; with it, 3 empty,
-    /// 4 not, and 5 a preview, which takes the empty stops.
+    /// 4 not, and 5 a preview, which takes the empty stops. A group fade is
+    /// 6 by its edges and 7 by a raw ramp along x.
     pub fn mode(&self) -> u32 {
+        if let Some(fade) = &self.fade {
+            return if fade.ramp_x.is_some() { 7 } else { 6 };
+        }
         match (self.haze, self.preview, self.empty) {
             (false, _, true) => 1,
             (false, _, false) => 2,
@@ -72,6 +93,12 @@ impl LayerMask {
             (true, false, true) => 3,
             (true, false, false) => 4,
         }
+    }
+
+    /// Whether a begin clears the region: every mask but a group fade, which
+    /// mixes the group into what it is drawn over.
+    pub fn clears(&self) -> bool {
+        self.fade.is_none()
     }
 
     /// The standard deviations of Haze's soft and strong blurs in CSS
@@ -83,6 +110,46 @@ impl LayerMask {
             3 => Some((7., 18.)),
             _ => None,
         }
+    }
+}
+
+/// How a group fade ([`Window::with_group_fade`]) mixes its group into what
+/// was under it, as monocode's `edge_fade_fragment` and
+/// `text_reveal_fragment` do, in device pixels from the region's top left.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GroupFade {
+    /// How far in each edge's linear ramp runs, from nothing at the edge to
+    /// whole; zero leaves the edge sharp. The four take their least.
+    pub width: Edges<f32>,
+    /// How faint each edge gets, from 0 to 1.
+    pub depth: Edges<f32>,
+    /// monocode's text reveal, `(start, end)` from the region's left:
+    /// `saturate((end - x) / (end - start))`, in place of the edges.
+    pub ramp_x: Option<(f32, f32)>,
+}
+
+impl GroupFade {
+    /// `fade`'s ramps over a region at `scale_factor` device pixels to a
+    /// pixel, as a group fade draws them: each edge linear, an axis' two
+    /// edges taking the lesser.
+    pub fn from_edge_fade(fade: &EdgeFade, scale_factor: f32) -> Self {
+        Self {
+            width: fade.width.map(|width: &Pixels| width.0 * scale_factor),
+            depth: fade.depth,
+            ramp_x: fade
+                .ramp_x
+                .map(|(start, end)| (start.0 * scale_factor, end.0 * scale_factor)),
+        }
+    }
+
+    /// Whether it fades anything.
+    pub fn fades(&self) -> bool {
+        let edge = |width: f32, depth: f32| width > 0. && depth > 0.;
+        self.ramp_x.is_some()
+            || edge(self.width.top, self.depth.top)
+            || edge(self.width.right, self.depth.right)
+            || edge(self.width.bottom, self.depth.bottom)
+            || edge(self.width.left, self.depth.left)
     }
 }
 
@@ -107,6 +174,10 @@ pub struct LayerMaskCut {
     /// Device pixels to a CSS pixel: Haze's blurs and its line are sized in
     /// CSS pixels.
     pub scale: f32,
+    /// How many quads of its draw order are drawn before it: those painted
+    /// before it, as monocode drew its marker quad after them (FORK.md,
+    /// "Onicode"). Everything else of its order but shadows is drawn after it.
+    pub quads_before: u32,
 }
 
 impl LayerMaskCut {
@@ -145,6 +216,7 @@ impl Window {
             corner_radii: corner_radii.scale(scale_factor),
             mask,
             scale: scale_factor,
+            quads_before: 0,
         };
         self.next_frame.scene.insert_layer_mask(cut);
     }
@@ -164,6 +236,38 @@ impl Window {
             };
             scene.insert_layer_mask(end);
         }
+    }
+
+    /// Paints `f` as a group faded as one inside `bounds` through `fade`'s
+    /// ramps, as monocode's marker groups are: what was drawn under the
+    /// region is copied before the group, what is drawn with it after, and
+    /// the region is drawn back as `mix(before, after, alpha)`, `alpha` the
+    /// least of `fade`'s linear edge ramps (each from `1 - depth` at the
+    /// edge to whole a width in) or its raw ramp along x. The group's text,
+    /// fills and images fade together, so a glyph over a fill shows none of
+    /// the fill through it, where [`Window::with_edge_fade`] fades each
+    /// primitive by itself. What the group draws past the region is left as
+    /// drawn, as monocode's is. The region is `bounds` rounded to device
+    /// pixels as a quad's are; nothing in `f` should fade by itself too.
+    ///
+    /// Each group ends the renderer's pass twice, so keep it to the
+    /// surfaces monocode faded so. Only Metal draws the fade: elsewhere the
+    /// group is drawn as painted. A group fade inside a scroll container
+    /// keeps the container off its scroll layer.
+    ///
+    /// This method should only be called as part of the paint phase of
+    /// element drawing.
+    pub fn with_group_fade<R>(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        fade: EdgeFade,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let fade = GroupFade::from_edge_fade(&fade, self.scale_factor());
+        if !fade.fades() {
+            return f(self);
+        }
+        self.with_layer_mask(bounds, Corners::default(), LayerMask::group_fade(fade), f)
     }
 
     /// Paints `f` as a group masked by `mask` inside `bounds`: a
@@ -212,6 +316,11 @@ impl Scene {
         // its end pairs as painted; neither cut is drawn.
         if !region.is_empty() {
             cut.order = self.primitive_bounds.insert(region);
+            cut.quads_before = self
+                .quads
+                .iter()
+                .filter(|quad| quad.order == cut.order)
+                .count() as u32;
             crate::fast::composition::scene::lift_open_layer(self);
             self.composition.masks.push(cut);
         }
@@ -229,7 +338,7 @@ pub(crate) fn sort(masks: &mut Vec<LayerMaskCut>, open: &mut Vec<LayerMaskCut>) 
         masks.retain(|cut| !open.iter().any(|open| open.id == cut.id));
         open.clear();
     }
-    masks.sort_by_key(|cut| (cut.order, !cut.begin));
+    masks.sort_by_key(|cut| (cut.order, cut.quads_before, !cut.begin));
 }
 
 /// `cut` moved by `delta`.

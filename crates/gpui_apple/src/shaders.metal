@@ -1350,7 +1350,7 @@ float4 fill_color(Background background,
       // ±2/255 for RGB (enough for dark-on-dark compositing),
       // ±3/255 for alpha (needs more because alpha × dark color = tiny steps).
       {
-        float2 seed = (position - float2(bounds.origin.x, bounds.origin.y)) * 0.6180339887; // golden ratio spread
+        float2 seed = position * 0.6180339887; // golden ratio spread
         float r1 = fract(sin(dot(seed, float2(12.9898, 78.233))) * 43758.5453);
         float r2 = fract(sin(dot(seed, float2(39.3460, 11.135))) * 24634.6345);
         float tri = r1 + r2 - 1.0; // triangular PDF, range [-1, +1]
@@ -1482,6 +1482,7 @@ struct BackdropBlur {
   Corners_ScaledPixels corner_radii;
   float blur_radius;
   float opacity;
+  uint quads_before;
 };
 
 struct BackdropBlurVertexOutput {
@@ -1615,6 +1616,10 @@ struct LayerMaskParams {
   float opacity;
   float scale;
   float padding;
+  float fade_width[4];
+  float fade_depth[4];
+  float ramp_x[2];
+  float fade_padding[2];
 };
 
 struct LayerMaskVertexOutput {
@@ -1670,6 +1675,29 @@ fragment float4 layer_mask_fragment(LayerMaskVertexOutput input [[stage_in]],
   if (params->mode == 0.) return float4(0.);
   uint2 pixel = uint2(input.position.xy - params->origin);
   float2 local = input.position.xy - params->region_origin;
+  // A group fade (gpui-fast, monocode's edge_fade_fragment and
+  // text_reveal_fragment): the region before the group and after it, mixed
+  // by the fade's alpha, which is linear at each edge and the least of them.
+  if (params->mode >= 6.) {
+    float alpha;
+    if (params->mode == 7.) {
+      float start = params->ramp_x[0];
+      float end = params->ramp_x[1];
+      alpha = saturate((end - local.x) / (end - start));
+    } else {
+      float distances[4] = {local.y, params->region_size.x - local.x,
+                            params->region_size.y - local.y, local.x};
+      alpha = 1.;
+      for (int edge = 0; edge < 4; edge++) {
+        float width = params->fade_width[edge];
+        if (width > 0.) {
+          float ramp = saturate(distances[edge] / width);
+          alpha = min(alpha, 1. - params->fade_depth[edge] * (1. - ramp));
+        }
+      }
+    }
+    return mix(before.read(pixel), artwork.read(pixel), alpha);
+  }
   float y = local.y / params->region_size.y;
   bool haze = params->mode >= 3.;
   bool empty = params->mode != 2. && params->mode != 4.;

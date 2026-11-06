@@ -108,15 +108,16 @@ mod tests {
         }
     }
 
-    /// A line is shaped at the size it is asked for, so it is as wide as Core
-    /// Text sets it with the font at exactly that size: at sizes on either
-    /// side of 20 pt, where San Francisco changes how it tracks its letters.
-    /// Every other run of a line, the first among them, used to be shaped a
-    /// float step above its size to keep ligatures from joining runs, and
-    /// Core Text tracks a size off the point differently: 0.11% wider at 20 pt
-    /// and 0.1% narrower at 11.
+    /// Every other run of a line, the first among them, is shaped a float
+    /// step above its size, as upstream and monocode shape it to keep
+    /// ligatures from joining runs, so a one-run line is as wide as Core Text
+    /// sets it with the font at `size.next_up()`: at sizes on either side of
+    /// 20 pt, where San Francisco changes how it tracks its letters. Core
+    /// Text tracks a size off the point differently (0.11% wider at 20 pt,
+    /// 0.1% narrower at 11 than the font at exactly its size), and onicode's
+    /// pixels are monocode's, 11 pt labels among them.
     #[test]
-    fn a_line_is_as_wide_as_core_text_sets_it_at_its_size() {
+    fn the_first_run_is_shaped_a_float_step_above_its_size() {
         use core_foundation::{
             attributed_string::CFMutableAttributedString,
             base::{CFRange, TCFType as _},
@@ -127,7 +128,7 @@ mod tests {
         let fonts = AppleTextSystem::new();
         let font_id = fonts.font_id(&font(".SystemUIFont")).unwrap();
         let line = "Sphinx of black quartz, judge my vow";
-        for size in [11., 13., 17., 19., 20., 21., 26., 34.] {
+        for size in [11_f32, 13., 17., 19., 20., 21., 26., 34.] {
             let ours = fonts
                 .layout_line(
                     line,
@@ -139,8 +140,9 @@ mod tests {
                 )
                 .width;
 
-            let native = core_text::font::new_from_name(".AppleSystemUIFont", f64::from(size))
-                .expect("the system UI font");
+            let native =
+                core_text::font::new_from_name(".AppleSystemUIFont", f64::from(f32::next_up(size)))
+                    .expect("the system UI font");
             let mut string = CFMutableAttributedString::new();
             string.replace_str(&CFString::new(line), CFRange::init(0, 0));
             // SAFETY: the range is the whole string just written, and the value

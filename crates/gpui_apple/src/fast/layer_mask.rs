@@ -68,6 +68,12 @@ struct Params {
     opacity: f32,
     scale: f32,
     padding: f32,
+    /// A group fade's edge widths and depths, top, right, bottom, left, and
+    /// its raw ramp along x, in device pixels from the region's top left.
+    fade_width: [f32; 4],
+    fade_depth: [f32; 4],
+    ramp_x: [f32; 2],
+    fade_padding: [f32; 2],
 }
 
 /// One depth's textures: the region before the group, the group, and the
@@ -418,8 +424,14 @@ pub(crate) fn draw(
     ];
     for item in &work {
         let cut = &item.cut;
+        // A group fade's begin only copies what is under the group.
+        if cut.begin && !cut.mask.clears() {
+            continue;
+        }
         let [left, top, right, bottom] = item.region;
         let radii = cut.corner_radii;
+        let fade = cut.mask.fade.unwrap_or_default();
+        let edges = |edges: gpui::Edges<f32>| [edges.top, edges.right, edges.bottom, edges.left];
         let params = Params {
             origin: [left as f32, top as f32],
             size: [(right - left) as f32, (bottom - top) as f32],
@@ -440,6 +452,10 @@ pub(crate) fn draw(
             opacity: cut.mask.opacity,
             scale: cut.scale.max(1.),
             padding: 0.,
+            fade_width: edges(fade.width),
+            fade_depth: edges(fade.depth),
+            ramp_x: fade.ramp_x.map_or([0., 0.], |(start, end)| [start, end]),
+            fade_padding: [0., 0.],
         };
         let depth = &masks.depths[item.depth];
         // Without Haze, or without its blurs, the fragment reads the group for them.
@@ -528,6 +544,7 @@ mod tests {
             },
             mask,
             scale,
+            quads_before: 0,
         }
     }
 

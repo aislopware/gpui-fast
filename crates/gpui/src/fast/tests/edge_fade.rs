@@ -9,8 +9,8 @@ use super::element_oracle::GlyphBoxTextSystem;
 use crate::{
     AnyWindowHandle, App, Context, EdgeFade, EdgeFadeRamps, Entity, IntoElement, LayoutStats,
     NoopTextSystem, PlatformInput, Render, ScaledPixels, Scene, ScrollDelta, ScrollEvent,
-    ScrollHandle, TestAppContext, TouchPhase, Window, WindowHandle, div, edge_fade, hsla, point,
-    prelude::*, px,
+    ScrollHandle, TestAppContext, TouchPhase, Window, WindowHandle, div, edge_fade, edge_fade_by,
+    hsla, point, prelude::*, px,
 };
 
 fn text_cx() -> TestAppContext {
@@ -828,6 +828,9 @@ struct Feed {
     shown: usize,
     /// Shown above the list, to build the list's view again.
     tick: usize,
+    /// The fade worked out by a closure (`edge_fade_by`) rather than by
+    /// `hidden_by_list`.
+    by: bool,
 }
 
 struct FeedRow {
@@ -851,6 +854,7 @@ impl Feed {
             rows: (0..30).map(|ix| cx.new(|_| FeedRow { ix })).collect(),
             shown,
             tick: 0,
+            by: false,
         }
     }
 }
@@ -861,18 +865,26 @@ impl Render for Feed {
         div()
             .size_full()
             .child(format!("tick {}", self.tick))
-            .child(
-                div().mt(px(10.)).w(px(200.)).h(px(100.)).child(
-                    edge_fade(
-                        crate::list(self.list.clone(), move |ix, _, _| {
-                            rows[ix].clone().into_any_element()
+            .child(div().mt(px(10.)).w(px(200.)).h(px(100.)).child({
+                let list = crate::list(self.list.clone(), move |ix, _, _| {
+                    rows[ix].clone().into_any_element()
+                })
+                .size_full();
+                if self.by {
+                    let state = self.list.clone();
+                    edge_fade_by(list, move |_, _, _| {
+                        let hidden = state.max_offset_for_scrollbar().y
+                            + state.scroll_px_offset_for_scrollbar().y;
+                        EdgeFade::y(px(10.)).hidden(crate::Edges {
+                            top: (-state.scroll_px_offset_for_scrollbar().y).max(px(0.)),
+                            bottom: hidden.max(px(0.)),
+                            ..crate::Edges::default()
                         })
-                        .size_full(),
-                        EdgeFade::y(px(10.)),
-                    )
-                    .hidden_by_list(&self.list),
-                ),
-            )
+                    })
+                } else {
+                    edge_fade(list, EdgeFade::y(px(10.))).hidden_by_list(&self.list)
+                }
+            }))
     }
 }
 
@@ -880,6 +892,59 @@ impl Render for Feed {
 /// the list lays out to: the next frame, in that fade, draws them from
 /// this one rather than building them again, and matches a frame drawn
 /// from scratch.
+/// A fade worked out by a closure from what the list lays out
+/// (`edge_fade_by`) is drawn in the frame the list lays out, as
+/// `hidden_by_list`'s is: as the list grows and scrolls, each frame matches
+/// one drawn with `hidden_by_list`, and none asks for another frame.
+#[test]
+fn a_fade_worked_out_by_a_closure_draws_the_frame_its_content_lays_out() {
+    let mut cx = text_cx();
+    let by = cx.add_window(|_, cx| Feed {
+        by: true,
+        ..Feed::new(3, cx)
+    });
+    let hidden = cx.add_window(|_, cx| Feed::new(3, cx));
+    for handle in [by, hidden] {
+        with_window(&mut cx, handle.into(), |window, _| {
+            window.set_scroll_layers(false)
+        });
+    }
+    let change =
+        |cx: &mut TestAppContext, handle: WindowHandle<Feed>, change: &dyn Fn(&mut Feed)| {
+            handle
+                .update(cx, |feed, _, cx| {
+                    change(feed);
+                    cx.notify();
+                })
+                .unwrap();
+            with_window(cx, handle.into(), |window, _| {
+                let asked = !window.next_frame_callbacks.borrow().is_empty();
+                (window.describe_rendered_frame(), asked)
+            })
+        };
+    for shown in [10, 4, 20] {
+        let grow = move |feed: &mut Feed| {
+            feed.list.splice(0..feed.shown, shown);
+            feed.shown = shown;
+        };
+        let scroll = |feed: &mut Feed| {
+            feed.list.scroll_to(crate::ListOffset {
+                item_ix: 1,
+                offset_in_item: px(3.),
+            })
+        };
+        for (what, step) in [
+            ("grown", &grow as &dyn Fn(&mut Feed)),
+            ("scrolled", &scroll),
+        ] {
+            let (drawn, asked) = change(&mut cx, by, step);
+            let (expected, _) = change(&mut cx, hidden, step);
+            assert_eq!(drawn, expected, "{what} to {shown} rows");
+            assert!(!asked, "{what} to {shown} rows asked for another frame");
+        }
+    }
+}
+
 #[test]
 fn rows_drawn_as_the_list_grows_are_drawn_again_in_the_fade_it_grew_to() {
     let mut cx = text_cx();

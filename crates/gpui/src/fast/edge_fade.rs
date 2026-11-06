@@ -281,6 +281,28 @@ pub fn edge_fade(child: impl IntoElement, fade: EdgeFade) -> EdgeFadeElement {
         child: child.into_any_element(),
         fade,
         hidden: None,
+        group: false,
+    }
+}
+
+/// `child`, painted in the fade `fade` works out from the child's bounds
+/// once the child is laid out, in the same frame: as a scroll container
+/// clamps its offset or a list lays out its rows, which can change what
+/// `fade` answers. `fade` is asked before the child prepaints, for a guess,
+/// and again after, and the child is painted in the second answer, with
+/// what retention noted in the first moved into it, as for
+/// [`EdgeFadeElement::hidden_by_scroll`]. Monocode painted its fade
+/// markers at paint time, after the content had laid out; this draws the
+/// same frame.
+pub fn edge_fade_by(
+    child: impl IntoElement,
+    fade: impl Fn(Bounds<Pixels>, &mut Window, &mut App) -> EdgeFade + 'static,
+) -> EdgeFadeElement {
+    EdgeFadeElement {
+        child: child.into_any_element(),
+        fade: EdgeFade::default(),
+        hidden: Some(Hidden::By(Box::new(fade))),
+        group: false,
     }
 }
 
@@ -290,12 +312,18 @@ pub struct EdgeFadeElement {
     child: AnyElement,
     fade: EdgeFade,
     hidden: Option<Hidden>,
+    /// Faded as one group ([`Window::with_group_fade`]) rather than primitive
+    /// by primitive.
+    group: bool,
 }
 
-/// What tells how far content runs past each edge of an [`EdgeFadeElement`].
+/// What an [`EdgeFadeElement`] learns only once its child is laid out: how
+/// far content runs past each edge, or the whole fade.
 enum Hidden {
     Scroll(ScrollHandle),
     List(ListState),
+    /// The fade, worked out from the element's bounds ([`edge_fade_by`]).
+    By(Box<dyn Fn(Bounds<Pixels>, &mut Window, &mut App) -> EdgeFade>),
 }
 
 impl Hidden {
@@ -306,6 +334,7 @@ impl Hidden {
                 list.scroll_px_offset_for_scrollbar(),
                 list.max_offset_for_scrollbar(),
             ),
+            Hidden::By(_) => return Edges::default(),
         };
         let zero = Pixels::ZERO;
         Edges {
@@ -332,8 +361,18 @@ impl EdgeFadeElement {
         self
     }
 
-    fn resolved(&self) -> EdgeFade {
+    /// Fades the child as one group, as monocode's marker groups fade
+    /// ([`Window::with_group_fade`]): its text over a fill shows none of the
+    /// fill through it, and what it draws past its bounds is left whole.
+    /// Each group ends the renderer's pass twice.
+    pub fn group(mut self) -> Self {
+        self.group = true;
+        self
+    }
+
+    fn resolved(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) -> EdgeFade {
         match &self.hidden {
+            Some(Hidden::By(fade)) => fade(bounds, window, cx),
             Some(hidden) => self.fade.hidden(hidden.edges()),
             None => self.fade,
         }
@@ -391,7 +430,16 @@ impl Element for EdgeFadeElement {
         // What retention notes as the child prepaints is the fade its paint
         // draws in: the one worked out now, or the one the child lays out
         // to, with what was noted moved into it.
-        let guess = self.resolved();
+        if self.group {
+            // Nothing in a group fades by itself: the fade is the group's,
+            // worked out once the child is laid out.
+            self.child.prepaint(window, cx);
+            return EdgeFadePrepaint {
+                fade: self.resolved(bounds, window, cx),
+                refade: None,
+            };
+        }
+        let guess = self.resolved(bounds, window, cx);
         let notes = self.hidden.is_some().then(|| PrepaintNotes::mark(window));
         window.with_edge_fade(bounds, guess, |window| self.child.prepaint(window, cx));
         let Some(notes) = notes else {
@@ -404,7 +452,7 @@ impl Element for EdgeFadeElement {
         // out its rows as it prepaints, a scroll container works out how far
         // it scrolls. What was noted in the fade from before is moved into
         // the one it lays out to, and the child is painted in that one.
-        let fade = self.resolved();
+        let fade = self.resolved(bounds, window, cx);
         let refade = (fade != guess)
             .then(|| FadeShift {
                 old: fade_in(window, bounds, guess),
@@ -428,6 +476,10 @@ impl Element for EdgeFadeElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if self.group {
+            window.with_group_fade(bounds, prepaint.fade, |window| self.child.paint(window, cx));
+            return;
+        }
         let notes = prepaint.refade.map(|_| PaintNotes::mark(window));
         window.with_edge_fade(bounds, prepaint.fade, |window| self.child.paint(window, cx));
         if let (Some(notes), Some(shift)) = (notes, &prepaint.refade) {
@@ -460,7 +512,7 @@ fn entered(window: &mut Window, bounds: Bounds<Pixels>, fade: EdgeFade) -> Optio
 }
 
 /// The index painting enters for `ramps` inside the fade it is in now.
-fn entered_ramps(window: &mut Window, ramps: &EdgeFadeRamps) -> u32 {
+pub(crate) fn entered_ramps(window: &mut Window, ramps: &EdgeFadeRamps) -> u32 {
     let outer = current(window);
     if outer == NONE {
         window.fast_edge_fade.intern(ramps)
@@ -1788,6 +1840,10 @@ pub(crate) struct WindowFades {
     /// Bumped whenever a slot is given a fade, for scenes to tell their
     /// copy is current.
     version: u64,
+    /// The rounded padding edges painting is inside, innermost last: each
+    /// with the fade entered for it and the fade around it
+    /// (`fast::rounded_clip`).
+    pub(crate) padding_edges: Vec<(crate::fast::rounded_clip::Shape, u32, u32)>,
     #[cfg(test)]
     sweeps: usize,
 }
@@ -1802,6 +1858,7 @@ impl Default for WindowFades {
             added: 0,
             live: 0,
             version: 0,
+            padding_edges: Vec::new(),
             #[cfg(test)]
             sweeps: 0,
         }

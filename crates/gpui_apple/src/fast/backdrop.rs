@@ -70,7 +70,7 @@ const SOURCE_TEXTURE: usize = 0;
 
 /// Scratch textures are sized in steps of this many pixels, so a region
 /// that grows a little reuses its pair.
-const QUANTUM: usize = 64;
+const QUANTUM: usize = 1;
 /// How many scratch pairs and kernels are kept.
 const KEPT: usize = 4;
 /// The most bytes the kept scratch pairs take, unless one pair needs more.
@@ -566,6 +566,7 @@ mod tests {
             corner_radii: Corners::default(),
             blur_radius: ScaledPixels(sigma),
             opacity: 1.,
+            quads_before: 0,
         }
     }
 
@@ -968,6 +969,7 @@ mod tests {
                 corner_radii: Corners::all(ScaledPixels(24.)),
                 blur_radius: ScaledPixels(32.),
                 opacity: 1.,
+                quads_before: 0,
             });
             scene.insert_primitive(solid(panel, 0x1818182a, 24.));
             rows(scene, panel);

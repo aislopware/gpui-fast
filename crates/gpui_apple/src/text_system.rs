@@ -562,10 +562,10 @@ impl AppleTextSystemState {
             let mut text = text;
             // CoreText merges adjacent runs that end up in equal fonts, including runs of
             // different fonts that fall back to the same one, so every other run that inserts
-            // text is set a hair larger to keep ligatures from forming across them. The first
-            // run keeps its exact size: SF tracks by its exact point size, and a nudged size
-            // draws wider or narrower than AppKit sets the same text.
-            let mut break_ligature = false;
+            // text is set a hair larger to keep ligatures from forming across them, the first
+            // among them as upstream and monocode set it (FORK.md, onicode-parity-3): SF then
+            // sets a line a fraction of a pixel off AppKit (-0.19 px at 11 pt), as monocode did.
+            let mut break_ligature = true;
             for run in font_runs {
                 let text_run;
                 (text_run, text) = text.split_at(run.len);

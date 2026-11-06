@@ -67,9 +67,6 @@ pub struct SceneComposition {
     pub holes: Vec<Quad>,
     /// Every backdrop blur painted this frame (`fast::backdrop`).
     pub blurs: Vec<crate::fast::backdrop::BackdropBlur>,
-    /// The draw orders blurs were drawn at this frame, each with its blur
-    /// radius's bits: where a blur may join others (`fast::backdrop`).
-    pub(crate) waves: Vec<(DrawOrder, u32)>,
     /// Every layer mask's cuts painted this frame (`fast::layer_mask`).
     pub masks: Vec<crate::fast::layer_mask::LayerMaskCut>,
     /// The begins of the masks still open, innermost last.
@@ -106,7 +103,6 @@ pub(crate) fn clear(scene: &mut Scene) {
     scene.composition.placements.clear();
     scene.composition.holes.clear();
     scene.composition.blurs.clear();
-    scene.composition.waves.clear();
     scene.composition.masks.clear();
     scene.composition.open_masks.clear();
     scene.composition.mask_ids = 0;
@@ -227,8 +223,9 @@ struct ComposedBatches<'a, I> {
     next_mask: usize,
 }
 
-/// What a primitive batch is split around. At one draw order a mask's cut
-/// goes first, then the blurs, then the holes.
+/// What a primitive batch is split around. At one draw order, among cuts
+/// drawn after as many quads of it, a mask's cut goes first, then the blurs,
+/// then the holes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Cut {
     Mask,
@@ -240,13 +237,19 @@ impl<I: Iterator<Item = PrimitiveBatch>> ComposedBatches<'_, I> {
     /// The order of the next cut, and what it is.
     fn next_cut(&self) -> Option<(DrawOrder, Cut)> {
         let composition = &self.scene.composition;
-        let mask = composition.masks.get(self.next_mask).map(|cut| cut.order);
-        let blur = composition.blurs.get(self.next_blur).map(|blur| blur.order);
-        let hole = composition.holes.get(self.next_hole).map(|hole| hole.order);
+        // Each with how many quads of its order are drawn before it.
+        let mask = (composition.masks.get(self.next_mask)).map(|cut| (cut.order, cut.quads_before));
+        let blur =
+            (composition.blurs.get(self.next_blur)).map(|blur| (blur.order, blur.quads_before));
+        let hole = composition
+            .holes
+            .get(self.next_hole)
+            .map(|hole| (hole.order, 0));
         [(mask, Cut::Mask), (blur, Cut::Blur), (hole, Cut::Hole)]
             .into_iter()
-            .filter_map(|(order, cut)| Some((order?, cut)))
+            .filter_map(|(at, cut)| Some((at?, cut)))
             .min()
+            .map(|((order, _), cut)| (order, cut))
     }
 
     /// The cut batch `cut` names, from the next of its kind.
@@ -264,25 +267,26 @@ impl<I: Iterator<Item = PrimitiveBatch>> ComposedBatches<'_, I> {
     fn masks(&mut self) -> ComposedBatch {
         let masks = &self.scene.composition.masks;
         let start = self.next_mask;
-        let order = masks[start].order;
+        let (order, quads_before) = (masks[start].order, masks[start].quads_before);
         let end = start
             + masks[start..]
                 .iter()
-                .take_while(|cut| cut.order == order)
+                .take_while(|cut| cut.order == order && cut.quads_before == quads_before)
                 .count();
         self.next_mask = end;
         ComposedBatch::Masks(start..end)
     }
 
-    /// The blurs from the next of its draw order.
+    /// The blurs from the next of its draw order drawn after as many of that
+    /// order's quads.
     fn blurs(&mut self) -> ComposedBatch {
         let blurs = &self.scene.composition.blurs;
         let start = self.next_blur;
-        let order = blurs[start].order;
+        let (order, quads_before) = (blurs[start].order, blurs[start].quads_before);
         let end = start
             + blurs[start..]
                 .iter()
-                .take_while(|blur| blur.order == order)
+                .take_while(|blur| blur.order == order && blur.quads_before == quads_before)
                 .count();
         self.next_blur = end;
         ComposedBatch::Blurs(start..end)
@@ -297,15 +301,18 @@ impl<I: Iterator<Item = PrimitiveBatch>> ComposedBatches<'_, I> {
     ) -> ComposedBatch {
         let composition = &self.scene.composition;
         let holes = &composition.holes;
-        let blur = composition.blurs.get(self.next_blur).map(|blur| blur.order);
-        let mask = composition.masks.get(self.next_mask).map(|cut| cut.order);
+        // A hole goes before a blur or a mask's cut of its order only when quads of that
+        // order are drawn before the cut, as the hole goes before them.
+        let blur =
+            (composition.blurs.get(self.next_blur)).map(|blur| (blur.order, blur.quads_before));
+        let mask = (composition.masks.get(self.next_mask)).map(|cut| (cut.order, cut.quads_before));
         let start = self.next_hole;
         let end = start
             + holes[start..]
                 .iter()
                 .take_while(|hole| {
-                    blur.is_none_or(|blur| hole.order < blur)
-                        && mask.is_none_or(|mask| hole.order < mask)
+                    blur.is_none_or(|blur| (hole.order, 0) < blur)
+                        && mask.is_none_or(|mask| (hole.order, 0) < mask)
                         && first_order.is_none_or(|first| !goes_first(first, hole.order))
                 })
                 .count();
@@ -331,12 +338,33 @@ impl<I: Iterator<Item = PrimitiveBatch>> Iterator for ComposedBatches<'_, I> {
         let len = batch_len(&batch);
         // A hole is drawn as its native would be as a quad: after the shadows of its own
         // order, which draw beyond their bounds, and before everything else of its order.
-        // A blur or a mask's cut is drawn after everything ordered below it and before
-        // everything else.
-        let shadows = cut == Cut::Hole && matches!(batch, PrimitiveBatch::Shadows(_));
+        // A blur or a mask's cut is drawn as monocode drew its marker quad: after the shadows
+        // of its order and the quads of its order painted before it, and before everything
+        // else of its order.
+        let shadows = matches!(batch, PrimitiveBatch::Shadows(_));
         let goes_first =
             move |order: DrawOrder, cut: DrawOrder| order < cut || (shadows && order == cut);
-        let below = partition_point(len, |index| goes_first(order_at(index), cut_order));
+        // The quads of the cut's order drawn before it end at this index of the scene's quads.
+        let composition = &self.scene.composition;
+        let quads_end = match (&batch, cut) {
+            (PrimitiveBatch::Quads(range), Cut::Blur | Cut::Mask) => {
+                let before = match cut {
+                    Cut::Blur => composition.blurs[self.next_blur].quads_before,
+                    _ => composition.masks[self.next_mask].quads_before,
+                };
+                let first = self
+                    .scene
+                    .quads
+                    .partition_point(|quad| quad.order < cut_order);
+                Some((range.start, first + before as usize))
+            }
+            _ => None,
+        };
+        let below = partition_point(len, |index| {
+            goes_first(order_at(index), cut_order)
+                || quads_end
+                    .is_some_and(|(start, end)| order_at(index) == cut_order && start + index < end)
+        });
         if below == len {
             return Some(ComposedBatch::Primitives(batch));
         }

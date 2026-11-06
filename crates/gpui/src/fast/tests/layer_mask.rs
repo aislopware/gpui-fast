@@ -213,6 +213,7 @@ fn cut(begin: bool, bounds: Bounds<ScaledPixels>) -> LayerMaskCut {
         corner_radii: Corners::default(),
         mask: LayerMask::project_background(true, false, false, 1.),
         scale: 1.,
+        quads_before: 0,
     }
 }
 
@@ -529,26 +530,25 @@ fn a_masks_mode_and_blurs_are_monocodes() {
 enum Met {
     Quad(usize, u32),
     Hole(u32),
-    Blur(u32),
+    /// A blur's order and how many quads of it are drawn before it.
+    Blur(u32, u32),
     Mask(LayerMaskCut),
 }
 
 impl Met {
     fn order(&self) -> u32 {
         match self {
-            Met::Quad(_, order) | Met::Hole(order) | Met::Blur(order) => *order,
+            Met::Quad(_, order) | Met::Hole(order) | Met::Blur(order, _) => *order,
             Met::Mask(cut) => cut.order,
         }
     }
 
-    /// Among what is met at one draw order: masks, then blurs, then holes,
-    /// then primitives.
-    fn rank(&self) -> u8 {
+    /// How many quads of its order a blur or a mask's cut is drawn after.
+    fn quads_before(&self) -> Option<u32> {
         match self {
-            Met::Mask(_) => 0,
-            Met::Blur(_) => 1,
-            Met::Hole(_) => 2,
-            Met::Quad(..) => 3,
+            Met::Blur(_, before) => Some(*before),
+            Met::Mask(cut) => Some(cut.quads_before),
+            Met::Quad(..) | Met::Hole(_) => None,
         }
     }
 }
@@ -571,7 +571,7 @@ fn met(scene: &Scene) -> Vec<Met> {
             ComposedBatch::Blurs(range) => met.extend(
                 scene.backdrop_blurs()[range]
                     .iter()
-                    .map(|blur| Met::Blur(blur.order)),
+                    .map(|blur| Met::Blur(blur.order, blur.quads_before)),
             ),
             ComposedBatch::Masks(range) => {
                 met.extend(scene.layer_masks()[range].iter().copied().map(Met::Mask))
@@ -644,6 +644,7 @@ fn every_quad_over_a_masks_region_is_met_on_its_side_of_the_cuts() {
                     corner_radii: Corners::default(),
                     blur_radius: ScaledPixels(4.),
                     opacity: 1.,
+                    quads_before: 0,
                 }),
                 7 | 8 if open.len() < 3 => {
                     let bounds = random_box(&mut rng);
@@ -682,14 +683,22 @@ fn every_quad_over_a_masks_region_is_met_on_its_side_of_the_cuts() {
             scene.natives().holes.len()
         );
         assert_eq!(
-            count(|m| matches!(m, Met::Blur(_))),
+            count(|m| matches!(m, Met::Blur(..))),
             scene.backdrop_blurs().len()
         );
         for pair in met.windows(2) {
             let (a, b) = (pair[0], pair[1]);
             assert!(a.order() <= b.order(), "seed {seed}: {a:?} then {b:?}");
-            if a.order() == b.order() && (a.rank() < 3 || b.rank() < 3) {
-                assert!(a.rank() <= b.rank(), "seed {seed}: {a:?} then {b:?}");
+        }
+        // A blur or a mask's cut is drawn as monocode drew its marker quad: after the quads
+        // of its order painted before it, and before the rest.
+        for (ix, cut) in met.iter().enumerate() {
+            if let Some(before) = cut.quads_before() {
+                let drawn = met[..ix]
+                    .iter()
+                    .filter(|m| matches!(m, Met::Quad(_, order) if *order == cut.order()))
+                    .count();
+                assert_eq!(drawn, before as usize, "seed {seed}: {cut:?}");
             }
         }
         let at = |want: &dyn Fn(&Met) -> bool| met.iter().position(want).unwrap();
