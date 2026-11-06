@@ -16,6 +16,11 @@
 //! Each glide step is the list's own scroll (`StateInner::scroll`), run from
 //! a next-frame callback before the frame draws, so the frame it brings is a
 //! scroll like a wheel's: scroll layers composite it (`fast::layers::lists`).
+//!
+//! monocode lands where its steps' sum takes it, which in `f32` is a hair
+//! off the notches' distance (199.99998 px for ten lines). Here the glide
+//! keeps the scroll top its notches aim at, summed from where it began, and
+//! the landing step puts the list there exactly.
 
 use scheduler::Instant;
 
@@ -38,6 +43,9 @@ const MAX_STEP_SECONDS: f32 = 0.05;
 pub(crate) struct WheelGlide {
     /// The distance still to travel, signed as the wheel's delta.
     remaining: Pixels,
+    /// The scroll top, in pixels, the glide lands on: where it began, or
+    /// where a notch the other way found the list, less every notch since.
+    target: Pixels,
     /// When the glide last stepped, or began.
     last: Instant,
     /// The list's viewport height, as its last notch's paint saw it.
@@ -68,9 +76,12 @@ pub(crate) fn glides(
     }
     let distance = NOTCH_LINE * lines.y;
     let mut inner = state.0.borrow_mut();
+    let base = inner.scroll_anchor.map(|anchor| anchor.position);
+    let top = inner.scroll_top(&base.unwrap_or(scroll_top));
     let start = inner.fast_glide.is_none();
     let glide = inner.fast_glide.get_or_insert(WheelGlide {
         remaining: px(0.),
+        target: top,
         last: cx.background_executor().now(),
         height,
         view,
@@ -78,8 +89,12 @@ pub(crate) fn glides(
     // Reversing direction drops what was left of the old notch.
     if glide.remaining.signum() != distance.signum() {
         glide.remaining = px(0.);
+        glide.target = top;
     }
     glide.remaining += distance;
+    // A notch's distance is signed as the wheel's delta: down is negative,
+    // and moves the scroll top down the content.
+    glide.target -= distance;
     glide.height = height;
     drop(inner);
     if start {
@@ -106,7 +121,8 @@ fn frame(state: ListState, scroll_top: ListOffset, window: &mut Window) {
             step = glide.remaining;
         }
         glide.remaining -= step;
-        let (height, view, done) = (glide.height, glide.view, glide.remaining == px(0.));
+        let (height, view, target) = (glide.height, glide.view, glide.target);
+        let done = glide.remaining == px(0.);
         if done {
             inner.fast_glide = None;
         }
@@ -119,6 +135,9 @@ fn frame(state: ListState, scroll_top: ListOffset, window: &mut Window) {
             inner.fast_glide = None;
         } else if step != px(0.) {
             inner.scroll(&base, height, point(px(0.), step), view, window, cx);
+            if done {
+                land(&mut inner, target, height);
+            }
         }
         let running = inner.fast_glide.is_some();
         drop(inner);
@@ -126,4 +145,44 @@ fn frame(state: ListState, scroll_top: ListOffset, window: &mut Window) {
             frame(state, scroll_top, window);
         }
     });
+}
+
+/// Puts `inner`, just scrolled by a glide's landing step, on the glide's
+/// `target` scroll top exactly, within the range the scroll clamps it to.
+/// A bottom-aligned list at its end has no position to put.
+fn land(inner: &mut crate::StateInner, target: Pixels, height: Pixels) {
+    let Some(anchor) = inner.scroll_anchor else {
+        return;
+    };
+    let padding = inner.last_padding.unwrap_or_default();
+    let summary = inner.items.summary();
+    let max = (summary.height + padding.top + padding.bottom - height).max(px(0.));
+    let target = target.max(px(0.)).min(max);
+    let count = summary.count;
+    let item_top = |item_ix| {
+        let offset_in_item = px(0.);
+        inner.scroll_top(&ListOffset {
+            item_ix,
+            offset_in_item,
+        })
+    };
+    // The step's sum lands a hair off the target, in the item it lands in
+    // or the one beside it.
+    let mut item_ix = anchor.position.item_ix.min(count);
+    while item_ix > 0 && target < item_top(item_ix) {
+        item_ix -= 1;
+    }
+    while item_ix + 1 < count && target >= item_top(item_ix + 1) {
+        item_ix += 1;
+    }
+    let offset_in_item = target - item_top(item_ix);
+    if let Some(anchor) = inner.scroll_anchor.as_mut() {
+        anchor.position = ListOffset {
+            item_ix,
+            offset_in_item,
+        };
+        if let Some(crate::PendingScroll::Absolute(offset)) = anchor.pending.as_mut() {
+            *offset = offset_in_item;
+        }
+    }
 }

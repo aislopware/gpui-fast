@@ -64,10 +64,11 @@ fn all_in_atlas(cx: &mut TestAppContext, window: AnyWindowHandle, images: &[Arc<
     .unwrap()
 }
 
-/// After a clear the atlas holds nothing, and the frame after draws every
-/// image from a tile inserted anew, though nothing told the view: a frame
-/// drawn from the last one would name the tiles a cleared atlas no longer
-/// has. A frame drawn without the clear names the same tiles.
+/// After a clear the atlas holds nothing, and the frame after (which a test
+/// app draws as the clearing update ends) draws every image from a tile
+/// inserted anew, though nothing told the view: a frame drawn from the last
+/// one would name the tiles a cleared atlas no longer has. A frame drawn
+/// without the clear names the same tiles.
 #[crate::test]
 fn the_frame_after_a_clear_uploads_what_it_draws(cx: &mut TestAppContext) {
     let images = vec![png(4, 10), png(4, 20), png(6, 30)];
@@ -85,14 +86,29 @@ fn the_frame_after_a_clear_uploads_what_it_draws(cx: &mut TestAppContext) {
     draw(cx, window);
     assert_eq!(drawn_tiles(cx, window), before);
 
-    cx.update(|cx| cx.clear_sprite_atlases());
-    assert!(!all_in_atlas(cx, window, &images), "the atlas is empty");
-    let dirty = cx
-        .update_window(window, |_, window, _| window.invalidator.is_dirty())
-        .unwrap();
-    assert!(dirty, "a cleared window is drawn again");
+    // A test app draws a dirty window as an update ends, so the clear is
+    // looked at inside the update that makes it.
+    cx.update(|cx| {
+        cx.clear_sprite_atlases();
+        window
+            .update(cx, |_, window, cx| {
+                assert!(
+                    window.invalidator.is_dirty(),
+                    "a cleared window is drawn again"
+                );
+                let held = images.iter().any(|image| {
+                    let decoded = image
+                        .clone()
+                        .get_render_image(window, cx)
+                        .expect("the image has loaded");
+                    window.has_image_atlas_entry(&decoded)
+                });
+                assert!(!held, "the atlas is empty");
+            })
+            .unwrap();
+    });
 
-    draw(cx, window);
+    // The update ended with the cleared window drawn.
     let after = drawn_tiles(cx, window);
     assert_eq!(after.len(), images.len());
     let newest_before = before.iter().map(|tile| tile.0).max().unwrap();

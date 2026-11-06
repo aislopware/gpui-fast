@@ -1000,7 +1000,9 @@ Branch `onicode-parity-2` ports the rest (stack-port.md §6 steps 5–8):
   `WheelGlide`): a vertical `ScrollDelta::Lines` notch is 20 px a line still to travel, and
   each frame (a next-frame callback, before the frame draws) moves the list by
   `remaining · (1 − e^(−dt/τ))`, τ 70 ms, `dt` at most 50 ms, landing on the end once within
-  half a pixel. Further notches add to what is left; one the other way drops it first; pixels
+  half a pixel, exactly on the scroll top the notches aim at (monocode lands on its steps'
+  `f32` sum, 199.99998 px for ten lines; here the landing step puts the anchor on the target,
+  summed from where the glide began). Further notches add to what is left; one the other way drops it first; pixels
   (a trackpad), a sideways notch, `reset`, `scroll_to_end` and following the tail end it; a
   bottom-aligned list at its end ends it; with `App::reduce_motion` a notch jumps as upstream's
   does. Monocode's constants and step verbatim; its clock is the executor's, which is
