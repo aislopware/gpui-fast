@@ -343,7 +343,7 @@ impl Element for Img {
 
                             let image_size = data.render_size(frame_index);
 
-                            if style.aspect_ratio.is_none() {
+                            if crate::fast::image_aspect::applies_intrinsic_ratio(&style) {
                                 style.aspect_ratio = Some(image_size.width / image_size.height);
                             }
 

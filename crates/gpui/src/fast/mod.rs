@@ -33,6 +33,7 @@ pub(crate) mod glyphs;
 #[cfg(feature = "profiler")]
 pub(crate) mod hang_trace;
 pub(crate) mod headless_atlas;
+pub(crate) mod image_aspect;
 pub(crate) mod image_evict;
 pub(crate) mod image_mask;
 pub(crate) mod inline_boxes;
