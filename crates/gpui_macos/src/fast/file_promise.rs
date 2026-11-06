@@ -61,7 +61,7 @@ define_class!(
     unsafe impl NSFilePromiseProviderDelegate for PromiseDelegate {
         // Called on the main thread while the drag is over a target, which
         // cancels the drag unless this returns at once.
-        #[unsafe(method(filePromiseProvider:fileNameForType:))]
+        #[unsafe(method_id(filePromiseProvider:fileNameForType:))]
         fn file_name_for_type(
             &self,
             _provider: &NSFilePromiseProvider,
@@ -87,7 +87,7 @@ define_class!(
             completion_handler.call((error,));
         }
 
-        #[unsafe(method(operationQueueForFilePromiseProvider:))]
+        #[unsafe(method_id(operationQueueForFilePromiseProvider:))]
         fn operation_queue(&self, _provider: &NSFilePromiseProvider) -> Retained<NSOperationQueue> {
             background_queue()
         }
