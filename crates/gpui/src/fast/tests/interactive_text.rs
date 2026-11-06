@@ -688,6 +688,7 @@ fn wheel(cx: &mut TestAppContext, window: AnyWindowHandle, dy: f32) {
                 delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                 modifiers: Modifiers::default(),
                 touch_phase: TouchPhase::Moved,
+                momentum_phase: None,
                 source: ScrollSource::Pointer,
             }),
             cx,

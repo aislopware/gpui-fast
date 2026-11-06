@@ -1680,17 +1680,18 @@ mod tests {
             let other_primitives = scene
                 .shadows
                 .iter()
-                .map(|shadow| format!("{shadow:?}"))
+                .map(|shadow| crate::fast::edge_fade::unfaded(shadow, scene))
                 .chain(
                     scene
                         .underlines
                         .iter()
-                        .map(|underline| format!("{underline:?}")),
+                        .map(|underline| crate::fast::edge_fade::unfaded(underline, scene)),
                 )
                 .chain(scene.paths.iter().map(|path| {
+                    let fast_color = crate::fast::edge_fade::unfaded(&path.color, scene);
                     format!(
                         "path {} {:?} {:?} {:?} {:?}",
-                        path.order, path.bounds, path.content_mask, path.color, path.vertices
+                        path.order, path.bounds, path.content_mask, fast_color, path.vertices
                     )
                 }))
                 .chain(scene.monochrome_sprites.iter().map(|sprite| {

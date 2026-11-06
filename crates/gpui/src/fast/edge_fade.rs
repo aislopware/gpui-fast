@@ -652,6 +652,44 @@ pub(crate) fn without_fade(mut background: crate::Background) -> crate::Backgrou
     background
 }
 
+#[cfg(test)]
+/// [`DescribeUnfaded::describe_unfaded`].
+pub(crate) fn unfaded(primitive: &impl DescribeUnfaded, scene: &Scene) -> String {
+    primitive.describe_unfaded(scene)
+}
+
+#[cfg(test)]
+/// The debug text of a shadow, an underline or a background with its fade
+/// index replaced by the ramps it stands for in `scene`: two windows drawing
+/// the same thing may number their fades apart. For upstream's tests
+/// comparing a window's primitives with another's.
+pub(crate) trait DescribeUnfaded {
+    fn describe_unfaded(&self, scene: &Scene) -> String;
+}
+
+#[cfg(test)]
+impl DescribeUnfaded for crate::Shadow {
+    fn describe_unfaded(&self, scene: &Scene) -> String {
+        let unfaded = crate::Shadow { pad: NONE, ..*self };
+        format!("{unfaded:?}{}", describe(scene, self.pad))
+    }
+}
+
+#[cfg(test)]
+impl DescribeUnfaded for crate::Underline {
+    fn describe_unfaded(&self, scene: &Scene) -> String {
+        let unfaded = crate::Underline { pad: NONE, ..*self };
+        format!("{unfaded:?}{}", describe(scene, self.pad))
+    }
+}
+
+#[cfg(test)]
+impl DescribeUnfaded for crate::Background {
+    fn describe_unfaded(&self, scene: &Scene) -> String {
+        format!("{:?}{}", without_fade(*self), describe(scene, self.pad))
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 /// Gives `primitive` the fade `fade` unless it holds one.
 pub(crate) fn stamp_with(fade: u32, primitive: &mut Primitive) {

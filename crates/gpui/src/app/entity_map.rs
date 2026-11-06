@@ -229,25 +229,6 @@ impl EntityMap {
         accessed_entities.frame.clear();
     }
 
-    pub fn push_access_scope(&mut self) {
-        self.accessed_entities
-            .get_mut()
-            .scopes
-            .push(FxHashSet::default());
-    }
-
-    /// Ends the innermost scope, adds its accessed entities to the scope
-    /// around it, and returns them.
-    pub fn pop_access_scope(&mut self) -> FxHashSet<EntityId> {
-        let accessed_entities = self.accessed_entities.get_mut();
-        let Some(scope) = accessed_entities.scopes.pop() else {
-            debug_assert!(false, "popped an access scope that wasn't pushed");
-            return FxHashSet::default();
-        };
-        accessed_entities.innermost().extend(scope.iter().copied());
-        scope
-    }
-
     /// Takes every entity accessed during the draw, to be handed back with
     /// [`Self::restore_accessed`].
     pub fn take_accessed(&mut self) -> FxHashSet<EntityId> {
@@ -1317,16 +1298,10 @@ mod test {
         entity_map.clear_accessed();
 
         entity_map.read(&first);
-        entity_map.push_access_scope();
         entity_map.read(&first);
-        entity_map.push_access_scope();
         entity_map.read(&second);
-        let inner = entity_map.pop_access_scope();
-        let outer = entity_map.pop_access_scope();
 
-        assert_eq!(inner, FxHashSet::from_iter([second.entity_id()]));
         let both = FxHashSet::from_iter([first.entity_id(), second.entity_id()]);
-        assert_eq!(outer, both);
         assert_eq!(entity_map.take_accessed(), both);
 
         drop(second);
