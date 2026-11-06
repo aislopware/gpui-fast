@@ -17,7 +17,7 @@ use crate::described::{DescribedPinch, DescribedRotation, GestureState, PressPha
 use crate::frame_pacing::{FramePacer, FrameSource, Wake};
 use crate::hardware_keyboard::{self, UiKey};
 use gpui::{
-    AnyWindowHandle, Bounds, Capslock, DevicePixels, DispatchEventResult, Edges, GpuSpecs,
+    AnyWindowHandle, Bounds, Capslock, Corners, DevicePixels, DispatchEventResult, Edges, GpuSpecs,
     Keystroke, Modifiers, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
     PlatformInputHandler, PlatformWindow, Point, PromptButton, PromptLevel, RequestFrameOptions,
     Scene, Size, TextInputStateChange, TouchEvent, TouchId, TouchPhase, WindowAppearance,
@@ -36,6 +36,7 @@ use parking_lot::Mutex;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, UiKitDisplayHandle, UiKitWindowHandle};
 use std::{
     cell::{Cell, RefCell},
+    collections::VecDeque,
     ffi::c_void,
     ptr::{self, NonNull},
     rc::Rc,
@@ -543,19 +544,29 @@ unsafe impl Encode for CAFrameRateRange {
 /// `view`, asking for the screen's full refresh rate. Returns the link, retained, and the
 /// screen's refresh interval.
 ///
+/// The link is the window scene's own (iOS 27), which UIKit retargets as the scene moves
+/// between displays, so a window on an external display ticks with that display rather than
+/// the device's; with no scene it is the device screen's.
+///
 /// # Safety
 ///
-/// `view` must be a live `GPUIMetalView` and `screen` a live `UIScreen`, on the main thread.
+/// `view` must be a live `GPUIMetalView`, `scene` a live `UIWindowScene` or null, and `screen`
+/// a live `UIScreen`, on the main thread.
 unsafe fn paused_display_link(
     view: *mut AnyObject,
+    scene: *mut AnyObject,
     screen: *mut AnyObject,
 ) -> (*mut AnyObject, Duration) {
     unsafe {
-        let link: *mut AnyObject = msg_send![
-            class!(CADisplayLink),
-            displayLinkWithTarget: view,
-            selector: sel!(gpuiDisplayLinkFired:)
-        ];
+        let link: *mut AnyObject = if scene.is_null() {
+            msg_send![
+                class!(CADisplayLink),
+                displayLinkWithTarget: view,
+                selector: sel!(gpuiDisplayLinkFired:)
+            ]
+        } else {
+            msg_send![scene, displayLinkWithTarget: view, selector: sel!(gpuiDisplayLinkFired:)]
+        };
         let link: *mut AnyObject = msg_send![link, retain];
         let max_fps: isize = msg_send![screen, maximumFramesPerSecond];
         let max_fps = max_fps.max(1) as f32;
@@ -922,7 +933,7 @@ fn handle_hover_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
 }
 
 /// An indirect scroll (trackpad, wheel) from the scroll-only pan recognizer: the translation
-/// since the previous report becomes a pixel `ScrollWheel` delta with the gesture's phase.
+/// since the previous report becomes a pixel `Scroll` delta with the gesture's phase.
 fn handle_scroll_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
     unsafe {
         #[allow(deprecated)]
@@ -950,14 +961,23 @@ fn handle_scroll_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
         );
         let location: super::cg_types::ObjcCGPoint = msg_send![recognizer, locationInView: view];
         let position = Point::new(px(location.x as f32), px(location.y as f32));
-        window.dispatch_input(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+        window.dispatch_input(PlatformInput::Scroll(gpui::ScrollEvent {
             position,
             delta: gpui::ScrollDelta::Pixels(delta),
             modifiers: window.modifiers.get(),
             touch_phase: phase,
             momentum_phase: None,
+            source: gpui::ScrollSource::Pointer,
         }));
     }
+}
+
+/// Whether UIKit can resolve corner configurations, which arrived in iOS 26.
+fn reports_corner_radii(view: *mut AnyObject) -> bool {
+    // SAFETY: `view` is a live UIView; `respondsToSelector:` is NSObject's.
+    let responds: Bool =
+        unsafe { msg_send![view, respondsToSelector: sel!(effectiveRadiusForCorner:)] };
+    responds.as_bool()
 }
 
 #[allow(clippy::type_complexity)]
@@ -985,6 +1005,10 @@ pub(crate) struct IosWindow {
     frame_pacer: RefCell<FramePacer>,
     /// Callback for input events
     input_callback: RefCell<Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>>,
+    /// An event is being handed to GPUI (`dispatch_input`).
+    dispatching: Cell<bool>,
+    /// The events UIKit sent from inside that dispatch, in order, for after it.
+    input_waiting: RefCell<VecDeque<PlatformInput>>,
     /// Callback for active status changes
     active_status_callback: RefCell<Option<Box<dyn FnMut(bool)>>>,
     /// Callback for hover status changes (not really applicable on iOS)
@@ -1006,6 +1030,8 @@ pub(crate) struct IosWindow {
     /// Callback for appearance changes
     appearance_changed_callback: RefCell<Option<Box<dyn FnMut()>>>,
     insets_changed_callback: RefCell<Option<Box<dyn FnMut(WindowInsets)>>>,
+    /// The insets GPUI was last told: UIKit lays the view out far more often than they change.
+    insets_told: RefCell<Option<WindowInsets>>,
     /// The keyboard's last end frame in screen coordinates, while it is shown on this
     /// window's screen.
     keyboard_frame: Cell<Option<ObjcCGRect>>,
@@ -1089,6 +1115,18 @@ impl IosWindow {
             let _: () = msg_send![view, setUserInteractionEnabled: true];
             let _: () = msg_send![view, setMultipleTouchEnabled: true];
 
+            // UIKit has no public API for the display's corner radius, but since iOS 26 a view
+            // filling the window with a container-concentric corner configuration resolves its
+            // radii to the display's (zed #65806). This only sets the layer's corner radius;
+            // without `masksToBounds` the Metal drawable is not clipped.
+            if reports_corner_radii(view) {
+                let radius: *mut AnyObject =
+                    msg_send![class!(UICornerRadius), containerConcentricRadius];
+                let configuration: *mut AnyObject =
+                    msg_send![class!(UICornerConfiguration), configurationWithRadius: radius];
+                let _: () = msg_send![view, setCornerConfiguration: configuration];
+            }
+
             // Pinch to zoom, recognized by UIKit and delivered as `PinchEvent`s (see
             // `handle_pinch_gesture`). The view is its own target.
             let pinch: *mut AnyObject = msg_send![class!(UIPinchGestureRecognizer), alloc];
@@ -1108,7 +1146,7 @@ impl IosWindow {
             // A trackpad or mouse on an iPad: hover moves the pointer (`MouseMove`), and a
             // pan recognizer that accepts scroll events with no touches at all (so direct
             // drags stay with gpui core's touch recognizer) carries two-finger scrolling and
-            // wheel ticks as `ScrollWheel`, phases included, the way an NSEvent does.
+            // wheel ticks as `Scroll`, phases included, the way an NSEvent does.
             let hover: *mut AnyObject = msg_send![class!(UIHoverGestureRecognizer), alloc];
             let hover: *mut AnyObject =
                 msg_send![hover, initWithTarget: view, action: sel!(handleHover:)];
@@ -1153,9 +1191,10 @@ impl IosWindow {
                 MetalContext::default(),
                 &*layer.cast::<objc2_quartz_core::CAMetalLayer>(),
                 false,
-            );
+            )?;
             renderer.update_drawable_size(size(DevicePixels(pixel_w), DevicePixels(pixel_h)));
-            let (display_link, refresh_interval) = paused_display_link(view, screen_obj);
+            let (display_link, refresh_interval) =
+                paused_display_link(view, window_scene, screen_obj);
             renderer.set_refresh_interval(refresh_interval);
 
             let ios_window = Self {
@@ -1172,6 +1211,8 @@ impl IosWindow {
                 display_link,
                 frame_pacer: RefCell::new(FramePacer::new(refresh_interval)),
                 input_callback: RefCell::new(None),
+                dispatching: Cell::new(false),
+                input_waiting: RefCell::default(),
                 active_status_callback: RefCell::new(None),
                 hover_status_callback: RefCell::new(None),
                 visibility: RefCell::new(WindowVisibility::Visible),
@@ -1183,6 +1224,7 @@ impl IosWindow {
                 close_callback: RefCell::new(None),
                 appearance_changed_callback: RefCell::new(None),
                 insets_changed_callback: RefCell::new(None),
+                insets_told: RefCell::new(None),
                 keyboard_frame: Cell::new(None),
                 keyboard_height: Cell::new(Pixels::ZERO),
                 mouse_position: Cell::new(Point::default()),
@@ -1201,6 +1243,17 @@ impl IosWindow {
             };
 
             Ok(ios_window)
+        }
+    }
+
+    /// Tells GPUI the window's appearance changed.
+    fn tell_appearance(&self) {
+        let callback = self.appearance_changed_callback.borrow_mut().take();
+        if let Some(mut callback) = callback {
+            callback();
+            self.appearance_changed_callback
+                .borrow_mut()
+                .get_or_insert(callback);
         }
     }
 
@@ -1223,6 +1276,13 @@ impl IosWindow {
                 *(*self.text_input_view).get_mut_ivar::<*mut c_void>(GPUI_WINDOW_IVAR) = window_ptr;
             }
             super::composition::set_root_window(self.root_view, self);
+            // The window's appearance, its own or its scene's, told each time it changes.
+            let view = self.view;
+            super::appearance::observe_style(view, move || {
+                if let Some(window) = window_of_view(view) {
+                    window.tell_appearance();
+                }
+            });
             log::info!(
                 "GPUI iOS: Set window pointer {:p} on view {:p} and text input {:p}",
                 window_ptr,
@@ -1328,6 +1388,7 @@ impl IosWindow {
             position,
             predicted_position,
             touch_force(touch),
+            Some(instant_of_uptime(touch_timestamp(touch))),
         );
     }
 
@@ -1404,7 +1465,8 @@ impl IosWindow {
     }
 
     /// Delivers one touch through GPUI's platform-neutral touch API (gpui core's recognizer
-    /// turns it into taps, pans, long presses and drags).
+    /// turns it into taps, pans, long presses and drags). `at` is when the touch happened,
+    /// which the recognizer times it by; `None` times it as it is handled.
     pub(crate) fn deliver_touch(
         &self,
         id: TouchId,
@@ -1412,6 +1474,7 @@ impl IosWindow {
         position: Point<Pixels>,
         predicted_position: Option<Point<Pixels>>,
         force: Option<f32>,
+        at: Option<Instant>,
     ) {
         self.mouse_position.set(position);
         let event = TouchEvent {
@@ -1420,6 +1483,7 @@ impl IosWindow {
             position,
             predicted_position,
             force,
+            timestamp: at,
         };
         self.dispatch_input(PlatformInput::Touch(event));
     }
@@ -1468,6 +1532,7 @@ impl IosWindow {
                         TouchId(touch.id),
                         touch.phase,
                         Point::new(px(touch.x), px(touch.y)),
+                        None,
                         None,
                         None,
                     );
@@ -1612,12 +1677,43 @@ impl IosWindow {
                 bottom: self.keyboard_height.get(),
                 ..Default::default()
             },
+            corner_radii: self.display_corner_radii(),
         }
     }
 
+    /// The display's corner radii as UIKit resolved the view's container-concentric corner
+    /// configuration, zero where it cannot tell.
+    fn display_corner_radii(&self) -> Corners<Pixels> {
+        if self.view.is_null() || !reports_corner_radii(self.view) {
+            return Corners::default();
+        }
+        // UIRectCorner (UIKit/UIGeometry.h): an NSUInteger bit per corner.
+        let radius = |corner: usize| {
+            // SAFETY: `view` is the window's live UIView, which answers
+            // `effectiveRadiusForCorner:` (checked above) with a CGFloat.
+            let radius: core_graphics::base::CGFloat =
+                unsafe { msg_send![self.view, effectiveRadiusForCorner: corner] };
+            px(radius as f32)
+        };
+        Corners {
+            top_left: radius(1),
+            top_right: radius(2),
+            bottom_left: radius(4),
+            bottom_right: radius(8),
+        }
+    }
+
+    /// Tells GPUI the insets when they changed. UIKit lays the view out on every layout pass,
+    /// and one runs whenever a native GPUI placed has moved, as GPUI's present commits: told
+    /// each time, GPUI would hear every frame of a scroll over a page, from inside its draw.
     fn notify_insets_changed(&self) {
+        let insets = self.current_insets();
+        if self.insets_told.borrow().as_ref() == Some(&insets) {
+            return;
+        }
         if let Some(callback) = self.insets_changed_callback.borrow_mut().as_mut() {
-            callback(self.current_insets());
+            *self.insets_told.borrow_mut() = Some(insets.clone());
+            callback(insets);
         }
     }
 
@@ -1797,16 +1893,29 @@ impl IosWindow {
     }
 
     /// Hands an event to GPUI. The callback is taken out of its cell for the call, so a
-    /// dispatch that re-enters (GPUI asking the platform for another event on the way) finds
-    /// no borrow to trip over; one registered meanwhile wins over the one taken out.
+    /// dispatch that re-enters finds no borrow to trip over: an event UIKit sends from inside
+    /// it (a touch cancelled as GPUI moves the view it was in, the action of the recogniser
+    /// that followed it) waits for it to return and goes next, in the order it came, never
+    /// dropped. A callback registered meanwhile wins over the one taken out.
     pub(super) fn dispatch_input(&self, event: PlatformInput) {
+        if self.dispatching.get() {
+            self.input_waiting.borrow_mut().push_back(event);
+            return;
+        }
         let taken = self.input_callback.borrow_mut().take();
-        if let Some(mut callback) = taken {
+        let Some(mut callback) = taken else {
+            return;
+        };
+        self.dispatching.set(true);
+        let mut next = Some(event);
+        while let Some(event) = next {
             let _result = callback(event);
-            let mut slot = self.input_callback.borrow_mut();
-            if slot.is_none() {
-                *slot = Some(callback);
-            }
+            next = self.input_waiting.borrow_mut().pop_front();
+        }
+        self.dispatching.set(false);
+        let mut slot = self.input_callback.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(callback);
         }
     }
 
@@ -1944,8 +2053,8 @@ impl IosWindow {
     pub fn handle_layout_change(&self) {
         unsafe {
             let view_bounds: ObjcCGRect = msg_send![self.view, bounds];
-            let screen: *mut AnyObject = msg_send![class!(UIScreen), mainScreen];
-            let scale: core_graphics::base::CGFloat = msg_send![screen, scale];
+            // The scale of the display the window is on, which an external one may not share.
+            let scale: core_graphics::base::CGFloat = msg_send![self.screen(), scale];
 
             let new_w = view_bounds.width as f32;
             let new_h = view_bounds.height as f32;
@@ -2078,14 +2187,13 @@ impl PlatformWindow for IosWindow {
     }
 
     fn appearance(&self) -> WindowAppearance {
-        unsafe {
-            let trait_collection: *mut AnyObject = msg_send![self.view, traitCollection];
-            let style: i64 = msg_send![trait_collection, userInterfaceStyle];
-            match style {
-                2 => WindowAppearance::Dark,
-                _ => WindowAppearance::Light,
-            }
-        }
+        // SAFETY: `self.view` is the live Metal view this window owns, a `UIView`.
+        unsafe { super::appearance::of(self.view) }
+    }
+
+    fn set_appearance(&self, appearance: Option<WindowAppearance>) {
+        // SAFETY: `self.window` is the live `UIWindow` this window owns, on the main thread.
+        unsafe { super::appearance::set_window(self.window, appearance) }
     }
 
     fn display(&self) -> Option<Rc<dyn PlatformDisplay>> {
@@ -2261,7 +2369,7 @@ impl PlatformWindow for IosWindow {
         let drawable = renderer
             .layer()
             .ok_or_else(|| anyhow::anyhow!("render_to_image needs a layer-backed renderer"))?
-            .drawable_size();
+            .drawableSize();
         let viewport = size(
             DevicePixels(drawable.width.ceil() as i32),
             DevicePixels(drawable.height.ceil() as i32),

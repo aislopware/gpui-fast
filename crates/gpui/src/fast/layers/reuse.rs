@@ -37,14 +37,25 @@ pub(crate) fn carry_prepaint(
     };
     let delta = scroll_offset - record.scroll_offset;
     let range = record.prepaint_range.clone();
+    let a11y = record.a11y.clone();
     let input = &mut layer.input;
     let moved = delta != input.stale;
+    input.scrolled = delta - input.stale;
     input.stale = delta;
     input.viewport = viewport;
     input.handle_offset.set(delta);
     // The hitboxes are the layer's, lent to the carry while it runs.
     let hitboxes = std::mem::take(&mut input.hitboxes);
-    let carried = carry_prepaint_records(window, &range, &hitboxes, delta, viewport, !moved, true);
+    let carried = carry_prepaint_records(
+        window,
+        &range,
+        &hitboxes,
+        a11y.as_deref(),
+        delta,
+        viewport,
+        !moved,
+        true,
+    );
     if let Some(layer) = window.fast_layers.layers.get_mut(id) {
         layer.input.hitboxes = hitboxes;
         if let Some(record) = layer.record.as_mut() {
@@ -59,12 +70,15 @@ pub(crate) fn carry_prepaint(
 /// of the range, moved by `delta` and clipped to `viewport`; its tooltips if
 /// `tooltips`, a tooltip showing where its element was when it was
 /// requested; its element states if `element_states`, which are dropped
-/// otherwise; its line layouts and dispatch nodes.
+/// otherwise; its line layouts and dispatch nodes; and the accessibility
+/// nodes `a11y` kept of it, moved by `delta`.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 pub(crate) fn carry_prepaint_records(
     window: &mut Window,
     range: &Range<PrepaintStateIndex>,
     hitboxes: &[Hitbox],
+    a11y: Option<&crate::fast::a11y::A11yStretch>,
     delta: Point<Pixels>,
     viewport: Bounds<Pixels>,
     tooltips: bool,
@@ -101,6 +115,7 @@ pub(crate) fn carry_prepaint_records(
     if subtree.contains_focus() {
         next.focus = window.focus;
     }
+    crate::fast::a11y::carry(window, a11y, delta, viewport);
     // Content that deferred draws is never composited (spec §6.5).
     debug_assert_eq!(
         range.start.deferred_draws_index,
@@ -121,15 +136,14 @@ pub(crate) fn carry_paint(window: &mut Window, id: &GlobalElementId) {
         return;
     };
     let range = record.paint_range.clone();
-    let mut debug_moved = record.debug_moved;
     let delta = layer.input.stale;
+    let scrolled = layer.input.scrolled;
     let viewport = layer.input.viewport;
-    let mut carried = carry_paint_records(window, &range, delta, &mut debug_moved, viewport, true);
+    let mut carried = carry_paint_records(window, &range, delta, scrolled, viewport, true);
     let Some(layer) = window.fast_layers.layers.get_mut(id) else {
         return;
     };
     if let Some(record) = layer.record.as_mut() {
-        record.debug_moved = debug_moved;
         // The content's scene is the layer's, which is not carried.
         carried.start.scene_index = record.paint_range.start.scene_index;
         carried.end.scene_index = record.paint_range.end.scene_index;
@@ -142,39 +156,25 @@ pub(crate) fn carry_paint(window: &mut Window, id: &GlobalElementId) {
 /// the frame being drawn, where painting what added them would add them
 /// again, returning where they lie in it: its window control hitboxes,
 /// moved by `delta` and clipped to `viewport`, cursor styles, input
-/// handlers, mouse listeners, element states if `element_states`, tab stops
-/// and line layouts; in tests, the debug bounds, moved to `delta` from where
-/// they were painted, `debug_moved` saying how far the range's had moved
-/// already, which it then says of the carried ones. The scene is not
-/// carried.
+/// handlers, mouse listeners, element states if `element_states`, tab stops,
+/// line layouts and, for tests, debug bounds, moved by `scrolled`: the
+/// rendered frame holds them where it showed what added them, which has
+/// scrolled by as much since. The scene is not carried.
 #[inline]
 pub(crate) fn carry_paint_records(
     window: &mut Window,
     range: &Range<PaintIndex>,
     delta: Point<Pixels>,
-    debug_moved: &mut Point<Pixels>,
+    scrolled: Point<Pixels>,
     viewport: Bounds<Pixels>,
     element_states: bool,
 ) -> Range<PaintIndex> {
     let start = window.paint_index();
     let next = &mut window.next_frame;
     let rendered = &mut window.rendered_frame;
-    // Unlike hitboxes, which the layer keeps as painted, debug bounds are
-    // read from the frame, which must hold where they show: a retained view
-    // drawn again copies them from it as they are.
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        let by = delta - *debug_moved;
-        for (selector, bounds) in &rendered.debug_bounds_records
-            [range.start.debug_bounds_index..range.end.debug_bounds_index]
-        {
-            next.record_debug_bounds(selector.clone(), *bounds + by);
-        }
-    }
-    *debug_moved = delta;
     next.window_control_hitboxes.extend(
-        rendered.window_control_hitboxes[range.start.fast_window_control_hitboxes_index
-            ..range.end.fast_window_control_hitboxes_index]
+        rendered.window_control_hitboxes
+            [range.start.fast.window_control_hitboxes..range.end.fast.window_control_hitboxes]
             .iter()
             .map(|(area, hitbox)| {
                 let moved = LayerInput::hitboxes_at(std::slice::from_ref(hitbox), delta, viewport)
@@ -211,6 +211,20 @@ pub(crate) fn carry_paint_records(
         &rendered.tab_stops.insertion_history
             [range.start.tab_handle_index..range.end.tab_handle_index],
     );
+    crate::fast::a11y::reuse_paint(window, range);
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let next = &mut window.next_frame;
+        let rendered = &window.rendered_frame;
+        for (selector, bounds) in &rendered.debug_bounds_records
+            [range.start.debug_bounds_index..range.end.debug_bounds_index]
+        {
+            let moved = Bounds::new(bounds.origin + scrolled, bounds.size);
+            next.record_debug_bounds(selector.clone(), moved);
+        }
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = scrolled;
     window
         .text_system
         .reuse_layouts(range.start.line_layout_index.clone()..range.end.line_layout_index.clone());
@@ -284,8 +298,8 @@ pub(crate) fn follow_paint(window: &mut Window, from: &Range<PaintIndex>, to: &P
     let inside = |range: &Range<PaintIndex>| {
         let (a, b) = (&range.start, &range.end);
         let (c, d) = (&from.start, &from.end);
-        a.fast_window_control_hitboxes_index >= c.fast_window_control_hitboxes_index
-            && b.fast_window_control_hitboxes_index <= d.fast_window_control_hitboxes_index
+        a.fast.window_control_hitboxes >= c.fast.window_control_hitboxes
+            && b.fast.window_control_hitboxes <= d.fast.window_control_hitboxes
             && a.mouse_listeners_index >= c.mouse_listeners_index
             && b.mouse_listeners_index <= d.mouse_listeners_index
             && a.input_handlers_index >= c.input_handlers_index

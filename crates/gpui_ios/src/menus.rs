@@ -131,11 +131,11 @@ pub fn keystroke_for(action: &dyn Action, keymap: &Keymap) -> Option<Keystroke> 
 
 /// The context `gpui_macos` evaluates a binding's predicate in for its menu bar.
 fn default_context() -> KeyContext {
-    let mut workspace = KeyContext::new_with_defaults();
+    let mut workspace = KeyContext::new_with_defaults(gpui::OperatingSystem::Ios);
     workspace.add("Workspace");
-    let mut pane = KeyContext::new_with_defaults();
+    let mut pane = KeyContext::new_with_defaults(gpui::OperatingSystem::Ios);
     pane.add("Pane");
-    let mut editor = KeyContext::new_with_defaults();
+    let mut editor = KeyContext::new_with_defaults(gpui::OperatingSystem::Ios);
     editor.add("Editor");
     pane.extend(&editor);
     workspace.extend(&pane);
@@ -398,7 +398,7 @@ mod tests {
 
     gpui::actions!(test_menus, [NewShell, Palette, Find, Copy, Quiet, Other]);
 
-    fn ks(text: &str) -> Keystroke {
+    fn ks(text: &'static str) -> Keystroke {
         Keystroke::parse(text).unwrap()
     }
 
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn named_keys_use_uikits_inputs() {
-        let input = |text: &str| chord(&ks(text)).map(|c| c.input);
+        let input = |text: &'static str| chord(&ks(text)).map(|c| c.input);
         assert_eq!(
             input("cmd-alt-left"),
             Some(KeyInput::Named(NamedInput::Left))
@@ -603,7 +603,11 @@ mod tests {
     #[test]
     fn a_press_holds_exactly_the_chords_modifiers() {
         let palette = ks("cmd-shift-p");
-        let held = |text: &str| ks(&format!("{text}-a")).modifiers;
+        let held = |text: &str| {
+            Keystroke::parse_with_os(&format!("{text}-a"), gpui::OperatingSystem::Ios)
+                .unwrap()
+                .modifiers
+        };
         assert!(pressed(&palette, held("cmd-shift")));
         assert!(
             !pressed(&palette, Modifiers::default()),

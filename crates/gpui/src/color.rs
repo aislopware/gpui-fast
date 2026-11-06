@@ -747,6 +747,7 @@ pub(crate) enum BackgroundTag {
     LinearGradient = 1,
     PatternSlash = 2,
     Checkerboard = 3,
+    RadialGradient = 4, // crate::fast::radial_gradient
 }
 
 /// A color space for color interpolation.
@@ -805,6 +806,7 @@ impl std::fmt::Debug for Background {
                 "Checkerboard({:?}, {})",
                 self.solid, self.gradient_angle_or_pattern_height
             ),
+            BackgroundTag::RadialGradient => crate::fast::radial_gradient::debug(self, f),
         }
     }
 }
@@ -943,6 +945,7 @@ impl Background {
             BackgroundTag::LinearGradient => self.colors.iter().all(|c| c.color.is_transparent()),
             BackgroundTag::PatternSlash => self.solid.is_transparent(),
             BackgroundTag::Checkerboard => self.solid.is_transparent(),
+            BackgroundTag::RadialGradient => crate::fast::radial_gradient::is_transparent(self),
         }
     }
 }

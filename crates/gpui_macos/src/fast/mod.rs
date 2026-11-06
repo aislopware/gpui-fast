@@ -7,14 +7,22 @@
 //! call to it. The logic itself — data structures, algorithms, bookkeeping,
 //! tests — is written here, one file per topic.
 
+pub(crate) mod appearance;
+pub(crate) mod backdrop;
 pub(crate) mod cursor;
 pub(crate) mod gesture;
+pub(crate) mod ime;
 pub(crate) mod keypad;
+pub(crate) mod native_blur;
+pub(crate) mod pasteboard;
 pub(crate) mod scroll;
+#[cfg(all(test, feature = "font-kit"))]
+mod test_pixels;
 #[cfg(feature = "font-kit")]
 pub(crate) mod text_smoothing;
 #[cfg(feature = "font-kit")]
 pub(crate) mod text_system;
+pub(crate) mod typed;
 
 pub(crate) mod composition;
 pub(crate) mod frame_park;

@@ -1,7 +1,11 @@
 //! `LayoutStats`: counters and timings describing the work a frame did, for benchmarks and profiling.
 
-use crate::{TaffyLayoutEngine, Window};
-use std::time::{Duration, Instant};
+use crate::{Window, taffy::TaffyLayoutEngine};
+use scheduler::Instant;
+use std::time::Duration;
+
+#[cfg(any(test, feature = "test-support"))]
+pub use super::path_cache::{PathCacheStats, path_cache_stats};
 
 /// Counters describing the work the layout engine performed, for benchmarking
 /// and profiling.

@@ -61,6 +61,13 @@ mod macos {
         runtime::{NO, Object, YES},
         sel, sel_impl,
     };
+    use objc2::{rc::Retained, runtime::ProtocolObject};
+    use objc2_core_foundation::CGSize;
+    use objc2_metal::{
+        MTLClearColor, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLCommandQueue,
+        MTLDevice as _, MTLLoadAction, MTLPixelFormat, MTLRenderPassDescriptor, MTLStoreAction,
+    };
+    use objc2_quartz_core::{CAMetalDrawable as _, CAMetalLayer};
     use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 
     const WARMUP_FRAMES: usize = 60;
@@ -97,27 +104,38 @@ mod macos {
 
     /// A second full-window transparent Metal layer, presented with every GPUI frame.
     struct Band {
-        layer: metal::MetalLayer,
-        queue: metal::CommandQueue,
+        layer: Retained<CAMetalLayer>,
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
     }
 
     impl Band {
         fn present(&self) {
             objc2::rc::autoreleasepool(|_| {
-                let Some(drawable) = self.layer.next_drawable() else {
+                let Some(drawable) = self.layer.nextDrawable() else {
                     return;
                 };
-                let descriptor = metal::RenderPassDescriptor::new();
-                let attachment = descriptor.color_attachments().object_at(0).unwrap();
-                attachment.set_texture(Some(drawable.texture()));
-                attachment.set_load_action(metal::MTLLoadAction::Clear);
-                attachment.set_clear_color(metal::MTLClearColor::new(0., 0., 0., 0.));
-                attachment.set_store_action(metal::MTLStoreAction::Store);
-                let command_buffer = self.queue.new_command_buffer();
-                command_buffer
-                    .new_render_command_encoder(descriptor)
-                    .end_encoding();
-                command_buffer.present_drawable(drawable);
+                let descriptor = MTLRenderPassDescriptor::new();
+                // SAFETY: index zero is within the pass's colour attachments.
+                let attachment =
+                    unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
+                attachment.setTexture(Some(&drawable.texture()));
+                attachment.setLoadAction(MTLLoadAction::Clear);
+                attachment.setClearColor(MTLClearColor {
+                    red: 0.,
+                    green: 0.,
+                    blue: 0.,
+                    alpha: 0.,
+                });
+                attachment.setStoreAction(MTLStoreAction::Store);
+                let Some(command_buffer) = self.queue.commandBuffer() else {
+                    return;
+                };
+                if let Some(encoder) =
+                    command_buffer.renderCommandEncoderWithDescriptor(&descriptor)
+                {
+                    encoder.endEncoding();
+                }
+                command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
                 command_buffer.commit();
             });
         }
@@ -217,30 +235,31 @@ mod macos {
                     let () = msg_send![layer, setOpaque: NO];
                 }
                 if variant == Variant::Band {
-                    let device = metal::Device::system_default().expect("a Metal device");
-                    let layer = metal::MetalLayer::new();
-                    layer.set_device(&device);
-                    layer.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
-                    layer.set_opaque(false);
-                    layer.set_maximum_drawable_count(3);
+                    let device =
+                        objc2_metal::MTLCreateSystemDefaultDevice().expect("a Metal device");
+                    let layer = CAMetalLayer::new();
+                    layer.setDevice(Some(&device));
+                    layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+                    layer.setOpaque(false);
+                    layer.setMaximumDrawableCount(3);
                     let backing: f64 = {
                         let window: *mut Object = msg_send![gpui_view, window];
                         msg_send![window, backingScaleFactor]
                     };
-                    layer.set_contents_scale(backing);
-                    layer.set_drawable_size(core_graphics::geometry::CGSize::new(
+                    layer.setContentsScale(backing);
+                    layer.setDrawableSize(CGSize::new(
                         bounds.size.width * backing,
                         bounds.size.height * backing,
                     ));
                     let view: *mut Object = msg_send![class!(NSView), alloc];
                     let view: *mut Object = msg_send![view, initWithFrame: bounds];
-                    let () = msg_send![view, setLayer: layer.as_ref()];
+                    let () = msg_send![view, setLayer: Retained::as_ptr(&layer).cast_mut().cast::<Object>()];
                     let () = msg_send![view, setWantsLayer: YES];
                     let () = msg_send![content, addSubview: view positioned: 1isize relativeTo: gpui_view];
                     let () = msg_send![view, release];
                     band = Some(Band {
                         layer,
-                        queue: device.new_command_queue(),
+                        queue: device.newCommandQueue().expect("a command queue"),
                     });
                 }
             }

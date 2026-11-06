@@ -273,7 +273,11 @@ narrows the cost:
 
 A view's prepaint and paint depend on its bounds, its content mask, the text
 style it inherits and its opacity. If any of these differs from last frame,
-its output cannot be copied. If its layout nodes are still valid, it is
+its output cannot be copied. Prepaint only foresees the opacity: an
+ancestor's hover or drag-over style depends on the frame's hit test, which
+paint has. The record keeps both, the opacity prepaint foresaw, which decides
+whether it is drawn again, and the one paint applied, which what is copied
+holds; copied under another, it is built on the next frame. If its layout nodes are still valid, it is
 rebuilt at the nodes it kept and laid out at the size its parent gave it,
 without laying out anything around it again.
 
@@ -288,7 +292,8 @@ frame around it.
 
 Every view is drawn from scratch while the window is refreshed
 (`window.refresh()`, a resize, a focus change), while something is dragged,
-while the inspector is picking, and while accessibility is active. Setting
+while the inspector is picking, and on the first frame after accessibility
+is turned on (see [`retained-mode.md`](retained-mode.md#accessibility)). Setting
 `GPUI_VIEW_RETENTION=0` turns retention off entirely, and scroll layers with
 it; `GPUI_SCROLL_LAYERS=0` turns off scroll layers alone.
 
@@ -467,7 +472,11 @@ sorted them by atlas tile, which only made that order arbitrary.
   node by node (`fast/dispatch.rs`).
 - **Paths** (sparklines, chart lines, a donut) are tessellated relative to
   their first point and the triangles kept, so a path of the same shape is
-  not tessellated again, wherever it is drawn (`fast/path_cache.rs`).
+  not tessellated again, wherever it is drawn (`fast/path_cache.rs`). A
+  thread keeps at most 2048 shapes and 16 MiB of them by weight (the memory
+  their keys and triangles own), the least recently drawn let go first; a
+  shape heavier than that is kept alone beside them, until the next one
+  takes its place, so one drawn again is kept however heavy it is.
 - **Glyph runs** work out their rendering once per run rather than once per
   glyph (`fast/glyphs.rs`).
 - **Absolute bounds** are cached per frame without rehashing

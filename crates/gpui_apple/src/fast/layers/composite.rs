@@ -9,6 +9,8 @@
 use std::ops::Range;
 
 use gpui::{AtlasTextureId, DevicePixels, Size, TileId, decode_layer_tile};
+use objc2::runtime::ProtocolObject;
+use objc2_metal::MTLRenderCommandEncoder;
 
 use crate::metal_renderer::{
     InstanceBindings, MetalRenderer,
@@ -28,7 +30,7 @@ pub(crate) fn draw_tiles(
     sprites: &Range<usize>,
     instance_bindings: &InstanceBindings,
     viewport_size: Size<DevicePixels>,
-    command_encoder: &metal::RenderCommandEncoderRef,
+    command_encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
     binds: &mut Binds,
 ) -> bool {
     let Some((layer, _)) = decode_layer_tile(texture_id, TileId(0)) else {

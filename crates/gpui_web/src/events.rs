@@ -4,8 +4,8 @@ use gpui::{
     Capslock, ClipboardEntry, ClipboardItem, ClipboardString, DispatchEventResult, GestureTuning,
     Image, ImageFormat, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent,
     MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection,
-    Pixels, PlatformInput, Point, ScrollDelta, ScrollWheelEvent, TouchEvent, TouchId, TouchPhase,
-    point, px,
+    Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, ScrollSource, TouchEvent, TouchId,
+    TouchPhase, point, px,
 };
 use wasm_bindgen::prelude::*;
 
@@ -274,6 +274,7 @@ impl WebWindowInner {
                     position,
                     predicted_position: None,
                     force: None,
+                    timestamp: None,
                 }));
                 // Keyboard and IME focus intentionally do not change here:
                 // whether this touch is a tap or a pan is only known at
@@ -347,6 +348,7 @@ impl WebWindowInner {
                     position,
                     predicted_position: None,
                     force: None,
+                    timestamp: None,
                 }));
 
                 // A keyboard opening or closing mid-gesture reflows the
@@ -459,6 +461,7 @@ impl WebWindowInner {
                     position: pointer_position_in_element(&event),
                     predicted_position: None,
                     force: None,
+                    timestamp: None,
                 }));
             } else {
                 this.pressed_button.set(None);
@@ -588,6 +591,7 @@ impl WebWindowInner {
                     position,
                     predicted_position: predicted_pointer_position(&event, position),
                     force: None,
+                    timestamp: None,
                 }));
                 return;
             }
@@ -663,12 +667,13 @@ impl WebWindowInner {
                 current_state.modifiers = modifiers;
             }
 
-            this.dispatch_input(PlatformInput::ScrollWheel(ScrollWheelEvent {
+            this.dispatch_input(PlatformInput::Scroll(ScrollEvent {
                 position,
                 delta,
                 modifiers,
                 touch_phase: TouchPhase::Moved,
                 momentum_phase: None,
+                source: ScrollSource::Pointer,
             }));
         })
     }
@@ -1301,21 +1306,46 @@ fn capslock_from_keyboard_event(event: &web_sys::KeyboardEvent) -> Capslock {
 }
 
 pub(crate) fn is_mac_platform(browser_window: &web_sys::Window) -> bool {
-    let navigator = browser_window.navigator();
+    // iOS hardware keyboards also use Option for text composition.
+    matches!(
+        platform_info(browser_window).os,
+        gpui::OperatingSystem::Mac | gpui::OperatingSystem::Ios
+    )
+}
 
+pub(crate) fn platform_info(browser_window: &web_sys::Window) -> gpui::PlatformInfo {
+    let navigator = browser_window.navigator();
+    let user_agent = navigator.user_agent().unwrap_or_default();
     #[allow(deprecated)]
     // navigator.platform() is deprecated but navigator.userAgentData is not widely available yet
-    if let Ok(platform) = navigator.platform() {
-        if platform.contains("Mac") {
-            return true;
-        }
+    let platform = navigator.platform().unwrap_or_default();
+    let os = if user_agent.contains("Android") {
+        gpui::OperatingSystem::Android
+    } else if user_agent.contains("iPhone")
+        || user_agent.contains("iPad")
+        || user_agent.contains("iPod")
+        || (platform.contains("Mac") && navigator.max_touch_points() > 1)
+    {
+        // iPadOS can advertise a desktop Mac user agent.
+        gpui::OperatingSystem::Ios
+    } else if platform.contains("Mac") || user_agent.contains("Mac") {
+        gpui::OperatingSystem::Mac
+    } else if platform.contains("Win") || user_agent.contains("Windows") {
+        gpui::OperatingSystem::Windows
+    } else if platform.contains("FreeBSD") || user_agent.contains("FreeBSD") {
+        gpui::OperatingSystem::FreeBsd
+    } else if platform.contains("Linux")
+        || user_agent.contains("Linux")
+        || user_agent.contains("CrOS")
+    {
+        gpui::OperatingSystem::Linux
+    } else {
+        gpui::OperatingSystem::Unknown
+    };
+    gpui::PlatformInfo {
+        os,
+        target: gpui::PlatformTarget::Web,
     }
-
-    if let Ok(user_agent) = navigator.user_agent() {
-        return user_agent.contains("Mac");
-    }
-
-    false
 }
 
 fn is_modifier_only_key(key: &str) -> bool {

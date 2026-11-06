@@ -1,10 +1,11 @@
-# Slopty's fork of gpui-fast
+# aislopware/gpui-fast
 
 `aislopware/gpui-fast` is [longbridge/gpui-fast](https://github.com/longbridge/gpui-fast)
-(GPUI with Retained Mode) plus what Slopty needs from GPUI: the iOS backend, video
-surfaces, presentation reports and pacing, and a few smaller features. It replaces the
-zed fork (`aislopware/zed`) Slopty used before. Everything lives on `main`; there is no
-separate branch for our commits.
+(GPUI with Retained Mode) plus what [onicode](https://github.com/aislopware/onicode) needs from
+GPUI: native composition for its browser, presentation reports and pacing, scroll layers,
+edge fades, backdrop blur and many smaller fixes. Onicode is its only consumer. Everything lives
+on `main`, and onicode pins a rev on it; there are no integration branches. The tip before
+onicode is tagged `archive/main-pre-onicode`.
 
 Two upstreams feed it:
 
@@ -15,12 +16,32 @@ Two upstreams feed it:
 
 ## History layout
 
+- 2026-11-06: `7f051e5` "Merge longbridge/gpui-fast 5bf7480 (#82, #85, #88, #91, #95-#99,
+  #103) into the fork" brings longbridge's `main` from `7fcd37e6` to `5bf74804`. Every
+  commit was read and the merge was built from our tree plus what was taken (`git merge -s
+  ours --no-commit`, then each taken change applied by hand), so none of longbridge's own
+  adaptations of zed changes we had already adapted were mixed in. Its body lists what was
+  taken and what was left out, with reasons: #97's four zed commits (zed `decd2399`), #82
+  and #95 (`InteractiveText`'s hand by hitboxes, now `fast::interactive_text`), #85 and #98
+  (Windows frame requests), #88 (already here; our test-support `PathCacheStats` export
+  stays, gpui_perf reads it), #91's last round (the late-layout splice fix, ported into
+  `fast::splice` with `splice_late_layout.rs`) and #96 (gpui-pre 0.3.11 snapshots); #86,
+  #99, #90 and #103 left out. `81eb4c5` ("chore: Sync GPUI upstream 4a6121bb0f") then
+  imports zed `4a6121bb0f` (vendor `85d71602`), whose drag cursor (#66540), menu key
+  equivalents (#65744), `Anchored::attach` (#66496) and animated WebP (#66459) help macOS.
+  The vendor line now sits on longbridge's: zed `4a6121bb` is replayed onto longbridge's
+  vendor commit `957e6599` (zed `decd2399`), not onto our own `0522de48`, so the two
+  lines, which had parted at `63cebde`, are one again. `5cfe3b9` ports open #101 (presses
+  on the window chrome go to AppKit) into this fork's composition, `1eaf1ef` ports #103's
+  fix to the Metal atlas (a tile over the 16384-pixel texture limit adds no texture), and
+  `67171c0` moves `compat/` to gpui-pre 0.3.11 and gpui-fast 0.1.13, gpui-kit's pins.
 - Vendor commits hold nothing but zed's copy of the directories `UPSTREAM` lists. Since
   longbridge #33 this fork imports zed on top of longbridge's vendor line, not its own:
   #33 replays each zed commit (`script/import-upstream`) from gpui-fast's first import
   (`11a44c4`, zed `7960b2a7`) to `0d78d77` (zed `0bdc70c`), and our imports start from
-  there: the latest is `8e30b2b` (`zed: import f8c2cc84`, zed #64990, "gpui_apple: Share
-  dispatcher and Metal renderer with iOS"; see "Conflicts to expect"). That way a
+  there: the latest is `0522de48` (`zed: import 0373366f`; see "Conflicts to expect"), and
+  the first was `8e30b2b` (`zed: import f8c2cc84`, zed #64990, "gpui_apple: Share
+  dispatcher and Metal renderer with iOS"). That way a
   longbridge merge and a zed import no longer bring the same zed changes in through two
   lines of history. The fork's own line before it (`zed: import <short
   hash>` commits) ended at `446268b` (`zed: import 39b53293`, zed `39b5329322`: Windows'
@@ -258,38 +279,6 @@ brings it: take zed's version of the files, remove the pull request's line from
     `glyph_raster_bounds_do_not_clip` rasterizes a bold tabular `0` at 12 to 48 pt and 3×
     and compares the ink with a buffer 8 px larger all round; without the margin it fails
     at 24 pt. It runs on the simulator (see "Testing gpui_ios on the simulator").
-- zed #64624 (@timvermeulen, head `54c44986d4`), "UAX #14 line breaking": `wrap_line`
-  and `compute_wrap_boundaries` break where `icu_segmenter`'s line segmenter allows,
-  in place of `is_word_char`. Wrapped lines no longer start with `/` or `?`, emoji
-  sequences such as 👍🏽, 🇯🇵 and 👩‍💻 stay whole, and a word may break after a hyphen.
-  Applied with its tests. Two adaptations:
-  - Its `test_wrap_line_break_opportunities` gained the `IndentAdjustment` argument
-    zed's `wrap_line` took after the pull request's base. The expected boundaries
-    in `test_extra_columns_overflow_guard` changed from `9, 11, 13, 15` to
-    `9, 11, 12, 14, 15`: with 2 columns left after the indent, the words `ef` and
-    `gh` stay whole and each space between them wraps alone. The old numbers came
-    from `prev_c` going stale across a returned boundary, which split `ef`.
-  - Ours, kept when the import brings the pull request: `fast::line_breaks`. The
-    segmenter costs about 8 ns a byte, three times the cost of measuring the line. So
-    both wrappers ask for break opportunities only when something on the line passes
-    the wrap width, and they read ASCII as Latin-1, which gives the same breaks
-    (test `ascii_breaks_as_its_utf8_does`). Tests for the exact-fit edge:
-    `a_wrapped_line_that_fits_exactly_is_not_broken`,
-    `a_shaped_line_that_fits_exactly_is_not_broken`.
-  - Cost (`cargo run -p gpui_perf --example wrap_cost --release`, best of 40 rounds,
-    2000 lines of 40 to 300 bytes at 320, 560 and 900 px):
-
-    | | before | after |
-    | --- | --- | --- |
-    | `wrap_line`, mixed scripts | 5.07 ms | 15.3 ms |
-    | `wrap_line`, ASCII | 5.56 ms | 13.7 ms |
-    | `wrap_line`, every line fits | 1.73 ms | 2.01 ms |
-    | `shape_text`, 100 lines | 0.61 ms | 1.61 ms |
-
-    That is about 2.5 µs per wrapped line of 190 bytes, against 0.85 µs before.
-    `__TEXT` grows by 48 KiB (the example: 5,865,472 to 5,914,624 bytes). Its four
-    new crates compile in about 3 s of CPU in a debug build; the ICU crates they
-    share with `idna` were already built.
 - zed #64542 (@madcodelife, head `21ad132982`), "text decorations across wrapped
   lines": an underline or strikethrough that continues onto the next wrapped line
   resumes where that line's alignment starts it, not at the box's left edge. The
@@ -412,6 +401,29 @@ Merged ahead of longbridge, and not yet merged there:
       with 393 of 600 composited.
     - The face while an answer streams, the terminal, and the other frames: within noise.
 
+- longbridge/gpui-fast#92 at `86219c69` (aislopware #76): a mouse release and a file drag
+  set mouse modality (`fast::misc::mouse_up_modality`), so a release after a key press with
+  the button held, or a file dragged in after typing, still reaches `on_mouse_up`,
+  `on_click` and `on_drop`. It replaces the fork's own file-drag arms in `window.rs`'s
+  modality match (`8758f95f`), which is upstream's again. When longbridge merges it, take
+  theirs and keep that match upstream's.
+- longbridge/gpui-fast#88 at `76c37716` (aislopware #77): kept path shapes in a
+  least-recently-drawn list capped at 2048 shapes and 16 MiB a thread, with one slot for a
+  heavier shape, instead of two generations bounded by count. Its test-support exports share
+  `LayoutStats`'s line in `gpui.rs`. When longbridge merges it, take theirs, exports on that
+  line.
+- longbridge/gpui-fast#91 at `d9fbe8c1` (aislopware #78, tests only): a spliced child left
+  its ancestor's checkpoint stale, so the next idle frame rendered the ancestor again. This
+  fork had fixed both halves in #44 and #45 (a spliced record's dependencies `checked_at`
+  the `Checked` taken before its gaps were built; `copy_prepaint_segment` leaving out the
+  gaps' element states), so only #91's tests came over. When longbridge merges it, keep
+  the fork's `splice.rs` and `dependencies.rs` and take the tests.
+- Open longbridge PRs (2026-11-06, at `5bf74804`): #101 is ported (`5cfe3b9`: a press on
+  the title bar or a window control over a native goes to AppKit, so the window drags and
+  its buttons work); #100 reuses #30's full-scene layers and #102 adds a web wgpu context,
+  both for code this fork does not carry. #69 and #90 (#30's composition) stay out, as
+  below; #82, #85 and #86 have merged and are in the 2026-11-06 sync's verdicts.
+
 - Window composition, against longbridge #30 (zed#62379, merged in `c22243e` and left out
   here). This fork composes natives its own way (docs/composition.md): under GPUI's single
   drawable, through antialiased holes cut in painter's order. #30 stacks things differently:
@@ -463,11 +475,89 @@ Added in this fork:
 - `817e345` perf(gpui): a `ShapedLine` keeps four decoration runs inline, not 32
 - `dfb5ad0` test(gpui): the test window records where it was asked to put the input
   method's candidate window (`TestAppContext::ime_positions`)
-- `2e199c6` feat(gpui): `ScrollWheelEvent::momentum_phase`. macOS reads it from
-  `NSEvent.momentumPhase`, and the touch recognizer's fling steps carry it too.
-  Windows, Linux and the web send `None`: Direct Manipulation's inertia could be
-  mapped, but it is untested here. Consumers that build a `ScrollWheelEvent` without
-  `..Default::default()` have to add the field.
+- `2e199c6` feat(gpui): `ScrollEvent::momentum_phase` (`ScrollWheelEvent` before zed #65805
+  renamed it). macOS reads it from `NSEvent.momentumPhase`, and the touch recognizer's fling
+  steps carry it too. Windows, Linux and the web send `None`: Direct Manipulation's inertia
+  could be mapped, but it is untested here. Consumers that build a `ScrollEvent` without
+  `..Default::default()` have to add the field. zed's `ScrollEvent::source` tells a touch pan
+  (`Touch`) from a wheel or trackpad (`Pointer`); `momentum_phase` still tells the
+  platform's momentum from a finger's scrolling, which `source` cannot.
+- fix(gpui): a touch is timed by when it happened (`TouchEvent::timestamp`,
+  `fast/touch_time.rs`), not by when it is handled: `gpui_ios` gives each touch its
+  `UITouch.timestamp`, and a pan handed on from a native's container the newest time of the
+  touches it follows, so a main thread busy between a finger's last move and its lift no longer
+  kills the fling. The fling runs from when the lift is handled. Tests:
+  `fast::tests::touch_time`.
+- fix(gpui): what a platform tells a window while the app is borrowed waits for the borrow to
+  end (`fast/window_wait.rs`): its inputs, and its resize, move, insets, visual viewport, button
+  layout, active status, visibility and hover. What comes after waits behind it, so nothing is
+  dropped and windows hear it all in order. Upstream's callbacks logged `RefCell already
+  borrowed` and dropped it. On iOS, UIKit lays GPUI's view controller out as GPUI's present
+  commits whenever a native view it placed moved, and `viewDidLayoutSubviews` reported the
+  insets, and the size when it changed, from inside the draw: Slopty's iPhone pages e2e logged it
+  63 times in a run, once a frame while the chat scrolled over a page. `gpui_ios` now tells the
+  insets only when they changed, and keeps an event UIKit sends while a dispatch runs for right
+  after it, where it dropped it without a word. Tests: `fast::tests::window_wait`.
+- feat(gpui): `Window::touch_in_flight` says whether a touch is in flight in the window, a
+  finger on it or the fling it threw still coasting (`fast/touch_in_flight.rs`), so an app can
+  hold work that stalls the main thread, a web view to make say, until the touch is over. A view
+  that reads it is built again when it changes, as one that reads the pointer is when it moves,
+  so the view that held work is built again, and does it, once the touch ends. Tests:
+  `fast::tests::touch_in_flight`.
+- fix(gpui_macos): a throttled window's immediate frame waits for the next tick
+  (`fast/frame_park.rs`). GPUI defers a throttled window's frame (an inactive window draws at
+  most 30 times a second) and asks for another, and the waker that ask runs queued the
+  immediate frame again. A run that drew nothing kept its slot, as a wake that only ran
+  next-frame callbacks keeps it for a keystroke's echo, so the deferred frame ran again at
+  once. An inactive window with frames to draw spun its main queue through the frame callback
+  until the throttle let one draw: about 28,000 callbacks a second in Slopty's e2e app. Each
+  callback journals a frame signal, so the storm lapped the foreground journal's ring between
+  two drains of the hang monitor and lost the hang Slopty's e2e test held for; the hang trace
+  below showed 56,000 entries in 2 s, 37,000 of them lost. A run that leaves GPUI asking for
+  another frame now gives the slot back to the next tick. CI now runs gpui_macos's tests.
+  Tests: `fast::frame_park::tests`. The trace also counts the markers that do no work (frame
+  signals, frame states, re-entrant skips).
+- feat(gpui): the hang monitor traces what it saw, at debug under the `gpui::hang` target
+  (`fast/hang_trace.rs`). It traces the monitor starting and every task poll of 100 ms or more,
+  journaled or dropped across a sleep or wake. It also traces every detector poll that drained,
+  sealed or still holds anything: the entries drained, the longest event, the boundaries
+  (power among them), entries lost, what it sealed and by what, and what stays open. Slopty's
+  e2e hang test lost a hang once more after the deadline below, in an idle VM where no power
+  cause applied, and nothing kept the journal to say why. A silent run now says where a hang
+  was lost: never timed, dropped, never drained, or never sealed. Nothing is counted or
+  formatted unless the target is on. Tests: `fast::hang_trace`.
+- fix(gpui): `Window::text_input_focused` answers what the platform was last told, whether its
+  soft keyboard is up (`fast/focus.rs`). It answered whether the last frame's text field was
+  still the focused element, so the focus moving from one field to another between frames read
+  false for one frame although the keyboard never went: an iPad layout dropped the keyboard's
+  band for that frame and resized both terminals twice. Views reading it are built again when a
+  frame finds a field where the last found none, or the other way about. Tests:
+  `fast::tests::text_input_focused`.
+- feat(gpui, gpui_macos, gpui_ios): a window's own appearance (`fast/window_appearance.rs`).
+  `Window::set_appearance` gives one window an appearance apart from the application's, `None`
+  following it again: `NSWindow.appearance` on macOS, `UIWindow.overrideUserInterfaceStyle` on
+  iOS. `Window::appearance` and `observe_window_appearance` report the window's. The
+  application's (`App::window_appearance`) is told by `App::on_window_appearance_change`, which
+  no window's own changes: macOS observes `NSApp.effectiveAppearance` by key-value observing, as
+  Ghostty's `AppDelegate` does, and iOS the window scene's `userInterfaceStyle` trait, which a
+  window's override does not reach. iOS's `App::window_appearance` now reads the scene rather
+  than the key window, and an iOS window's appearance observers, which nothing called before,
+  hear its style's trait changes. Slopty gives a window the appearance of its terminal's
+  background, as Ghostty does, while its theme follows the application. On the test platform a
+  window follows the application's appearance unless it has its own, as a macOS window does, and
+  a test sets the system's (`TestAppContext::simulate_system_appearance`). Tests:
+  `fast::tests::window_appearance`.
+- fix(gpui): a hang is reported while the foreground stays busy (`fast/interval_deadline.rs`).
+  The hang monitor reports an interval once the journal's writer seals it, and an idle seal
+  waited for a turn end with no runnable queued for as long as runnables kept arriving; a
+  covered window that keeps drawing (test builds keep its frames coming) only adds unmeasured
+  presentations, which seal nothing. So a busy, covered app held a hang unreported indefinitely:
+  Slopty's e2e hang test lost one that way in a loaded VM. Retained work now waits at most
+  `FRAME_DEADLINE`, as a pending frame does, and the first turn to end past it seals the interval
+  idle. A foreground that went quiet with the interval open (a dirty window whose frame never
+  draws, nothing left to run) ends no turn, so the hang detector closes the interval at its first
+  poll past the deadline, idle where the last work ended; it polls on its own thread, so an idle
+  app does no more work. Tests: `fast::interval_deadline` and the writer's state-model property.
 - fix(gpui): a touch's fling ends once a step of it moves nothing, and a touch outside what
   it scrolls stays a tap (`fast/fling.rs`). `div`'s and `list`'s scroll listeners report
   whether a step moved them and where they are; a custom scroll handler reports nothing and
@@ -477,6 +567,10 @@ Added in this fork:
   ancestors' content mask (`fast/a11y.rs`), and an a11y press skips a node with nothing
   showing. Upstream reported a node scrolled out of view at its layout bounds, so VoiceOver
   framed, and its activate pressed, whatever was drawn there instead.
+  Since longbridge#48 draws views and `div` scroll layers again while accessibility is active,
+  a layer painted afresh cuts the nodes of its content to its viewport once their stretch is
+  captured (they were prepainted under the painted region's mask), and a layer composited
+  cuts them again to the viewport where it shows (`fast::a11y::clip_to_viewport`, `carry`).
 - `1776aa2` test(gpui): a video surface shows the buffer its view holds, retained or not
 - `4d0009e` gpui: build a view that asked for an animation frame on the next frame drawn
 - the commit after `4c13f16`: a spliced view builds every nested view that is out of
@@ -538,9 +632,6 @@ Added in this fork:
   `on_swipe` on every interactive element (`InteractiveGestures`); on iOS a rotation from
   `UIRotationGestureRecognizer`, recognized alongside the pinch. A swipe no listener
   stops still becomes the back or forward mouse button, as upstream makes it
-- build: core-video 0.6.1 (zed has 0.5.2): its texture cache takes a `CVImageBuffer`, so
-  the surface pass hands it the pixel buffer as one. An application sharing
-  `CVPixelBuffer` with GPUI (Slopty's `slopty-ui`) takes 0.6.1 with it
 - perf(gpui): the tab order is sorted when it is read (`Window::focus_next`, `focus_prev`,
   accessibility's count), not kept as a sum tree every tracked focus handle is inserted
   into as it is painted, and replayed into for every view drawn from last frame
@@ -617,54 +708,90 @@ Added in this fork:
   `FontWeight::MEDIUM` is SF Medium (`each_css_weight_reaches_its_own_face`: the system
   face and Avenir Next, each weight its own face, each inking more than the one below).
   Zed's issue #14175 is this
+- feat(gpui): a list's tail reservation, ported from zui (`fast/list_tail.rs`;
+  zeronsh/zui `8425850`, Apache-2.0). `ListState::set_tail_reservation(Some((row,
+  inset)))` keeps a viewport's height less `inset` from `row` through the last row, as
+  trailing space in the last row's box sized while the list lays its rows out, so a
+  transcript's new turn rests at the top with the answer streaming in below it and no gap
+  ever shows; `tail_reservation_filled` says when the rows have taken it up and
+  `offset_for_item` where a row begins in the list's tree. Unlike zui the last row is not
+  rendered again on every layout: its natural height is its height less the extra, and a
+  scroll layer counts the extra in its overscan and keeps the row
+  (`a_list_with_a_reservation_scrolls_on_its_layer`: over 29 scrolled frames, 27 composited,
+  the last row is rendered once, against twice when the layer measures it without the extra)
+- fix(gpui): `ImageSource::evict` and `App::peek_asset`, ported from zui (wingleeio/zed
+  `b687328`, Apache-2.0; `fast/image_evict.rs`). `remove_asset` alone leaves a decoded
+  image's sprite atlas tiles in every window, out of reach (each image shown from bytes
+  leaks its tiles; a large one a texture of its own); `evict` removes the cached load and
+  drops the tiles, in the window being updated too (`evicting_an_image_frees_its_atlas_tiles`)
+- feat(gpui, gpui_apple): `Window::with_rounded_clip(bounds, radius, f)`, ported from zui
+  (`361ff20`, Apache-2.0) into the edge fade table: each entry also holds a rounded
+  rectangle (a radius per corner) that the fade's shader path cuts every primitive by, per
+  pixel, antialiased. Retention, moved stretches and scroll layers treat it as a fade
+  (`fast/tests/rounded_clip.rs`: incremental against from scratch while the card moves,
+  its rows slide and a nested view rebuilds; a clip around a layer composites, one inside
+  its content draws without tiles); Metal matches the CPU coverage to 0 levels on quads,
+  underlines and paths, clipped alone and inside a fade (`gpui_apple` `fast::edge_fade`)
+- feat(gpui, gpui_apple): `Window::paint_backdrop_blur(bounds, corner_radii, blur_radius)`,
+  ported from zui (`361ff20`, Apache-2.0; `fast/backdrop.rs`,
+  `gpui_apple/src/fast/backdrop.rs`): what the window drew under a region drawn back blurred
+  with Metal Performance Shaders, antialiased at its rounded corners, under the edge fade or
+  rounded clip around it and the element opacity. Ordered over everything it reads, as a
+  native's hole is ordered, so retention, paint layers and list layers carry it and a
+  scroll layer whose content blurs draws without tiles (`fast/tests/backdrop.rs`); the
+  pixels follow the gaussian to within a level, keep a non-opaque drawable's alpha, and
+  leave holes and paths outside the region as drawn without it (`gpui_apple`
+  `fast::backdrop`). Costs in docs/composition.md, "Backdrop blur"
+- feat(gpui): `Window::on_present(callback)`, zui's API (`fast/present.rs`): run as the
+  painted frame is presented, again when a subtree is drawn from last frame, never from a
+  moved stretch or scroll tiles (`fast/tests/present.rs`: only on present, in paint order,
+  again for a reused view, with the bounds a moved view is drawn at; a scrolling column
+  handing one draws without tiles, and loses its callbacks when made to composite)
+- feat(gpui, gpui_apple): `Window::paint_glyph_transformed(origin, font_id, glyph_id,
+  font_size, color, transformation, blur)`, ported from zui (`0966d06`, Apache-2.0;
+  `fast/glyph_blur.rs`): one glyph raster drawn through a composite-time transformation and
+  blurred by zui's gaussian taps, the blur riding in the tile's unused `padding` so no sprite
+  layout changes. Scroll layers count the widened quad, a stretch holding one is painted
+  again rather than moved (`fast/tests/glyph_blur.rs`); Metal matches the kernel to 0
+  levels and scales the halo with the glyph (`gpui_apple` `fast::glyph_blur`)
+- perf(gpui, gpui_apple): blurs share pass breaks. A blur joins the draw order of an earlier
+  one of its radius when nothing between them is under its region, only its region goes in
+  the bounds tree, and Metal ends the pass once per draw order, copying and blurring a group
+  of nearby blurs at once (`ComposedBatch::Blurs`). Twenty frosted file badges over a
+  scrolling list: 836 µs encode and 3.24 ms GPU to 112 µs and 1.05 ms (opaque: 0.75 ms)
+  (`blurs_whose_regions_are_apart_share_one_copy`; grouped blurs draw as each alone to 0
+  levels, `blurs_drawn_from_one_copy_draw_as_each_alone`)
+- feat(gpui, gpui_apple): `Window::paint_image_fitted_masked(.., Some(ImageAlphaMask))`,
+  ported from zui (`aa00941`, Apache-2.0; `fast/image_mask.rs`): a rounded rectangle
+  feathered out of an image past a clearance, and a bottom fade, as zeron's new-thread hero
+  clears the composer's space. The mask rides in the edge fade table (an entry grows from
+  80 to 128 bytes, no byte added to a sprite); moving it reuses the image's tile, retention
+  draws it as from scratch (`fast/tests/image_mask.rs`); Metal matches the CPU mask to 0
+  levels, alone and inside a fade and a rounded clip (`gpui_apple` `fast::edge_fade`)
+- feat(gpui, gpui_apple): BGRA surfaces. `Window::paint_surface` takes an `IOSurface`-backed
+  `kCVPixelFormatType_32BGRA` buffer beside the Y′CbCr video formats, sampled as one texture
+  with straight alpha (`bgra_surface_fragment`), so an offscreen renderer hands GPUI the buffer
+  it drew into, with no read-back and no atlas upload: Slopty's animated agent visuals, drawn
+  by wgpu on Metal through a CoreVideo texture cache. A surface now takes its element's
+  opacity and its edge fade as a sprite does (`PaintSurface::{opacity, pad}`; Metal draws
+  both, video included), and a scroll layer draws surfaces in its overlay with the paths,
+  since a tile rasterized from one kept the picture it was rasterized with after the view
+  handed over the next. Tests: `a_surface_takes_its_elements_opacity_and_its_fade`,
+  `a_surface_is_drawn_over_the_tiles_with_the_picture_last_painted`, and in `gpui_apple`
+  `a_bgra_surface_draws_its_straight_alpha_at_its_opacity` and `a_faded_surface_draws_its_fade`
+- fix(gpui): the text frames are compared by names the buffer each surface shows. The retained
+  check (`fast/layers/verify.rs`) described a surface by its bounds, clip and opacity only, and
+  `Scene::describe` left surfaces out, so a retained frame that showed an older picture than a
+  frame drawn afresh read the same. Both now carry the buffer (`fast::scene::picture`), which
+  both frames hold while they are compared. Test:
+  `a_frames_description_names_the_buffer_each_surface_shows`
 
 ### Candidates for longbridge
 
-Generic to gpui-fast, not to Slopty, and worth a pull request to longbridge/gpui-fast:
-
-- the zed bd747337 sync itself: `2db56fa` (`zed: import bd747337`) and its merge `acfc6db`,
-  including the font generation handling (`fast::text::refresh_if_fonts_changed`, a text
-  measurement carried over only within one font generation, and its test
-  `every_view_is_rendered_again_once_fonts_are_added`);
-- `4d0009e`, a view that asked for an animation frame built on the next frame drawn;
-- `1776aa2`, the retained-mode test of a surface's buffer (macOS; the surface element is
-  upstream's).
-- the splice fixes in `fast/splice.rs` (the commit after `4c13f16`), all in `fast/`:
-  - A view dirty because a nested view was notified was spliced with only the notified
-    views built again. A nested view that read a model updated without a notify (or a
-    global changed, or a state version bumped, or a hover) was copied from the last frame
-    and drawn stale, where upstream builds every view under the notified one. The gaps
-    are now the outermost nested records that are out of date by any of those, and a
-    view is spliced when it is not reusable, not only when it is in `dirty_views`.
-  - A deferred draw is copied with the view that deferred it, but the views it draws are
-    not nested in that view's record. `Window::deferred_out_of_date` refuses the splice
-    when anything the view read, less what the gaps read, changed or is dirty. The
-    oracle found this (seed 14, step 40) once the first fix spliced more often.
-  - A spliced record kept the `updates` and `generation` baselines of the frame it was
-    first built in, so the next frame found it changed by updates it had already been
-    checked against, and built the whole chain again. `RenderDependencies::checked_at`
-    moves the baselines up to where they stood when the splice was checked.
-  - Tests: `a_view_that_read_a_changed_model_is_built_again_beside_a_notified_one`
-    and `a_view_drawn_around_a_nested_view_built_again_is_reused_on_the_next_frame` in
-    `fast/tests/retained.rs`; each fails without its fix.
-  - longbridge#10 marks a view whose own reads changed dirty
-    (`mark_changed_retained_views_dirty`), which covers the first fix for entities,
-    globals and states, but not for hovers; the gap test stays as it is. `checked_at`
-    and `deferred_out_of_date` are still needed with #10.
-- what we added to longbridge#17 (above), the radix scene sort `4105616`, the decoration
-  runs `817e345` and the test window's IME record `dfb5ad0`; `2e199c6` is a candidate
-  for zed itself;
-- the element-state fixes made while merging longbridge#10 (above): a spliced view keeps
-  neither its gaps' element states nor last frame's whole layout.
-- the commit adding this file, which also lets `script/check-upstream` accept the patches
-  above (`script/upstream-allowlist`, the "Slopty's patches" section)
-- window composition's platform-neutral part (`crates/gpui/src/fast/composition/`, the
-  scene, present and hit-test hooks) and its macOS side: generic to any GPUI app that
-  embeds a web view or a video layer, and an alternative to zed#62379's overlay bands that
-  also orders GPUI content between natives;
-- the destination-alpha blend fix in `gpui_apple`'s pipelines (`OneMinusSourceAlpha`
-  instead of `One`): a non-opaque window's alpha is wrong without it, and an opaque one
-  renders bit-identically with it. Also a candidate for zed itself.
+Every patch the fork carries that longbridge lacks, each with a verdict (a fix longbridge
+wants, a performance change, a feature, or fork-only), a one-paragraph case and its test, is
+in [docs/upstream-candidates.md](docs/upstream-candidates.md). Nothing has been offered
+upstream: publishing is the person's call.
 
 `crates/gpui_ios` is ours, like `crates/gpui_perf` is gpui-fast's: it is a workspace member
 but not in `UPSTREAM`'s `tracked` list, so `script/check-upstream` does not look at it.
@@ -690,7 +817,10 @@ Retained Mode draws a view from the last frame while nothing it read changed
 - **Presentation reports** (`Window::on_frame_presented`) are per window, reported by the
   renderer for every scene it presents, retained or not. Nothing to fix.
 - **Insets, input modality, a11y**: an insets change and an input modality change refresh
-  the window; accessibility turns retention off. Nothing is drawn stale.
+  the window. Accessibility no longer turns retention off (longbridge#48): a frame logs
+  what building its tree did and a stretch drawn again does it again (`fast/a11y.rs`).
+  Element retention (`fast/element.rs`) and list layers still stand aside while it is
+  active. Nothing is drawn stale.
 - **`request_animation_frame` from paint** (the terminal's cursor blink): it notifies
   the view for the next frame, which is then built again and asks again.
 - **`CursorStyle::None`, the outline style, `paint_glyph_scaled`**: painted into the frame's
@@ -762,6 +892,49 @@ streaming Markdown message grows its layout, so the views around it are built ag
 
 The `RefreshTable` scenario drew no frames here, retained or not. `gpui_perf --headless
 --verify` painted the same quads retained and from scratch in all 25 simulated scenarios.
+
+## Onicode
+
+Onicode (`aislopware/onicode`) moves from zui to this fork; its study is onicode's
+`.research/gpui-migration.md`. These are the APIs it depends on beyond upstream GPUI, so a
+sync or a cleanup that touches one has to keep it or say what replaces it.
+
+Already on `main`:
+
+- `ImageSource::evict` and `App::peek_asset` (`fast::image_evict`).
+- `ListState::set_tail_reservation`, `offset_for_item` and `tail_reservation_filled`
+  (`fast::list_tail`).
+- `Window::with_rounded_clip` and `with_edge_fade`, `EdgeFade` and `edge_fade`
+  (`fast::edge_fade`). Onicode's own `edge_fade.rs` is rewritten onto this shape.
+- `Window::paint_backdrop_blur` (`fast::backdrop`), `paint_glyph_transformed`
+  (`fast::glyph_blur`), `paint_image_fitted_masked` with `ImageAlphaMask`
+  (`fast::image_mask`) and `on_present` (`fast::present`).
+- `Window::create_native_host`, `NativeHost`, `native_view` and `Window::paint_native`
+  (`fast::composition`): onicode's browser hosts its WKWebView this way, in place of zui's
+  scene overlay.
+- `Window::paint_surface`, for streamed pictures.
+- zed's API as this fork has it: `Window::paint_image(bounds, image_bounds, ..)`,
+  `Window::blur(cx)`, `Modifiers::secondary_key(cx)`, `ScrollEvent` (with `momentum_phase`
+  and `source`) and `gpui_platform::current_headless_renderer() -> Result<..>`.
+
+Merged since (they were branches on `67171c0`):
+
+- `gpui_tokio`, tracked from zed: `Tokio::spawn` and the crate's
+  other entry points.
+- Drags start only with the button held and 4 px of travel (`fast::drag`); no new API.
+- An image's intrinsic aspect ratio applies only when a dimension is auto
+  (`fast::image_aspect`); no new API.
+- The instance buffer pool shrinks after a large frame, and `GPUI_GPU_STATS=1` writes a
+  GPU memory line every 10 s with `MTLDevice.currentAllocatedSize` (`gpui_apple`'s `fast::instance_pool` and `fast::gpu_stats`).
+- `GPUI_DRAWABLE_COUNT=2` keeps two drawables a window instead of three
+  (`gpui_apple`'s `fast::drawable_count`); the default stays three
+  until measured.
+- Native backdrop blur: a GPUI backdrop blur over a native (a frosted menu over a
+  WKWebView) blurs the native too, in the transactional present (`NativeFrame::blurs`, `NativeFrameBlur`, `gpui_macos`'s `fast::native_blur`;
+  `GPUI_NATIVE_BLUR=0` turns it off).
+
+Onicode pins this fork by rev and patches the `gpui-pre` crates gpui-kit names to the same rev
+(onicode's `Cargo.toml`), so its graph holds one GPUI.
 
 ## Syncing
 
@@ -890,6 +1063,153 @@ does), sprites included rather than #50's `u128` comparison sort, leaves kinds i
 alone, and reuses last frame's order when the keys repeat; `fast::scene::primitive` reads
 the `gathered` flags that sort keeps. Sprites stay keyed by ordering and texture, not tile.
 
+In the longbridge 1db7f80 merge (#76, rounded overflow clipping, and #77, its command palette
+fixture and the `content_mask` example): #76's behaviour is taken, its transport is not. An
+element clipping its overflow on both axes with rounded corners cuts its children along its
+padding edge, every ancestor's edge kept where it is (no radius inherited, zed#37480), the
+corners quarter ellipses where the borders differ, and an empty padding edge hides them. #76
+records each clip as a scope in the paint operations and has Metal, WGPU and Direct3D draw a
+scope's primitives as a group of their own; this fork already cuts primitives per pixel through
+the table of edge fades (`Window::with_rounded_clip`), which retention, moving and scroll
+layers carry, and its scene holds places in the primitive lists, not primitives, so a scene
+rebuilt around groups would break drawing a stretch again. So `fast::rounded_clip` keeps #76's
+`Shape::for_style` and its two hooks (style.rs around the children's paint, and the prepaint
+hook in `Interactivity::prepaint`, so that retention notes the clip), and enters the shape as a
+clip in that table. An entry now holds the innermost clip and the one around it it does not lie
+inside (a clip inside another makes that one redundant; of three none inside another, the
+innermost and the outermost are kept), with vertical radii beside the horizontal ones; nesting
+had been innermost-wins. Fades and clips set inside a scroll layer's content no longer keep the
+layer from compositing: they move into content space with the content
+(`edge_fade::Relocation`), the content carries a copy of the table (`carry_table`), each tile's
+scene gets its own moved into the tile's space (`TileFades`), and what is drawn of the content
+into the frame (lists, overlays) moves them back; only callbacks handed to the present still
+do (`present::uncarried`). Left out with the transport: `fast::rounded_clip_scene`,
+`PaintOperation::FastRoundedClip` and its arms, the Metal group encoder and shader injection,
+WGPU's and Direct3D's clip stacks (WGPU stays zed's; Windows draws no fades, as before) and the
+X11 occluders (#30's composition). #76's pixel fixtures run on Metal unchanged but for two
+lines: the scroll-tile fixture copies the window's table into its content, and a view inside a
+clip that changes is built again (as in a content mask that changes) rather than drawn again,
+so the retained fixture counts three renders, not one. `gpui_apple`'s
+`rounded_overflow_mask_cost`, debug build, mac-studio: 64 rounded clips 310 µs (128 px target)
+and 314 µs (1024 px) against 300 µs and 329 µs for 64 rectangular ones, the same within noise;
+#76 reports about 0.7 ms on Metal for its groups. Upstream's randomized element tree compares
+two windows' quads, whose fade indices may differ, so its snapshot drops the index
+(`edge_fade::without_fade`).
+
+In the 56934ec0 sync (zed #65738, hot reload through Subsecond behind `hot-reload`): zed's
+`view.rs` now renders every view through `render_view`, which patches the render function when
+hot reload is on. The fork's forwarding bodies in `view.rs` stay, `render_view` is
+`pub(crate)`, and `fast::retained` renders through it in all five places it builds a view, so
+a retained view picks up a patched render too. The root `Cargo.toml` gains zed's
+`async-tungstenite` workspace dependency, which `hot-reload` needs.
+
+In the 33156f0d sync (zed #64624, #65942, #66147, #66152, #66206, #66237, #66281):
+
+- zed #64624, UAX #14 line breaking, which this fork had carried ahead of zed, is zed's own
+  now, its tests included. Ours stays `fast::line_breaks`: the segmenter costs about 8 ns a
+  byte, three times measuring the line, so both wrappers ask for break opportunities only
+  when something on the line passes the wrap width, and read ASCII as Latin-1, which breaks
+  at the same places (`ascii_breaks_as_its_utf8_does`; the exact-fit edges
+  `a_wrapped_line_that_fits_exactly_is_not_broken` and
+  `a_shaped_line_that_fits_exactly_is_not_broken`). `wrap_line` hands it the wrapper's
+  `CharWidthCache` (#66206), and `compute_wrap_boundaries` is `pub(crate)` with its
+  `WrapScratch` for `fast::inline_boxes` and the tests (#66152 dropped the hash-keyed
+  layouts and moved the scratch into the cache). What UAX #14 costs with `fast::line_breaks`
+  (`cargo run -p gpui_perf --example wrap_cost --release`, best of 40 rounds, 2000 lines of
+  40 to 300 bytes at 320, 560 and 900 px, measured when the pull request was ported):
+
+  | | before #64624 | after |
+  | --- | --- | --- |
+  | `wrap_line`, mixed scripts | 5.07 ms | 15.3 ms |
+  | `wrap_line`, ASCII | 5.56 ms | 13.7 ms |
+  | `wrap_line`, every line fits | 1.73 ms | 2.01 ms |
+  | `shape_text`, 100 lines | 0.61 ms | 1.61 ms |
+
+  About 2.5 µs per wrapped line of 190 bytes, against 0.85 µs before; `__TEXT` grows by
+  48 KiB.
+- zed #65942 ports the Metal renderer from the `metal` crate to `objc2-metal`, which takes
+  `block` out of the tree. Every `fast/` file of `gpui_apple` that draws (binds, the tile
+  cache, raster and composite, occlusion, the backdrop blur, paths, edge fades, glyph blur,
+  the composition and layer tests) moved with it, and the renderer's hooks sit in zed's
+  objc2 code: the fork's fields, presentation reports and pacing, `SurfacesInFlight`
+  releasing a frame's surface textures on the render thread (handed down as
+  `&mut Vec<CFRetained<CVMetalTexture>>`, through `rasterize_tiles` too), the skipped
+  surface on a bad format, the Y′CbCr matrices and their tests. The renderer's
+  constructors return `Result` now, so a pipeline that fails to build is an error, not a
+  panic. `fast::video_layer` takes an `objc2-core-video` `CVPixelBuffer` (its
+  `objc2_buffer` conversion is gone), and with it the `core-video` crate leaves the tree:
+  an application hands `VideoLayer::present` and `surface` the same buffer. `gpui_perf`'s
+  composition test and `video_latency` build their buffers with `CVPixelBufferCreate`.
+- zed #66237 and #66281 apply the frame limits to every frame and make them window
+  options (`inactive_frame_interval`, `low_power_frame_interval`, `thermal_frame_interval`);
+  an inactive window draws at most at about 30 fps. `fast::settle`'s tests drive platform
+  frames back to back, so they make their window active first, as zed's frame-waker test
+  does. `gpui_apple::thermal` is now `process_info` (thermal state and Low Power Mode),
+  which `gpui_ios` now reads as macOS does, in place of its constant `Nominal`.
+- zed #66147 takes the locks out of the window's text layout, and #66206 pools each
+  wrapper's `CharWidthCache` in the text system.
+- The root pins follow zed's: wgpu `cddb2f5d`, scap `b5c86ec5`, oo7 from zed's fork at
+  `731c1215`, and `objc2-uniform-type-identifiers`.
+- The longbridge `07b42ebf` merge kept this fork's fallback in the weight and style asked
+  for, which longbridge's zed `08cbb88a` sync had dropped for zed #65852's cached fallbacks
+  (`caches_resolved_font_fallbacks`); `fast::text` resolves a fallback as longbridge does
+  again: with the features asked for, in the fallback's own weight and style.
+
+In the 0373366f sync (zed #65472, `CAMetalDisplayLink` on macOS 14 and later): zed paces a
+window with a `CAMetalDisplayLink`, which hands each update its drawable (`FrameSource::Metal`,
+whose `MetalFrames` pauses the link after an update that drew nothing), keeps the
+`CVDisplayLink` for older systems, and holds the window state in `Rc<Mutex<_>>`. This fork
+keeps a window on the `CVDisplayLink` until `nextDrawable` blocks, the stall zed's change is
+for (`gpui_apple::fast::frame_source`). The link costs every frame of a drawing window about a
+refresh and a half. `frame_latency` on the M1 Max here, on Parsec's 60 Hz virtual display with
+the presented handler for the glass (`GPUI_PRESENTED_AT_CALLBACK=1`), three rounds of each
+build alternating, 988229b0 against this import with the link on every window:
+
+| | `CVDisplayLink` | `CAMetalDisplayLink` |
+| --- | --- | --- |
+| `continuous`: submit → glass, p50 | 11.6–12.1 ms | 38.1–39.5 ms |
+| `flood`: key → glass, p50 | 20.1–21.2 ms | 46.8–47.2 ms |
+| `idle`: key → glass, p50 (p99) | 14.9–17.5 ms (26.0–26.8) | 9.7–11.4 ms (17.0–18.6) |
+| `echo`: key → echo on the glass, p50 (p99) | 31.7–32.1 ms (41.2–41.7) | 13.3–14.4 ms (59.5–61.7) |
+| `animate`: gap between renders, p99 | 18.7 ms | 16.7–16.9 ms |
+| `wake`: wake → render, p50 | 62–88 µs | 94–129 µs |
+
+- The link schedules each update's drawable for the third refresh after it: its
+  `targetTimestamp` lay 16.5 ms out and its `targetPresentationTimestamp` 49.9 ms.
+  `preferredFrameLatency` (2 by default, 1 taken, more capped at 2) moved neither, and a link
+  drawable presented at another time (`presentDrawable:atTime:`, `afterMinimumDuration:`) got
+  no presentation report at all. The link wins only an idle window's first frame and the echo
+  after it, which the fork's immediate frame draws with the link set aside.
+- Once `nextDrawable` has waited more than a refresh on six of the last eight frames, every
+  window of the process moves to its link at its next tick or link start
+  (`fast::frame_park::after_tick`, `before_start`), and new windows start there
+  (`fast::frame_park::frame_source`). `GPUI_METAL_DISPLAY_LINK=1` starts every window on the
+  link, and `=0` never moves one. A run that counted every wait as a stall moved after six
+  ticks and kept 60 renders a second; no Mac here stalls for real (zed saw it on base M4 and
+  M5 chips under macOS 26 and later).
+- On the link, the immediate frame stays. `fast::frame_park::before_immediate_frame` sets the
+  link aside, since the layer gives no drawable while a link drives it; the frame draws into
+  `nextDrawable`, and `after_immediate_frame` attaches a new link. zed's idle pause replaces
+  the frame park there, and the frame waker and `schedule_frame` wake it
+  (`fast::frame_park::wake_link`). The presentation pacer holds back no link update, but each
+  takes in the display's reports (`MetalRenderer::take_presentations`). The backdrop blur skips
+  a frame whose drawable is `framebufferOnly`: the link takes the drawable before
+  `fast::backdrop::prepare_layer` can make it readable.
+- The display's refresh is read in `fast::frame_park::note_refresh`, which `before_start`
+  calls. The root `objc2-quartz-core` gains the `CAMetalDisplayLink` and `objc2-metal`
+  features.
+- With windows on the `CVDisplayLink` until a stall, this import draws as 988229b0 did (two
+  rounds of each build, alternating):
+
+  | | 988229b0 | this import |
+  | --- | --- | --- |
+  | `continuous`: submit → glass, p50 | 11.4–11.6 ms | 11.3–12.8 ms |
+  | `flood`: key → glass, p50 | 19.6–19.8 ms | 19.6–20.4 ms |
+  | `idle`: key → glass, p50 | 18.3–18.6 ms | 15.1–17.8 ms |
+  | `echo`: key → echo on the glass, p50 | 31.4–32.8 ms | 32.1–33.2 ms |
+  | `animate`: gap between renders, p99 | 18.7 ms | 18.6–18.7 ms |
+  | `wake`: wake → render, p50 | 76–82 µs | 74–88 µs |
+
 For our patches: `window.rs` (`paint_glyph_scaled` sits next to gpui-fast's
 `pub(crate) fn should_use_subpixel_rendering`), the root `Cargo.toml` (`gpui_ios` member
 and dependency) and `Cargo.lock`. `git am -3` needs the preimage blobs from the zed fork;
@@ -899,16 +1219,10 @@ hash-object -w --stdin` for every `index` line of `format-patch --full-index`).
 ## Testing gpui_ios on the simulator
 
 `gpui_ios`'s tests that need UIKit or CoreText build for `aarch64-apple-ios-sim` and run
-inside a booted simulator. `core-video` pulls in `cgl`, which links `OpenGL.framework`,
-absent on iOS; a test binary links against a stub whose install name is a library the
-simulator has (`/usr/lib/libobjc.A.dylib`), since nothing calls into it:
+inside a booted simulator:
 
 ```sh
-mkdir -p /tmp/iosstub/OpenGL.framework
-printf -- "--- !tapi-tbd\ntbd-version: 4\ntargets: [ arm64-ios-simulator ]\ninstall-name: '/usr/lib/libobjc.A.dylib'\n...\n" \
-  > /tmp/iosstub/OpenGL.framework/OpenGL.tbd
-CARGO_TARGET_AARCH64_APPLE_IOS_SIM_RUSTFLAGS="-C target-cpu=apple-m1 -C link-arg=-F/tmp/iosstub" \
-  cargo test -p gpui_ios --features test-support --target aarch64-apple-ios-sim --lib --no-run
+cargo test -p gpui_ios --features test-support --target aarch64-apple-ios-sim --lib --no-run
 xcrun simctl boot <device>
 xcrun simctl spawn <device> target/aarch64-apple-ios-sim/debug/deps/gpui_ios-<hash>
 xcrun simctl shutdown <device>
@@ -921,15 +1235,3 @@ application: build the example with `--features menu-test` and launch it with
 `examples/ios/src/menu_test.rs`). It checks that UIKit built the menus, that a picked command
 reaches the focused view's action through the responder chain and an unavailable one is
 refused, and that a key command pressed with its chord's modifiers goes through the keymap.
-
-## Building inside Slopty's checkout
-
-Under `slopty/.research/`, Cargo also reads Slopty's `.cargo/config.toml`. Its
-`IPHONEOS_DEPLOYMENT_TARGET` makes `aws-lc-sys` (a dev-dependency through
-`reqwest_client`) reject the host compiler, and Slopty's `rustfmt.toml` asks for nightly
-options. Build and format with:
-
-```sh
-IPHONEOS_DEPLOYMENT_TARGET= cargo test -p gpui --features test-support
-cargo fmt -- --config-path /path/to/empty/rustfmt.toml
-```

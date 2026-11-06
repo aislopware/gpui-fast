@@ -1,8 +1,11 @@
 //! Conversion from UIKit events to GPUI input events.
 
+use std::time::{Duration, Instant};
+
 use gpui::{Pixels, Point, TouchId, px};
 use objc2::msg_send;
 use objc2::runtime::AnyObject;
+use objc2_foundation::NSProcessInfo;
 
 use super::cg_types::ObjcCGPoint;
 use crate::described::UiTouchPhase;
@@ -13,6 +16,26 @@ pub fn touch_location_in_view(touch: *mut AnyObject, view: *mut AnyObject) -> Po
         let location: ObjcCGPoint = msg_send![touch, locationInView: view];
         Point::new(px(location.x as f32), px(location.y as f32))
     }
+}
+
+/// When `touch` was last in its phase: `UITouch.timestamp`, the hardware's time of the event
+/// UIKit read it from, in seconds since the system started ([`instant_of_uptime`]).
+pub fn touch_timestamp(touch: *mut AnyObject) -> f64 {
+    // SAFETY: `UITouch.timestamp` is a plain `NSTimeInterval` property, read on the main thread
+    // that delivers the touch.
+    unsafe { msg_send![touch, timestamp] }
+}
+
+/// The instant `uptime` seconds after the system started (the clock of `UITouch.timestamp`
+/// and `UIEvent.timestamp`, `NSProcessInfo.systemUptime`'s), read against both clocks now; a
+/// time that is not a time, or one ahead of now, is now.
+pub fn instant_of_uptime(uptime: f64) -> Instant {
+    let now = Instant::now();
+    let age = NSProcessInfo::processInfo().systemUptime() - uptime;
+    Duration::try_from_secs_f64(age)
+        .ok()
+        .and_then(|age| now.checked_sub(age))
+        .unwrap_or(now)
 }
 
 /// Returns the current UIKit touch phase.

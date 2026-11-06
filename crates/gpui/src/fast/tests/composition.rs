@@ -70,6 +70,11 @@ fn drawing_order(scene: &Scene) -> Vec<(char, u32)> {
                     .map(|shadow| ('s', shadow.order)),
             ),
             ComposedBatch::Primitives(other) => panic!("unexpected batch {other:?}"),
+            ComposedBatch::Blurs(range) => drawn.extend(
+                scene.backdrop_blurs()[range]
+                    .iter()
+                    .map(|blur| ('b', blur.order)),
+            ),
         }
     }
     drawn
@@ -516,7 +521,7 @@ struct Arrangement {
 impl Render for Arrangement {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let mut rng = StdRng::seed_from_u64(self.seed);
-        let mut random_box = |rng: &mut StdRng| {
+        let random_box = |rng: &mut StdRng| {
             (
                 px(rng.random_range(0.0..400.)),
                 px(rng.random_range(0.0..300.)),
@@ -761,4 +766,213 @@ fn a_native_dropped_with_its_view_goes_without_waiting_for_a_frame() {
         })
         .unwrap();
     assert_eq!(placed, 0, "and the next frame places nothing");
+}
+
+/// A web page in a dialog: a native hosted inside a deferred draw, over a
+/// page native of the root view and the root view's own controls.
+struct Dialog {
+    page: NativeHost,
+    dialog_page: NativeHost,
+}
+
+impl Render for Dialog {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .relative()
+            .size_full()
+            .child(native_view(&self.page).absolute().size(px(300.)))
+            .child(
+                div()
+                    .id("control")
+                    .absolute()
+                    .top(px(50.))
+                    .left(px(50.))
+                    .size(px(200.))
+                    .bg(rgb(0x303030))
+                    .on_mouse_down(crate::MouseButton::Left, |_, _, _| {}),
+            )
+            .child(deferred(
+                anchored().position(point(px(40.), px(40.))).child(
+                    div()
+                        .relative()
+                        .size(px(220.))
+                        .bg(rgb(0x404040))
+                        .occlude()
+                        .child(native_view(&self.dialog_page).size(px(100.)))
+                        .child(
+                            div()
+                                .id("dialog-control")
+                                .absolute()
+                                .top(px(0.))
+                                .left(px(0.))
+                                .size(px(20.))
+                                .bg(rgb(0x505050))
+                                .on_mouse_down(crate::MouseButton::Left, |_, _, _| {}),
+                        ),
+                ),
+            ))
+    }
+}
+
+/// gpui-fast #66 moves such a native's surface above its overlay surface;
+/// here its placement is painted where the dialog paints it, so it is
+/// above all the root view drew under the dialog, below what the dialog
+/// draws after it, and takes the pointer over the root view's control.
+#[test]
+fn a_native_hosted_in_a_deferred_draw_stacks_with_its_dialog() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(|window, cx| Dialog {
+        page: host(window, cx),
+        dialog_page: host(window, cx),
+    });
+    draw(&mut cx, window);
+    let (page, dialog_page) = window
+        .update(&mut cx, |view, _, _| {
+            (view.page.id(), view.dialog_page.id())
+        })
+        .unwrap();
+    cx.update_window(window.into(), |_, window, _| {
+        let scene = &window.rendered_frame.scene;
+        let hole = |id: NativeId| {
+            let placement = scene
+                .natives()
+                .placements
+                .iter()
+                .find(|placement| placement.id == id)
+                .unwrap();
+            placement.order
+        };
+        let quad_order = |color: u32| {
+            scene
+                .quads
+                .iter()
+                .find(|quad| quad.background.solid == rgb(color).into())
+                .map(|quad| quad.order)
+                .unwrap()
+        };
+        assert!(hole(page) < quad_order(0x303030));
+        assert!(quad_order(0x303030) < quad_order(0x404040));
+        assert!(quad_order(0x404040) < hole(dialog_page));
+        // A primitive of a hole's own order is drawn after the hole.
+        assert!(hole(dialog_page) <= quad_order(0x505050));
+        let drawn = drawing_order(scene);
+        let at = |entry: (char, u32)| drawn.iter().position(|drawn| *drawn == entry).unwrap();
+        assert!(
+            at(('h', hole(dialog_page))) < at(('q', quad_order(0x505050))),
+            "{drawn:?}"
+        );
+        assert!(
+            at(('q', quad_order(0x404040))) < at(('h', hole(dialog_page))),
+            "{drawn:?}"
+        );
+
+        let hit_map = window.native_hit_map().unwrap();
+        assert_eq!(
+            hit_map.native_at(point(px(100.), px(100.))),
+            Some(dialog_page),
+            "the dialog's page over the root view's control"
+        );
+        assert_eq!(
+            hit_map.native_at(point(px(45.), px(45.))),
+            None,
+            "the dialog's own control over its page"
+        );
+        assert_eq!(
+            hit_map.native_at(point(px(270.), px(10.))),
+            Some(page),
+            "the root view's page outside the dialog"
+        );
+    })
+    .unwrap();
+}
+
+struct Described {
+    plain: NativeHost,
+    named: NativeHost,
+}
+
+impl Render for Described {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("root")
+            .role(accesskit::Role::Group)
+            .relative()
+            .size_full()
+            .child(
+                native_view(&self.plain)
+                    .id("plot")
+                    .absolute()
+                    .top(px(10.))
+                    .left(px(20.))
+                    .w(px(100.))
+                    .h(px(50.)),
+            )
+            .child(
+                native_view(&self.named)
+                    .id("card")
+                    .role(accesskit::Role::Document)
+                    .aria_label("Page: chart")
+                    .absolute()
+                    .top(px(100.))
+                    .left(px(20.))
+                    .w(px(100.))
+                    .h(px(50.)),
+            )
+    }
+}
+
+/// A native with an id is a node of the accessibility tree where it is placed,
+/// so assistive technologies and tests find it among GPUI's own: a group named
+/// for its host, with no role or label of its element's needed; an element's
+/// own role and label win.
+#[test]
+fn a_native_is_a_node_of_the_accessibility_tree_where_it_shows() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(|window, cx| {
+        let labelled = |label: &str| NativeHostOptions {
+            label: Some(label.to_owned().into()),
+            ..NativeHostOptions::default()
+        };
+        Described {
+            plain: window
+                .create_native_host(labelled("Page: plot"), cx)
+                .expect("the test platform composes natives"),
+            named: window
+                .create_native_host(labelled("unused"), cx)
+                .expect("the test platform composes natives"),
+        }
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.set_a11y_active(true);
+        window.draw_and_present(cx);
+    })
+    .unwrap();
+    cx.update_window(window.into(), |_, window, _| {
+        let scale = f64::from(window.scale_factor());
+        let tree = window.a11y_tree().expect("a tree after an active frame");
+        let node = |label: &str| {
+            tree.nodes
+                .iter()
+                .map(|(_, node)| node)
+                .find(|node| node.label() == Some(label))
+                .unwrap_or_else(|| panic!("a node named {label}"))
+        };
+        let plain = node("Page: plot");
+        assert_eq!(plain.role(), accesskit::Role::Group);
+        let bounds = plain.bounds().expect("bounds");
+        assert_eq!(
+            (bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+            (20. * scale, 10. * scale, 120. * scale, 60. * scale),
+            "where the native shows"
+        );
+        let named = node("Page: chart");
+        assert_eq!(named.role(), accesskit::Role::Document);
+        assert!(
+            tree.nodes
+                .iter()
+                .all(|(_, node)| node.label() != Some("unused")),
+            "the element's own label wins"
+        );
+    })
+    .unwrap();
 }

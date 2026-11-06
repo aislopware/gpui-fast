@@ -172,6 +172,14 @@ unchanged, and a new entry needs as good a reason.
   `UIRotationGestureRecognizer`, touch screen or trackpad, is delivered in
   the same units; UIKit has no smart magnify, and iPadOS keeps
   three-finger trackpad swipes for itself.
+- `TouchEvent::timestamp` is a new public field (`fast/touch_time.rs`): when the touch was in
+  its phase, by the platform's clock (`UITouch.timestamp` on iOS), `None` where the platform
+  says nothing (the web, tests). Upstream's recognizer times each touch as it handles it, so a
+  main thread busy when a lift arrives makes every fling a finger threw read as one that had
+  stopped (a lift more than 40 ms after the last move), and moves that waited and came all at
+  once read as faster than the finger was. Only the platform knows when the finger moved, and
+  the event is how it says so. A fling still runs from when its release is handled. Code that
+  builds a `TouchEvent` without `..Default::default()` adds the field.
 - `CursorStyle::Image(CursorImageId)`, `CursorImage`, `CursorImageId`,
   `CURSOR_IMAGE_MAX_SIDE` and `App::set_cursor_image` are new public API
   (`fast/cursor.rs`, `gpui_macos/src/fast/cursor.rs`), with a defaulted
@@ -187,6 +195,18 @@ unchanged, and a new entry needs as good a reason.
   needs none, so a test that shapes and rasterises real glyphs (Slopty's terminal
   paint oracle) takes it from here. Windows' and Linux's text systems need their
   platform's devices and still come from a headless platform.
+- `InlineBox`, `StyledText::with_inline_boxes`, `LineLayout::with_inline_boxes`,
+  `WrappedLineLayout::glyph_position_for_index` and `TextLayout::baseline_for_index` are new
+  public API (`fast/inline_boxes.rs`). Upstream's text runs are glyphs only, so a formula, an
+  image or a chip inside a paragraph could only be drawn as text or break the paragraph into
+  pieces that wrap apart. A box stands for a range of the text: the text keeps its bytes, so
+  selection, copying and assistive technologies read them, while the line lays one unbroken box
+  of the box's width out there (its glyphs give way to one blank glyph, the glyphs after it
+  move), keeping its height and baseline, and never wrapping inside it. The text is shaped as
+  it is without boxes, from the line layout cache, and the boxes laid out over that shape, so
+  nothing changes for text without boxes. The caller paints each box at the baseline point of
+  its range's start (`fast/tests/inline_boxes.rs`). Slopty sets TeX formulas inside a line of
+  a reply this way.
 - `Window::paint_mask`, `RenderMaskParams` and `AtlasKey::Mask` are new public API
   (`fast/mask.rs`). Upstream's monochrome sprites are glyphs and SVGs, and an SVG is
   rasterised at twice the device size and halved by the sampler. Slopty's icons are the
@@ -200,6 +220,18 @@ unchanged, and a new entry needs as good a reason.
   its renderer's offscreen render, are new. Upstream renders a window only at its display's
   scale; Slopty's visual tests run on a 1x display and keep one Retina golden, so a
   regression that shows only at 2x is caught too.
+- `TestAppContext::build_with_renderer(dispatcher, fn_name, text_system, assets,
+  renderer_factory)` and the defaulted `PlatformHeadlessRenderer::fast_set_transparent`
+  (test-support, `fast/test_pixels.rs`) are new; a test window keeps the background it is given
+  and forwards it to its renderer, and renders at another scale
+  (`fast_render_scene_to_image`). Upstream's test context has a no-op text system, no assets
+  and no renderer, and its constructor that takes a platform is private, so only
+  `HeadlessAppContext`, which has no input simulation and no `VisualTestContext`, draws real
+  pixels; and its test window drew every frame opaque. Slopty renders its whole interface
+  in a test window with Core Text, its icons and the Metal renderer, and compares the picture
+  with the one its app draws (frosted surfaces included), in its test process. Metal's
+  headless renderer forwards the transparency to `update_transparency`; wgpu's keeps
+  drawing opaque.
 - `TextSmoothing`, `App::set_text_smoothing`, `App::text_smoothing`,
   `Window::with_text_smoothing` and `Window::text_smoothing` are new public API
   (`fast/text_smoothing.rs`). Upstream dilates light glyphs on macOS as Core
@@ -226,6 +258,15 @@ unchanged, and a new entry needs as good a reason.
   the wgpu and Direct3D renderers draw everything unfaded. With
   `test-support`, `Scene::edge_fade_ramps`, `Scene::add_edge_fade` and
   `Scene::insert_faded_primitive` let a renderer's test build a faded scene.
+- `radial_gradient(center, radius, from, to)` is new public API
+  (`fast/radial_gradient.rs`). Upstream's backgrounds are a
+  solid colour, a linear gradient and two patterns, so a soft glow or a lit
+  surface could only be faked with stacked shadows. The ellipse is placed in
+  fractions of the bounds, and rides fields a linear gradient leaves alone in
+  `Background`'s shared `repr(C)` layout (the radii in `solid`'s hue and
+  saturation, the centre in the stops' percentages), so the struct keeps
+  upstream's size. Metal, wgpu and Direct3D all draw it, in the colour space
+  the background asks for.
 - A tooltip (`.tooltip(..)`, `.hoverable_tooltip(..)`) on an element that
   tracks a focus handle also shows while the element is focus-visible:
   focused, with the keyboard the last input (`fast/focus_tooltip.rs`).
@@ -238,6 +279,26 @@ unchanged, and a new entry needs as good a reason.
   element with a tooltip pays one test in its paint and, with a focus
   handle, one focus question; `focus_tooltip_bench` in
   `fast/tests/focus_tooltip.rs` measures 100 such controls.
+- `TooltipPlacement`, `StatefulInteractiveElement::tooltip_placement`,
+  `Interactivity::tooltip_placement`, `Window::set_tooltip_placement` and
+  `TOOLTIP_WARM_FOR` are new public API (`fast/focus_tooltip.rs`). Upstream
+  hangs a hover tooltip 1 px from the pointer, so the arrow covers its first
+  words, and makes every tooltip wait its full delay. An element, or the
+  window for all its elements, can anchor the tooltip centred below or above
+  the element instead, flipping where the window has no room and kept 8 px
+  inside it, as the focus tooltip sits; the pointer stays the default. Once
+  one has shown, the next shows at once while one is up or hid under 400 ms
+  ago (Base UI's and Radix's delay groups).
+- `StatefulInteractiveElement::aria_disabled` is new public API: upstream
+  has no way to say a control is disabled, so a dimmed button read as
+  usable to assistive tech.
+- `Window::observe_draws(cx, callback)` is new public API
+  (`fast/draw_timing.rs`): after each draw of the window it hands the
+  callback when the draw began and how long render, layout, prepaint and
+  paint took. A host's frame-time probe drawn inside the window sees only
+  the views built again around it, so a frame that rebuilds one cached view
+  goes unseen; upstream's own window profiler keeps only histograms and
+  only behind its `profiler` feature.
 - `StateTransition` and `StatefulInteractiveElement::transition` are new
   public API (`fast/transition.rs`). Upstream swaps a hover, active, focus or
   drag-over style in the frame its state changes; a design system's pointer
@@ -268,19 +329,151 @@ unchanged, and a new entry needs as good a reason.
   notifies the view holding the value. No upstream code calls it, so it
   costs nothing unused; a hundred values at rest add about 0.02 ms to a
   frame (`value_transition_bench` in `fast/tests/value_transition.rs`).
-- The workspace pins Taffy 0.14 where upstream pins 0.13. Taffy 0.13 keeps
-  one cached size per kind of constraint, so a node measured under two widths
-  in one layout evicts one with the other, and the clean subtrees around a
-  single dirty node are laid out again on every frame; 0.14 keeps nine sizes
-  per node whatever their kind. 0.14 hands a leaf's measure function its whole
-  layout, so `taffy.rs` lays the tree out through
-  `fast::layout::MeasuredTaffy`, which lays each leaf out around GPUI's
-  measurement as 0.13 did. When upstream moves to 0.14 or later, the sync
-  takes its version and drops `MeasuredTaffy`.
+- `ListState::set_tail_reservation`, `ListState::offset_for_item` and
+  `ListState::tail_reservation_filled` are new public API (`fast/list_tail.rs`),
+  ported from zui (<https://github.com/zeronsh/zui> `8425850`; Apache-2.0, by
+  Wing; the notice is kept at the top of the file). A chat transcript that
+  scrolls the turn just sent to the top of its viewport needs a viewport's
+  height below it before the answer exists; padding written after paint shows
+  a gap for a frame and lets a scroll reach it, so the list sizes the space as
+  it lays its rows out, as trailing space in its last row's box that appended
+  rows take up. Slopty's transcript, copied from zeron, calls it as zeron does.
+  Unused, it is one comparison per row laid out and two calls per layout. A
+  scroll layer keeps the last row and the space below it as one row
+  (`fast/tests/list_tail.rs`).
+- `ImageSource::evict` and `App::peek_asset` are new public API
+  (`fast/image_evict.rs`), ported from zui, which carries wingleeio/zed
+  `b687328` (Apache-2.0, by Wing; the notice is kept at the top of the file).
+  `ImageSource::remove_asset` forgets an image's cached load, but its decoded
+  `RenderImage` lives inside that load, so its sprite atlas tiles stay in every
+  window with nothing able to hand them to `App::drop_image`: each image shown
+  from bytes leaks its tiles, and a large one a texture
+  (`evicting_an_image_frees_its_atlas_tiles` shows the leak and its fix).
+  `evict` removes the load and drops the tiles; `peek_asset` reads a finished
+  load without starting one.
+- `Window::with_rounded_clip` is new public API, with `EdgeFadeRamps`'s
+  `clip` and `radii` fields and its `rounded`, `clips` and `coverage_at`
+  (`fast/edge_fade.rs`; docs/retained-mode.md, "Edge fades"), ported from
+  zui (<https://github.com/zeronsh/zui> `361ff20`; Apache-2.0, by fate; the
+  notice is in the module's documentation). A content mask is a rectangle, so
+  content scrolling inside a rounded card shows past its corners; over an
+  opaque card a corner painted over it hides that, over glass nothing can.
+  The clip rides in the edge fade table each primitive already indexes, so it
+  adds no byte to a primitive and is drawn by the fade's shader path; an
+  entry grows from 48 to 80 bytes. Only Metal draws it.
+- `Window::on_present` is new public API (`fast/present.rs`), in zui's shape
+  (<https://github.com/zeronsh/zui>; Apache-2.0, by Wing and the zui
+  contributors): a callback run each time the frame painted reaches the
+  screen, for a native child view placed by hand. A subtree drawn again from
+  last frame hands its callbacks again; a stretch handing one is painted
+  again rather than moved, and scroll content handing one is drawn without
+  tiles. zui's `Window::enable_scene_overlay`, a second GPUI surface over
+  native children, is not carried: natives go under the one layer with
+  holes (docs/composition.md), through `Window::create_native_host`.
+- `Window::paint_glyph_transformed` is new public API (`fast/glyph_blur.rs`),
+  ported from zui (<https://github.com/zeronsh/zui> `0966d06`; Apache-2.0, by
+  Wing; the notice is in the module's documentation). zeron's rolling digits
+  scale and blur each glyph as it slides in, from one raster. The blur's
+  standard deviation rides in the sprite's `tile.padding`, as `f32` bits,
+  which no atlas sets, so `MonochromeSprite` keeps upstream's layout where
+  zui adds a field to it and to each renderer's mirror; only Metal blurs,
+  elsewhere the glyph is drawn sharp, transformed.
+- `Window::paint_image_fitted_masked` and `ImageAlphaMask` are new public
+  API, with `EdgeFadeRamps`'s `mask`, `mask_shape` and `mask_bottom` and its
+  `masks` and `mask_at` (`fast/image_mask.rs`; docs/retained-mode.md, "Edge
+  fades"), ported from zui (<https://github.com/zeronsh/zui> `aa00941`;
+  Apache-2.0, by Gaël Cado; the notice is in the module's documentation).
+  zeron's new-thread hero clears the space around the composer laid over it
+  by feathering a rounded rectangle out of the wallpaper, which a quad
+  painted over it can't do over glass, and moves the cutout every frame the
+  composer grows without rasterizing the image again. The mask rides in the
+  fade table, not in 40 more bytes on every image sprite as in zui; an entry
+  grows from 80 to 128 bytes. Only Metal draws it.
+- `Window::paint_backdrop_blur` is new public API, with `BackdropBlur`,
+  `Scene::backdrop_blurs`, `Scene::insert_backdrop_blur` and
+  `ComposedBatch::Blurs` (`fast/backdrop.rs`, `gpui_apple/src/fast/backdrop.rs`;
+  docs/composition.md, "Backdrop blur"), ported from zui
+  (<https://github.com/zeronsh/zui> `361ff20`; Apache-2.0, by Wing and the zui
+  contributors; the notice is in the module's documentation). A frosted
+  popover, menu or composer shows the content behind it blurred; a translucent
+  fill alone shows it sharp. The blur is a paint operation ordered as a
+  native's hole is, so retention, paint layers and list layers carry it; a
+  scroll container whose content blurs draws without its tiles. Only Metal
+  draws it, with Metal Performance Shaders; elsewhere nothing is drawn.
+- `NativeFrame::blurs` and `NativeFrameBlur` are new public API, with
+  `MacNativeHost::blur_views` for tests (`fast/composition/frame.rs`,
+  `gpui_macos/src/fast/native_blur.rs`; docs/composition.md, "Over a native"),
+  ported from zui (<https://github.com/zeronsh/zui> `b8f3465` and its PR #5;
+  Apache-2.0, by Wing and the zui contributors; the notice is in the module's
+  documentation). A backdrop blur reads GPUI's drawable, which is transparent
+  where a native shows, so a frosted menu over a web page left the page sharp.
+  The presented frame names each blur over a native, and macOS blurs the native
+  under it with a private `CABackdropLayer` between the natives and GPUI's
+  layer, in the transaction that moves the hole. `NativeFrame` is composition's
+  own type, so the field changes nothing of upstream's.
+- `gpui_platform::set_clipboard_pasteboard`, with `gpui_macos`'s and
+  `gpui_ios`'s, is new public API (`gpui_macos/src/fast/pasteboard.rs`,
+  `gpui_platform/src/fast/clipboard.rs`, `gpui_ios`'s platform). Upstream's
+  clipboard is always the general pasteboard, so an application that shares
+  its clipboard through a pasteboard of its own copied to one and shared
+  another, and its tests' copies landed on the person's clipboard. Named once
+  at startup, GPUI's clipboard reads and writes that pasteboard instead; the
+  find pasteboard is never redirected. macOS and iOS only.
+- `Window::text_input_focused` is new public API (`fast/focus.rs`): whether
+  the focused element is a text field the last frame registered, its input
+  handler taking text, as the platform was last told at that frame's end, so
+  the focus moving from one field to another between frames keeps it true.
+  The platform shows its soft keyboard for one, and a
+  layout that makes room for the keyboard needs to know when a button or a
+  pane took the focus and the keyboard went; GPUI keeps the answer privately
+  for the platform. A view that reads it is built again when it changes.
+- `Window::frame_time`, `App::frame_time` and `Window::repeat_frame_time` are
+  new public API (`fast/frame_time.rs`): the moment the frame being drawn
+  shows (the app's is that while a window draws, now between frames), and the
+  next frame shown at the moment the last frame showed. Every animation of a
+  frame reads one moment, taken as the frame starts drawing, where upstream
+  reads the wall clock as each is laid out; a check that draws the frame
+  shown again from scratch and compares the two (Slopty's retained-mode
+  oracle) draws it at the same moment, or a fade drawn a hair short of its
+  end in the frame shown is at its end in the one from scratch. Code that
+  animates on its own clock reads `frame_time` to be drawn again the same.
+- `Window::touch_in_flight` is new public API (`fast/touch_in_flight.rs`):
+  whether a finger is on the window or the fling it threw still coasts. A
+  main thread busy under a finger is a scroll that stops dead and a fling
+  that freezes, and some work an app does cannot leave the main thread: the
+  first web view a process makes takes WebKit's own start, 730 ms in Slopty's
+  iPhone simulator. GPUI keeps the answer privately in its touch recognizer.
+  A view that reads it is built again when it changes, so the view that held
+  work does it once the touch is over.
+- `Window::set_appearance` and `App::on_window_appearance_change` are new
+  public API (`fast/window_appearance.rs`), with the defaulted
+  `PlatformWindow::set_appearance` and `Platform::on_window_appearance_change`
+  the backends implement. Upstream sets an appearance only for every window
+  at once (`App::set_window_appearance`). A terminal gives one window the
+  appearance of the background its program paints, as Ghostty does, so the
+  traffic lights, menus and scrollers the platform draws read on it, while
+  the application and its theme keep theirs. A window with its own
+  appearance no longer hears the system's light and dark, so what follows
+  the application needs the application's own change, which upstream reports
+  through no callback.
 
 When the check fails, move the change into a `fast/` module and leave a hook
 behind that names it; use `git diff <import_commit> -- <file>` to see what
 differs.
+
+### gpui_ios
+
+`crates/gpui_ios` is gpui-fast's own iOS backend under an upstream path. It began as
+zed#63068's August draft and has grown by 31 commits since. These deliver hardware keys and
+Return as key events, VoiceOver through the accessibility tree, edit menus, native composition
+(`ios/composition.rs`), the pointer, pinch, frame pacing, keyboard insets and `render_to_image`.
+They also add the UIKit-boundary input a host's tests drive (`inject`, `described`). zed merged
+#63068 on 2026-10-14 as a rewrite on typed objc2 with Rust-owned scene delegates, and it has
+none of these. Since gpui_platform depends on it, the zed import tracks the crate and the
+vendor commit holds zed's copy. The merge keeps ours, and `script/upstream-allowlist` exempts
+the directory. What zed's backend does better is ported into ours as it comes. Its core API
+(window insets, `TextInputStateChange`, `request_virtual_keyboard`, the input handler's
+`focus_id`, `AppLifecyclePhase::Disconnected`) is upstream's, unchanged.
 
 ## Syncing with upstream
 
@@ -310,4 +503,19 @@ commit our copy was taken from is `zed_commit` in `UPSTREAM`, and
 4. Update `zed_commit` and `import_commit` in `UPSTREAM` to the new zed commit
    and the new vendor commit, and add or remove entries under `tracked` if zed
    added or removed crates we use.
-5. Run `script/check-upstream`, the tests and clippy.
+5. Look at whether upstream changed how an index under the pointer is found:
+   `TextLayout::index_for_position`'s steps from line to line (with
+   `WrappedLineLayout::size` and `WrappedLine::len`),
+   `WrappedLineLayout::_index_for_position` and `LineLayout::index_for_x`
+   (`git diff <old vendor commit> <new vendor commit> --
+   crates/gpui/src/elements/text.rs crates/gpui/src/text_system/line.rs
+   crates/gpui/src/text_system/line_layout.rs`). `fast/interactive_text.rs`
+   follows those steps to lay hitboxes over where an `InteractiveText` shows
+   the hand, while its clicks still go through upstream's code; port the
+   change into it, or the hand and the clicks part. Nothing conflicts there
+   either.
+6. Run `script/check-upstream`, the tests and clippy.
+7. Check that `window/a11y.rs` still keeps the tree it last sent in
+   `A11yDebug::last_tree_update` in every build: `fast/a11y.rs` reads the
+   nodes it draws again from there
+   (`a11y_frame_keeps_the_tree_it_sent` fails if it stops).

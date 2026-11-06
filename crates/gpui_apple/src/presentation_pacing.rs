@@ -74,6 +74,11 @@ impl PresentationPacer {
     }
 
     /// The display's shortest refresh interval.
+    pub(crate) fn refresh(&self) -> Duration {
+        self.refresh
+    }
+
+    /// The display's shortest refresh interval.
     pub(crate) fn set_refresh(&mut self, refresh: Duration) {
         if refresh != self.refresh {
             self.refresh = refresh;

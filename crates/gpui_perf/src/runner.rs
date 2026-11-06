@@ -36,7 +36,10 @@ use gpui::{
 };
 use serde::Serialize;
 
-use crate::{Scenario, all_scenarios, alloc::allocations};
+use crate::{
+    Scenario, all_scenarios,
+    alloc::{allocations, live_bytes},
+};
 
 /// Which retention modes to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,6 +145,8 @@ pub struct PhaseAverages {
     pub paints_moved: f64,
     /// Scroll containers drawn from a scroll layer's cached tiles.
     pub layer_frames_composited: f64,
+    /// Of those, the frames whose content was painted into the layer again.
+    pub layer_frames_repainted: f64,
     /// Scroll layer tiles repaints changed.
     pub tiles_dirtied: f64,
     /// Scroll layers painted again before an input event.
@@ -175,6 +180,7 @@ impl PhaseAverages {
             paints_replayed: stats.paints_replayed as f64 / n,
             paints_moved: stats.paints_moved as f64 / n,
             layer_frames_composited: stats.layer_frames_composited as f64 / n,
+            layer_frames_repainted: stats.layer_frames_repainted as f64 / n,
             tiles_dirtied: stats.tiles_dirtied as f64 / n,
             layer_rebuilds_for_input: stats.layer_rebuilds_for_input as f64 / n,
         }
@@ -204,8 +210,46 @@ pub struct RunReport {
     pub allocations: f64,
     /// Bytes allocated per frame, in KiB, step excluded.
     pub allocated_kib: f64,
+    /// Bytes the process holds more once the measured frames are drawn than
+    /// before the scenario was built, in MiB; the window and what the scenario
+    /// drew are in it.
+    pub live_heap_mib: f64,
+    /// The kept path shapes, over the measured frames (per frame) and at the
+    /// end; see `gpui::PathCacheStats`.
+    pub paths: PathCacheReport,
     /// Measured frames whose step left the window clean, drawn explicitly.
     pub forced_draws: usize,
+}
+
+/// What the kept path shapes did per measured frame, and hold at the end.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct PathCacheReport {
+    pub hits: f64,
+    pub misses: f64,
+    pub evictions: f64,
+    /// The weight of one path tessellated, in KiB (zero if none was).
+    pub built_kib_per_miss: f64,
+    /// The weight of the shapes kept at the end, in MiB.
+    pub held_mib: f64,
+    pub held_shapes: f64,
+}
+
+impl PathCacheReport {
+    fn between(before: gpui::PathCacheStats, after: gpui::PathCacheStats, frames: f64) -> Self {
+        let misses = after.misses - before.misses;
+        Self {
+            hits: (after.hits - before.hits) as f64 / frames,
+            misses: misses as f64 / frames,
+            evictions: (after.evictions - before.evictions) as f64 / frames,
+            built_kib_per_miss: if misses == 0 {
+                0.
+            } else {
+                (after.built_bytes - before.built_bytes) as f64 / 1024. / misses as f64
+            },
+            held_mib: after.held_bytes as f64 / (1024. * 1024.),
+            held_shapes: after.held_shapes as f64,
+        }
+    }
 }
 
 /// Result of running two windows in lockstep and comparing what they painted.
@@ -542,6 +586,7 @@ fn frame(
 
 /// Runs scenario `index` in one retention mode.
 fn measure(index: usize, retention: bool, options: &Options) -> RunReport {
+    let live_before = live_bytes();
     let scenario = fresh_scenario(index);
     let mut cx = new_context();
     let (window, root) = open(&mut cx, &*scenario, retention, options);
@@ -552,6 +597,7 @@ fn measure(index: usize, retention: bool, options: &Options) -> RunReport {
 
     cx.update_window(window, |_, window, _| window.reset_layout_stats())
         .unwrap();
+    let paths_before = gpui::path_cache_stats();
 
     let mut costs = Vec::with_capacity(options.frames);
     let mut costs_wall = Vec::with_capacity(options.frames);
@@ -592,6 +638,8 @@ fn measure(index: usize, retention: bool, options: &Options) -> RunReport {
         phases: PhaseAverages::of(&stats, options.frames),
         allocations: allocation_count as f64 / frames,
         allocated_kib: allocated_bytes as f64 / 1024. / frames,
+        live_heap_mib: (live_bytes() as f64 - live_before as f64) / (1024. * 1024.),
+        paths: PathCacheReport::between(paths_before, gpui::path_cache_stats(), frames),
         forced_draws,
     }
 }
@@ -815,7 +863,7 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
         let _ = writeln!(out);
 
         type Row = (&'static str, fn(&RunReport) -> f64, usize);
-        let rows: [Row; 33] = [
+        let rows: [Row; 41] = [
             ("frame mean ms", |r| r.frame.mean_ms, 3),
             ("frame p50 ms", |r| r.frame.p50_ms, 3),
             ("frame p95 ms", |r| r.frame.p95_ms, 3),
@@ -848,6 +896,11 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
                 |r| r.phases.layer_frames_composited,
                 2,
             ),
+            (
+                "layer frames repainted",
+                |r| r.phases.layer_frames_repainted,
+                2,
+            ),
             ("tiles dirtied", |r| r.phases.tiles_dirtied, 2),
             (
                 "layer rebuilds for input",
@@ -856,6 +909,13 @@ pub fn format_reports(reports: &[ScenarioReport]) -> String {
             ),
             ("allocations", |r| r.allocations, 1),
             ("allocated KiB", |r| r.allocated_kib, 1),
+            ("live heap growth MiB", |r| r.live_heap_mib, 1),
+            ("path hits", |r| r.paths.hits, 1),
+            ("path misses", |r| r.paths.misses, 2),
+            ("path evictions", |r| r.paths.evictions, 3),
+            ("path KiB per miss", |r| r.paths.built_kib_per_miss, 1),
+            ("path cache held MiB", |r| r.paths.held_mib, 1),
+            ("path cache shapes", |r| r.paths.held_shapes, 0),
             ("step ms (not counted)", |r| r.step.mean_ms, 3),
         ];
         for (label, value, precision) in rows {
@@ -1076,14 +1136,20 @@ mod tests {
     /// view, and what it paints moves.
     #[test]
     fn scroll_scenarios_scroll_with_the_wheel() {
-        const NAMES: [&str; 7] = [
+        const NAMES: [&str; 13] = [
             "scroll-child-view",
             "scroll-same-view",
             "scroll-uniform-list",
             "scroll-list",
             "scroll-list-beside-input",
+            "scroll-list-tables",
             "chat-scroll",
             "chat-scroll-no-button",
+            "chat-scroll-plain",
+            "chat-scroll-animates",
+            "chat-scroll-trackpad",
+            "chat-scroll-allsum",
+            "chat-scroll-allsum-wheel",
         ];
         let options = Options::default();
         for name in NAMES {
@@ -1094,15 +1160,19 @@ mod tests {
             let scenario = fresh_scenario(index);
             let mut cx = new_context();
             let (window, root) = open(&mut cx, &*scenario, true, &options);
-            let mut painted = painted_quads(&mut cx, window);
             assert!(
-                painted.iter().any(|line| line.starts_with("monochrome")),
+                painted_quads(&mut cx, window)
+                    .iter()
+                    .any(|line| line.starts_with("monochrome")),
                 "{name}: no icon or text painted"
             );
+            // Composited tiles are listed where the layer holds them, so
+            // compare the content they composite.
+            let mut painted = painted_primitives(&mut cx, window);
             for n in 0..6 {
                 let sample = frame(&mut cx, window, &*scenario, &root, n);
                 assert!(!sample.forced, "{name}: frame {n} drew nothing by itself");
-                let now = painted_quads(&mut cx, window);
+                let now = painted_primitives(&mut cx, window);
                 assert_ne!(
                     now, painted,
                     "{name}: frame {n} painted what frame {n} - 1 did"

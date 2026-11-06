@@ -31,8 +31,8 @@ use std::mem;
 use smallvec::SmallVec;
 
 use crate::{
-    App, Bounds, Hitbox, Interactivity, ListOffset, Pixels, Point, ScrollWheelEvent, Style,
-    TouchEvent, TouchPhase, Window,
+    App, Bounds, Hitbox, Interactivity, ListOffset, Pixels, Point, ScrollEvent, Style, TouchEvent,
+    TouchPhase, Window,
     gestures::{Momentum, RecognizedTouchGesture, TouchGestureRecognizer, scroll_event},
     size,
 };
@@ -47,6 +47,9 @@ pub(crate) struct Fling {
     heard: Option<Heard>,
     /// A momentum tick is scheduled.
     ticking: bool,
+    /// Whether a touch was in flight when the views that read it were last
+    /// told (`fast/touch_in_flight.rs`).
+    pub(crate) in_flight: bool,
 }
 
 /// What the containers a scroll step reached reported.
@@ -90,7 +93,7 @@ pub(crate) fn replace(
 /// Dispatches one step of a touch's scroll (the hook in
 /// `Window::dispatch_recognized_touch_gesture`), and ends the fling when the
 /// step was momentum that moved nothing.
-pub(crate) fn dispatch_scroll(window: &mut Window, event: &ScrollWheelEvent, cx: &mut App) {
+pub(crate) fn dispatch_scroll(window: &mut Window, event: &ScrollEvent, cx: &mut App) {
     let outer = window
         .touch_gestures
         .fast_fling
@@ -139,6 +142,7 @@ pub(crate) fn schedule_tick(window: &mut Window) {
         if window.touch_gestures.has_momentum() {
             schedule_tick(window);
         }
+        crate::fast::touch_in_flight::stamp(window, cx);
     });
 }
 
@@ -207,7 +211,7 @@ fn heard(window: &mut Window, hitbox: &Hitbox, moved: bool) {
     heard.moved |= moved;
 }
 
-fn closing_step(momentum: &Momentum) -> ScrollWheelEvent {
+fn closing_step(momentum: &Momentum) -> ScrollEvent {
     scroll_event(momentum.position, Point::default(), TouchPhase::Ended)
         .fast_momentum(TouchPhase::Ended)
 }

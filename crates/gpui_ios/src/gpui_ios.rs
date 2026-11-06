@@ -19,7 +19,7 @@ mod menus;
 pub mod pointer;
 
 #[cfg(target_os = "ios")]
-pub use ios::{IosPlatform, current_platform, text_system};
+pub use ios::{IosPlatform, current_platform, set_clipboard_pasteboard, text_system};
 
 /// Why a described input could not be delivered.
 #[cfg(all(target_os = "ios", feature = "test-support"))]

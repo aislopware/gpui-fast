@@ -24,12 +24,14 @@ impl Render for Tip {
     }
 }
 
-/// Three 40×20 controls with tooltips: `a` and `b` side by side near the
-/// top, `c` at the window's foot. Escape is bound to `Cancel` around them.
+/// Four 40×20 controls with tooltips: `a` and `b` side by side near the
+/// top, `c` at the window's foot, `edge` flush with the window's right edge.
+/// Escape is bound to `Cancel` around them.
 struct Controls {
     a: FocusHandle,
     b: FocusHandle,
     c: FocusHandle,
+    edge: FocusHandle,
     cancels: Rc<Cell<usize>>,
 }
 
@@ -54,6 +56,7 @@ impl Render for Controls {
     fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let cancels = self.cancels.clone();
         let foot = window.viewport_size().height - px(30.);
+        let right = window.viewport_size().width - px(40.);
         div()
             .key_context("Controls")
             .size_full()
@@ -61,6 +64,7 @@ impl Render for Controls {
             .child(control("a", &self.a, px(100.), px(50.)))
             .child(control("b", &self.b, px(200.), px(50.)))
             .child(control("c", &self.c, px(100.), foot))
+            .child(control("edge", &self.edge, right, px(50.)))
     }
 }
 
@@ -93,12 +97,19 @@ fn setup() -> Setup {
     let mut cx = TestAppContext::single();
     cx.update(|cx| cx.bind_keys([KeyBinding::new("escape", Cancel, Some("Controls"))]));
     let (a, b, c) = cx.update(|cx| (cx.focus_handle(), cx.focus_handle(), cx.focus_handle()));
+    let edge = cx.update(|cx| cx.focus_handle());
     let cancels = Rc::new(Cell::new(0));
     let window = cx
         .add_window({
             let (a, b, c, cancels) = (a.clone(), b.clone(), c.clone(), cancels.clone());
             move |_, cx| Host {
-                controls: cx.new(|_| Controls { a, b, c, cancels }),
+                controls: cx.new(|_| Controls {
+                    a,
+                    b,
+                    c,
+                    edge,
+                    cancels,
+                }),
             }
         })
         .into();
@@ -122,7 +133,7 @@ impl Setup {
             .unwrap();
     }
 
-    fn press(&mut self, key: &str) {
+    fn press(&mut self, key: &'static str) {
         let keystroke = Keystroke::parse(key).unwrap();
         self.cx
             .update_window(self.window, |_, window, cx| {
@@ -243,6 +254,7 @@ fn the_tooltip_follows_the_focus() {
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
     assert_eq!(s.tooltip_at(), Some((90., 74.)));
     s.tab_to(&b);
+    s.wait(crate::fast::tooltip_exit::EXIT); // it fades out first
     assert_eq!(s.tooltip(), None, "gone with the focus");
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
     assert_eq!(s.tooltip_at(), Some((190., 74.)));
@@ -259,6 +271,7 @@ fn escape_hides_it_first_and_keeps_the_focus() {
     assert!(s.tooltip().is_some());
 
     s.press("escape");
+    s.wait(crate::fast::tooltip_exit::EXIT); // it fades out first
     assert_eq!(s.tooltip(), None);
     assert!(s.is_focused(&a));
     assert_eq!(s.cancels.get(), 0, "the binding never saw it");
@@ -298,6 +311,7 @@ fn the_pointer_hides_it() {
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
     assert!(s.tooltip().is_some());
     s.move_mouse(5., 5.);
+    s.wait(crate::fast::tooltip_exit::EXIT); // it fades out first
     assert_eq!(s.tooltip(), None);
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
     assert_eq!(s.tooltip(), None);
@@ -313,6 +327,89 @@ fn a_control_focused_with_the_pointer_shows_nothing() {
     s.focus(&a);
     s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
     assert_eq!(s.tooltip(), None);
+}
+
+/// Anchored, a hover's tooltip sits centred below the control, not at the
+/// pointer, and above it at the window's foot.
+#[test]
+fn an_anchored_hover_tooltip_sits_under_its_control() {
+    let mut s = setup();
+    s.cx.update_window(s.window, |_, window, _| {
+        window.set_tooltip_placement(crate::TooltipPlacement::Below)
+    })
+    .unwrap();
+    s.move_mouse(135., 65.);
+    s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
+    assert_eq!(s.tooltip_at(), Some((90., 74.)));
+
+    s.move_mouse(5., 5.);
+    s.wait(Duration::from_secs(1));
+    let viewport =
+        s.cx.update_window(s.window, |_, window, _| window.viewport_size())
+            .unwrap();
+    let top = viewport.height.as_f32() - 30.;
+    s.move_mouse(110., top + 5.);
+    s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
+    assert_eq!(s.tooltip_at(), Some((90., top - 4. - 16.)));
+}
+
+/// Anchored to a control flush with the window's edge, the tooltip stops
+/// short of the edge rather than touching it.
+#[test]
+fn an_anchored_tooltip_keeps_off_the_windows_edge() {
+    let mut s = setup();
+    s.cx.update_window(s.window, |_, window, _| {
+        window.set_tooltip_placement(crate::TooltipPlacement::Below)
+    })
+    .unwrap();
+    let width =
+        s.cx.update_window(s.window, |_, window, _| window.viewport_size().width)
+            .unwrap()
+            .as_f32();
+    s.move_mouse(width - 20., 60.);
+    s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
+    assert_eq!(s.tooltip_at(), Some((width - 60. - 8., 74.)));
+}
+
+/// At the pointer by default: just below and right of it.
+#[test]
+fn a_hover_tooltip_sits_at_the_pointer_by_default() {
+    let mut s = setup();
+    s.move_mouse(135., 65.);
+    s.wait(DEFAULT_TOOLTIP_SHOW_DELAY);
+    assert_eq!(s.tooltip_at(), Some((136., 66.)));
+}
+
+/// Once one tooltip showed, the next shows at once while the window is warm,
+/// and waits its delay again once it cooled.
+#[test]
+fn the_next_tooltip_shows_at_once_while_warm() {
+    let mut s = setup();
+    s.move_mouse(110., 55.);
+    s.wait(ALMOST);
+    assert_eq!(s.tooltip(), None, "cold: the first waits its delay");
+    s.wait(Duration::from_millis(1));
+    assert!(s.tooltip().is_some());
+
+    s.move_mouse(210., 55.);
+    s.wait(Duration::ZERO);
+    assert_eq!(s.tooltip_at(), Some((211., 56.)), "warm: the next at once");
+
+    s.move_mouse(5., 5.);
+    s.wait(crate::fast::tooltip_exit::EXIT); // it fades out first
+    assert_eq!(s.tooltip(), None);
+    s.wait(crate::TOOLTIP_WARM_FOR - Duration::from_millis(100));
+    s.move_mouse(110., 55.);
+    s.wait(Duration::ZERO);
+    assert!(s.tooltip().is_some(), "still warm soon after one hid");
+
+    s.move_mouse(5., 5.);
+    s.wait(crate::TOOLTIP_WARM_FOR);
+    s.move_mouse(110., 55.);
+    s.wait(ALMOST);
+    assert_eq!(s.tooltip(), None, "cooled: the delay again");
+    s.wait(Duration::from_millis(1));
+    assert!(s.tooltip().is_some());
 }
 
 /// A list of rows, each a control with a tooltip and a focus handle.

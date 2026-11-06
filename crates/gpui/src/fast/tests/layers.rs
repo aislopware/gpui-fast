@@ -230,6 +230,7 @@ fn content_in_parts_draws_each_tile_as_one_scene_does() {
         insert_operations(&mut scene, operations);
         LayerPart {
             bounds: Some(reach.unwrap_or_default()),
+            row: None,
             scene: Rc::new(scene),
         }
     });
@@ -271,6 +272,7 @@ fn insert_operations(scene: &mut Scene, operations: &[crate::fast::scene::Operat
             Operation::StartLayer(bounds) => scene.push_layer(*bounds),
             Operation::EndLayer => scene.pop_layer(),
             Operation::Native(placement) => scene.insert_native(placement.clone()),
+            Operation::Backdrop(blur) => scene.insert_backdrop_blur(*blur),
         }
     }
 }
@@ -342,9 +344,6 @@ fn translation_moves_every_position_a_primitive_carries() {
     );
     let mut path = path.scale(1.);
     path.content_mask = mask;
-    for vertex in &mut path.vertices {
-        vertex.content_mask = mask;
-    }
     let bounds = path.bounds;
     let Primitive::Path(moved) = translate(path.into()) else {
         unreachable!()
@@ -365,7 +364,8 @@ fn translation_moves_every_position_a_primitive_carries() {
         moved
             .vertices
             .iter()
-            .all(|v| v.content_mask.bounds == moved_mask)
+            .all(|v| v.content_mask == ContentMask::default()),
+        "a vertex's own mask, which no renderer reads, is left as painted"
     );
     assert!(
         moved
@@ -1634,7 +1634,7 @@ mod paint {
                 record.content.scene().unwrap().paths.is_empty(),
                 "the tiles hold no path"
             );
-            assert_eq!(record.paths.len(), 1, "the layer keeps the path apart");
+            assert_eq!(record.overlay.len(), 1, "the layer keeps the path apart");
             let scene = &window.rendered_frame.scene;
             assert!(!tile_quads(scene).is_empty(), "the tiles are composited");
             assert_eq!(scene.layers.frames.len(), 1);
@@ -1783,9 +1783,9 @@ mod invalidation {
     use crate::fast::layers::invalidate::{ScrollSource, render_read_offset, scrolled};
     use crate::{
         AnyWindowHandle, App, AppContext as _, Context, Entity, GlobalElementId,
-        InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollDelta,
-        ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _,
-        TestAppContext, TouchPhase, Window, div, point, px, rgb,
+        InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollDelta, ScrollEvent,
+        ScrollHandle, StatefulInteractiveElement as _, Styled as _, TestAppContext, TouchPhase,
+        Window, div, point, px, rgb,
     };
     use std::{cell::Cell, rc::Rc};
 
@@ -1863,12 +1863,12 @@ mod invalidation {
     ) -> Vec<GlobalElementId> {
         with_window(cx, window, |window, cx| {
             window.dispatch_event(
-                crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                crate::PlatformInput::Scroll(ScrollEvent {
                     position: point(px(20.), px(20.)),
                     delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                     modifiers: Default::default(),
                     touch_phase: TouchPhase::Moved,
-                    momentum_phase: None,
+                    ..Default::default()
                 }),
                 cx,
             );
@@ -2085,7 +2085,7 @@ mod decisions {
     use crate::{
         AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity,
         GlobalElementId, Hsla, InteractiveElement as _, IntoElement, MouseMoveEvent,
-        ParentElement as _, Pixels, Render, ScrollDelta, ScrollHandle, ScrollWheelEvent,
+        ParentElement as _, Pixels, Render, ScrollDelta, ScrollEvent, ScrollHandle,
         StatefulInteractiveElement as _, Styled as _, TestAppContext, TouchPhase, Window,
         WindowHandle, canvas, div, point, px, rgb, size,
     };
@@ -2280,12 +2280,12 @@ mod decisions {
             with_window(cx, window, |window, cx| {
                 change(cx);
                 window.dispatch_event(
-                    crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    crate::PlatformInput::Scroll(ScrollEvent {
                         position: point(px(20.), px(20.)),
                         delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                         modifiers: Default::default(),
                         touch_phase: TouchPhase::Moved,
-                        momentum_phase: None,
+                        ..Default::default()
                     }),
                     cx,
                 );
@@ -2451,12 +2451,12 @@ mod decisions {
         frame_after(cx, window, |cx| {
             with_window(cx, window, |window, cx| {
                 window.dispatch_event(
-                    crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    crate::PlatformInput::Scroll(ScrollEvent {
                         position: point(px(20.), px(20.)),
                         delta: ScrollDelta::Pixels(point(px(0.), px(-20.))),
                         modifiers: Default::default(),
                         touch_phase: TouchPhase::Moved,
-                        momentum_phase: None,
+                        ..Default::default()
                     }),
                     cx,
                 );
@@ -2557,6 +2557,41 @@ mod decisions {
             })
         });
         assert_eq!(decision(cx, window), Some(Decision::Repaint));
+    }
+
+    /// A scroll that composites the content under a still pointer moves
+    /// another row under it: the frame asks for the next one, which paints
+    /// the content afresh with the row now under the pointer hovered, as a
+    /// frame drawn from scratch shows it, without the pointer moving.
+    #[crate::test]
+    fn a_scroll_moving_another_row_under_a_still_pointer_hovers_it_on_the_next_frame(
+        cx: &mut TestAppContext,
+    ) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = page(cx, false);
+        let window = handle.into();
+        handle
+            .update(cx, |page, _, cx| {
+                page.hover = true;
+                cx.notify();
+            })
+            .unwrap();
+        draw(cx, window);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        let asked = with_window(cx, window, |window, cx| window.simulate_next_frame(cx));
+        assert!(asked > 0, "the composited frame asks for the next one");
+        draw(cx, window);
+        let shown = with_window(cx, window, |window, _| window.painted_primitives());
+        with_window(cx, window, |window, _| window.refresh());
+        draw(cx, window);
+        let afresh = with_window(cx, window, |window, _| window.painted_primitives());
+        assert_eq!(
+            shown, afresh,
+            "the hover drawn is the one a frame from scratch draws"
+        );
     }
 
     /// A view around the page that sets the text colour the page inherits.
@@ -2815,26 +2850,33 @@ mod policies {
         assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
     }
 
+    /// Content of a layer that starts asking for animation frames drops the
+    /// layer, and content asking for them is not painted into one: a
+    /// promotion waits until it stops.
     #[crate::test]
-    fn an_animation_frame_requested_by_the_owner_makes_it_ineligible(cx: &mut TestAppContext) {
+    fn an_animation_frame_requested_inside_the_content_makes_it_ineligible(
+        cx: &mut TestAppContext,
+    ) {
         if !crate::fast::layers::COMPILED {
             return;
         }
         let handle = page(cx, false);
         let window = handle.into();
         promote(cx, window);
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
-        frame_after(cx, window, |cx| {
-            handle
-                .update(cx, |page, _, cx| {
-                    page.animate = true;
-                    cx.notify();
-                })
-                .unwrap();
+        // Asks for an animation frame from its prepaint, inside the scroll
+        // container, without a view of its own.
+        with_extra(cx, handle, || {
+            canvas(
+                |_, window, _| window.request_animation_frame(),
+                |_, _, _, _| {},
+            )
+            .h(px(10.))
+            .into_any_element()
         });
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
-        assert!(!has_record(cx, window));
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        for _ in 0..4 {
+            assert_eq!(scroll(cx, window, -5.), Some(Decision::Bypass));
+            assert!(!has_record(cx, window));
+        }
     }
 
     /// A promotion waits while the owner asks for animation frames: the
@@ -2977,7 +3019,9 @@ mod policies {
     }
 
     #[crate::test]
-    fn content_drawing_over_a_path_is_demoted(cx: &mut TestAppContext) {
+    fn content_drawing_over_a_path_composites_with_the_cover_over_the_tiles(
+        cx: &mut TestAppContext,
+    ) {
         if !crate::fast::layers::COMPILED {
             return;
         }
@@ -2985,11 +3029,111 @@ mod policies {
         let window = handle.into();
         with_path(cx, handle, true);
         promote(cx, window);
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
-        assert_eq!(layers_demoted(cx, window), 1);
-        assert!(!has_record(cx, window));
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
-        assert_eq!(scroll(cx, window, -20.), Some(Decision::Bypass));
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        crate::AppContext::update_window(cx, window, |_, window, _| {
+            let layer = window.fast_layers.layers.values().next().expect("a layer");
+            let record = layer.record.as_ref().expect("painted");
+            assert!(!record.has_paths);
+            let kinds: Vec<_> = record
+                .overlay
+                .iter()
+                .map(|primitive| matches!(primitive, crate::scene::Primitive::Path(_)))
+                .collect();
+            assert_eq!(kinds, [true, false], "the path and the quad over it");
+            let scene = &window.rendered_frame.scene;
+            assert_eq!(scene.paths.len(), 1, "the path is in the frame");
+            assert!(
+                scene
+                    .quads
+                    .iter()
+                    .any(|quad| quad.order > scene.paths[0].order),
+                "the quad is drawn over the path"
+            );
+        })
+        .unwrap();
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(layers_demoted(cx, window), 0);
+    }
+
+    /// A surface in a layer's content is drawn over the tiles, never rasterized into one: the
+    /// frame shows the picture the content was last painted with, however the tiles were
+    /// rasterized.
+    #[cfg(target_os = "macos")]
+    #[crate::test]
+    fn a_surface_is_drawn_over_the_tiles_with_the_picture_last_painted(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let picture = |side| {
+            let mut buffer = std::ptr::null_mut();
+            // SAFETY: a valid out-pointer CoreVideo fills with a +1 buffer on success.
+            let status = unsafe {
+                objc2_core_video::CVPixelBufferCreate(
+                    None,
+                    side,
+                    side,
+                    objc2_core_video::kCVPixelFormatType_32BGRA,
+                    None,
+                    std::ptr::NonNull::from(&mut buffer),
+                )
+            };
+            assert_eq!(status, objc2_core_video::kCVReturnSuccess);
+            // SAFETY: the buffer CoreVideo created, owned from here.
+            unsafe {
+                objc2_core_foundation::CFRetained::from_raw(std::ptr::NonNull::new(buffer).unwrap())
+            }
+        };
+        let handle = page(cx, false);
+        let window = handle.into();
+        let shown = |cx: &mut TestAppContext,
+                     buffer: &objc2_core_foundation::CFRetained<
+            objc2_core_video::CVPixelBuffer,
+        >| {
+            let buffer = buffer.clone();
+            with_extra(cx, handle, move || {
+                // Square, as the picture is, and tall enough to show
+                // however far the test scrolls.
+                crate::surface(buffer.clone())
+                    .size(px(400.))
+                    .into_any_element()
+            });
+        };
+        let first = picture(16);
+        shown(cx, &first);
+        promote(cx, window);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        let surfaces = |cx: &mut TestAppContext| {
+            crate::AppContext::update_window(cx, window, |_, window, _| {
+                let layer = window.fast_layers.layers.values().next().expect("a layer");
+                let record = layer.record.as_ref().expect("painted");
+                assert!(
+                    record
+                        .overlay
+                        .iter()
+                        .any(|primitive| matches!(primitive, crate::scene::Primitive::Surface(_))),
+                    "the surface is in the overlay"
+                );
+                assert!(
+                    record
+                        .content
+                        .scenes()
+                        .all(|scene| scene.surfaces.is_empty()),
+                    "and in no tile"
+                );
+                window
+                    .painted_surfaces()
+                    .into_iter()
+                    .map(|surface| surface.image_buffer)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap()
+        };
+        assert_eq!(surfaces(cx), [first], "the frame draws it");
+        let second = picture(16);
+        shown(cx, &second);
+        assert_eq!(scroll(cx, window, -20.), Some(Decision::Composite));
+        assert_eq!(surfaces(cx), [second], "the next picture, not the first");
+        assert_eq!(layers_demoted(cx, window), 0);
     }
 
     #[crate::test]
@@ -3213,7 +3357,7 @@ mod input {
         AnyWindowHandle, AppContext as _, Bounds, Context, DispatchPhase, FocusHandle,
         HitboxBehavior, InteractiveElement as _, IntoElement, Modifiers, MouseButton,
         MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render,
-        ScrollDelta, ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement as _, Styled as _,
+        ScrollDelta, ScrollEvent, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
         TestAppContext, TouchPhase, Window, WindowHandle, canvas, div, point, px, rgb,
     };
     use std::{
@@ -3247,6 +3391,9 @@ mod input {
         /// Paints the page's background translucent, which a layer's tiles
         /// cannot be cleared with.
         translucent: bool,
+        /// Each frame's work deferred from rendering the page ("frame") and
+        /// each press on a row ("press"), in the order they ran.
+        log: Rc<RefCell<Vec<&'static str>>>,
     }
 
     /// What a row of an [`InputPage`] is dragged as.
@@ -3270,15 +3417,21 @@ mod input {
     }
 
     impl Render for InputPage {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let log = self.log.clone();
+            window.defer(cx, move |_, _| log.borrow_mut().push("frame"));
             let rows = (0..ROWS).map(|index| {
                 let clicks = self.clicks.clone();
                 let drags = self.drags.clone();
+                let log = self.log.clone();
                 let row = div()
                     .id(("row", index))
                     .w(px(100.))
                     .h(px(ROW_HEIGHT))
                     .bg(rgb(0x100000 + index as u32 * 0x10))
+                    .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                        log.borrow_mut().push("press")
+                    })
                     .on_click(move |_, _, _| clicks.borrow_mut().push(index))
                     .on_drag(DraggedRow, |_, _, _, cx| cx.new(|_| super::EmptyView))
                     .on_drag_move::<DraggedRow>(move |event, _, _| {
@@ -3289,8 +3442,11 @@ mod input {
                     .child(noting_canvas(index, self.seen.clone()));
                 if index == 2 {
                     let keys = self.keys.clone();
-                    row.track_focus(&self.focus)
-                        .on_key_down(move |_, _, _| keys.set(keys.get() + 1))
+                    let log = self.log.clone();
+                    row.track_focus(&self.focus).on_key_down(move |_, _, _| {
+                        keys.set(keys.get() + 1);
+                        log.borrow_mut().push("key");
+                    })
                 } else {
                     row
                 }
@@ -3344,6 +3500,7 @@ mod input {
             inner,
             tooltip,
             translucent: false,
+            log: Rc::default(),
         });
         draw(cx, window.into());
         draw(cx, window.into());
@@ -3356,12 +3513,12 @@ mod input {
         frame_after(cx, window, |cx| {
             with_window(cx, window, |window, cx| {
                 window.dispatch_event(
-                    crate::PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    crate::PlatformInput::Scroll(ScrollEvent {
                         position: point(px(150.), px(20.)),
                         delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
                         modifiers: Default::default(),
                         touch_phase: TouchPhase::Moved,
-                        momentum_phase: None,
+                        ..Default::default()
                     }),
                     cx,
                 );
@@ -3594,6 +3751,65 @@ mod input {
         assert_eq!(drags_with, drags(cx, without));
     }
 
+    /// A 200 × 100 px scroll container of forty 20 px rows, 100 px wide, at
+    /// the top left of the window, each row found in tests as `row-<index>`.
+    struct LabelledRows {
+        handle: ScrollHandle,
+    }
+
+    impl Render for LabelledRows {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().bg(rgb(0xffffff)).child(
+                div()
+                    .id("scroller")
+                    .overflow_y_scroll()
+                    .track_scroll(&self.handle)
+                    .w(px(200.))
+                    .h(px(100.))
+                    .children((0..ROWS).map(|index| {
+                        div()
+                            .debug_selector(move || format!("row-{index}"))
+                            .w(px(100.))
+                            .h(px(ROW_HEIGHT))
+                            .bg(rgb(0x100000 + index as u32 * 0x10))
+                    })),
+            )
+        }
+    }
+
+    /// The content of a layer composited on frame after frame is found
+    /// where it shows on each of them.
+    #[crate::test]
+    fn a_composited_layer_s_content_is_found_where_it_shows(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = cx.add_window(|_, _| LabelledRows {
+            handle: ScrollHandle::new(),
+        });
+        let window: AnyWindowHandle = handle.into();
+        draw(cx, window);
+        draw(cx, window);
+        let mut composited = 0;
+        for step in 0..8 {
+            if scroll(cx, window, -7.) == Some(Decision::Composite) {
+                composited += 1;
+            }
+            let offset = handle
+                .update(cx, |page, _, _| page.handle.offset())
+                .unwrap();
+            let found = with_window(cx, window, |window, _| {
+                window.rendered_frame.debug_bounds.get("row-3").copied()
+            });
+            assert_eq!(
+                found.map(|bounds| bounds.origin),
+                Some(point(px(0.), px(3. * ROW_HEIGHT) + offset.y)),
+                "step {step}, scrolled to {offset:?}"
+            );
+        }
+        assert!(composited >= 4, "the layer was composited ({composited})");
+    }
+
     #[crate::test]
     fn wheel_events_do_not_rebuild(cx: &mut TestAppContext) {
         if !crate::fast::layers::COMPILED {
@@ -3606,6 +3822,50 @@ mod input {
             assert_eq!(scroll(cx, window, 5.), Some(Decision::Composite));
         }
         assert_eq!(rebuilds(cx, window), 0);
+    }
+
+    /// A press after a scroll needs the layer painted again first, in a frame
+    /// drawn before the press is dispatched. The work that frame's views
+    /// deferred runs before the press's handlers, as it does for any frame
+    /// drawn before an input: a view giving the keyboard back to what its
+    /// frame mounts must not see the focus a handler then moves.
+    #[crate::test]
+    fn a_frame_drawn_for_a_press_runs_its_deferred_work_first(cx: &mut TestAppContext) {
+        if !crate::fast::layers::COMPILED {
+            return;
+        }
+        let handle = input_page(cx);
+        let window = handle.into();
+        scroll_five_times(cx, window);
+        let log = handle.update(cx, |page, _, _| page.log.clone()).unwrap();
+        log.borrow_mut().clear();
+        cx.test_window(window)
+            .simulate_input(mouse_down(point(px(20.), px(50.))));
+        assert_eq!(
+            rebuilds(cx, window),
+            1,
+            "a frame was drawn before the press"
+        );
+        assert_eq!(log.borrow().get(..2), Some(&["frame", "press"][..]));
+    }
+
+    /// The first key after the pointer leaves the window dirty, and a key draws
+    /// a dirty window before it is dispatched: that frame's deferred work runs
+    /// before the key's handlers too.
+    #[crate::test]
+    fn a_frame_drawn_for_a_key_runs_its_deferred_work_first(cx: &mut TestAppContext) {
+        let handle = input_page(cx);
+        let window = handle.into();
+        let log = handle
+            .update(cx, |page, window, cx| {
+                window.focus(&page.focus, cx);
+                page.log.clone()
+            })
+            .unwrap();
+        draw(cx, window);
+        log.borrow_mut().clear();
+        cx.dispatch_keystroke(window, crate::Keystroke::parse("a").unwrap());
+        assert_eq!(log.borrow().get(..2), Some(&["frame", "key"][..]));
     }
 
     #[crate::test]
@@ -4032,7 +4292,7 @@ mod integration {
         if !crate::fast::layers::COMPILED {
             return u64::MAX;
         }
-        let mut open = |cx: &mut TestAppContext, layers: bool| {
+        let open = |cx: &mut TestAppContext, layers: bool| {
             let window = cx.add_window(|_, cx| page(cx));
             cx.simulate_window_scale_factor_change(window.into(), scale_factor);
             cx.update_window(window.into(), |_, window, cx| {
@@ -4055,12 +4315,12 @@ mod integration {
             for window in [layered, plain] {
                 cx.update_window(window.into(), |_, window, cx| {
                     window.dispatch_event(
-                        crate::PlatformInput::ScrollWheel(crate::ScrollWheelEvent {
+                        crate::PlatformInput::Scroll(crate::ScrollEvent {
                             position: point(px(20.), px(20.)),
                             delta: crate::ScrollDelta::Pixels(point(px(0.), px(dy))),
                             modifiers: Default::default(),
                             touch_phase: crate::TouchPhase::Moved,
-                            momentum_phase: None,
+                            ..Default::default()
                         }),
                         cx,
                     );

@@ -38,6 +38,10 @@ pub(crate) struct LayerInput {
     /// painted: how far behind the positions its closures and element
     /// states hold are.
     pub(crate) stale: Point<Pixels>,
+    /// How far the content shown scrolled since last frame, on a frame that
+    /// composites it: the rendered frame holds the content's debug bounds
+    /// where it showed then.
+    pub(crate) scrolled: Point<Pixels>,
     /// Whether the content is to be painted again at the offset shown the
     /// next time the container is prepainted, though nothing it is built
     /// from changed: it is about to see input (see [`before_dispatch`]).
@@ -158,6 +162,18 @@ pub(crate) fn decide(window: &mut Window, id: &GlobalElementId, decision: Decisi
 /// Called by [`Window::dispatch_event`] once it has taken in the event's
 /// position.
 pub(crate) fn before_dispatch(window: &mut Window, cx: &mut App, event: &PlatformInput) {
+    if matches!(event, PlatformInput::Scroll(_)) {
+        crate::fast::layers::hover_freeze::note_wheel(window, cx);
+    }
+    crate::fast::layers::wheel::begin_dispatch(window, cx, event);
+    draw_for(window, cx, event);
+}
+
+/// The frame [`before_dispatch`] draws for `event`, if it needs one: the
+/// layers it could reach whose content was shown scrolled since it was
+/// painted, painted again. Drawn by [`crate::prepare_input`] in an update of
+/// its own first, it leaves [`before_dispatch`] nothing to draw.
+pub(crate) fn draw_for(window: &mut Window, cx: &mut App, event: &PlatformInput) {
     if !COMPILED || window.fast_layers.layers.is_empty() {
         return;
     }
@@ -172,7 +188,7 @@ pub(crate) fn before_dispatch(window: &mut Window, cx: &mut App, event: &Platfor
         _ => None,
     };
     let reaches: &dyn Fn(&Window, &Layer) -> bool = match event {
-        PlatformInput::ScrollWheel(_) => return,
+        PlatformInput::Scroll(_) => return,
         PlatformInput::KeyDown(_)
         | PlatformInput::KeyUp(_)
         | PlatformInput::ModifiersChanged(_) => &focus_inside,

@@ -118,3 +118,108 @@ fn a_surface_shows_the_buffer_its_view_holds_now() {
     );
     assert_eq!(builds.get(), 3);
 }
+
+/// The text frames are compared by tells the pictures surfaces show apart, as the retained
+/// check and two windows' comparison need: a frame that shows an older buffer than a frame
+/// drawn afresh does not read the same, and one that shows the same buffer does.
+#[test]
+fn a_frames_description_names_the_buffer_each_surface_shows() {
+    let mut cx = TestAppContext::single();
+    let (first, second) = (buffer(), buffer());
+    let window = cx.add_window({
+        let first = first.clone();
+        move |_, cx| Tiles {
+            picture: cx.new(|_| Picture {
+                buffer: first,
+                builds: Rc::default(),
+            }),
+        }
+    });
+    let picture = window
+        .update(&mut cx, |tiles, _, _| tiles.picture.clone())
+        .unwrap();
+    let described = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            // Each line after its depth.
+            let painted: Vec<String> = window
+                .painted_primitives()
+                .into_iter()
+                .filter(|line| line.contains(" surface "))
+                .collect();
+            let scene: Vec<String> = window
+                .rendered_frame
+                .scene
+                .describe()
+                .into_iter()
+                .filter(|line| line.starts_with("surface"))
+                .collect();
+            (painted, scene)
+        })
+        .unwrap()
+    };
+    let showing_first = described(&mut cx);
+    assert_eq!(showing_first.0.len(), 1, "{showing_first:?}");
+    assert_eq!(showing_first.1.len(), 1, "{showing_first:?}");
+    let swap = |cx: &mut TestAppContext, buffer: &CVPixelBuffer| {
+        picture.update(cx, |picture, cx| {
+            picture.buffer = buffer.clone();
+            cx.notify();
+        });
+    };
+    swap(&mut cx, &second);
+    let showing_second = described(&mut cx);
+    assert_ne!(
+        showing_first.0, showing_second.0,
+        "the retained check's text"
+    );
+    assert_ne!(showing_first.1, showing_second.1, "the scene's text");
+    swap(&mut cx, &first);
+    assert_eq!(
+        described(&mut cx),
+        showing_first,
+        "the same buffer reads the same"
+    );
+}
+
+struct Faded {
+    buffer: CVPixelBuffer,
+}
+
+impl Render for Faded {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(100.)).child(crate::edge_fade(
+            div()
+                .size(px(100.))
+                .opacity(0.5)
+                .child(surface(self.buffer.clone()).size(px(64.))),
+            crate::EdgeFade::y(px(16.)),
+        ))
+    }
+}
+
+/// A surface is painted as an image is: at the opacity of the element around it, and in the
+/// edge fade it lies in, which the renderer multiplies it by.
+#[test]
+fn a_surface_takes_its_elements_opacity_and_its_fade() {
+    let mut cx = TestAppContext::single();
+    let buffer = buffer();
+    let window = cx.add_window({
+        let buffer = buffer.clone();
+        move |_, _| Faded { buffer }
+    });
+    let surfaces = cx
+        .update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.painted_surfaces()
+        })
+        .unwrap();
+    assert_eq!(surfaces.len(), 1);
+    assert_eq!(surfaces[0].image_buffer, buffer);
+    assert_eq!(surfaces[0].opacity, 0.5);
+    assert_ne!(
+        surfaces[0].pad,
+        crate::fast::edge_fade::NONE,
+        "painted in the fade around it"
+    );
+}

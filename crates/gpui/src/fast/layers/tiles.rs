@@ -69,9 +69,9 @@ pub(crate) fn tile_hashes(
                     });
                 }
             }
-            // Content placing a native is never composited from tiles (see
-            // `paint::lift_paths`).
-            Operation::Native(_) => {}
+            // Content placing a native or a blur is never composited from
+            // tiles (see `overlay::lift`).
+            Operation::Native(_) | Operation::Backdrop(_) => {}
         }
     }
     hashers
@@ -111,9 +111,9 @@ pub(crate) fn part_tile_hashes(
             }
             Operation::StartLayer(_) => hasher.write_u8(1),
             Operation::EndLayer => hasher.write_u8(2),
-            // A row placing a native is drawn into the frame, never from
-            // tiles.
-            Operation::Native(_) => {}
+            // A row placing a native or a blur is drawn into the frame,
+            // never from tiles.
+            Operation::Native(_) | Operation::Backdrop(_) => {}
         }
     }
     let hash = hasher.finish();
@@ -220,6 +220,9 @@ fn tile_rect(tile_size: u32) -> Bounds<ScaledPixels> {
 /// decides its pixels in the tile to `hasher`: all but its draw order and
 /// ids, which the scene assigns, with its masks clipped to the tile.
 fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &mut FxHasher) {
+    // The fade and clip it is drawn in, kept in content space: one changed
+    // changes the index, interned by what it holds.
+    hasher.write_u32(crate::fast::edge_fade::index_of(primitive));
     match primitive {
         Primitive::Shadow(shadow) => {
             hasher.write_u8(0);
@@ -253,7 +256,6 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
                 hash_f32(vertex.xy_position.y.0, hasher);
                 hash_f32(vertex.st_position.x, hasher);
                 hash_f32(vertex.st_position.y, hasher);
-                hash_mask(&vertex.content_mask, tile, hasher);
             }
         }
         Primitive::Underline(underline) => {
@@ -290,9 +292,11 @@ fn hash_primitive(primitive: &Primitive, tile: &Bounds<ScaledPixels>, hasher: &m
             hash_tile(&sprite.tile, hasher);
         }
         Primitive::Surface(surface) => {
-            // A surface's pixels come from outside the scene; layers never
-            // hold one (spec §6.5), so it only needs to hash apart.
+            // A surface's pixels come from outside the scene, so it goes to
+            // the overlay (`overlay::split`), never into a tile: it only
+            // needs to hash apart.
             hasher.write_u8(7);
+            hash_f32(surface.opacity, hasher);
             hash_bounds(&surface.bounds, hasher);
             hash_mask(&surface.content_mask, tile, hasher);
         }

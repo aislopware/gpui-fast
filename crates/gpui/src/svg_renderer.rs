@@ -41,10 +41,7 @@ fn is_emoji_presentation(c: char) -> bool {
 
 fn font_has_char(db: &usvg::fontdb::Database, id: usvg::fontdb::ID, ch: char) -> bool {
     db.with_face_data(id, |font_data, face_index| {
-        ttf_parser::Face::parse(font_data, face_index)
-            .ok()
-            .and_then(|face| face.glyph_index(ch))
-            .is_some()
+        crate::fast::svg_text::font_has_char(font_data, face_index, ch)
     })
     .unwrap_or(false)
 }
@@ -480,7 +477,7 @@ mod tests {
 
     #[test]
     fn test_select_emoji_font_skips_family_without_glyph() {
-        let mut db = db_with_bundled_fonts();
+        let db = db_with_bundled_fonts();
 
         let ibm_plex_sans = db
             .query(&usvg::fontdb::Query {

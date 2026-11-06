@@ -117,21 +117,31 @@ impl LayerFrame {
             ScaledPixels(-bounds.origin.y.0),
         );
         let mut scene = Scene::default();
-        for operation in self.content.operations_over(bounds) {
-            match operation {
-                Operation::Primitive(primitive) => {
-                    if visible_bounds(&primitive).intersects(&bounds) {
-                        scene.insert_primitive(translate_primitive(&primitive, delta));
+        let mut fades = crate::fast::edge_fade::TileFades::new(delta);
+        let parts = self.content.parts.iter().enumerate();
+        for (index, part) in
+            parts.filter(|(_, part)| part.bounds.is_none_or(|b| b.intersects(&bounds)))
+        {
+            for operation in crate::fast::scene::operations(&part.scene) {
+                match operation {
+                    Operation::Primitive(primitive) => {
+                        if visible_bounds(&primitive).intersects(&bounds) {
+                            let mut primitive = translate_primitive(&primitive, delta);
+                            fades.primitive(index, &part.scene, &mut primitive);
+                            scene.insert_primitive(primitive);
+                        }
                     }
+                    Operation::StartLayer(layer_bounds) => {
+                        scene.push_layer(translate_bounds(layer_bounds, delta))
+                    }
+                    Operation::EndLayer => scene.pop_layer(),
+                    // Content placing a native or a blur is never composited
+                    // from tiles.
+                    Operation::Native(_) | Operation::Backdrop(_) => {}
                 }
-                Operation::StartLayer(layer_bounds) => {
-                    scene.push_layer(translate_bounds(layer_bounds, delta))
-                }
-                Operation::EndLayer => scene.pop_layer(),
-                // Content placing a native is never composited from tiles.
-                Operation::Native(_) => {}
             }
         }
+        fades.finish(&mut scene);
         scene.finish();
         scene
     }
@@ -161,7 +171,11 @@ impl LayerFrame {
         let mut scenes: Vec<Scene> = tiles.iter().map(|_| Scene::default()).collect();
         let mut reaches = vec![false; tiles.len()];
         let mut base: DrawOrder = 0;
-        for part in self.content.parts.iter() {
+        let mut fades: Vec<crate::fast::edge_fade::TileFades> = tiles
+            .iter()
+            .map(|tile| crate::fast::edge_fade::TileFades::new(delta(*tile)))
+            .collect();
+        for (index, part) in self.content.parts.iter().enumerate() {
             let mut any = false;
             for (slot, tile) in tiles.iter().enumerate() {
                 reaches[slot] = part
@@ -187,11 +201,9 @@ impl LayerFrame {
                     if let Some(&slot) = slots.get(&tile)
                         && reaches[slot]
                     {
-                        push_ordered(
-                            &mut scenes[slot],
-                            translate_primitive(&primitive, delta(tile)),
-                            order,
-                        );
+                        let mut primitive = translate_primitive(&primitive, delta(tile));
+                        fades[slot].primitive(index, &part.scene, &mut primitive);
+                        push_ordered(&mut scenes[slot], primitive, order);
                     }
                 }
             }
@@ -199,7 +211,8 @@ impl LayerFrame {
                 base = last + 1;
             }
         }
-        for scene in &mut scenes {
+        for (scene, fades) in scenes.iter_mut().zip(fades) {
+            fades.finish(scene);
             scene.finish();
         }
         scenes
@@ -265,9 +278,28 @@ pub(crate) struct LayerPart {
     /// Where the part's primitives can draw, if known: a tile it misses
     /// draws nothing of it.
     pub(crate) bounds: Option<Bounds<ScaledPixels>>,
+    /// Where a list placed the row the part is, if it is one. A list drawn
+    /// without a layer paints the rows its scroll offset puts over its
+    /// viewport, however little of one, and nothing of a row past them
+    /// that would reach into it (a path spilling out of the row, a shadow):
+    /// neither does its layer.
+    pub(crate) row: Option<Bounds<ScaledPixels>>,
     /// The part's paint operations, in drawing order. A row's scene holds
     /// nothing else.
     pub(crate) scene: Rc<Scene>,
+}
+
+impl LayerPart {
+    /// Whether the part draws anything over `bounds` when its content is
+    /// drawn into a frame.
+    /// A row part draws only if its row lies over `rows_over`: the viewport
+    /// where the list's scroll offset puts it before the offset is snapped
+    /// to whole device pixels, as a list drawn without a layer tells the
+    /// rows it paints.
+    fn draws_over(&self, bounds: &Bounds<ScaledPixels>, rows_over: &Bounds<ScaledPixels>) -> bool {
+        self.bounds.is_none_or(|reach| reach.intersects(bounds))
+            && self.row.is_none_or(|slot| slot.intersects(rows_over))
+    }
 }
 
 impl From<Scene> for LayerContent {
@@ -281,6 +313,7 @@ impl From<Rc<Scene>> for LayerContent {
         LayerContent {
             parts: Rc::new([LayerPart {
                 bounds: None,
+                row: None,
                 scene,
             }]),
         }
@@ -309,7 +342,7 @@ impl LayerContent {
     }
 
     /// The scenes of the content's parts, in order.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn part_scenes(&self) -> impl Iterator<Item = &Rc<Scene>> {
         self.parts.iter().map(|part| &part.scene)
     }
@@ -317,6 +350,20 @@ impl LayerContent {
     /// Whether `self` and `other` are the same content, shared.
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.parts, &other.parts)
+    }
+
+    /// The scenes of the parts that can draw over `bounds`, in drawing
+    /// order, as [`Self::operations_over`] takes them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn part_scenes_over(
+        &self,
+        bounds: Bounds<ScaledPixels>,
+        rows_over: Bounds<ScaledPixels>,
+    ) -> impl Iterator<Item = &Rc<Scene>> + '_ {
+        self.parts
+            .iter()
+            .filter(move |part| part.draws_over(&bounds, &rows_over))
+            .map(|part| &part.scene)
     }
 
     /// Every paint operation of the content, in drawing order.
@@ -333,10 +380,11 @@ impl LayerContent {
     pub(crate) fn operations_over(
         &self,
         bounds: Bounds<ScaledPixels>,
+        rows_over: Bounds<ScaledPixels>,
     ) -> impl Iterator<Item = Operation> + '_ {
         self.parts
             .iter()
-            .filter(move |part| part.bounds.is_none_or(|part| part.intersects(&bounds)))
+            .filter(move |part| part.draws_over(&bounds, &rows_over))
             .flat_map(|part| crate::fast::scene::operations(&part.scene))
     }
 }
@@ -378,9 +426,10 @@ pub(crate) fn drawn_bounds(primitive: &Primitive) -> Bounds<ScaledPixels> {
                 ),
             }
         }
-        Primitive::MonochromeSprite(sprite) => {
-            transformed_bounds(sprite.bounds, &sprite.transformation)
-        }
+        Primitive::MonochromeSprite(sprite) => transformed_bounds(
+            crate::fast::glyph_blur::drawn_bounds(sprite),
+            &sprite.transformation,
+        ),
         Primitive::SubpixelSprite(sprite) => {
             transformed_bounds(sprite.bounds, &sprite.transformation)
         }
@@ -446,9 +495,9 @@ pub(crate) fn move_primitive(primitive: &mut Primitive, delta: Point<ScaledPixel
         Primitive::Path(path) => {
             mv(&mut path.bounds);
             mv(&mut path.content_mask.bounds);
+            // A vertex's own mask is never read: renderers clip a path by its bounds and mask.
             for vertex in &mut path.vertices {
                 vertex.xy_position = vertex.xy_position + delta;
-                mv(&mut vertex.content_mask.bounds);
             }
         }
         Primitive::Underline(underline) => {

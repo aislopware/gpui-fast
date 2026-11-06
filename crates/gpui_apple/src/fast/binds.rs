@@ -16,13 +16,18 @@
 //! the offset of a buffer that is already bound. The draws are upstream's,
 //! argument for argument.
 
-use std::{ffi::c_void, ops::Range};
+use std::{ffi::c_void, ops::Range, ptr};
 
 use gpui::{AtlasTextureId, DevicePixels, PrimitiveBatch, Size, size};
-use metal::{
-    BufferRef, RenderCommandEncoderRef, RenderPipelineStateRef, TextureRef,
-    foreign_types::ForeignTypeRef as _,
+use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2_metal::{
+    MTLBuffer, MTLPrimitiveType, MTLRenderCommandEncoder, MTLRenderPipelineState, MTLTexture,
 };
+
+type RenderCommandEncoderRef = ProtocolObject<dyn MTLRenderCommandEncoder>;
+type RenderPipelineStateRef = ProtocolObject<dyn MTLRenderPipelineState>;
+type BufferRef = ProtocolObject<dyn MTLBuffer>;
+type TextureRef = ProtocolObject<dyn MTLTexture>;
 
 use super::{InstanceBinding, InstanceBindings, MetalRenderer, SpriteInputIndex};
 
@@ -34,7 +39,7 @@ enum Slot {
     Unknown,
     Buffer {
         buffer: *const c_void,
-        offset: u64,
+        offset: usize,
     },
     /// Eight bytes set inline.
     Bytes(u64),
@@ -72,9 +77,9 @@ impl Binds {
     }
 
     fn pipeline(&mut self, encoder: &RenderCommandEncoderRef, pipeline: &RenderPipelineStateRef) {
-        let pointer = pipeline.as_ptr() as *const c_void;
+        let pointer = ptr::from_ref(pipeline).cast::<c_void>();
         if self.pipeline != pointer {
-            encoder.set_render_pipeline_state(pipeline);
+            encoder.setRenderPipelineState(pipeline);
             self.pipeline = pointer;
         }
     }
@@ -84,19 +89,21 @@ impl Binds {
         encoder: &RenderCommandEncoderRef,
         index: usize,
         buffer: &BufferRef,
-        offset: u64,
+        offset: usize,
     ) {
-        let pointer = buffer.as_ptr() as *const c_void;
+        let pointer = ptr::from_ref(buffer).cast::<c_void>();
         let wanted = Slot::Buffer {
             buffer: pointer,
             offset,
         };
+        // SAFETY: the instanced kinds' shaders read the unit vertices and their instances at
+        // these slots; Metal retains the buffer, and the frame's writer publishes its writes.
         match self.vertex[index] {
             slot if slot == wanted => return,
-            Slot::Buffer { buffer, .. } if buffer == pointer => {
-                encoder.set_vertex_buffer_offset(index as u64, offset)
-            }
-            _ => encoder.set_vertex_buffer(index as u64, Some(buffer), offset),
+            Slot::Buffer { buffer, .. } if buffer == pointer => unsafe {
+                encoder.setVertexBufferOffset_atIndex(offset, index)
+            },
+            _ => unsafe { encoder.setVertexBuffer_offset_atIndex(Some(buffer), offset, index) },
         }
         self.vertex[index] = wanted;
     }
@@ -111,11 +118,14 @@ impl Binds {
         if self.vertex[index] == Slot::Bytes(bytes) {
             return;
         }
-        encoder.set_vertex_bytes(
-            index as u64,
-            size_of::<Size<DevicePixels>>() as u64,
-            &value as *const Size<DevicePixels> as *const c_void,
-        );
+        // SAFETY: Metal copies the size, which the shaders read at this slot.
+        unsafe {
+            encoder.setVertexBytes_length_atIndex(
+                ptr::NonNull::from(&value).cast(),
+                size_of::<Size<DevicePixels>>(),
+                index,
+            );
+        }
         self.vertex[index] = Slot::Bytes(bytes);
     }
 
@@ -123,28 +133,30 @@ impl Binds {
         &mut self,
         encoder: &RenderCommandEncoderRef,
         buffer: &BufferRef,
-        offset: u64,
+        offset: usize,
     ) {
-        let index = SpriteInputIndex::Sprites as u64;
-        let pointer = buffer.as_ptr() as *const c_void;
+        let index = SpriteInputIndex::Sprites as usize;
+        let pointer = ptr::from_ref(buffer).cast::<c_void>();
         let wanted = Slot::Buffer {
             buffer: pointer,
             offset,
         };
+        // SAFETY: the fragment shaders that read their instance read it at this slot; Metal
+        // retains the buffer, and the frame's writer publishes its writes.
         match self.fragment {
             slot if slot == wanted => return,
-            Slot::Buffer { buffer, .. } if buffer == pointer => {
-                encoder.set_fragment_buffer_offset(index, offset)
-            }
-            _ => encoder.set_fragment_buffer(index, Some(buffer), offset),
+            Slot::Buffer { buffer, .. } if buffer == pointer => unsafe {
+                encoder.setFragmentBufferOffset_atIndex(offset, index)
+            },
+            _ => unsafe { encoder.setFragmentBuffer_offset_atIndex(Some(buffer), offset, index) },
         }
         self.fragment = wanted;
     }
 
     fn fades(&mut self, encoder: &RenderCommandEncoderRef, fades: &InstanceBinding) {
         let wanted = Slot::Buffer {
-            buffer: fades.buffer.as_ptr() as *const c_void,
-            offset: fades.offset as u64,
+            buffer: Retained::as_ptr(&fades.buffer).cast::<c_void>(),
+            offset: fades.offset,
         };
         if self.fades != wanted {
             crate::fast::edge_fade::bind(encoder, fades);
@@ -153,9 +165,15 @@ impl Binds {
     }
 
     fn atlas(&mut self, encoder: &RenderCommandEncoderRef, texture: &TextureRef) {
-        let pointer = texture.as_ptr() as *const c_void;
+        let pointer = ptr::from_ref(texture).cast::<c_void>();
         if self.atlas != pointer {
-            encoder.set_fragment_texture(SpriteInputIndex::AtlasTexture as u64, Some(texture));
+            // SAFETY: the sprite shaders sample their atlas at this slot; Metal retains it.
+            unsafe {
+                encoder.setFragmentTexture_atIndex(
+                    Some(texture),
+                    SpriteInputIndex::AtlasTexture as usize,
+                );
+            }
             self.atlas = pointer;
         }
     }
@@ -287,7 +305,10 @@ impl MetalRenderer {
         );
     }
 
-    fn atlas_texture(&self, texture_id: AtlasTextureId) -> Option<metal::Texture> {
+    fn atlas_texture(
+        &self,
+        texture_id: AtlasTextureId,
+    ) -> Option<Retained<ProtocolObject<dyn MTLTexture>>> {
         self.sprite_atlas.metal_texture(texture_id)
     }
 
@@ -315,7 +336,7 @@ impl MetalRenderer {
             encoder,
             SpriteInputIndex::Sprites as usize,
             &draw.instances.buffer,
-            draw.instances.offset as u64,
+            draw.instances.offset,
         );
         binds.vertex_size(
             encoder,
@@ -323,11 +344,7 @@ impl MetalRenderer {
             viewport_size,
         );
         if draw.fragment_reads_instances {
-            binds.fragment_buffer(
-                encoder,
-                &draw.instances.buffer,
-                draw.instances.offset as u64,
-            );
+            binds.fragment_buffer(encoder, &draw.instances.buffer, draw.instances.offset);
         }
         if let Some(fades) = draw.fades {
             binds.fades(encoder, fades);
@@ -344,13 +361,16 @@ impl MetalRenderer {
             );
             binds.atlas(encoder, atlas);
         }
-        encoder.draw_primitives_instanced_base_instance(
-            metal::MTLPrimitiveType::Triangle,
-            0,
-            6,
-            draw.range.len() as u64,
-            draw.range.start as u64,
-        );
+        // SAFETY: six unit vertices draw the batch's instances, all within the instances bound.
+        unsafe {
+            encoder.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(
+                MTLPrimitiveType::Triangle,
+                0,
+                6,
+                draw.range.len(),
+                draw.range.start,
+            );
+        }
         true
     }
 }
@@ -382,7 +402,7 @@ mod tests {
         Quad, RenderSvgParams, ScaledPixels, Scene, Shadow, TransformationMatrix, Underline, hsla,
         point, size,
     };
-    use metal::MTLPixelFormat;
+    use objc2_metal::MTLCommandBuffer as _;
 
     use super::{super::InstanceBufferPool, MetalRenderer, UPSTREAM_LOOP};
 
@@ -392,6 +412,7 @@ mod tests {
         MetalRenderer::new_headless(std::sync::Arc::new(parking_lot::Mutex::new(
             InstanceBufferPool::default(),
         )))
+        .unwrap()
     }
 
     fn bounds(x: f32, y: f32, width: f32, height: f32) -> Bounds<ScaledPixels> {
@@ -538,14 +559,10 @@ mod tests {
     fn encoding_cost() {
         let mut renderer = renderer();
         let viewport = size(DevicePixels(SIDE), DevicePixels(SIDE));
-        renderer.update_path_intermediate_textures(viewport);
-        let descriptor = metal::TextureDescriptor::new();
-        descriptor.set_width(SIDE as u64);
-        descriptor.set_height(SIDE as u64);
-        descriptor.set_pixel_format(MTLPixelFormat::BGRA8Unorm);
-        descriptor.set_usage(metal::MTLTextureUsage::RenderTarget);
-        descriptor.set_storage_mode(metal::MTLStorageMode::Private);
-        let target = renderer.device.new_texture(&descriptor);
+        renderer
+            .update_path_intermediate_textures(viewport)
+            .unwrap();
+        let target = crate::fast::render_target(&renderer.device, SIDE as usize, SIDE as usize);
         for cards in [0, 8, 60] {
             let scene = scene(&renderer, cards);
             let batches = scene.batches().count();
@@ -561,7 +578,7 @@ mod tests {
                     let retired = instructions() - retired;
                     let elapsed = start.elapsed();
                     command_buffer.commit();
-                    command_buffer.wait_until_completed();
+                    command_buffer.waitUntilCompleted();
                     if frame >= 200 {
                         times[usize::from(!upstream)].push(elapsed.as_secs_f64() * 1e6);
                         counts[usize::from(!upstream)].push(retired as f64 / 1e3);

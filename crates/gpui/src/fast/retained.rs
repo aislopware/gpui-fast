@@ -21,8 +21,8 @@ use crate::fast::splice::{Prebuilt, Rebuild, Splice, SplicedPrepaint};
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, ElementId, EntityId, GlobalElementId,
-    HitboxId, IntoElement, LayoutId, Pixels, Point, Size, Style, TextStyle, View, ViewElement,
-    Window,
+    HitboxId, LayoutId, Pixels, PlatformInputHandler, Point, Size, Style, TextStyle, View,
+    ViewElement, Window,
 };
 use collections::{FxHashMap, FxHashSet};
 use refineable::Refineable;
@@ -35,7 +35,16 @@ use std::{any::TypeId, cell::RefCell, mem, ops::Range, rc::Rc};
 pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
     window.fast_layout.phase_times.begin();
     crate::fast::focus::begin_frame(window, cx);
+    crate::fast::layers::hover_freeze::begin_draw(window);
+    // Offsets code set since the last frame (a scrollbar, a `scroll_to_*`)
+    // are scrolls of their containers, which the views that read them are
+    // told of before any is drawn from last frame: a view that is not
+    // notified for it would otherwise be drawn as it was, the container
+    // with it, at its old offset.
+    window.fast_layers.scrolls.take_offsets_set();
+    crate::fast::a11y::new_frame(window);
     window.mark_changed_retained_views_dirty(cx);
+    crate::fast::check_retained::begin_drawing(window);
 }
 
 /// Prepares `window` for an element drawn outside of its frames, as
@@ -46,6 +55,23 @@ pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
 #[inline(always)]
 pub(crate) fn draw_outside_frames(window: &mut Window) {
     window.refreshing = true;
+}
+
+/// Forwarded to by `Window::draw` as it hands the platform this frame's input
+/// handler.
+pub(crate) fn note_installed_input_handler(window: &mut Window, handler: &PlatformInputHandler) {
+    window.retained_state.installed_input_focus = Some(handler.focus_id());
+}
+
+/// Forwarded to by `Window::draw` as it takes back the input handler it gave
+/// the platform. A view drawn again from last frame hands the platform that
+/// handler again, which is only right if it is the one GPUI gave it: when
+/// the platform hands back another, nothing is drawn again from last frame,
+/// so the views that paint input handlers paint them anew.
+pub(crate) fn note_restored_input_handler(window: &mut Window, handler: &PlatformInputHandler) {
+    if window.retained_state.installed_input_focus != Some(handler.focus_id()) {
+        window.refreshing = true;
+    }
 }
 
 /// The retained subtrees being prepainted right now, for something deferred
@@ -67,6 +93,8 @@ pub(crate) struct RetainedSubtrees {
     /// The elements drawn this frame that can be drawn again from it. See
     /// [`crate::fast::element`].
     pub(crate) elements: crate::fast::element::ElementRecords,
+    /// What `Window::on_present` was handed while painting, in order.
+    pub(crate) present: Vec<crate::fast::present::OnPresent>,
 }
 
 pub(crate) struct RetainedSubtree {
@@ -111,6 +139,20 @@ pub(crate) struct RetainedSubtree {
     /// [`crate::fast::element::ElementRecords`], carried along when it is
     /// drawn again from last frame.
     pub(crate) element_records: Range<u32>,
+    /// Whether this frame drew it from last frame's record rather than
+    /// building it: copied with a view drawn again, or spliced around the
+    /// views nested in it that were built. See [`crate::fast::check_retained`].
+    #[cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
+    pub(crate) drawn_again: bool,
+}
+
+impl RetainedSubtree {
+    /// Whether the subtree is a cached view ([`crate::Entity::cached`]).
+    pub(crate) fn is_cached(&self) -> bool {
+        self.rebuild
+            .as_ref()
+            .is_some_and(|rebuild| rebuild.is_cached())
+    }
 }
 
 pub(crate) enum PaintStatus {
@@ -127,19 +169,31 @@ pub(crate) enum PaintStatus {
 
 /// What a subtree's prepaint and paint depended on besides what it read: the
 /// place it was drawn in and what it inherited there.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct RetainedContext {
     pub(crate) bounds: Bounds<Pixels>,
     /// Where it was laid out within the device pixel its bounds snap to,
     /// which decides where what it holds snaps (see
-    /// [`crate::TaffyLayoutEngine::layout_phase`]), laid out in place or on
+    /// [`crate::taffy::TaffyLayoutEngine::layout_phase`]), laid out in place or on
     /// its own.
     pub(crate) phase: Point<f32>,
     pub(crate) content_mask: ContentMask<Pixels>,
     pub(crate) text_style: TextStyle,
+    /// The opacity prepaint foresaw for it, which it is drawn again under.
     pub(crate) opacity: f32,
+    /// The opacity it was painted at, which paint may find other than the
+    /// one prepaint foresaw. See [`Window::note_painted_opacity`].
+    pub(crate) painted_opacity: f32,
     /// The edge fade it was drawn in (see [`crate::fast::edge_fade`]).
     pub(crate) fade: u32,
+}
+
+/// Whether two opacities are the same, by their bits, so that a NaN opacity
+/// is the same as itself and what is painted at one can still be drawn again
+/// from last frame.
+#[inline(always)]
+pub(crate) fn same_opacity(a: f32, b: f32) -> bool {
+    a.to_bits() == b.to_bits()
 }
 
 /// Gives every subtree of `records` the fade `map` makes of the one it was
@@ -155,6 +209,7 @@ pub(crate) fn refade(records: &mut [RetainedSubtree], map: &mut impl FnMut(u32) 
                 content_mask: context.content_mask,
                 text_style: context.text_style.clone(),
                 opacity: context.opacity,
+                painted_opacity: context.painted_opacity,
                 fade,
             });
         }
@@ -313,6 +368,16 @@ pub(crate) struct RetainedState {
     /// render: what it writes from then on is part of building it, not a
     /// change of what it read. See [`note_rendering`].
     pub(crate) rendering_since: FxHashMap<EntityId, u64>,
+    /// The writes each view rendered this frame made in its `render` the
+    /// last time it ran, `start..end` in the write generation: what it
+    /// handed the elements it built, rather than what they wrote as they
+    /// were laid out. See [`note_rendered`].
+    pub(crate) render_writes: FxHashMap<EntityId, Range<u64>>,
+    /// The retained check's state. See [`crate::fast::check_retained`].
+    pub(crate) check: crate::fast::check_retained::CheckState,
+    /// The focus of the input handler last given to the platform window, if
+    /// one was. See [`note_restored_input_handler`].
+    pub(crate) installed_input_focus: Option<Option<crate::FocusId>>,
 }
 
 impl RetainedState {
@@ -340,6 +405,9 @@ impl RetainedState {
             recording_elements: 0,
             content_mask_pushes: 0,
             rendering_since: FxHashMap::default(),
+            render_writes: FxHashMap::default(),
+            check: crate::fast::check_retained::CheckState::new(),
+            installed_input_focus: None,
         }
     }
 
@@ -392,6 +460,7 @@ impl PrepaintStateIndex {
             line_layout_index: self
                 .line_layout_index
                 .shifted(&from.line_layout_index, &to.line_layout_index),
+            fast_a11y_index: self.fast_a11y_index - from.fast_a11y_index + to.fast_a11y_index,
         }
     }
 }
@@ -407,8 +476,10 @@ impl PartialEq for PrepaintStateIndex {
             dispatch_tree_index,
             accessed_element_states_index,
             line_layout_index,
+            fast_a11y_index,
         } = self;
-        *hitboxes_index == other.hitboxes_index
+        *fast_a11y_index == other.fast_a11y_index
+            && *hitboxes_index == other.hitboxes_index
             && *tooltips_index == other.tooltips_index
             && *deferred_draws_index == other.deferred_draws_index
             && *dispatch_tree_index == other.dispatch_tree_index
@@ -422,9 +493,9 @@ impl PartialEq for PaintIndex {
     fn eq(&self, other: &Self) -> bool {
         let PaintIndex {
             scene_index,
-            fast_window_control_hitboxes_index,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds_index,
+            fast,
             mouse_listeners_index,
             input_handlers_index,
             cursor_styles_index,
@@ -432,8 +503,8 @@ impl PartialEq for PaintIndex {
             tab_handle_index,
             line_layout_index,
         } = self;
-        let same = *scene_index == other.scene_index
-            && *fast_window_control_hitboxes_index == other.fast_window_control_hitboxes_index
+        let same = *fast == other.fast
+            && *scene_index == other.scene_index
             && *mouse_listeners_index == other.mouse_listeners_index
             && *input_handlers_index == other.input_handlers_index
             && *cursor_styles_index == other.cursor_styles_index
@@ -466,12 +537,17 @@ impl PaintIndex {
     fn shifted_with_scene(&self, scene_index: usize, from: &Self, to: &Self) -> Self {
         PaintIndex {
             scene_index,
-            fast_window_control_hitboxes_index: self.fast_window_control_hitboxes_index
-                - from.fast_window_control_hitboxes_index
-                + to.fast_window_control_hitboxes_index,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds_index: self.debug_bounds_index - from.debug_bounds_index
                 + to.debug_bounds_index,
+            fast: FastPaintIndex {
+                window_control_hitboxes: self.fast.window_control_hitboxes
+                    - from.fast.window_control_hitboxes
+                    + to.fast.window_control_hitboxes,
+                a11y_actions: self.fast.a11y_actions - from.fast.a11y_actions
+                    + to.fast.a11y_actions,
+                present: self.fast.present - from.fast.present + to.fast.present,
+            },
             mouse_listeners_index: self.mouse_listeners_index - from.mouse_listeners_index
                 + to.mouse_listeners_index,
             input_handlers_index: self.input_handlers_index - from.input_handlers_index
@@ -496,6 +572,7 @@ impl RetainedSubtrees {
         self.open.clear();
         self.reused_any = false;
         self.elements.clear();
+        self.present.clear();
     }
 
     /// Whether any subtree was drawn from last frame.
@@ -645,9 +722,22 @@ impl Window {
     /// Where it is drawn is not checked here; see
     /// [`Window::retained_context_matches`].
     pub(crate) fn reusable_retained(&self, id: &GlobalElementId, cx: &App) -> Option<usize> {
+        self.reusable_record(id, cx, false)
+    }
+
+    /// The record the cached view `id` left last frame, if nothing about
+    /// this frame rules out drawing it again, as [`Self::reusable_retained`]
+    /// finds it, but for what it read updated without being notified, which
+    /// does not draw a cached view again (see
+    /// [`App::notified_dependencies_changed`]).
+    pub(crate) fn reusable_cached(&self, id: &GlobalElementId, cx: &App) -> Option<usize> {
+        self.reusable_record(id, cx, true)
+    }
+
+    fn reusable_record(&self, id: &GlobalElementId, cx: &App, cached: bool) -> Option<usize> {
         if self.refreshing
             || cx.has_active_drag()
-            || self.a11y.is_active()
+            || crate::fast::a11y::stale(&self.a11y)
             || self.is_inspector_picking(cx)
             || self.retained_state.dirty_subtrees.contains(id)
             || self.next_frame.retained.by_id.contains_key(id)
@@ -657,7 +747,12 @@ impl Window {
         }
         let index = self.rendered_frame.retained.find(id)?;
         let record = &self.rendered_frame.retained.records[index];
-        if cx.dependencies_changed(&record.dependencies, self.inside_notified_view())
+        let changed = if cached {
+            cx.notified_dependencies_changed(&record.dependencies, self.inside_notified_view())
+        } else {
+            cx.dependencies_changed(&record.dependencies, self.inside_notified_view())
+        };
+        if changed
             || crate::fast::layers::invalidate::offset_read_changed(self, &record.dependencies)
             || !self.hovers_unchanged(&record.hover_dependencies)
         {
@@ -679,7 +774,7 @@ impl Window {
         !crate::fast::layers::paint::inside_layer(self)
             && context.bounds == bounds
             && context.phase == phase
-            && context.opacity == self.element_opacity
+            && same_opacity(context.opacity, self.element_opacity)
             && context.content_mask == self.content_mask()
             && context.fade == crate::fast::edge_fade::current(self)
             && context.text_style == self.text_style()
@@ -896,6 +991,7 @@ impl Window {
                 layout: record.layout.clone(),
                 rebuild: record.rebuild.clone(),
                 element_records: carry_elements(&record.element_records),
+                drawn_again: true,
             });
         }
         anchor
@@ -946,8 +1042,54 @@ impl Window {
             self.retained_state.subtrees_dirty_next_frame.insert(id);
             self.request_animation_frame();
         }
+        // What it painted is copied at the opacity it was painted at, and
+        // is stale under another.
+        if self.note_painted_opacity(index) {
+            self.build_stale_opacity_next_frame(index);
+        }
         // Subtrees around this one depend on these hovers too.
         self.add_nested_hovers(&hovers);
+    }
+
+    /// Records that the subtree at `index` of this frame's records is painted
+    /// at the opacity paint has here, saying whether its record held another.
+    ///
+    /// What is drawn again from last frame is decided in prepaint, under the
+    /// opacity the styles around it have there; but an ancestor's hover or
+    /// drag-over style depends on this frame's hit test, which only paint
+    /// has, so prepaint only foresees the opacity paint applies. A record
+    /// keeps both: it is drawn again where prepaint foresees what it foresaw
+    /// then, and what it copies is right only where paint applies what it
+    /// applied then. A hover prepaint never sees, as a `div` without an id
+    /// has, is foreseen wrongly the same way every frame, and the subtree
+    /// under it is still drawn again; one that changed is found here. A view
+    /// built again where it was, in a view drawn from last frame around it
+    /// (see [`crate::fast::splice`]), is prepainted under the one and painted
+    /// under the other.
+    pub(crate) fn note_painted_opacity(&mut self, index: usize) -> bool {
+        let opacity = self.element_opacity;
+        let record = &mut self.next_frame.retained.records[index];
+        if same_opacity(record.context.painted_opacity, opacity) {
+            return false;
+        }
+        Rc::make_mut(&mut record.context).painted_opacity = opacity;
+        true
+    }
+
+    /// Has the subtree at `index` of this frame's records, painted from last
+    /// frame under another opacity than it was painted at, built on the next
+    /// frame, which is asked for: its view is told, and the subtrees and
+    /// elements nested in it, whose paint was copied with its own, are built
+    /// too.
+    pub(crate) fn build_stale_opacity_next_frame(&mut self, index: usize) {
+        let records = &self.next_frame.retained.records;
+        let nested = &records[index + 1..=index + records[index].nested];
+        self.retained_state
+            .subtrees_dirty_next_frame
+            .extend(nested.iter().map(|record| record.id.clone()));
+        let elements = records[index].element_records.clone();
+        crate::fast::element::mark_stale(&mut self.next_frame.retained.elements, elements);
+        build_next_frame(self);
     }
 
     /// Adds the hovers a subtree nested in the one being painted was painted
@@ -998,6 +1140,7 @@ impl Window {
                     content_mask: ContentMask::default(),
                     text_style: TextStyle::default(),
                     opacity: 1.,
+                    painted_opacity: 1.,
                     fade: crate::fast::edge_fade::NONE,
                 }),
                 dependencies: RenderDependencies::default(),
@@ -1010,6 +1153,7 @@ impl Window {
                 layout: None,
                 rebuild: None,
                 element_records: 0..0,
+                drawn_again: false,
             });
             retained.open.push(index);
             index
@@ -1080,6 +1224,7 @@ impl Window {
             content_mask: self.content_mask(),
             text_style: self.text_style(),
             opacity: self.element_opacity,
+            painted_opacity: self.element_opacity,
             fade: crate::fast::edge_fade::current(self),
         };
         let end = self.prepaint_index();
@@ -1169,6 +1314,7 @@ impl Window {
         record.own_hovers = own.into();
         record.dependencies = record.dependencies.union(&dependencies.all);
         record.own_dependencies = record.own_dependencies.union(&dependencies.own);
+        self.note_painted_opacity(index);
     }
 
     /// Takes the hovers read since the last call into `hover_dependencies`,
@@ -1181,12 +1327,12 @@ impl Window {
         }
     }
 
-    /// See [`crate::TaffyLayoutEngine::record_claimed_keys`].
+    /// See [`crate::taffy::TaffyLayoutEngine::record_claimed_keys`].
     pub(crate) fn record_claimed_layout_keys(&mut self) -> usize {
         self.layout_engine.as_mut().unwrap().record_claimed_keys()
     }
 
-    /// See [`crate::TaffyLayoutEngine::finish_recording_claimed_keys`].
+    /// See [`crate::taffy::TaffyLayoutEngine::finish_recording_claimed_keys`].
     pub(crate) fn finish_recording_claimed_layout_keys(&mut self, start: usize) -> Vec<u64> {
         self.layout_engine
             .as_mut()
@@ -1194,7 +1340,7 @@ impl Window {
             .finish_recording_claimed_keys(start)
     }
 
-    /// See [`crate::TaffyLayoutEngine::keep_retained`].
+    /// See [`crate::taffy::TaffyLayoutEngine::keep_retained`].
     pub(crate) fn keep_retained_layout(&mut self, keys: &[u64]) {
         self.layout_engine.as_mut().unwrap().keep_retained(keys);
     }
@@ -1219,10 +1365,24 @@ impl Window {
             return;
         }
         let notified = &self.retained_state.notified_entities;
+        let records = &self.rendered_frame.retained.records;
         let mut changed = SmallVec::<[EntityId; 8]>::new();
-        for record in &self.rendered_frame.retained.records {
+        // The last record inside each cached view the walk is in, innermost
+        // last.
+        let mut cached = SmallVec::<[usize; 4]>::new();
+        for (index, record) in records.iter().enumerate() {
+            while cached.last().is_some_and(|until| index > *until) {
+                cached.pop();
+            }
             let Some(entity) = crate::fast::splice::view_entity(&record.id) else {
                 continue;
+            };
+            let changed_alone = || {
+                crate::fast::layers::invalidate::offset_read_changed(self, &record.own_dependencies)
+                    || crate::fast::layers::invalidate::list_state_scrolled(
+                        self,
+                        &record.own_dependencies,
+                    )
             };
             let inside_notified = !notified.is_empty()
                 && self
@@ -1230,14 +1390,33 @@ impl Window {
                     .dispatch_tree
                     .view_path_reversed(entity)
                     .any(|view| notified.contains(&view));
-            if cx.dependencies_changed(&record.own_dependencies, inside_notified)
-                || crate::fast::layers::invalidate::offset_read_changed(
-                    self,
-                    &record.own_dependencies,
-                )
-            {
-                changed.push(entity);
+            if record.is_cached() {
+                // A cached view is drawn again for what is notified, or
+                // updated outside drawing under a notified view, not for
+                // what is only written while the window draws. See
+                // `App::notified_dependencies_changed`.
+                if cx.notified_dependencies_changed(&record.own_dependencies, inside_notified)
+                    || changed_alone()
+                {
+                    changed.push(entity);
+                }
+                cached.push(index + record.nested);
+                continue;
             }
+            if !cx.dependencies_changed(&record.own_dependencies, inside_notified)
+                && !changed_alone()
+            {
+                continue;
+            }
+            // A view inside a cached view only written while the window
+            // drew is built again only if the cached view is, as upstream
+            // does.
+            if !cached.is_empty()
+                && !cx.notified_dependencies_changed(&record.own_dependencies, inside_notified)
+            {
+                continue;
+            }
+            changed.push(entity);
         }
         // As a notification marks a view and the views around it.
         for entity in changed {
@@ -1261,6 +1440,17 @@ impl Window {
     }
 }
 
+/// Has the view being drawn built on the next frame, which is asked for, as
+/// [`Window::request_animation_frame`] has it, but with no scroll layer
+/// taking it for an animation of what the layer holds or of the view holding
+/// it (see [`crate::fast::layers::invalidate::owner_animating`]): for what a
+/// frame finds too late to build it.
+pub(crate) fn build_next_frame(window: &Window) {
+    let view = window.current_view();
+    note_animation_frame_request(window, view);
+    window.on_next_frame(move |_, cx| cx.notify(view));
+}
+
 /// Notes that the view `entity` asked to be drawn again on the next frame.
 /// See [`RetainedState::note_notified`].
 #[inline(always)]
@@ -1272,18 +1462,40 @@ pub(crate) fn note_animation_frame_request(window: &Window, entity: EntityId) {
         .insert(entity);
 }
 
-/// Copies the window control hitboxes last frame's paint of `range`
-/// inserted, which upstream's [`Window::reuse_paint`] leaves out: a subtree
-/// drawn again from last frame would otherwise lose the window controls it
-/// painted.
+/// Where a frame's paint stands in what gpui-fast adds to the frame: the
+/// part of a [`PaintIndex`] upstream's lacks.
+#[derive(Clone, Default, PartialEq)]
+pub(crate) struct FastPaintIndex {
+    pub(crate) window_control_hitboxes: usize,
+    pub(crate) a11y_actions: usize,
+    pub(crate) present: usize,
+}
+
+impl FastPaintIndex {
+    #[inline(always)]
+    pub(crate) fn new(window: &Window) -> Self {
+        FastPaintIndex {
+            window_control_hitboxes: window.next_frame.window_control_hitboxes.len(),
+            a11y_actions: crate::fast::a11y::actions_index(window),
+            present: window.next_frame.retained.present.len(),
+        }
+    }
+}
+
+/// Copies what last frame's paint of `range` added that upstream's
+/// [`Window::reuse_paint`] leaves out: a subtree drawn again from last frame
+/// would otherwise lose the window controls it painted and the listeners
+/// for accessibility actions it registered.
 #[inline(always)]
-pub(crate) fn reuse_window_control_hitboxes(window: &mut Window, range: &Range<PaintIndex>) {
+pub(crate) fn reuse_paint_records(window: &mut Window, range: &Range<PaintIndex>) {
     window.next_frame.window_control_hitboxes.extend(
-        window.rendered_frame.window_control_hitboxes[range.start.fast_window_control_hitboxes_index
-            ..range.end.fast_window_control_hitboxes_index]
+        window.rendered_frame.window_control_hitboxes
+            [range.start.fast.window_control_hitboxes..range.end.fast.window_control_hitboxes]
             .iter()
             .cloned(),
     );
+    crate::fast::a11y::reuse_paint(window, range);
+    crate::fast::present::reuse_paint(window, range);
 }
 
 /// The retained subtrees around the element being painted, for a listener
@@ -1329,29 +1541,6 @@ pub(crate) fn invalidate_retained_subtrees(window: &mut Window, subtrees: &[Glob
         .retained_state
         .dirty_subtrees
         .extend(subtrees.last().cloned());
-}
-
-/// Multiplies the opacity of what is painted from here on by `opacity`,
-/// returning the opacity to go back to with
-/// [`pop_element_opacity`]. See [`Window::with_element_opacity`].
-///
-/// Opacity only affects what is painted, but a retained subtree inside is
-/// drawn again from what it painted only if it would be painted at the
-/// opacity it was, which prepaint decides.
-#[inline(always)]
-pub(crate) fn push_element_opacity(window: &mut Window, opacity: Option<f32>) -> f32 {
-    window.invalidator.debug_assert_paint_or_prepaint();
-    let previous_opacity = window.element_opacity;
-    if let Some(opacity) = opacity {
-        window.element_opacity = previous_opacity * opacity;
-    }
-    previous_opacity
-}
-
-/// Goes back to the opacity [`push_element_opacity`] returned.
-#[inline(always)]
-pub(crate) fn pop_element_opacity(window: &mut Window, previous_opacity: f32) {
-    window.element_opacity = previous_opacity;
 }
 
 /// Starts prepainting the deferred draw at `deferred_draw_ix` as a part of
@@ -1442,6 +1631,7 @@ pub(crate) fn finish_deferred(
 /// becomes the rendered frame.
 #[inline]
 pub(crate) fn finish_retained_frame(window: &mut Window) {
+    crate::fast::check_retained::end_drawing(window);
     crate::fast::focus::finish_frame(window);
     // The sprite atlas may be cleared when the frame is presented.
     window.fast_glyph_bounds.finish_frame();
@@ -1451,6 +1641,7 @@ pub(crate) fn finish_retained_frame(window: &mut Window) {
     window.retained_state.hover_dependencies.clear();
     window.retained_state.hover_reads.get_mut().clear();
     window.retained_state.rendering_since.clear();
+    window.retained_state.render_writes.clear();
     window.next_frame.retained.finish_frame();
     crate::fast::layers::paint::finish_frame(window);
     crate::fast::layers::finish_frame(window);
@@ -1461,18 +1652,18 @@ pub(crate) fn finish_retained_frame(window: &mut Window) {
 // layout they kept.
 impl Window {
     /// How many writes that change a layout the engine has made. See
-    /// [`crate::TaffyLayoutEngine::layout_changes`].
+    /// [`crate::taffy::TaffyLayoutEngine::layout_changes`].
     pub(crate) fn layout_changes(&self) -> u64 {
         self.layout_engine.as_ref().unwrap().layout_changes()
     }
 
     /// How many measurements the engine has been given to take again. See
-    /// [`crate::TaffyLayoutEngine::remeasures`].
+    /// [`crate::taffy::TaffyLayoutEngine::remeasures`].
     pub(crate) fn layout_remeasures(&self) -> u64 {
         self.layout_engine.as_ref().unwrap().remeasures()
     }
 
-    /// See [`crate::TaffyLayoutEngine::relayout_in_place`].
+    /// See [`crate::taffy::TaffyLayoutEngine::relayout_in_place`].
     pub(crate) fn relayout_in_place(
         &mut self,
         layout_id: LayoutId,
@@ -1550,6 +1741,9 @@ impl<V: View> ViewElement<V> {
         cx: &mut App,
     ) -> (LayoutId, ViewLayout) {
         if let Some(entity_id) = self.entity_id {
+            let name = self.rebuild.view_type_name();
+            let name = name.unwrap_or_else(std::any::type_name::<V>);
+            crate::fast::check_retained::note_view(window, entity_id, name);
             // Stateful path: create a reactive boundary.
             window.with_rendered_view(entity_id, |window| {
                 let caching_disabled = window.is_inspector_picking(cx);
@@ -1586,17 +1780,14 @@ impl<V: View> ViewElement<V> {
                         {
                             return (root, ViewLayout::Spliced(splice));
                         }
-                        note_rendering(window, cx, entity_id);
+                        let start = note_rendering(window, cx, entity_id);
                         crate::fast::layers::invalidate::note_rebuild(
                             window, cx, global_id, entity_id,
                         );
                         let mut recording = window.begin_retained_layout(cx);
-                        let mut element = self
-                            .view
-                            .take()
-                            .unwrap()
-                            .render(window, cx)
-                            .into_any_element();
+                        let mut element =
+                            crate::view::render_view(self.view.take().unwrap(), window, cx);
+                        note_rendered(window, cx, entity_id, start);
                         recording.rendered(cx);
                         let layout_id = element.request_layout(window, cx);
                         let retained = window.finish_retained_layout(recording, layout_id, cx);
@@ -1609,12 +1800,8 @@ impl<V: View> ViewElement<V> {
                         )
                     }
                     _ => {
-                        let mut element = self
-                            .view
-                            .take()
-                            .unwrap()
-                            .render(window, cx)
-                            .into_any_element();
+                        let mut element =
+                            crate::view::render_view(self.view.take().unwrap(), window, cx);
                         let layout_id = element.request_layout(window, cx);
                         (
                             layout_id,
@@ -1631,12 +1818,8 @@ impl<V: View> ViewElement<V> {
             window.with_id(
                 ElementId::Name(std::any::type_name::<V>().into()),
                 |window| {
-                    let mut element = self
-                        .view
-                        .take()
-                        .unwrap()
-                        .render(window, cx)
-                        .into_any_element();
+                    let mut element =
+                        crate::view::render_view(self.view.take().unwrap(), window, cx);
                     let layout_id = element.request_layout(window, cx);
                     (
                         layout_id,
@@ -1754,7 +1937,7 @@ impl<V: View> ViewElement<V> {
                     retained: (layout, layout_dependencies),
                 } => {
                     if !window.dirty_views.contains(&entity_id)
-                        && let Some(previous) = window.reusable_retained(global_id, cx)
+                        && let Some(previous) = window.reusable_cached(global_id, cx)
                         && window.retained_context_matches(previous, bounds, phase)
                     {
                         let rebuild = window.rebuild_here(
@@ -1772,15 +1955,12 @@ impl<V: View> ViewElement<V> {
                         record.rebuild = rebuild.map(Rc::new);
                         return ViewPrepaint::Reused(index);
                     }
-                    note_rendering(window, cx, entity_id);
+                    let start = note_rendering(window, cx, entity_id);
                     crate::fast::layers::invalidate::note_rebuild(window, cx, global_id, entity_id);
                     let recording = window.begin_retained(global_id, None, cx);
-                    let mut element = self
-                        .view
-                        .take()
-                        .unwrap()
-                        .render(window, cx)
-                        .into_any_element();
+                    let mut element =
+                        crate::view::render_view(self.view.take().unwrap(), window, cx);
+                    note_rendered(window, cx, entity_id, start);
                     let render = recording.rendered(cx);
                     let root = element.request_layout(window, cx);
                     // Laid out on its own, it snaps as it would in place.
@@ -1862,12 +2042,14 @@ impl<V: View> ViewElement<V> {
         let mut layout_recording = window.begin_retained_layout(cx);
         let changes_before = window.layout_changes();
         let remeasures_before = window.layout_remeasures();
-        if let Some(entity_id) = self.entity_id {
-            note_rendering(window, cx, entity_id);
-        }
+        let entity_id = self.entity_id;
+        let start = entity_id.map(|entity_id| note_rendering(window, cx, entity_id));
         let view = self.view.take().unwrap();
         let (mut element, layout_id) = window.with_layout_key_of_prepainting_element(|window| {
-            let mut element = view.render(window, cx).into_any_element();
+            let mut element = crate::view::render_view(view, window, cx);
+            if let (Some(entity_id), Some(start)) = (entity_id, start) {
+                note_rendered(window, cx, entity_id, start);
+            }
             layout_recording.rendered(cx);
             let layout_id = element.request_layout(window, cx);
             (element, layout_id)
@@ -1914,14 +2096,26 @@ impl<V: View> ViewElement<V> {
 }
 
 /// Notes that the view `entity_id` begins to render, if it has not yet this
-/// frame: see [`RetainedState::rendering_since`].
-fn note_rendering(window: &mut Window, cx: &App, entity_id: EntityId) {
+/// frame: see [`RetainedState::rendering_since`]. Returns where in the write
+/// generation this render begins.
+fn note_rendering(window: &mut Window, cx: &App, entity_id: EntityId) -> u64 {
     let since = cx.entities.write_generation();
     window
         .retained_state
         .rendering_since
         .entry(entity_id)
         .or_insert(since);
+    since
+}
+
+/// Notes that the `render` of the view `entity_id`, begun at `start` in the
+/// write generation, returned: see [`RetainedState::render_writes`].
+fn note_rendered(window: &mut Window, cx: &App, entity_id: EntityId, start: u64) {
+    let end = cx.entities.write_generation();
+    window
+        .retained_state
+        .render_writes
+        .insert(entity_id, start..end);
 }
 
 /// Lays the view out as [`crate::Element::request_layout`] does, drawing it
@@ -2044,11 +2238,16 @@ fn paint_component(
 }
 
 impl HitboxId {
-    /// Whether the hitbox is hovered, as [`HitboxId::is_hovered`] answers,
-    /// without noting that it was asked.
+    /// Whether the hitbox is hovered, as [`HitboxId::is_hovered`] answers
+    /// while a frame is drawn, without noting that it was asked.
     pub(crate) fn hovered_now(self, window: &Window) -> bool {
-        window.captured_hitbox == Some(self)
-            || (!window.last_input_was_keyboard() && self.hit_test(window))
+        if window.captured_hitbox == Some(self) {
+            return true;
+        }
+        if crate::fast::layers::hover_freeze::hides_drawn_hover(window, self) {
+            return false;
+        }
+        self.hit_test(window)
     }
 }
 

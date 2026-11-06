@@ -1,14 +1,10 @@
 //! Touch gesture recognition vocabulary.
 //!
-//! GPUI recognizes gestures from raw [`TouchEvent`](crate::TouchEvent)s in a
-//! single, portable arena in gpui core: recognizers compete for in-flight
-//! touches, winners claim them, and losers are cancelled. Recognized gestures
-//! are surfaced through *existing* semantic events wherever possible, a tap
-//! becomes [`ClickEvent::Touch`](crate::ClickEvent), a pan becomes
-//! [`ScrollWheelEvent`](crate::ScrollWheelEvent)s carrying a
-//! [`TouchPhase`](crate::TouchPhase), and a pinch becomes
-//! [`PinchEvent`](crate::PinchEvent)s — so components written against
-//! `on_click` and scroll containers work untouched on mobile.
+//! GPUI recognizes gestures from raw [`TouchEvent`](crate::TouchEvent)s using
+//! a portable recognizer. Taps synthesize mouse presses and releases so
+//! existing click listeners and text selection work on mobile. Pans produce
+//! [`ScrollEvent`](crate::ScrollEvent)s, including post-release
+//! momentum. Long presses and touch drags can be claimed by element listeners.
 
 use std::collections::VecDeque;
 use std::mem;
@@ -19,8 +15,8 @@ use smallvec::SmallVec;
 
 use crate::{
     Axis, GestureEvent, InputEvent, IsZero, Modifiers, MouseButton, MouseDownEvent, MouseEvent,
-    MouseUpEvent, Pixels, PlatformInput, Point, ScrollDelta, ScrollWheelEvent, TouchEvent, TouchId,
-    TouchPhase, point, px, seal::Sealed,
+    MouseUpEvent, Pixels, PlatformInput, Point, ScrollDelta, ScrollEvent, ScrollSource, TouchEvent,
+    TouchId, TouchPhase, point, px, seal::Sealed,
 };
 
 const SCROLL_EVENT_SEPARATION: Duration = Duration::from_millis(28);
@@ -351,12 +347,12 @@ mod friction_spline {
 /// portable recognizers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GestureKinds {
-    /// Tap (and multi-tap), surfaced as [`ClickEvent::Touch`](crate::ClickEvent).
+    /// Tap (and multi-tap), synthesized as mouse presses by the portable recognizer.
     pub tap: bool,
     /// Long press, surfaced as [`LongPressEvent`].
     pub long_press: bool,
     /// Pan/scroll (including fling momentum), surfaced as
-    /// [`ScrollWheelEvent`](crate::ScrollWheelEvent)s.
+    /// [`ScrollEvent`](crate::ScrollEvent)s.
     pub pan: bool,
     /// Pinch to zoom, surfaced as [`PinchEvent`](crate::PinchEvent)s.
     pub pinch: bool,
@@ -400,6 +396,49 @@ impl InputEvent for TouchDragEvent {
 }
 impl GestureEvent for TouchDragEvent {}
 impl MouseEvent for TouchDragEvent {}
+
+/// A back-navigation gesture, such as the iOS swipe from the leading screen
+/// edge.
+///
+/// Elements receive it through
+/// [`InteractiveElement::on_back_gesture`](crate::InteractiveElement::on_back_gesture).
+/// The innermost element under [`Self::start_position`] claims the whole
+/// gesture when it starts; the platform cancels the gesture if no element does.
+/// Every phase is delivered at the start position, so the claiming element
+/// should stay in place while it animates its contents.
+#[derive(Clone, Debug, Default)]
+pub struct BackGestureEvent {
+    /// The phase of the gesture.
+    pub phase: BackGesturePhase,
+    /// Where the gesture started.
+    pub start_position: Point<Pixels>,
+    /// How far the gesture has travelled toward going back, from 0 to 1.
+    pub progress: f32,
+}
+
+/// The phase of a [`BackGestureEvent`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BackGesturePhase {
+    /// The gesture began. Claiming it here routes the remaining phases to the
+    /// same element.
+    #[default]
+    Started,
+    /// The gesture moved; [`BackGestureEvent::progress`] changed.
+    Progressed,
+    /// The gesture ended and the platform decided to go back.
+    Committed,
+    /// The gesture ended without going back.
+    Cancelled,
+}
+
+impl Sealed for BackGestureEvent {}
+impl InputEvent for BackGestureEvent {
+    fn to_platform_input(self) -> PlatformInput {
+        PlatformInput::BackGesture(self)
+    }
+}
+impl GestureEvent for BackGestureEvent {}
+impl MouseEvent for BackGestureEvent {}
 
 /// A phased long-press gesture recognized from a touch.
 #[derive(Clone, Debug)]
@@ -489,7 +528,7 @@ const VELOCITY_MAX_SAMPLES: usize = 20;
 /// while one is being recognized.
 pub(crate) struct TouchGestureRecognizer {
     tuning: GestureTuning,
-    state: TouchGestureState,
+    pub(crate) state: TouchGestureState,
     pub(crate) momentum: Option<Momentum>,
     last_tap: Option<CompletedTap>,
     pub(crate) fast_fling: crate::fast::fling::Fling,
@@ -501,7 +540,7 @@ pub(crate) struct TouchGestureRecognizer {
 pub(crate) enum RecognizedTouchGesture {
     /// One step of a pan (or of its post-release momentum), delivered to
     /// scroll listeners at the pan's starting position.
-    Scroll(ScrollWheelEvent),
+    Scroll(ScrollEvent),
     /// A recognized tap, delivered as a synthesized mouse press and release.
     Tap {
         down: MouseDownEvent,
@@ -511,7 +550,7 @@ pub(crate) enum RecognizedTouchGesture {
     LongPress(LongPressEvent),
 }
 
-enum TouchGestureState {
+pub(crate) enum TouchGestureState {
     Idle,
     /// The touch is still within `touch_slop` of where it started: it can
     /// still resolve into either a tap or a pan.
@@ -535,7 +574,7 @@ enum TouchGestureState {
     TouchDragging(ActiveTouch),
 }
 
-struct ActiveTouch {
+pub(crate) struct ActiveTouch {
     id: TouchId,
     start_position: Point<Pixels>,
     /// The latest raw position reported for this touch.
@@ -569,7 +608,7 @@ pub(crate) struct Momentum {
     direction: Point<f32>,
     /// Release speed in pixels per second.
     speed: f32,
-    started_at: Instant,
+    pub(crate) started_at: Instant,
     duration: Duration,
     /// Distance already emitted along `direction`, in pixels.
     emitted_distance: f32,
@@ -591,7 +630,7 @@ impl TouchGestureRecognizer {
         &mut self,
         event: &TouchEvent,
     ) -> SmallVec<[RecognizedTouchGesture; 2]> {
-        self.handle_event_at(event, Instant::now())
+        crate::fast::touch_time::handle(self, event)
     }
 
     pub(crate) fn handle_event_at(
@@ -1033,13 +1072,14 @@ pub(crate) fn scroll_event(
     position: Point<Pixels>,
     delta: Point<Pixels>,
     touch_phase: TouchPhase,
-) -> ScrollWheelEvent {
-    ScrollWheelEvent {
+) -> ScrollEvent {
+    ScrollEvent {
         position,
         delta: ScrollDelta::Pixels(delta),
         modifiers: Modifiers::default(),
         touch_phase,
         momentum_phase: None,
+        source: ScrollSource::Touch,
     }
 }
 
@@ -1102,12 +1142,14 @@ impl VelocityTracker {
             return point(endpoint_estimate(&horizontal), endpoint_estimate(&vertical));
         }
         point(
-            quadratic_velocity_at_newest(&times_seconds, &horizontal).map_or_else(
-                || endpoint_estimate(&horizontal),
-                |velocity| velocity as f32,
+            crate::fast::misc::touch_fling::release_velocity(
+                endpoint_estimate(&horizontal),
+                quadratic_velocity_at_newest(&times_seconds, &horizontal),
             ),
-            quadratic_velocity_at_newest(&times_seconds, &vertical)
-                .map_or_else(|| endpoint_estimate(&vertical), |velocity| velocity as f32),
+            crate::fast::misc::touch_fling::release_velocity(
+                endpoint_estimate(&vertical),
+                quadratic_velocity_at_newest(&times_seconds, &vertical),
+            ),
         )
     }
 }
@@ -2117,7 +2159,7 @@ mod tests {
         );
         assert!(matches!(
             moved.as_slice(),
-            [RecognizedTouchGesture::Scroll(ScrollWheelEvent {
+            [RecognizedTouchGesture::Scroll(ScrollEvent {
                 touch_phase: TouchPhase::Started,
                 ..
             })]
@@ -2191,7 +2233,7 @@ mod tests {
         );
         assert!(matches!(
             moved.as_slice(),
-            [RecognizedTouchGesture::Scroll(ScrollWheelEvent {
+            [RecognizedTouchGesture::Scroll(ScrollEvent {
                 touch_phase: TouchPhase::Started,
                 ..
             })]
@@ -2288,6 +2330,7 @@ mod tests {
             position: point(px(x), px(y)),
             predicted_position: None,
             force: None,
+            timestamp: None,
         }
     }
 }

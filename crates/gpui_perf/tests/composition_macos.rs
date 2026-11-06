@@ -1,8 +1,10 @@
 //! Window composition on macOS, in a real window: the containers natives live in, the
 //! hit testing that decides who gets the pointer, the frames presented inside a
 //! transaction, focus both ways, a video layer presenting from another thread without a
-//! GPUI frame, and (with `COMPOSITION_LIVE=1`) that a native and GPUI's hole around it
-//! reach the glass in the same refresh.
+//! GPUI frame, the backdrop view a frosted menu over a native gets, (with
+//! `COMPOSITION_LIVE=1`) that a native and GPUI's hole around it reach the glass in the
+//! same refresh, and (with `GPUI_NATIVE_BLUR_PIXEL_TEST=1`) that the menu blurs the native
+//! on the glass.
 //!
 //! It runs on the main thread, as AppKit requires, so it has its own harness. It opens
 //! one non-activating panel above the other windows and never takes the keyboard from
@@ -14,7 +16,18 @@
 //! COMPOSITION_LIVE=1 GPUI_PRESENTED_AT_CALLBACK=1 cargo test -p gpui_perf --release --test composition_macos
 //! COMPOSITION_LIVE=1 GPUI_PRESENTED_AT_CALLBACK=1 GPUI_COMPOSITION_TRANSACTIONS=0 \
 //!     cargo test -p gpui_perf --release --test composition_macos   # must report seams
+//! GPUI_NATIVE_BLUR_PIXEL_TEST=1 cargo test -p gpui_perf --test composition_macos
+//! GPUI_NATIVE_BLUR_PIXEL_TEST=1 GPUI_NATIVE_BLUR=0 \
+//!     cargo test -p gpui_perf --test composition_macos   # must fail: the page stays sharp
 //! ```
+//!
+//! The pixel test reads back what the window server composited for its own window with
+//! `CGWindowListCreateImage`: Core Animation's own renderers (`CARenderer`,
+//! `-[CALayer renderInContext:]`) do not draw a `CABackdropLayer`, so no headless
+//! readback shows the blur. A process may capture its own windows without the Screen
+//! Recording permission, so it never prompts; where a macOS release refuses even that
+//! (the function is deprecated since macOS 14), the check fails saying so, and granting
+//! the terminal Screen Recording (System Settings › Privacy & Security) lets it run.
 
 extern crate gpui_fast as gpui;
 extern crate gpui_platform_fast as gpui_platform;
@@ -31,6 +44,7 @@ fn main() {
 mod macos {
     use std::{
         cell::{Cell, RefCell},
+        ffi::c_void,
         ptr::NonNull,
         rc::Rc,
         sync::{
@@ -44,12 +58,11 @@ mod macos {
         base::{id, nil},
         foundation::{NSPoint, NSRect, NSSize},
     };
-    use foreign_types::ForeignType;
     use gpui::{
-        App, AsyncApp, Bounds, Context, FocusHandle, MouseButton, PresentedFrame, Window,
-        WindowBounds, WindowHandle, WindowKind, WindowOptions,
+        App, AsyncApp, Bounds, Context, Corners, FocusHandle, MouseButton, Pixels, PresentedFrame,
+        Window, WindowBounds, WindowHandle, WindowKind, WindowOptions, canvas,
         composition::{NativeHost, NativeHostOptions, native_view},
-        div,
+        div, hsla, point,
         prelude::*,
         px, rgb, size,
     };
@@ -63,6 +76,15 @@ mod macos {
         runtime::{BOOL, Class, NO, Object, Sel, YES},
         sel, sel_impl,
     };
+    use objc2::{rc::Retained, runtime::ProtocolObject};
+    use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
+    use objc2_core_video::CVPixelBuffer;
+    use objc2_metal::{
+        MTLClearColor, MTLCommandBuffer as _, MTLCommandEncoder as _, MTLCommandQueue,
+        MTLDevice as _, MTLDrawable, MTLLoadAction, MTLPixelFormat, MTLRenderPassDescriptor,
+        MTLStoreAction,
+    };
+    use objc2_quartz_core::{CAMetalDrawable as _, CAMetalLayer};
 
     static MOVED_TO_WINDOW: AtomicUsize = AtomicUsize::new(0);
     static MOUSE_DOWNS: AtomicUsize = AtomicUsize::new(0);
@@ -117,6 +139,8 @@ mod macos {
         animate: bool,
         live: Option<Rc<LiveNative>>,
         video: Option<NativeHost>,
+        /// A frosted menu drawn over everything, where it is.
+        menu: Option<Bounds<Pixels>>,
     }
 
     impl Render for Stage {
@@ -179,21 +203,54 @@ mod macos {
                         .size(px(40.))
                         .bg(rgb(0x3060cc)),
                 )
+                .when_some(self.menu, |this, menu| this.child(frosted_menu(menu)))
         }
+    }
+
+    /// A frosted menu at `bounds`: what is under it blurred by 12 points, rounded by 10,
+    /// under a faint white fill.
+    fn frosted_menu(bounds: Bounds<Pixels>) -> impl IntoElement {
+        div()
+            .absolute()
+            .left(bounds.origin.x)
+            .top(bounds.origin.y)
+            .w(bounds.size.width)
+            .h(bounds.size.height)
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    |bounds, _, window, _| {
+                        window.paint_backdrop_blur(bounds, Corners::all(px(10.)), px(12.))
+                    },
+                )
+                .absolute()
+                .top(px(0.))
+                .left(px(0.))
+                .size_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(0.))
+                    .left(px(0.))
+                    .size_full()
+                    .rounded(px(10.))
+                    .bg(hsla(0., 0., 1., 0.2)),
+            )
     }
 
     /// A native whose layer is a `CAMetalLayer` presented with the Core Animation
     /// transaction on every GPUI frame, recording when each drawable was shown.
     struct LiveNative {
-        layer: metal::MetalLayer,
-        queue: metal::CommandQueue,
+        layer: Retained<CAMetalLayer>,
+        queue: Retained<ProtocolObject<dyn MTLCommandQueue>>,
         shown: Arc<parking_lot::Mutex<Vec<Option<Instant>>>>,
     }
 
     impl LiveNative {
         fn present_frame(&self) {
             objc2::rc::autoreleasepool(|_| {
-                let Some(drawable) = self.layer.next_drawable() else {
+                let Some(drawable) = self.layer.nextDrawable() else {
                     return;
                 };
                 let slot = {
@@ -202,30 +259,41 @@ mod macos {
                     shown.len() - 1
                 };
                 let shown = self.shown.clone();
-                let handler =
-                    block2::RcBlock::new(move |drawable: NonNull<objc2::runtime::AnyObject>| {
-                        // SAFETY: the presented handler gets the drawable it was added to.
-                        let drawable = unsafe { &*drawable.as_ptr().cast::<Object>() };
-                        // SAFETY: `presentedTime` is a property of every CAMetalDrawable.
-                        let time: f64 = unsafe { msg_send![drawable, presentedTime] };
-                        shown.lock()[slot] = Some(host_time(time));
-                    });
+                let handler = block2::RcBlock::new(
+                    move |drawable: NonNull<ProtocolObject<dyn MTLDrawable>>| {
+                        // SAFETY: the presented handler gets the drawable it was added to,
+                        // alive for the call.
+                        let drawable = unsafe { drawable.as_ref() };
+                        shown.lock()[slot] = Some(host_time(drawable.presentedTime()));
+                    },
+                );
                 // SAFETY: `addPresentedHandler:` copies the block, before presenting.
                 unsafe {
-                    let () = msg_send![drawable, addPresentedHandler: &*handler];
+                    drawable.addPresentedHandler(block2::RcBlock::as_ptr(&handler));
                 }
-                let descriptor = metal::RenderPassDescriptor::new();
-                let attachment = descriptor.color_attachments().object_at(0).unwrap();
-                attachment.set_texture(Some(drawable.texture()));
-                attachment.set_load_action(metal::MTLLoadAction::Clear);
-                attachment.set_clear_color(metal::MTLClearColor::new(0.1, 0.6, 0.6, 1.));
-                attachment.set_store_action(metal::MTLStoreAction::Store);
-                let command_buffer = self.queue.new_command_buffer();
-                command_buffer
-                    .new_render_command_encoder(descriptor)
-                    .end_encoding();
+                let descriptor = MTLRenderPassDescriptor::new();
+                // SAFETY: index zero is within the pass's colour attachments.
+                let attachment =
+                    unsafe { descriptor.colorAttachments().objectAtIndexedSubscript(0) };
+                attachment.setTexture(Some(&drawable.texture()));
+                attachment.setLoadAction(MTLLoadAction::Clear);
+                attachment.setClearColor(MTLClearColor {
+                    red: 0.1,
+                    green: 0.6,
+                    blue: 0.6,
+                    alpha: 1.,
+                });
+                attachment.setStoreAction(MTLStoreAction::Store);
+                let Some(command_buffer) = self.queue.commandBuffer() else {
+                    return;
+                };
+                if let Some(encoder) =
+                    command_buffer.renderCommandEncoderWithDescriptor(&descriptor)
+                {
+                    encoder.endEncoding();
+                }
                 command_buffer.commit();
-                command_buffer.wait_until_scheduled();
+                command_buffer.waitUntilScheduled();
                 drawable.present();
             });
         }
@@ -300,6 +368,8 @@ mod macos {
 
     pub fn main() {
         let live = std::env::var_os("COMPOSITION_LIVE").is_some();
+        let blur_pixels =
+            std::env::var_os("GPUI_NATIVE_BLUR_PIXEL_TEST").is_some_and(|value| value != "0");
         application().run(move |cx: &mut App| {
             let bounds = Bounds::centered(None, size(px(700.), px(450.)), cx);
             let presented: Rc<RefCell<Vec<PresentedFrame>>> = Rc::default();
@@ -332,6 +402,7 @@ mod macos {
                             animate: false,
                             live: None,
                             video: None,
+                            menu: None,
                         })
                     },
                 )
@@ -340,10 +411,16 @@ mod macos {
                 let failures = Failures(RefCell::default());
                 structure_and_input(cx, window, &failures).await;
                 video_without_frames(cx, window, &presented, &failures).await;
+                native_blur_view(cx, window, &failures).await;
                 if live {
                     same_refresh(cx, window, &presented, &failures).await;
                 } else {
                     println!("skip same refresh (set COMPOSITION_LIVE=1)");
+                }
+                if blur_pixels {
+                    native_blur_pixels(cx, window, &failures).await;
+                } else {
+                    println!("skip native blur pixels (set GPUI_NATIVE_BLUR_PIXEL_TEST=1)");
                 }
                 let failed = failures.0.borrow().len();
                 println!("{} checks failed", failed);
@@ -372,7 +449,7 @@ mod macos {
             host.attach_view(NonNull::new(probe.cast()).unwrap())
                 .unwrap();
             let () = msg_send![probe, release];
-            let container = mac_host(&host).container_view();
+            let container: id = mac_host(&host).container_view().cast();
             let content_view: id = msg_send![container, superview];
             let ns_window: id = msg_send![container, window];
             let subviews: id = msg_send![content_view, subviews];
@@ -630,31 +707,357 @@ mod macos {
     }
 
     /// A 4:2:0 picture backed by an IOSurface, as a decoder hands over.
-    struct Picture(core_video::pixel_buffer::CVPixelBuffer);
+    struct Picture(CFRetained<CVPixelBuffer>);
 
     // SAFETY: a CVPixelBuffer is a CoreFoundation object, whose retain and release are
     // thread-safe; nothing writes this one after it is made.
     unsafe impl Send for Picture {}
 
     fn picture() -> Picture {
-        use core_foundation::{base::TCFType, dictionary::CFDictionary, string::CFString};
-        use core_video::pixel_buffer::{
-            CVPixelBuffer, kCVPixelBufferIOSurfacePropertiesKey,
-            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        use objc2_core_foundation::{CFDictionary, CFType};
+        use objc2_core_video::{
+            CVPixelBufferCreate, kCVPixelBufferIOSurfacePropertiesKey,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVReturnSuccess,
         };
         // SAFETY: CoreVideo's constant key string lives forever.
-        let key = unsafe { CFString::wrap_under_get_rule(kCVPixelBufferIOSurfacePropertiesKey) };
-        let empty = CFDictionary::<CFString, CFString>::from_CFType_pairs(&[]);
-        let options = CFDictionary::from_CFType_pairs(&[(key, empty.as_CFType())]);
-        Picture(
-            CVPixelBuffer::new(
-                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        let key = unsafe { kCVPixelBufferIOSurfacePropertiesKey };
+        let options =
+            CFDictionary::from_slices(&[key], &[&*CFDictionary::<CFType, CFType>::empty()]);
+        let mut buffer = std::ptr::null_mut();
+        // SAFETY: a valid out-pointer, which CoreVideo fills with a +1 buffer on success.
+        let status = unsafe {
+            CVPixelBufferCreate(
+                None,
                 640,
                 360,
-                Some(&options),
+                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                Some(options.as_opaque()),
+                NonNull::from(&mut buffer),
             )
-            .expect("a 4:2:0 buffer"),
-        )
+        };
+        assert_eq!(status, kCVReturnSuccess, "a 4:2:0 buffer");
+        // SAFETY: the buffer CoreVideo created, owned from here.
+        Picture(unsafe { CFRetained::from_raw(NonNull::new(buffer).expect("a 4:2:0 buffer")) })
+    }
+
+    /// The menu's bounds over the native when the native's left edge is at `x`: across its
+    /// lower half, clear of the red overlay.
+    fn menu_over_native(x: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(x + 20.), px(165.)), size(px(160.), px(80.)))
+    }
+
+    /// A frosted menu over the native gets a backdrop view between the native's container
+    /// and GPUI's layer, in a transactional frame; a frame that changes no blur leaves it
+    /// alone and is plain; off the native, the view is hidden.
+    async fn native_blur_view(cx: &mut AsyncApp, window: WindowHandle<Stage>, failures: &Failures) {
+        let host = window.update(cx, |stage, _, _| stage.host.clone()).unwrap();
+        let x = window.update(cx, |stage, _, _| stage.x).unwrap();
+        let (transactional_before, _) = mac_host(&host).presents();
+        window
+            .update(cx, |stage, _, cx| {
+                stage.menu = Some(menu_over_native(x));
+                cx.notify();
+            })
+            .unwrap();
+        frames(cx, 3).await;
+        let (transactional_after, plain_after) = mac_host(&host).presents();
+        failures.check(
+            transactional_after > transactional_before,
+            "the frame placing the blur was transactional",
+        );
+        let views = mac_host(&host).blur_views();
+        failures.check(
+            views.len() == 1,
+            format!(
+                "one backdrop view for the menu over the native: {}",
+                views.len()
+            ),
+        );
+        let Some(&view) = views.first() else {
+            return;
+        };
+        let view: id = view.cast();
+        let container: id = mac_host(&host).container_view().cast();
+        // SAFETY: AppKit and Core Animation reads of this window's own views and layers, on
+        // the main thread.
+        unsafe {
+            let hidden: BOOL = msg_send![view, isHidden];
+            failures.check(hidden == NO, "the backdrop view shows");
+            let layer: id = msg_send![view, layer];
+            let backdrop = Class::get("CABackdropLayer").expect("CABackdropLayer");
+            let is_backdrop: BOOL = msg_send![layer, isKindOfClass: backdrop];
+            failures.check(is_backdrop == YES, "its layer is a backdrop layer");
+            let z: f64 = msg_send![layer, zPosition];
+            let container_layer: id = msg_send![container, layer];
+            let container_z: f64 = msg_send![container_layer, zPosition];
+            failures.check(
+                container_z < z && z < 0.,
+                format!("it lies over the native and under GPUI: {container_z} < {z} < 0"),
+            );
+            let frame: NSRect = msg_send![view, frame];
+            failures.check(
+                frame.size.width == 160. && frame.size.height == 80.,
+                format!(
+                    "it covers the menu: {} × {}",
+                    frame.size.width, frame.size.height
+                ),
+            );
+            let filters: id = msg_send![layer, filters];
+            let count: usize = if filters == nil {
+                0
+            } else {
+                msg_send![filters, count]
+            };
+            failures.check(count == 1, "it blurs with one filter");
+        }
+
+        window.update(cx, |_, _, cx| cx.notify()).unwrap();
+        frames(cx, 3).await;
+        let (transactional_still, plain_still) = mac_host(&host).presents();
+        failures.check(
+            transactional_still == transactional_after && plain_still > plain_after,
+            format!(
+                "a frame changing no blur was plain: {transactional_after}→{transactional_still} transactional, {plain_after}→{plain_still} plain"
+            ),
+        );
+
+        window
+            .update(cx, |stage, _, cx| {
+                stage.menu = Some(Bounds::new(
+                    point(px(480.), px(300.)),
+                    size(px(160.), px(80.)),
+                ));
+                cx.notify();
+            })
+            .unwrap();
+        frames(cx, 3).await;
+        // SAFETY: as above.
+        let hidden: BOOL = unsafe { msg_send![view, isHidden] };
+        failures.check(hidden == YES, "off the native, the backdrop view is hidden");
+
+        window
+            .update(cx, |stage, _, cx| {
+                stage.menu = None;
+                cx.notify();
+            })
+            .unwrap();
+        frames(cx, 3).await;
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGWindowListCreateImage(
+            bounds: CGRect,
+            list_option: u32,
+            window_id: u32,
+            image_option: u32,
+        ) -> *mut c_void;
+        fn CGImageGetWidth(image: *mut c_void) -> usize;
+        fn CGImageGetHeight(image: *mut c_void) -> usize;
+        fn CGImageGetBytesPerRow(image: *mut c_void) -> usize;
+        fn CGImageGetBitsPerPixel(image: *mut c_void) -> usize;
+        fn CGImageGetBitmapInfo(image: *mut c_void) -> u32;
+        fn CGImageGetDataProvider(image: *mut c_void) -> *mut c_void;
+        fn CGDataProviderCopyData(provider: *mut c_void) -> *const c_void;
+        fn CGImageRelease(image: *mut c_void);
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFDataGetBytePtr(data: *const c_void) -> *const u8;
+        fn CFDataGetLength(data: *const c_void) -> isize;
+        fn CFRelease(object: *const c_void);
+    }
+
+    /// What the window server composited for one window: grey levels, row by row, with
+    /// the image's pixels per point.
+    struct Capture {
+        width: usize,
+        height: usize,
+        scale: f64,
+        grey: Vec<f64>,
+    }
+
+    impl Capture {
+        /// The window `ns_window` as it is on the glass, or why it could not be read.
+        ///
+        /// # Safety
+        ///
+        /// Main thread; `ns_window` is live.
+        unsafe fn window(ns_window: id) -> Result<Self, String> {
+            const INCLUDING_WINDOW: u32 = 1 << 3;
+            const IGNORE_FRAMING: u32 = 1 << 0;
+            const BEST_RESOLUTION: u32 = 1 << 3;
+            // SAFETY: Core Graphics reads of this process's own window; every object
+            // created here is released here.
+            unsafe {
+                let number: isize = msg_send![ns_window, windowNumber];
+                let frame: NSRect = msg_send![ns_window, frame];
+                let null = CGRect::new(
+                    CGPoint::new(f64::INFINITY, f64::INFINITY),
+                    CGSize::new(0., 0.),
+                );
+                let image = CGWindowListCreateImage(
+                    null,
+                    INCLUDING_WINDOW,
+                    number as u32,
+                    IGNORE_FRAMING | BEST_RESOLUTION,
+                );
+                if image.is_null() {
+                    return Err("CGWindowListCreateImage gave no image of the test's own \
+                                window; grant the terminal Screen Recording to run this check"
+                        .into());
+                }
+                let width = CGImageGetWidth(image);
+                let height = CGImageGetHeight(image);
+                let row = CGImageGetBytesPerRow(image);
+                let bits = CGImageGetBitsPerPixel(image);
+                let info = CGImageGetBitmapInfo(image);
+                let data = CGDataProviderCopyData(CGImageGetDataProvider(image));
+                CGImageRelease(image);
+                if data.is_null() || bits != 32 {
+                    if !data.is_null() {
+                        CFRelease(data);
+                    }
+                    return Err(format!("an image of {bits} bits per pixel, not 32"));
+                }
+                let bytes = std::slice::from_raw_parts(
+                    CFDataGetBytePtr(data),
+                    CFDataGetLength(data) as usize,
+                );
+                // Which of a pixel's four bytes is alpha, from the alpha's place and the
+                // byte order.
+                let alpha_first = matches!(info & 0x1f, 2 | 4 | 6);
+                let little = info & 0x7000 == 0x2000;
+                let alpha = if alpha_first != little { 0 } else { 3 };
+                let mut grey = Vec::with_capacity(width * height);
+                for y in 0..height {
+                    for x in 0..width {
+                        let pixel = &bytes[y * row + x * 4..][..4];
+                        let sum: u32 = (0..4)
+                            .filter(|channel| *channel != alpha)
+                            .map(|channel| u32::from(pixel[channel]))
+                            .sum();
+                        grey.push(f64::from(sum) / 3.);
+                    }
+                }
+                CFRelease(data);
+                Ok(Self {
+                    width,
+                    height,
+                    scale: width as f64 / frame.size.width,
+                    grey,
+                })
+            }
+        }
+
+        /// The standard deviation of the grey levels along the row at GPUI's `y`, from
+        /// `left` to `right` (in points).
+        fn deviation(&self, y: f32, left: f32, right: f32) -> f64 {
+            let row = ((f64::from(y) * self.scale) as usize).min(self.height - 1);
+            let from = ((f64::from(left) * self.scale) as usize).min(self.width);
+            let to = ((f64::from(right) * self.scale) as usize).min(self.width);
+            let samples = &self.grey[row * self.width + from..row * self.width + to.max(from)];
+            if samples.is_empty() {
+                return 0.;
+            }
+            let mean = samples.iter().sum::<f64>() / samples.len() as f64;
+            let variance = samples
+                .iter()
+                .map(|grey| (grey - mean) * (grey - mean))
+                .sum::<f64>()
+                / samples.len() as f64;
+            variance.sqrt()
+        }
+    }
+
+    /// A layer of black and white stripes, 4 points each, for a native whose blur shows.
+    fn stripes() -> id {
+        // SAFETY: Core Animation layer creation on the main thread; the returned layer is
+        // autoreleased, and its stripes are owned by it.
+        unsafe {
+            let layer: id = msg_send![class!(CALayer), layer];
+            let black: id = msg_send![class!(NSColor), blackColor];
+            let black: id = msg_send![black, CGColor];
+            let () = msg_send![layer, setBackgroundColor: black];
+            let white: id = msg_send![class!(NSColor), whiteColor];
+            let white: id = msg_send![white, CGColor];
+            for stripe in 0..200 {
+                let sublayer: id = msg_send![class!(CALayer), layer];
+                let frame = NSRect::new(
+                    NSPoint::new(f64::from(stripe) * 8., 0.),
+                    NSSize::new(4., 2000.),
+                );
+                let () = msg_send![sublayer, setFrame: frame];
+                let () = msg_send![sublayer, setBackgroundColor: white];
+                let () = msg_send![layer, addSublayer: sublayer];
+            }
+            layer
+        }
+    }
+
+    /// The menu over a striped native, read back from the glass: across the menu the
+    /// stripes are blurred away, beside it on the same native they are not.
+    async fn native_blur_pixels(
+        cx: &mut AsyncApp,
+        window: WindowHandle<Stage>,
+        failures: &Failures,
+    ) {
+        let host = window.update(cx, |stage, _, _| stage.host.clone()).unwrap();
+        // SAFETY: attaches a live layer on the main thread; the host's view retains it.
+        unsafe {
+            host.attach_layer(NonNull::new(stripes().cast()).unwrap())
+                .unwrap();
+        }
+        let x = 40.;
+        let menu = menu_over_native(x);
+        window
+            .update(cx, |stage, _, cx| {
+                stage.x = x;
+                stage.shown = true;
+                stage.menu = Some(menu);
+                cx.notify();
+            })
+            .unwrap();
+        frames(cx, 15).await;
+        let container: id = mac_host(&host).container_view().cast();
+        // SAFETY: the container's window is this test's live window; main thread.
+        let capture = unsafe {
+            let ns_window: id = msg_send![container, window];
+            Capture::window(ns_window)
+        };
+        let capture = match capture {
+            Ok(capture) => capture,
+            Err(why) => {
+                failures.check(false, format!("read the window back: {why}"));
+                return;
+            }
+        };
+        // One row across the menu's middle; inside it clear of its rounded corners, beside
+        // it on the native (which spans x to x + 300) clear of its edge.
+        let y = f32::from(menu.origin.y + menu.size.height / 2.);
+        let menu_left = f32::from(menu.origin.x);
+        let menu_right = f32::from(menu.origin.x + menu.size.width);
+        let inside = capture.deviation(y, menu_left + 20., menu_right - 20.);
+        let beside = capture.deviation(y, menu_right + 16., x + 290.);
+        println!("native blur: grey deviation {inside:.1} under the menu, {beside:.1} beside it");
+        failures.check(
+            beside > 40.,
+            format!("the stripes beside the menu are sharp on the glass: deviation {beside:.1}"),
+        );
+        failures.check(
+            inside < beside * 0.1,
+            format!(
+                "the menu blurs the native under it: deviation {inside:.1} against {beside:.1} beside it"
+            ),
+        );
+        window
+            .update(cx, |stage, _, cx| {
+                stage.menu = None;
+                cx.notify();
+            })
+            .unwrap();
+        frames(cx, 3).await;
     }
 
     /// Scrolls the native a point a frame for ten seconds; every frame's GPUI drawable
@@ -667,21 +1070,23 @@ mod macos {
     ) {
         let host = window.update(cx, |stage, _, _| stage.host.clone()).unwrap();
         let live = {
-            let device = metal::Device::system_default().expect("a Metal device");
-            let layer = metal::MetalLayer::new();
-            layer.set_device(&device);
-            layer.set_pixel_format(metal::MTLPixelFormat::BGRA8Unorm);
-            layer.set_presents_with_transaction(true);
-            layer.set_maximum_drawable_count(3);
-            layer.set_drawable_size(core_graphics::geometry::CGSize::new(600., 400.));
+            let device = objc2_metal::MTLCreateSystemDefaultDevice().expect("a Metal device");
+            let layer = CAMetalLayer::new();
+            layer.setDevice(Some(&device));
+            layer.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+            layer.setPresentsWithTransaction(true);
+            layer.setMaximumDrawableCount(3);
+            layer.setDrawableSize(CGSize::new(600., 400.));
             // SAFETY: attaches a live CAMetalLayer on the main thread.
             unsafe {
-                host.attach_layer(NonNull::new(layer.as_ptr().cast()).unwrap())
-                    .unwrap();
+                host.attach_layer(
+                    NonNull::new(Retained::as_ptr(&layer).cast_mut().cast()).unwrap(),
+                )
+                .unwrap();
             }
             Rc::new(LiveNative {
                 layer,
-                queue: device.new_command_queue(),
+                queue: device.newCommandQueue().expect("a command queue"),
                 shown: Arc::default(),
             })
         };

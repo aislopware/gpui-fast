@@ -41,11 +41,6 @@ mod macos {
         time::{Duration, Instant},
     };
 
-    use core_foundation::{base::TCFType, dictionary::CFDictionary, string::CFString};
-    use core_video::pixel_buffer::{
-        CVPixelBuffer, kCVPixelBufferIOSurfacePropertiesKey,
-        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-    };
     use gpui::{
         App, Bounds, Context, PresentedFrame, Subscription, Window, WindowBounds, WindowKind,
         WindowOptions,
@@ -56,6 +51,14 @@ mod macos {
     };
     use gpui_apple::fast::video_layer::{VideoLayer, VideoLayerOptions};
     use gpui_platform::application;
+    use objc2_core_foundation::{CFDictionary, CFRetained, CFType};
+    use objc2_core_video::{
+        CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddressOfPlane,
+        CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeightOfPlane,
+        CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
+        kCVPixelBufferIOSurfacePropertiesKey, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        kCVReturnSuccess,
+    };
     use parking_lot::Mutex;
 
     const WARMUP: usize = 60;
@@ -84,7 +87,7 @@ mod macos {
     /// A picture on its way from the producer thread to the main thread.
     struct Picture {
         index: usize,
-        buffer: CVPixelBuffer,
+        buffer: CFRetained<CVPixelBuffer>,
     }
 
     // SAFETY: a CVPixelBuffer is a CoreFoundation object, whose retain and release are
@@ -120,7 +123,7 @@ mod macos {
         mode: Mode,
         host: Option<NativeHost>,
         _video: Option<VideoLayer>,
-        picture: Option<CVPixelBuffer>,
+        picture: Option<CFRetained<CVPixelBuffer>>,
         /// The index of each drawn frame's picture, oldest first.
         drawn: Rc<RefCell<VecDeque<usize>>>,
         pending: Option<usize>,
@@ -139,37 +142,43 @@ mod macos {
         Duration::new(time.tv_sec as u64, time.tv_nsec as u32)
     }
 
-    fn pool() -> Vec<CVPixelBuffer> {
+    fn pool() -> Vec<CFRetained<CVPixelBuffer>> {
         // SAFETY: CoreVideo's constant key string lives forever.
-        let key = unsafe { CFString::wrap_under_get_rule(kCVPixelBufferIOSurfacePropertiesKey) };
-        let empty = CFDictionary::<CFString, CFString>::from_CFType_pairs(&[]);
-        let options = CFDictionary::from_CFType_pairs(&[(key, empty.as_CFType())]);
+        let key = unsafe { kCVPixelBufferIOSurfacePropertiesKey };
+        let options =
+            CFDictionary::from_slices(&[key], &[&*CFDictionary::<CFType, CFType>::empty()]);
         (0..POOL)
             .map(|_| {
-                CVPixelBuffer::new(
-                    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-                    WIDTH,
-                    HEIGHT,
-                    Some(&options),
-                )
-                .expect("an IOSurface-backed 4:2:0 buffer")
+                let mut buffer = std::ptr::null_mut();
+                // SAFETY: a valid out-pointer, which CoreVideo fills with a +1 buffer on
+                // success.
+                let status = unsafe {
+                    CVPixelBufferCreate(
+                        None,
+                        WIDTH,
+                        HEIGHT,
+                        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                        Some(options.as_opaque()),
+                        std::ptr::NonNull::from(&mut buffer),
+                    )
+                };
+                assert_eq!(status, kCVReturnSuccess, "an IOSurface-backed 4:2:0 buffer");
+                // SAFETY: the buffer CoreVideo created, owned from here.
+                unsafe { CFRetained::from_raw(std::ptr::NonNull::new(buffer).unwrap()) }
             })
             .collect()
     }
 
     /// Writes picture `index` into `buffer`: grey, with a bright bar that moves along.
     fn decode(buffer: &CVPixelBuffer, index: usize) {
-        buffer.lock_base_address(0);
         // SAFETY: the base address is locked; plane 0 spans `bytes per row × height`, and
         // plane 1 (interleaved chroma) `bytes per row × height / 2`.
         unsafe {
-            let raw = buffer.as_concrete_TypeRef();
+            CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags::empty());
             for plane in 0..2 {
-                let base = core_video::pixel_buffer::CVPixelBufferGetBaseAddressOfPlane(raw, plane)
-                    .cast::<u8>();
-                let stride =
-                    core_video::pixel_buffer::CVPixelBufferGetBytesPerRowOfPlane(raw, plane);
-                let rows = buffer.get_height_of_plane(plane);
+                let base = CVPixelBufferGetBaseAddressOfPlane(buffer, plane).cast::<u8>();
+                let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, plane);
+                let rows = CVPixelBufferGetHeightOfPlane(buffer, plane);
                 let bytes = std::slice::from_raw_parts_mut(base, stride * rows);
                 if plane == 0 {
                     bytes.fill(100);
@@ -181,8 +190,8 @@ mod macos {
                     bytes.fill(128);
                 }
             }
+            CVPixelBufferUnlockBaseAddress(buffer, CVPixelBufferLockFlags::empty());
         }
-        buffer.unlock_base_address(0);
     }
 
     fn summary(label: &str, samples: &[f64]) -> String {
@@ -384,15 +393,14 @@ mod macos {
                     this.child(native_view(host).flex_1().h_full())
                 })
                 .when(self.mode.surface(), |this| {
-                    this.child(div().flex_1().h_full().when_some(
-                        self.picture.clone(),
-                        |this, picture| {
-                            this.child(
-                                surface(gpui_apple::fast::video_layer::objc2_buffer(&picture))
-                                    .size_full(),
-                            )
-                        },
-                    ))
+                    this.child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .when_some(self.picture.clone(), |this, picture| {
+                                this.child(surface(picture).size_full())
+                            }),
+                    )
                 })
         }
     }

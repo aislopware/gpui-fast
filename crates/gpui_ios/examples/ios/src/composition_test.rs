@@ -27,9 +27,9 @@ use objc2::{
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct CGPoint {
-    x: f64,
-    y: f64,
+pub(crate) struct CGPoint {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
 }
 
 // SAFETY: the layout is CoreGraphics' `CGPoint`: two `CGFloat`s (double on 64-bit).
@@ -45,11 +45,11 @@ unsafe impl objc2::encode::Encode for CGPoint {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct CGRect {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
+pub(crate) struct CGRect {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) width: f64,
+    pub(crate) height: f64,
 }
 
 // SAFETY: the layout is CoreGraphics' `CGRect`: a `CGPoint` then a `CGSize`.

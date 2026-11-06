@@ -7,7 +7,9 @@
 //! stacking; GPUI's Metal layer, on top, has a hole cut wherever a native shows. A frame
 //! that changes any of that is presented inside one explicit `CATransaction` with the
 //! container changes, with the layer presenting with the transaction, so the hole and the
-//! native move on the same refresh; other frames are presented as before.
+//! native move on the same refresh; other frames are presented as before. A backdrop blur
+//! over a native is shown as a backdrop view among the containers (`fast::native_blur`),
+//! changed in the same transaction.
 //!
 //! Input follows GPUI's hit test, published per presented frame as a
 //! [`NativeHitMap`]: the GPUI view answers `hitTest:` with nil where a native is the
@@ -29,10 +31,6 @@ use std::{
 };
 
 use anyhow::Result;
-use cocoa::{
-    base::{id, nil},
-    foundation::{NSPoint, NSRect, NSSize},
-};
 use gpui::{
     Bounds, Pixels, Scene,
     composition::{
@@ -41,20 +39,24 @@ use gpui::{
     },
     point, px,
 };
-use objc::{
-    class,
-    declare::ClassDecl,
-    msg_send,
-    runtime::{BOOL, Class, NO, Object, Sel, YES},
-    sel, sel_impl,
+use objc2::{
+    class, msg_send,
+    runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
+    sel,
 };
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use gpui::WindowBackgroundAppearance;
 
 use crate::window::MacWindow;
 
+use super::native_blur::{NativeBlurs, native_z};
+
+/// Objective-C's `nil`, for the views and responders passed and returned here.
+const NIL: *mut AnyObject = std::ptr::null_mut();
+
 /// The `NSView` subclass holding a native.
-static mut CONTAINER_CLASS: *const Class = std::ptr::null();
+static mut CONTAINER_CLASS: *const AnyClass = std::ptr::null();
 
 thread_local! {
     /// Each composing window's state, by its `NSWindow`.
@@ -75,11 +77,13 @@ fn transactional_frames() -> bool {
 
 /// One window's natives and what its last present showed of them.
 pub(crate) struct WindowComposition {
-    window: id,
-    gpui_view: id,
+    window: *mut AnyObject,
+    gpui_view: *mut AnyObject,
     hosts: RefCell<HashMap<NativeId, Weak<MacNativeHost>>>,
     hit_map: RefCell<Rc<NativeHitMap>>,
     presented: RefCell<NativeFrame>,
+    /// The backdrop views blurring natives under the blurs over them.
+    blurs: RefCell<NativeBlurs>,
     /// The native GPUI's focus asked the keyboard for in the last present.
     keyboard: Cell<Option<NativeId>>,
     /// A mouse button went down on a native, which gets the drag and the release.
@@ -91,7 +95,7 @@ pub(crate) struct WindowComposition {
 }
 
 impl WindowComposition {
-    fn of_window(window: id) -> Option<Rc<Self>> {
+    fn of_window(window: *mut AnyObject) -> Option<Rc<Self>> {
         WINDOWS.with(|windows| windows.borrow().get(&(window as usize)).cloned())
     }
 
@@ -103,7 +107,7 @@ impl WindowComposition {
     fn window_point_to_gpui(&self, location: NSPoint) -> gpui::Point<Pixels> {
         // SAFETY: the GPUI view is alive while its window composes; main thread.
         unsafe {
-            let local: NSPoint = msg_send![self.gpui_view, convertPoint: location fromView: nil];
+            let local: NSPoint = msg_send![self.gpui_view, convertPoint: location, fromView: NIL];
             self.view_point_to_gpui(local)
         }
     }
@@ -112,9 +116,9 @@ impl WindowComposition {
     fn view_point_to_gpui(&self, local: NSPoint) -> gpui::Point<Pixels> {
         // SAFETY: as above.
         unsafe {
-            let flipped: BOOL = msg_send![self.gpui_view, isFlipped];
+            let flipped: Bool = msg_send![self.gpui_view, isFlipped];
             let bounds: NSRect = msg_send![self.gpui_view, bounds];
-            let y = if flipped == YES {
+            let y = if flipped == Bool::YES {
                 local.y
             } else {
                 bounds.size.height - local.y
@@ -124,16 +128,16 @@ impl WindowComposition {
     }
 
     /// The native whose container holds `view`, if any.
-    fn native_holding(&self, mut view: id) -> Option<NativeId> {
+    fn native_holding(&self, mut view: *mut AnyObject) -> Option<NativeId> {
         // SAFETY: walks live views' superviews; main thread.
         unsafe {
             let view_class = class!(NSView);
-            let is_view: BOOL = if view.is_null() {
-                NO
+            let is_view: Bool = if view.is_null() {
+                Bool::NO
             } else {
                 msg_send![view, isKindOfClass: view_class]
             };
-            if is_view == NO {
+            if is_view == Bool::NO {
                 return None;
             }
             while !view.is_null() {
@@ -172,21 +176,28 @@ impl WindowComposition {
         let changes = frame.changes_since(&presented);
         for placement in changes.placed {
             if let Some(host) = self.host(placement.id) {
-                self.place(&host, placement, frame.placements.len());
+                self.place(&host, placement);
             }
         }
         for native in changes.hidden {
             if let Some(host) = self.host(native) {
                 // SAFETY: the container is a live view of this window; main thread.
                 unsafe {
-                    let () = msg_send![host.container, setHidden: YES];
+                    let () = msg_send![host.container, setHidden: Bool::YES];
                 }
             }
+        }
+        if let Some(blurs) = changes.blurs {
+            self.blurs
+                .borrow_mut()
+                .apply(blurs, self.gpui_view, |bounds| {
+                    self.frame_in_content_view(bounds)
+                });
         }
     }
 
     /// Gives a native's container and content their frames and stacking, and shows it.
-    fn place(&self, host: &MacNativeHost, placement: &NativeFramePlacement, count: usize) {
+    fn place(&self, host: &MacNativeHost, placement: &NativeFramePlacement) {
         let content_frame = NSRect::new(
             NSPoint::new(
                 f64::from(placement.bounds.origin.x - placement.visible.origin.x),
@@ -203,12 +214,12 @@ impl WindowComposition {
         unsafe {
             let () =
                 msg_send![host.container, setFrame: self.frame_in_content_view(placement.visible)];
-            let layer: id = msg_send![host.container, layer];
-            let () = msg_send![layer, setZPosition: placement.rank as f64 - count as f64 - 1.];
+            let layer: *mut AnyObject = msg_send![host.container, layer];
+            let () = msg_send![layer, setZPosition: native_z(placement.rank)];
             if let Some(content) = *host.content.borrow() {
                 let () = msg_send![content, setFrame: content_frame];
             }
-            let () = msg_send![host.container, setHidden: NO];
+            let () = msg_send![host.container, setHidden: Bool::NO];
         }
     }
 
@@ -220,7 +231,7 @@ impl WindowComposition {
         }
         // SAFETY: the window and its views are live; main thread.
         unsafe {
-            let responder: id = msg_send![self.window, firstResponder];
+            let responder: *mut AnyObject = msg_send![self.window, firstResponder];
             let holder = self.native_holding(responder);
             let target = match keyboard {
                 Some(native) if holder != Some(native) => self
@@ -231,7 +242,7 @@ impl WindowComposition {
             };
             if let Some(target) = target {
                 self.moving_focus.set(true);
-                let _: BOOL = msg_send![self.window, makeFirstResponder: target];
+                let _: Bool = msg_send![self.window, makeFirstResponder: target];
                 self.moving_focus.set(false);
             }
         }
@@ -241,15 +252,15 @@ impl WindowComposition {
 /// A native's container in a macOS window.
 pub struct MacNativeHost {
     id: NativeId,
-    container: id,
-    content: RefCell<Option<id>>,
+    container: *mut AnyObject,
+    content: RefCell<Option<*mut AnyObject>>,
     focused: Rc<dyn Fn(bool)>,
     composition: Weak<WindowComposition>,
 }
 
 impl MacNativeHost {
     /// The container view (`NSView *`), for tests.
-    pub fn container_view(&self) -> id {
+    pub fn container_view(&self) -> *mut AnyObject {
         self.container
     }
 
@@ -271,7 +282,16 @@ impl MacNativeHost {
             .map(|composition| composition.hit_map.borrow().clone())
     }
 
-    fn set_content(&self, view: id) {
+    /// The backdrop views (`NSView *`) blurring the window's natives under backdrop
+    /// blurs, shown or hidden for reuse, in the order of the last frame's blurs, for
+    /// tests.
+    pub fn blur_views(&self) -> Vec<*mut AnyObject> {
+        self.composition
+            .upgrade()
+            .map_or_else(Vec::new, |composition| composition.blurs.borrow().views())
+    }
+
+    fn set_content(&self, view: *mut AnyObject) {
         // SAFETY: `view` is a live view the caller vouched for; main thread. The container
         // retains its subview; the host keeps its own reference until replaced or dropped.
         unsafe {
@@ -279,7 +299,7 @@ impl MacNativeHost {
                 let () = msg_send![previous, removeFromSuperview];
                 let () = msg_send![previous, release];
             }
-            let _: id = msg_send![view, retain];
+            let _: *mut AnyObject = msg_send![view, retain];
             let () = msg_send![self.container, addSubview: view];
         }
         *self.content.borrow_mut() = Some(view);
@@ -287,7 +307,7 @@ impl MacNativeHost {
         if let Some(composition) = self.composition.upgrade() {
             let presented = composition.presented.borrow();
             if let Some(placement) = presented.placement(self.id) {
-                composition.place(self, placement, presented.placements.len());
+                composition.place(self, placement);
             }
         }
     }
@@ -303,10 +323,10 @@ impl PlatformNativeHost for MacNativeHost {
         // A layer-hosting view carries the layer, so AppKit places it like any view.
         // SAFETY: `layer` is a live CALayer the caller vouched for; main thread.
         unsafe {
-            let view: id = msg_send![class!(NSView), alloc];
-            let view: id = msg_send![view, initWithFrame: NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.))];
-            let () = msg_send![view, setLayer: layer.as_ptr().cast::<Object>()];
-            let () = msg_send![view, setWantsLayer: YES];
+            let view: *mut AnyObject = msg_send![class!(NSView), alloc];
+            let view: *mut AnyObject = msg_send![view, initWithFrame: NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.))];
+            let () = msg_send![view, setLayer: layer.as_ptr().cast::<AnyObject>()];
+            let () = msg_send![view, setWantsLayer: Bool::YES];
             self.set_content(view);
             let () = msg_send![view, release];
         }
@@ -339,17 +359,17 @@ impl Drop for MacNativeHost {
     }
 }
 
-fn container_class() -> *const Class {
+fn container_class() -> *const AnyClass {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| {
-        let mut decl = ClassDecl::new("GPUINativeContainer", class!(NSView))
+        let mut decl = ClassBuilder::new(c"GPUINativeContainer", class!(NSView))
             .expect("GPUINativeContainer is declared once");
         // SAFETY: the methods' signatures match the selectors' Objective-C types.
         unsafe {
-            decl.add_method(sel!(isFlipped), yes as extern "C" fn(&Object, Sel) -> BOOL);
+            decl.add_method(sel!(isFlipped), yes as extern "C" fn(_, Sel) -> Bool);
             decl.add_method(
                 sel!(hitTest:),
-                container_hit_test as extern "C" fn(&Object, Sel, NSPoint) -> id,
+                container_hit_test as extern "C" fn(_, Sel, NSPoint) -> *mut AnyObject,
             );
             CONTAINER_CLASS = decl.register();
         }
@@ -358,29 +378,29 @@ fn container_class() -> *const Class {
     unsafe { CONTAINER_CLASS }
 }
 
-extern "C" fn yes(_: &Object, _: Sel) -> BOOL {
-    YES
+extern "C" fn yes(_: &AnyObject, _: Sel) -> Bool {
+    Bool::YES
 }
 
 /// A container answers a hit test only where its native is the topmost hitbox.
-extern "C" fn container_hit_test(this: &Object, _: Sel, point: NSPoint) -> id {
-    let this_ptr = this as *const Object as usize;
+extern "C" fn container_hit_test(this: &AnyObject, _: Sel, point: NSPoint) -> *mut AnyObject {
+    let this_ptr = this as *const AnyObject as usize;
     let Some((native, composition)) = CONTAINERS.with(|containers| {
         containers
             .borrow()
             .get(&this_ptr)
             .and_then(|(native, composition)| Some((*native, composition.upgrade()?)))
     }) else {
-        return nil;
+        return NIL;
     };
     // SAFETY: `point` is in the superview's coordinates, as `hitTest:` passes it; main thread.
     let local: NSPoint = unsafe {
-        let superview: id = msg_send![this, superview];
-        msg_send![composition.gpui_view, convertPoint: point fromView: superview]
+        let superview: *mut AnyObject = msg_send![this, superview];
+        msg_send![composition.gpui_view, convertPoint: point, fromView: superview]
     };
     let position = composition.view_point_to_gpui(local);
     if composition.hit_map.borrow().native_at(position) != Some(native) {
-        return nil;
+        return NIL;
     }
     // SAFETY: calls NSView's own hit test on this container.
     unsafe { msg_send![super(this, class!(NSView)), hitTest: point] }
@@ -388,18 +408,22 @@ extern "C" fn container_hit_test(this: &Object, _: Sel, point: NSPoint) -> id {
 
 /// The GPUI view declines a hit test where a native is the topmost hitbox, so AppKit
 /// looks further, at the containers under it.
-pub(crate) extern "C" fn gpui_view_hit_test(this: &Object, _: Sel, point: NSPoint) -> id {
+pub(crate) extern "C" fn gpui_view_hit_test(
+    this: &AnyObject,
+    _: Sel,
+    point: NSPoint,
+) -> *mut AnyObject {
     // SAFETY: `this` is the GPUI view; main thread.
-    let window: id = unsafe { msg_send![this, window] };
+    let window: *mut AnyObject = unsafe { msg_send![this, window] };
     if let Some(composition) = WindowComposition::of_window(window) {
         // SAFETY: as above; `point` is in the superview's coordinates.
         let local: NSPoint = unsafe {
-            let superview: id = msg_send![this, superview];
-            msg_send![this, convertPoint: point fromView: superview]
+            let superview: *mut AnyObject = msg_send![this, superview];
+            msg_send![this, convertPoint: point, fromView: superview]
         };
         let position = composition.view_point_to_gpui(local);
         if composition.hit_map.borrow().native_at(position).is_some() {
-            return nil;
+            return NIL;
         }
     }
     // SAFETY: NSView's own hit test.
@@ -409,14 +433,14 @@ pub(crate) extern "C" fn gpui_view_hit_test(this: &Object, _: Sel, point: NSPoin
 /// Whether a native holds the keyboard in the GPUI view's window, so GPUI's key
 /// equivalent handling leaves keys to the native (they were offered to GPUI's keymap
 /// already by the window's `sendEvent:`).
-pub(crate) fn native_has_keyboard(gpui_view: &Object) -> bool {
+pub(crate) fn native_has_keyboard(gpui_view: &AnyObject) -> bool {
     // SAFETY: `gpui_view` is the GPUI view; main thread.
-    let window: id = unsafe { msg_send![gpui_view, window] };
+    let window: *mut AnyObject = unsafe { msg_send![gpui_view, window] };
     let Some(composition) = WindowComposition::of_window(window) else {
         return false;
     };
     // SAFETY: as above.
-    let responder: id = unsafe { msg_send![window, firstResponder] };
+    let responder: *mut AnyObject = unsafe { msg_send![window, firstResponder] };
     composition.native_holding(responder).is_some()
 }
 
@@ -427,8 +451,8 @@ pub(crate) fn native_has_keyboard(gpui_view: &Object) -> bool {
 /// the drag and release that follow it. A key press while a native holds the keyboard,
 /// and GPUI's focus is on that native's element, goes to GPUI's keymap first; a binding
 /// that matches consumes it.
-pub(crate) fn send_event(window: &Object, event: id) -> bool {
-    let window_ptr = window as *const Object as id;
+pub(crate) fn send_event(window: &AnyObject, event: *mut AnyObject) -> bool {
+    let window_ptr = window as *const AnyObject as *mut AnyObject;
     let Some(composition) = WindowComposition::of_window(window_ptr) else {
         return false;
     };
@@ -449,7 +473,9 @@ pub(crate) fn send_event(window: &Object, event: id) -> bool {
             // SAFETY: as above.
             let location: NSPoint = unsafe { msg_send![event, locationInWindow] };
             let position = composition.window_point_to_gpui(location);
-            if composition.hit_map.borrow().native_at(position).is_some() {
+            if composition.hit_map.borrow().native_at(position).is_some()
+                && !hits_window_chrome(window_ptr, location)
+            {
                 composition.pressed_on_native.set(true);
                 show_gpui(&composition, event);
             }
@@ -469,7 +495,7 @@ pub(crate) fn send_event(window: &Object, event: id) -> bool {
                 return false;
             };
             // SAFETY: as above.
-            let responder: id = unsafe { msg_send![window_ptr, firstResponder] };
+            let responder: *mut AnyObject = unsafe { msg_send![window_ptr, firstResponder] };
             if composition.native_holding(responder) != Some(keyboard) || composing_text(responder)
             {
                 return false;
@@ -480,22 +506,53 @@ pub(crate) fn send_event(window: &Object, event: id) -> bool {
     }
 }
 
-/// Whether `responder` is composing text with an input method, which keys must reach
-/// untouched.
-fn composing_text(responder: id) -> bool {
-    // SAFETY: probes an NSResponder with `respondsToSelector:` first; main thread.
+/// Whether AppKit hit-tests a press at `location` (window coordinates) outside the
+/// window's content view: to the frame view itself, its resize border, or to one of its
+/// controls, such as the titlebar buttons. Such a press belongs to AppKit, as in a window
+/// without natives. Shown to GPUI and recorded as pressed on the native under it, a resize
+/// grabbed where a native reaches the window's edge could leave that press open: AppKit's
+/// live-resize loop can consume the release (it does with a physical mouse on macOS 26.6;
+/// synthetic events still reach `sendEvent:`), so neither GPUI nor `pressed_on_native`
+/// would see the press end, and the next click went astray. A release that does arrive
+/// still clears `pressed_on_native` below. Ported from longbridge/gpui-fast#101 (by
+/// ohdarling, through `6365c72`) into this fork's composition.
+fn hits_window_chrome(window: *mut AnyObject, location: NSPoint) -> bool {
+    // SAFETY: `window` is a live NSWindow; main thread. `hitTest:` on the frame view, which
+    // has no superview, takes a point in window coordinates.
     unsafe {
-        let responds: BOOL = msg_send![responder, respondsToSelector: sel!(hasMarkedText)];
-        if responds == NO {
+        let content: *mut AnyObject = msg_send![window, contentView];
+        if content.is_null() {
             return false;
         }
-        let marked: BOOL = msg_send![responder, hasMarkedText];
-        marked == YES
+        let frame_view: *mut AnyObject = msg_send![content, superview];
+        if frame_view.is_null() {
+            return false;
+        }
+        let target: *mut AnyObject = msg_send![frame_view, hitTest: location];
+        if target.is_null() {
+            return false;
+        }
+        let inside: Bool = msg_send![target, isDescendantOf: content];
+        inside == Bool::NO
+    }
+}
+
+/// Whether `responder` is composing text with an input method, which keys must reach
+/// untouched.
+fn composing_text(responder: *mut AnyObject) -> bool {
+    // SAFETY: probes an NSResponder with `respondsToSelector:` first; main thread.
+    unsafe {
+        let responds: Bool = msg_send![responder, respondsToSelector: sel!(hasMarkedText)];
+        if responds == Bool::NO {
+            return false;
+        }
+        let marked: Bool = msg_send![responder, hasMarkedText];
+        marked == Bool::YES
     }
 }
 
 /// Shows GPUI a mouse event AppKit delivers to a native, as if the GPUI view had it.
-fn show_gpui(composition: &WindowComposition, event: id) {
+fn show_gpui(composition: &WindowComposition, event: *mut AnyObject) {
     // SAFETY: the GPUI view is alive and `event` is the mouse event being sent; the view's
     // own handler converts it and dispatches it to GPUI, on the main thread.
     unsafe {
@@ -505,7 +562,7 @@ fn show_gpui(composition: &WindowComposition, event: id) {
 
 /// Offers a key press to GPUI's keymap, as the GPUI view would dispatch it. Returns
 /// whether a binding took it.
-fn offer_key_to_gpui(gpui_view: id, event: id) -> bool {
+fn offer_key_to_gpui(gpui_view: *mut AnyObject, event: *mut AnyObject) -> bool {
     // SAFETY: the GPUI view holds its window state; main thread.
     let window_state = unsafe { crate::window::get_window_state(&*gpui_view) };
     let mut lock = window_state.lock();
@@ -527,8 +584,14 @@ fn offer_key_to_gpui(gpui_view: id, event: id) -> bool {
 
 /// `NSWindow makeFirstResponder:` for a composing window, after AppKit made the change:
 /// tells GPUI when the user moved the keyboard into or out of a native.
-pub(crate) fn first_responder_changed(window: &Object, previous: id, responder: id) {
-    let Some(composition) = WindowComposition::of_window(window as *const Object as id) else {
+pub(crate) fn first_responder_changed(
+    window: &AnyObject,
+    previous: *mut AnyObject,
+    responder: *mut AnyObject,
+) {
+    let Some(composition) =
+        WindowComposition::of_window(window as *const AnyObject as *mut AnyObject)
+    else {
         return;
     };
     if composition.moving_focus.get() {
@@ -548,7 +611,7 @@ pub(crate) fn first_responder_changed(window: &Object, previous: id, responder: 
 }
 
 impl MacWindow {
-    fn native_window_and_view(&self) -> (id, id) {
+    fn native_window_and_view(&self) -> (*mut AnyObject, *mut AnyObject) {
         let state = self.0.lock();
         (state.native_window, state.native_view.as_ptr())
     }
@@ -576,9 +639,7 @@ impl MacWindow {
         };
         let opaque =
             state.background_appearance == WindowBackgroundAppearance::Opaque && !frame.any_hole;
-        // SAFETY: reads properties of the window's own Metal layer; main thread.
-        let hidden: BOOL = unsafe { msg_send![layer, isHidden] };
-        layer.is_opaque() != opaque || (hidden == YES) != frame.covers_window
+        layer.isOpaque() != opaque || layer.isHidden() != frame.covers_window
     }
 
     /// Makes GPUI's layer composite over what is under it while a hole shows a native,
@@ -590,12 +651,9 @@ impl MacWindow {
         };
         let opaque =
             state.background_appearance == WindowBackgroundAppearance::Opaque && !frame.any_hole;
-        layer.set_opaque(opaque);
-        // SAFETY: sets a property of the window's own Metal layer, inside the frame's
-        // transaction; main thread.
-        unsafe {
-            let () = msg_send![layer, setHidden: if frame.covers_window { YES } else { NO }];
-        }
+        layer.setOpaque(opaque);
+        // Inside the frame's transaction; main thread.
+        layer.setHidden(frame.covers_window);
     }
 
     /// Creates a native's container under the GPUI view.
@@ -611,6 +669,7 @@ impl MacWindow {
                 hosts: RefCell::default(),
                 hit_map: RefCell::default(),
                 presented: RefCell::default(),
+                blurs: RefCell::default(),
                 keyboard: Cell::new(None),
                 pressed_on_native: Cell::new(false),
                 moving_focus: Cell::new(false),
@@ -627,17 +686,17 @@ impl MacWindow {
         // SAFETY: AppKit view creation and insertion on the main thread; the content view
         // retains the container, and the host keeps its own reference.
         let container = unsafe {
-            let container: id = msg_send![container_class(), alloc];
-            let container: id = msg_send![container, initWithFrame: NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.))];
-            let () = msg_send![container, setWantsLayer: YES];
-            let () = msg_send![container, setClipsToBounds: YES];
-            let () = msg_send![container, setHidden: YES];
+            let container: *mut AnyObject = msg_send![container_class(), alloc];
+            let container: *mut AnyObject = msg_send![container, initWithFrame: NSRect::new(NSPoint::new(0., 0.), NSSize::new(0., 0.))];
+            let () = msg_send![container, setWantsLayer: Bool::YES];
+            let () = msg_send![container, setClipsToBounds: Bool::YES];
+            let () = msg_send![container, setHidden: Bool::YES];
             if let Some(label) = &params.options.label {
                 let label = crate::ns_string(label);
                 let () = msg_send![container, setAccessibilityLabel: label];
             }
-            let content_view: id = msg_send![gpui_view, superview];
-            let () = msg_send![content_view, addSubview: container positioned: -1isize relativeTo: gpui_view];
+            let content_view: *mut AnyObject = msg_send![gpui_view, superview];
+            let () = msg_send![content_view, addSubview: container, positioned: -1isize, relativeTo: gpui_view];
             container
         };
         CONTAINERS.with(|containers| {
@@ -690,7 +749,7 @@ impl MacWindow {
             unsafe {
                 if transaction {
                     let () = msg_send![class!(CATransaction), begin];
-                    let () = msg_send![class!(CATransaction), setDisableActions: YES];
+                    let () = msg_send![class!(CATransaction), setDisableActions: Bool::YES];
                 }
                 let presented_with_transaction = self.set_presents_with_transaction(transaction);
                 if !frame.covers_window {
@@ -714,16 +773,16 @@ impl MacWindow {
 /// # Safety
 ///
 /// `decl` must be declaring an `NSWindow` subclass.
-pub(crate) unsafe fn declare_window_methods(decl: &mut ClassDecl) {
+pub(crate) unsafe fn declare_window_methods(decl: &mut ClassBuilder) {
     // SAFETY: the signatures match `sendEvent:` and `makeFirstResponder:`.
     unsafe {
         decl.add_method(
             sel!(sendEvent:),
-            window_send_event as extern "C" fn(&Object, Sel, id),
+            window_send_event as extern "C" fn(_, Sel, *mut AnyObject),
         );
         decl.add_method(
             sel!(makeFirstResponder:),
-            window_make_first_responder as extern "C" fn(&Object, Sel, id) -> BOOL,
+            window_make_first_responder as extern "C" fn(_, Sel, *mut AnyObject) -> Bool,
         );
     }
 }
@@ -731,9 +790,9 @@ pub(crate) unsafe fn declare_window_methods(decl: &mut ClassDecl) {
 /// The AppKit class GPUI's window class derives from. `object_getClass` may name a
 /// subclass AppKit made at run time (key-value observing does), so the chain is walked up
 /// to GPUI's own class rather than taking the immediate superclass.
-fn window_superclass(this: &Object) -> &Class {
+fn window_superclass(this: &AnyObject) -> &AnyClass {
     let mut class = this.class();
-    while !matches!(class.name(), "GPUIWindow" | "GPUIPanel") {
+    while !matches!(class.name().to_bytes(), b"GPUIWindow" | b"GPUIPanel") {
         class = class
             .superclass()
             .expect("a GPUI window derives from GPUI's window class");
@@ -743,7 +802,7 @@ fn window_superclass(this: &Object) -> &Class {
         .expect("GPUI's window class derives from NSWindow")
 }
 
-extern "C" fn window_send_event(this: &Object, _: Sel, event: id) {
+extern "C" fn window_send_event(this: &AnyObject, _: Sel, event: *mut AnyObject) {
     if send_event(this, event) {
         return;
     }
@@ -753,13 +812,17 @@ extern "C" fn window_send_event(this: &Object, _: Sel, event: id) {
     }
 }
 
-extern "C" fn window_make_first_responder(this: &Object, _: Sel, responder: id) -> BOOL {
+extern "C" fn window_make_first_responder(
+    this: &AnyObject,
+    _: Sel,
+    responder: *mut AnyObject,
+) -> Bool {
     // SAFETY: NSWindow's own `makeFirstResponder:` and `firstResponder`; main thread.
     unsafe {
-        let previous: id = msg_send![this, firstResponder];
-        let made: BOOL =
+        let previous: *mut AnyObject = msg_send![this, firstResponder];
+        let made: Bool =
             msg_send![super(this, window_superclass(this)), makeFirstResponder: responder];
-        if made == YES {
+        if made == Bool::YES {
             first_responder_changed(this, previous, responder);
         }
         made
@@ -767,6 +830,6 @@ extern "C" fn window_make_first_responder(this: &Object, _: Sel, responder: id) 
 }
 
 /// Forgets a closing window's composition.
-pub(crate) fn window_closed(window: id) {
+pub(crate) fn window_closed(window: *mut AnyObject) {
     WINDOWS.with(|windows| windows.borrow_mut().remove(&(window as usize)));
 }

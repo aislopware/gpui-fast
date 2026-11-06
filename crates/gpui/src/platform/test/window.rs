@@ -28,8 +28,9 @@ pub(crate) struct TestWindowState {
     platform: Weak<TestPlatform>,
     // TODO: Replace with `Rc`
     sprite_atlas: Arc<dyn PlatformAtlas>,
-    renderer: Option<Box<dyn PlatformHeadlessRenderer>>,
+    pub(crate) renderer: Option<Box<dyn PlatformHeadlessRenderer>>,
     pub(crate) should_close_handler: Option<Box<dyn FnMut() -> bool>>,
+    close_callback: Option<Box<dyn FnOnce()>>,
     hit_test_window_control_callback: Option<Box<dyn FnMut() -> Option<WindowControlArea>>>,
     input_callback: Option<Box<dyn FnMut(PlatformInput) -> DispatchEventResult>>,
     active_status_change_callback: Option<Box<dyn FnMut(bool)>>,
@@ -45,7 +46,7 @@ pub(crate) struct TestWindowState {
     virtual_keyboard_dismissals: usize,
     moved_callback: Option<Box<dyn FnMut()>>,
     display_changed_callback: Option<Box<dyn FnMut()>>,
-    appearance_change_callback: Option<Box<dyn FnMut()>>,
+    pub(crate) appearance_change_callback: Option<Box<dyn FnMut()>>,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     frame_wake_count: Rc<Cell<usize>>,
     frame_scheduled: bool,
@@ -57,10 +58,12 @@ pub(crate) struct TestWindowState {
     text_input_state_changes: Vec<TextInputStateChange>,
     is_fullscreen: bool,
     scale_factor: f32,
-    appearance: WindowAppearance,
+    pub(crate) appearance: WindowAppearance,
     external_drag_files: Vec<(PathBuf, bool)>,
     start_external_drag_result: bool,
     pub(crate) fast_ime_positions: Vec<Bounds<Pixels>>,
+    pub(crate) fast_appearance: Option<WindowAppearance>,
+    pub(crate) fast_background: WindowBackgroundAppearance,
 }
 
 #[derive(Clone)]
@@ -107,6 +110,7 @@ impl TestWindow {
             edited: false,
             document_path: None,
             should_close_handler: None,
+            close_callback: None,
             hit_test_window_control_callback: None,
             input_callback: None,
             active_status_change_callback: None,
@@ -139,8 +143,17 @@ impl TestWindow {
             external_drag_files: Vec::new(),
             start_external_drag_result: false,
             fast_ime_positions: Vec::new(),
+            fast_appearance: None,
+            fast_background: WindowBackgroundAppearance::Opaque,
         })))
     }
+    pub fn simulate_close(&self) {
+        let callback = self.0.lock().close_callback.take();
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+
     pub fn simulate_scheduled_frame(&self) -> bool {
         let callback = {
             let mut state = self.0.lock();
@@ -376,7 +389,11 @@ impl PlatformWindow for TestWindow {
     }
 
     fn appearance(&self) -> WindowAppearance {
-        self.0.lock().appearance
+        crate::fast::window_appearance::of_test_window(self)
+    }
+
+    fn set_appearance(&self, appearance: Option<WindowAppearance>) {
+        crate::fast::window_appearance::set_test_window(self, appearance);
     }
 
     fn display(&self) -> Option<std::rc::Rc<dyn crate::PlatformDisplay>> {
@@ -450,7 +467,7 @@ impl PlatformWindow for TestWindow {
     }
 
     fn background_appearance(&self) -> WindowBackgroundAppearance {
-        WindowBackgroundAppearance::Opaque
+        crate::fast::test_pixels::background(self)
     }
 
     fn is_subpixel_rendering_supported(&self) -> bool {
@@ -463,7 +480,9 @@ impl PlatformWindow for TestWindow {
 
     fn set_app_id(&mut self, _app_id: &str) {}
 
-    fn set_background_appearance(&self, _background: WindowBackgroundAppearance) {}
+    fn set_background_appearance(&self, background: WindowBackgroundAppearance) {
+        crate::fast::test_pixels::set_background(self, background)
+    }
 
     fn set_edited(&mut self, edited: bool) {
         self.0.lock().edited = edited;
@@ -555,7 +574,9 @@ impl PlatformWindow for TestWindow {
         self.0.lock().should_close_handler = Some(callback);
     }
 
-    fn on_close(&self, _callback: Box<dyn FnOnce()>) {}
+    fn on_close(&self, callback: Box<dyn FnOnce()>) {
+        self.0.lock().close_callback = Some(callback);
+    }
 
     fn on_hit_test_window_control(&self, callback: Box<dyn FnMut() -> Option<WindowControlArea>>) {
         self.0.lock().hit_test_window_control_callback = Some(callback);
@@ -603,6 +624,15 @@ impl PlatformWindow for TestWindow {
         } else {
             anyhow::bail!("render_to_image not available: no HeadlessRenderer configured")
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn fast_render_scene_to_image(
+        &self,
+        scene: &Scene,
+        fast_size: Size<DevicePixels>,
+    ) -> anyhow::Result<RgbaImage> {
+        crate::fast::test_pixels::render_at(self, scene, fast_size)
     }
 
     fn as_test(&mut self) -> Option<&mut TestWindow> {

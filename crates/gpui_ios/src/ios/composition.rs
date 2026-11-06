@@ -13,9 +13,11 @@
 //! Metal view answers `hitTest:withEvent:` with nil where a native is the topmost hitbox,
 //! and a container only where its native is. A gesture recogniser on the root view that
 //! never recognises and never cancels shows GPUI a touch that begins over a native as a
-//! mouse press, so a menu open elsewhere closes and the native's element hears it. The
-//! keyboard focus is kept in step both ways between a native and the focus handle its
-//! element tracks.
+//! mouse press, so a menu open elsewhere closes and the native's element hears it. A
+//! container is a scroll view that never moves its content, so UIKit hands it a pan the
+//! native's own scroll views leave (nothing to scroll that way, or at an edge), which GPUI
+//! gets as the touch it is and scrolls with. The keyboard focus is kept in step both ways
+//! between a native and the focus handle its element tracks.
 //!
 //! Everything here runs on the main thread, as UIKit and Core Animation require of views
 //! and of the explicit transactions that move them.
@@ -33,6 +35,7 @@ use std::{
 use anyhow::Result;
 use gpui::{
     Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels, PlatformInput, Point, Scene,
+    TouchId,
     composition::{
         NativeFrame, NativeFramePlacement, NativeHitMap, NativeHostParams, NativeId, NativePresent,
         PlatformNativeHost,
@@ -41,16 +44,49 @@ use gpui::{
 };
 use objc2::{
     class, msg_send,
+    rc::Retained,
     runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel},
     sel,
 };
 
 use super::IosWindow;
 use super::cg_types::{ObjcCGPoint, ObjcCGRect};
+use crate::described::UiTouchPhase;
 
 const WINDOW_IVAR: &str = "gpui_window_ptr";
-/// `UIGestureRecognizerStateFailed`, from UIGestureRecognizer.h.
+/// `UIGestureRecognizerState`, from UIGestureRecognizer.h.
+const GESTURE_STATE_BEGAN: isize = 1;
+const GESTURE_STATE_CHANGED: isize = 2;
+const GESTURE_STATE_ENDED: isize = 3;
 const GESTURE_STATE_FAILED: isize = 5;
+/// `UIScrollViewContentInsetAdjustmentNever`, from UIScrollView.h.
+const CONTENT_INSET_ADJUSTMENT_NEVER: isize = 2;
+/// How far a container could scroll every way (`container_class`), in points: farther than
+/// any pan goes.
+const HAND_ON_ROOM: f64 = 1e6;
+
+/// UIKit's `UIEdgeInsets`: top, left, bottom, right.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UIEdgeInsets {
+    top: f64,
+    left: f64,
+    bottom: f64,
+    right: f64,
+}
+
+// SAFETY: the layout is UIKit's `UIEdgeInsets`, four `CGFloat`s (double on 64-bit).
+unsafe impl objc2::encode::Encode for UIEdgeInsets {
+    const ENCODING: objc2::encode::Encoding = objc2::encode::Encoding::Struct(
+        "UIEdgeInsets",
+        &[
+            objc2::encode::Encoding::Double,
+            objc2::encode::Encoding::Double,
+            objc2::encode::Encoding::Double,
+            objc2::encode::Encoding::Double,
+        ],
+    );
+}
 
 static ROOT_VIEW_CLASS: Once = Once::new();
 static CONTAINER_CLASS: Once = Once::new();
@@ -146,12 +182,20 @@ fn root_view_class() -> &'static AnyClass {
     class!(GPUIRootView)
 }
 
+/// A native's container is a scroll view that never moves its content: an ancestor scroll
+/// view of whatever scrolls inside the native, so UIKit hands it the pans the native's own
+/// scroll views do not take (one that cannot scroll that way, or one at its edge, by
+/// `transfersVerticalScrollingToParent` and its horizontal twin), and the container hands
+/// them to GPUI as the touch they are (`container_hand_on`). Its content is its own size,
+/// inset [`HAND_ON_ROOM`] every way, and its offset stays at zero: UIKit sees room to scroll
+/// in every direction, so an edge's pan is passed to it, and nothing on screen moves.
 fn container_class() -> &'static AnyClass {
     CONTAINER_CLASS.call_once(|| {
-        let Some(mut decl) = ClassBuilder::new(c"GPUINativeContainer", class!(UIView)) else {
+        let Some(mut decl) = ClassBuilder::new(c"GPUINativeContainer", class!(UIScrollView)) else {
             return;
         };
-        // SAFETY: the signature matches `hitTest:withEvent:`.
+        // SAFETY: the signatures match `hitTest:withEvent:`, `setContentOffset:`,
+        // `setBounds:` and an action's `v@:@`.
         unsafe {
             decl.add_method(
                 sel!(hitTest:withEvent:),
@@ -163,10 +207,106 @@ fn container_class() -> &'static AnyClass {
                         *mut AnyObject,
                     ) -> *mut AnyObject,
             );
+            decl.add_method(
+                sel!(setContentOffset:),
+                container_set_content_offset as extern "C" fn(*mut AnyObject, Sel, ObjcCGPoint),
+            );
+            decl.add_method(
+                sel!(setBounds:),
+                container_set_bounds as extern "C" fn(*mut AnyObject, Sel, ObjcCGRect),
+            );
+            decl.add_method(
+                sel!(gpuiHandOn:),
+                container_hand_on as extern "C" fn(*mut AnyObject, Sel, *mut AnyObject),
+            );
         }
         decl.register();
     });
     class!(GPUINativeContainer)
+}
+
+/// The container's content stays where GPUI placed it: its pan moves nothing on screen.
+extern "C" fn container_set_content_offset(this: *mut AnyObject, _: Sel, _offset: ObjcCGPoint) {
+    // SAFETY: UIScrollView's own setter on this container; main thread.
+    unsafe {
+        let _: () = msg_send![
+            super(this, class!(UIScrollView)),
+            setContentOffset: ObjcCGPoint { x: 0., y: 0. }
+        ];
+    }
+}
+
+/// As `setContentOffset:`: a scroll view's offset is its bounds' origin.
+extern "C" fn container_set_bounds(this: *mut AnyObject, _: Sel, bounds: ObjcCGRect) {
+    let pinned = ObjcCGRect::new(0., 0., bounds.width, bounds.height);
+    // SAFETY: UIView's own setter on this container; main thread.
+    unsafe {
+        let _: () = msg_send![super(this, class!(UIScrollView)), setBounds: pinned];
+    }
+}
+
+/// The container's pan, which UIKit begins only for a pan the native's own scroll views
+/// leave: GPUI gets it as one touch, from where it began, so GPUI's own recogniser pans and
+/// flings what is under the native as it would under a finger on GPUI's view.
+extern "C" fn container_hand_on(this: *mut AnyObject, _: Sel, pan: *mut AnyObject) {
+    let Some(composition) = CONTAINERS.with(|containers| {
+        containers
+            .borrow()
+            .get(&(this as usize))
+            .and_then(|(_, composition)| composition.upgrade())
+    }) else {
+        return;
+    };
+    // SAFETY: the root view is live while its composition is; main thread.
+    let Some(window) = (unsafe { window_of_root(composition.root) }) else {
+        return;
+    };
+    // SAFETY: reads the state and geometry of this container's own pan recogniser, in the
+    // Metal view's coordinates (GPUI's); main thread.
+    let (state, at, moved): (isize, ObjcCGPoint, ObjcCGPoint) = unsafe {
+        (
+            msg_send![pan, state],
+            msg_send![pan, locationInView: composition.metal_view],
+            msg_send![pan, translationInView: composition.metal_view],
+        )
+    };
+    let id = TouchId(pan as usize as u64);
+    let position = to_gpui(at);
+    // The recogniser's action says no time: the touches it follows do.
+    let (began, now) = composition
+        .touch_times()
+        .map_or((None, None), |(began, now)| {
+            (
+                Some(super::events::instant_of_uptime(began)),
+                Some(super::events::instant_of_uptime(now)),
+            )
+        });
+    let deliver = |phase, position, at| window.deliver_touch(id, phase, position, None, None, at);
+    match state {
+        GESTURE_STATE_BEGAN => {
+            let start = to_gpui(ObjcCGPoint {
+                x: at.x - moved.x,
+                y: at.y - moved.y,
+            });
+            deliver(UiTouchPhase::Began, start, began);
+            deliver(UiTouchPhase::Moved, position, now);
+        }
+        GESTURE_STATE_CHANGED => deliver(UiTouchPhase::Moved, position, now),
+        GESTURE_STATE_ENDED => deliver(UiTouchPhase::Ended, position, now),
+        _ => deliver(UiTouchPhase::Cancelled, position, now),
+    }
+    if state >= GESTURE_STATE_ENDED {
+        // GPUI flings; the container's own deceleration would only swallow the next tap on
+        // the native, as a scroll view still moving takes a touch to stop it.
+        // SAFETY: UIScrollView's own call on this container; main thread.
+        unsafe {
+            let _: () = msg_send![
+                this,
+                setContentOffset: ObjcCGPoint { x: 0., y: 0. },
+                animated: false
+            ];
+        }
+    }
 }
 
 /// A gesture recogniser that watches touches over natives and never recognises, cancels,
@@ -236,6 +376,7 @@ extern "C" fn observer_touches_began(
     };
     let composition = &window.composition;
     for touch in touches_of(touches) {
+        composition.note_touch_began(touch);
         composition
             .active_touches
             .set(composition.active_touches.get() + 1);
@@ -446,6 +587,9 @@ pub(crate) struct WindowComposition {
     responder_native: Cell<Option<NativeId>>,
     active_touches: Cell<usize>,
     touches_on_natives: RefCell<HashSet<usize>>,
+    /// The touches down (and those that ended since the last began), each with when it began:
+    /// the times of a pan handed on (`container_hand_on`).
+    sequence: RefCell<Vec<(Retained<AnyObject>, f64)>>,
     transactional_presents: Cell<usize>,
     plain_presents: Cell<usize>,
 }
@@ -462,6 +606,7 @@ impl WindowComposition {
             responder_native: Cell::new(None),
             active_touches: Cell::new(0),
             touches_on_natives: RefCell::default(),
+            sequence: RefCell::default(),
             transactional_presents: Cell::new(0),
             plain_presents: Cell::new(0),
         })
@@ -473,6 +618,41 @@ impl WindowComposition {
 
     fn touch_position(&self, touch: *mut AnyObject) -> Point<Pixels> {
         super::events::touch_location_in_view(touch, self.metal_view)
+    }
+
+    /// `touch` began: it joins the touches still down, and those that ended leave. An ended
+    /// touch stays until the next one begins, since a pan's last action may come after the
+    /// observer hears its touch end.
+    fn note_touch_began(&self, touch: *mut AnyObject) {
+        // SAFETY: retains the live `UITouch` UIKit passed to the observer; main thread.
+        let Some(retained) = (unsafe { Retained::retain(touch) }) else {
+            return;
+        };
+        let mut sequence = self.sequence.borrow_mut();
+        // UIKit may hand an ended touch's object to a new touch: it is kept once, as the new one.
+        sequence.retain(|(held, _)| {
+            let held = Retained::as_ptr(held).cast_mut();
+            held != touch
+                && !matches!(
+                    super::events::touch_phase(held),
+                    UiTouchPhase::Ended | UiTouchPhase::Cancelled
+                )
+        });
+        sequence.push((retained, super::events::touch_timestamp(touch)));
+    }
+
+    /// When the touches down began, the earliest, and when the newest change to them happened,
+    /// in UIKit's uptime seconds: UIKit stamps a touch with its event's time before any
+    /// recogniser sees the event, so whichever runs first, a pan's action reads the time of
+    /// the change it reports.
+    fn touch_times(&self) -> Option<(f64, f64)> {
+        let sequence = self.sequence.borrow();
+        let began = sequence.iter().map(|(_, began)| *began).reduce(f64::min)?;
+        let newest = sequence
+            .iter()
+            .map(|(touch, _)| super::events::touch_timestamp(Retained::as_ptr(touch).cast_mut()))
+            .reduce(f64::max)?;
+        Some((began, newest))
     }
 
     /// The native whose container holds `view`, if any.
@@ -514,6 +694,29 @@ impl WindowComposition {
                 msg_send![container, initWithFrame: ObjcCGRect::default()];
             let _: () = msg_send![container, setClipsToBounds: true];
             let _: () = msg_send![container, setHidden: true];
+            // A scroll view that only hands pans on (`container_class`): it bounces both
+            // ways so it can begin with no content to scroll, never delays the native's
+            // touches, shows nothing of its own and is never the status bar's scroll to top.
+            let _: () = msg_send![container, setAlwaysBounceVertical: true];
+            let _: () = msg_send![container, setAlwaysBounceHorizontal: true];
+            let _: () = msg_send![container, setDirectionalLockEnabled: true];
+            let _: () = msg_send![container, setDelaysContentTouches: false];
+            let _: () = msg_send![container, setShowsVerticalScrollIndicator: false];
+            let _: () = msg_send![container, setShowsHorizontalScrollIndicator: false];
+            let _: () = msg_send![container, setScrollsToTop: false];
+            let _: () = msg_send![
+                container,
+                setContentInsetAdjustmentBehavior: CONTENT_INSET_ADJUSTMENT_NEVER
+            ];
+            let room = UIEdgeInsets {
+                top: HAND_ON_ROOM,
+                left: HAND_ON_ROOM,
+                bottom: HAND_ON_ROOM,
+                right: HAND_ON_ROOM,
+            };
+            let _: () = msg_send![container, setContentInset: room];
+            let pan: *mut AnyObject = msg_send![container, panGestureRecognizer];
+            let _: () = msg_send![pan, addTarget: container, action: sel!(gpuiHandOn:)];
             if let Some(label) = &params.options.label {
                 let _: () =
                     msg_send![container, setAccessibilityLabel: super::util::nsstring(label)];
@@ -582,6 +785,11 @@ impl WindowComposition {
         // never removes a view from the window.
         unsafe {
             let _: () = msg_send![host.container, setFrame: container_frame];
+            let size = super::cg_types::ObjcCGSize {
+                width: container_frame.width,
+                height: container_frame.height,
+            };
+            let _: () = msg_send![host.container, setContentSize: size];
             let layer: *mut AnyObject = msg_send![host.container, layer];
             let _: () = msg_send![layer, setZPosition: placement.rank as f64 - count as f64 - 1.];
             if let Some(content) = &*host.content.borrow() {
@@ -748,14 +956,14 @@ impl IosWindow {
         composition.first_responder_changed();
         *composition.hit_map.borrow_mut() = present.hit_map.clone();
         let frame = &present.frame;
-        let changes_natives = !frame
+        // iOS does not blur natives under a backdrop blur, so a frame that changes only
+        // the blurs over them is presented as any other.
+        let changes_natives = frame
             .changes_since(&composition.presented.borrow())
-            .is_empty();
+            .moves_natives();
         let mut renderer = self.renderer.lock();
         let layer_changes = renderer.layer().is_some_and(|layer| {
-            // SAFETY: reads a property of the window's own Metal layer; main thread.
-            let hidden: bool = unsafe { msg_send![layer_object(layer), isHidden] };
-            layer.is_opaque() == frame.any_hole || hidden != frame.covers_window
+            layer.isOpaque() == frame.any_hole || layer.isHidden() != frame.covers_window
         });
         if !changes_natives && !layer_changes {
             composition
@@ -785,8 +993,8 @@ impl IosWindow {
                 renderer.set_presents_with_transaction(presented_with_transaction);
                 composition.apply(frame);
                 if let Some(layer) = renderer.layer() {
-                    layer.set_opaque(!frame.any_hole);
-                    let _: () = msg_send![layer_object(layer), setHidden: frame.covers_window];
+                    layer.setOpaque(!frame.any_hole);
+                    layer.setHidden(frame.covers_window);
                 }
                 if transaction {
                     let _: () = msg_send![class!(CATransaction), commit];
@@ -797,9 +1005,4 @@ impl IosWindow {
         *composition.presented.borrow_mut() = frame.clone();
         composition.follow_keyboard(present.keyboard);
     }
-}
-
-fn layer_object(layer: &metal::MetalLayerRef) -> *mut AnyObject {
-    use foreign_types::ForeignTypeRef as _;
-    layer.as_ptr().cast()
 }

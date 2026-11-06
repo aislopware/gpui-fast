@@ -41,8 +41,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # With the profiler, as an app running GPUI's hang monitor builds it: the
+      # journal's and the hang detector's tests only compile with it. Clippy
+      # below still builds gpui without it.
       - name: Test gpui
-        run: cargo test -p gpui --features test-support
+        run: cargo test -p gpui --features test-support,profiler
 
       - name: Link GPUI Fast with GPUI Pre
         if: runner.os == 'Windows'
@@ -58,6 +61,12 @@ jobs:
         if: runner.os == 'Windows'
         run: cargo test -p gpui_windows --features test-support fast::layers -- --nocapture
 
+      # gpui_macos's own: the immediate frame's slot, the frame park, the
+      # cursor and text smoothing.
+      - name: Test gpui_macos
+        if: runner.os == 'macOS'
+        run: cargo test -p gpui_macos
+
       # gpui_ios's pure parts (hardware keys, described input, frame pacing, the
       # keyboard inset) are compiled on the host too, so their tests run here.
       - name: Test gpui_ios on the host
@@ -67,12 +76,13 @@ jobs:
       - name: Check gpui_perf
         run: cargo check -p gpui_perf --all-targets
 
-      # The gpui-pre stand-ins GPUI Kit applications patch in (compat/): every
-      # feature a gpui-pre crate has must reach ours.
+      # The gpui-pre and gpui-fast stand-ins GPUI Kit applications patch in
+      # (compat/): every feature a crate they stand in for has must reach ours.
       - name: Check compat
         run: >-
           cargo check -p gpui-pre -p gpui-pre-platform -p gpui-pre-macros
-          -p gpui-pre-reqwest-client -p gpui-pre-sum-tree --all-features
+          -p gpui-pre-reqwest-client -p gpui-pre-sum-tree
+          -p gpui-fast -p gpui-fast-platform -p gpui-fast-web --all-features
 
   lint:
     name: Lint and upstream check
@@ -105,3 +115,6 @@ jobs:
 
       - name: Clippy
         run: cargo clippy -p gpui -p gpui_perf --all-targets --features gpui/test-support -- -D warnings
+
+      - name: Clippy with the profiler
+        run: cargo clippy -p gpui --all-targets --features test-support,profiler -- -D warnings

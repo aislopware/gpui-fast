@@ -45,6 +45,15 @@ struct EdgeFadeRamps {
   float4 edge;
   float4 rate;
   float4 start;
+  float4 clip;
+  float4 radii;
+  float4 mask;
+  float4 mask_shape;
+  float4 mask_bottom;
+  float4 radii_y;
+  float4 outer_clip;
+  float4 outer_radii;
+  float4 outer_radii_y;
 };
 float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades);
 
@@ -647,6 +656,8 @@ struct MonochromeSpriteVertexOutput {
   float4 color [[flat]];
   float4 clip_distance;
   uint fade [[flat]];
+  float4 blur_tile [[flat]];
+  float blur [[flat]];
 };
 
 struct MonochromeSpriteFragmentInput {
@@ -655,7 +666,17 @@ struct MonochromeSpriteFragmentInput {
   float4 color [[flat]];
   float4 clip_distance;
   uint fade [[flat]];
+  float4 blur_tile [[flat]];
+  float blur [[flat]];
 };
+
+float glyph_blur_sigma(AtlasTile tile);
+void glyph_blur_widen(float2 unit_vertex, MonochromeSprite sprite, float sigma,
+                      constant Size_DevicePixels *viewport_size,
+                      constant Size_DevicePixels *atlas_size, thread float4 &device_position,
+                      thread float4 &clip_distance, thread float2 &tile_position);
+float glyph_blur_alpha(float2 tile_position, float4 tile, float sigma,
+                       texture2d<float> atlas_texture);
 
 vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
     uint unit_vertex_id [[vertex_id]], uint sprite_id [[instance_id]],
@@ -672,13 +693,21 @@ vertex MonochromeSpriteVertexOutput monochrome_sprite_vertex(
   float4 clip_distance = distance_from_clip_rect_transformed(unit_vertex, sprite.bounds,
                                                  sprite.content_mask.bounds, sprite.transformation);
   float2 tile_position = to_tile_position(unit_vertex, sprite.tile, atlas_size);
+  float sigma = glyph_blur_sigma(sprite.tile);
+  if (sigma > 0.) {
+    glyph_blur_widen(unit_vertex, sprite, sigma, viewport_size, atlas_size, device_position,
+                     clip_distance, tile_position);
+  }
   float4 color = hsla_to_rgba(sprite.color);
   return MonochromeSpriteVertexOutput{
       device_position,
       tile_position,
       color,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w},
-      sprite.pad};
+      sprite.pad,
+      float4(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y,
+             sprite.tile.bounds.size.width, sprite.tile.bounds.size.height),
+      sigma};
 }
 
 fragment float4 monochrome_sprite_fragment(
@@ -692,10 +721,11 @@ fragment float4 monochrome_sprite_fragment(
 
   constexpr sampler atlas_texture_sampler(mag_filter::linear,
                                           min_filter::linear);
-  float4 sample =
-      atlas_texture.sample(atlas_texture_sampler, input.tile_position);
+  float alpha = input.blur > 0.
+      ? glyph_blur_alpha(input.tile_position, input.blur_tile, input.blur, atlas_texture)
+      : atlas_texture.sample(atlas_texture_sampler, input.tile_position).a;
   float4 color = input.color;
-  color.a *= sample.a * edge_fade(input.position.xy, input.fade, fades);
+  color.a *= alpha * edge_fade(input.position.xy, input.fade, fades);
   return color;
 }
 
@@ -882,12 +912,16 @@ fragment float4 path_sprite_fragment(
 struct SurfaceVertexOutput {
   float4 position [[position]];
   float2 texture_position;
+  float opacity [[flat]]; // gpui-fast: the element opacity and the edge fade (fast::edge_fade)
+  uint fade [[flat]];
   float clip_distance [[clip_distance]][4];
 };
 
 struct SurfaceFragmentInput {
   float4 position [[position]];
   float2 texture_position;
+  float opacity [[flat]];
+  uint fade [[flat]];
 };
 
 vertex SurfaceVertexOutput surface_vertex(
@@ -910,6 +944,8 @@ vertex SurfaceVertexOutput surface_vertex(
   return SurfaceVertexOutput{
       device_position,
       texture_position,
+      surface.opacity,
+      surface.pad,
       {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
 }
 
@@ -921,13 +957,29 @@ fragment float4 surface_fragment(SurfaceFragmentInput input [[stage_in]],
                                  texture2d<float> cb_cr_texture
                                  [[texture(SurfaceInputIndex_CbCrTexture)]],
                                  constant float4x4 *ycbcr_to_rgb
-                                 [[buffer(SurfaceInputIndex_YCbCrToRgb)]]) {
+                                 [[buffer(SurfaceInputIndex_YCbCrToRgb)]],
+                                 constant EdgeFadeRamps *fades [[buffer(EDGE_FADE_BUFFER)]]) {
   constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
   float4 ycbcr = float4(
       y_texture.sample(texture_sampler, input.texture_position).r,
       cb_cr_texture.sample(texture_sampler, input.texture_position).rg, 1.0);
 
-  return *ycbcr_to_rgb * ycbcr;
+  float4 color = *ycbcr_to_rgb * ycbcr;
+  color.a *= input.opacity * edge_fade(input.position.xy, input.fade, fades);
+  return color;
+}
+
+// gpui-fast: a straight-alpha BGRA surface (fast/surfaces.rs), blended as an
+// image's sprite is.
+fragment float4 bgra_surface_fragment(SurfaceFragmentInput input [[stage_in]],
+                                      texture2d<float> bgra_texture
+                                      [[texture(SurfaceInputIndex_YTexture)]],
+                                      constant EdgeFadeRamps *fades
+                                      [[buffer(EDGE_FADE_BUFFER)]]) {
+  constexpr sampler texture_sampler(mag_filter::linear, min_filter::linear);
+  float4 color = bgra_texture.sample(texture_sampler, input.texture_position);
+  color.a *= input.opacity * edge_fade(input.position.xy, input.fade, fades);
+  return color;
 }
 
 float4 hsla_to_rgba(Hsla hsla) {
@@ -1186,7 +1238,7 @@ GradientColor prepare_fill_color(uint tag, uint color_space, Hsla solid,
   GradientColor out;
   if (tag == 0 || tag == 2 || tag == 3) {
     out.solid = hsla_to_rgba(solid);
-  } else if (tag == 1) {
+  } else if (tag == 1 || tag == 4) { // 4: fast::radial_gradient
     out.color0 = hsla_to_rgba(color0);
     out.color1 = hsla_to_rgba(color1);
 
@@ -1206,6 +1258,32 @@ float2x2 rotate2d(float angle) {
     float s = sin(angle);
     float c = cos(angle);
     return float2x2(c, -s, s, c);
+}
+
+// gpui-fast: a radial gradient (fast::radial_gradient): `color0` at the
+// centre, fading to `color1` at the ellipse's edge. The centre rides the
+// stops' percentages and the radii `solid`'s hue and saturation, all in
+// fractions of the bounds.
+float4 fast_radial_gradient(Background background, float2 position,
+                            Bounds_ScaledPixels bounds, float4 color0,
+                            float4 color1) {
+  float2 size = float2(bounds.size.width, bounds.size.height);
+  float2 center = float2(bounds.origin.x, bounds.origin.y) +
+      float2(background.colors[0].percentage, background.colors[1].percentage) * size;
+  float2 radius = max(float2(background.solid.h, background.solid.s) * size, float2(0.0001));
+  float t = clamp(length((position - center) / radius), 0.0, 1.0);
+  float4 color = mix(color0, color1, t);
+  if (background.color_space == 1) {
+    color = oklab_to_srgb(color);
+  }
+  // Dithered as the linear gradient is: a faint glow bands at 8 bits.
+  float2 seed = (position - float2(bounds.origin.x, bounds.origin.y)) * 0.6180339887;
+  float r1 = fract(sin(dot(seed, float2(12.9898, 78.233))) * 43758.5453);
+  float r2 = fract(sin(dot(seed, float2(39.3460, 11.135))) * 24634.6345);
+  float tri = r1 + r2 - 1.0;
+  color.rgb += tri * 2.0 / 255.0;
+  color.a += tri * 3.0 / 255.0;
+  return color;
 }
 
 float4 fill_color(Background background,
@@ -1304,9 +1382,39 @@ float4 fill_color(Background background,
         color.a *= saturate(should_be_colored);
         break;
     }
+    case 4: // fast::radial_gradient
+      color = fast_radial_gradient(background, position, bounds, color0, color1);
+      break;
   }
 
   return color;
+}
+
+// gpui-fast: the signed distance of `position` from the edge of the rounded
+// rectangle `rect` (left, top, right, bottom) with corners of `rx` across and
+// `ry` down (top left, top right, bottom right, bottom left), negative inside
+// (gpui's fast/edge_fade.rs, Clip::distance): exact for a circular corner,
+// and for a quarter ellipse its implicit function over its gradient's length.
+float rounded_clip_distance(float2 position, float4 rect, float4 rx, float4 ry) {
+  float2 half_size = (rect.zw - rect.xy) * 0.5;
+  float2 p = position - (rect.xy + half_size);
+  float2 radius = p.x < 0. ? (p.y < 0. ? float2(rx.x, ry.x) : float2(rx.w, ry.w))
+                           : (p.y < 0. ? float2(rx.y, ry.y) : float2(rx.z, ry.z));
+  if (radius.x == radius.y) {
+    float r = min(radius.x, min(half_size.x, half_size.y));
+    float2 q = abs(p) - half_size + r;
+    return length(max(q, float2(0.))) + min(max(q.x, q.y), 0.) - r;
+  }
+  radius = min(radius, half_size);
+  float2 q = abs(p) - half_size + radius;
+  if (q.x > 0. && q.y > 0. && radius.x > 0. && radius.y > 0.) {
+    float2 u = q / radius;
+    float len = length(u);
+    float gradient = length(u / radius) / max(len, 0.000001);
+    return (len - 1.) / max(gradient, 0.000001);
+  }
+  float2 outside = abs(p) - half_size;
+  return max(outside.x, outside.y);
 }
 
 // gpui-fast: how strongly a pixel centred at `position` is drawn under the
@@ -1321,5 +1429,162 @@ float edge_fade(float2 position, uint fade, constant EdgeFadeRamps *fades) {
   EdgeFadeRamps ramps = fades[slot];
   float4 ramp = saturate(ramps.start + ramps.rate * (position.xyxy - ramps.edge));
   ramp = ramp * ramp * (3. - 2. * ramp);
-  return ramp.x * ramp.y * ramp.z * ramp.w;
+  float alpha = ramp.x * ramp.y * ramp.z * ramp.w;
+  if (ramps.clip.z > ramps.clip.x) {
+    // The rounded clip (zui 361ff20), and the one around it it does not lie
+    // inside (overflow's padding edges, longbridge/gpui-fast#76): the
+    // signed distance from each edge, over a pixel's antialiased step.
+    float coverage =
+        saturate(0.5 - rounded_clip_distance(position, ramps.clip, ramps.radii, ramps.radii_y));
+    if (ramps.outer_clip.z > ramps.outer_clip.x) {
+      coverage = min(coverage, saturate(0.5 - rounded_clip_distance(position, ramps.outer_clip,
+                                                                    ramps.outer_radii,
+                                                                    ramps.outer_radii_y)));
+    }
+    alpha *= coverage;
+  }
+  if (ramps.mask_shape.y > 0.) {
+    // The image alpha mask (zui aa00941): smoothstep out of a rounded
+    // rectangle past its clearance, and a bottom fade.
+    float2 half_size = (ramps.mask.zw - ramps.mask.xy) * 0.5;
+    float radius = ramps.mask_shape.x;
+    float2 q = abs(position - (ramps.mask.xy + half_size)) - half_size + radius;
+    float distance = length(max(q, float2(0.))) + min(max(q.x, q.y), 0.) - radius;
+    float mask = smoothstep(0., ramps.mask_shape.y, distance - ramps.mask_shape.z);
+    if (ramps.mask_shape.w > 0.) {
+      mask = min(mask, smoothstep(0., ramps.mask_shape.w, ramps.mask_bottom.x - position.y));
+    }
+    alpha *= mask;
+  }
+  return alpha;
+}
+
+// gpui-fast: backdrop blur (gpui's fast/backdrop.rs, BackdropBlur; gpui_apple's
+// fast/backdrop.rs). Two draws over the region: one keeping destination × (1 − k),
+// one adding the blurred backdrop × k, k being the antialiased rounded rectangle's
+// coverage times the edge fade and the opacity.
+struct BackdropBlur {
+  uint order;
+  uint fade;
+  Bounds_ScaledPixels bounds;
+  ContentMask_ScaledPixels content_mask;
+  Corners_ScaledPixels corner_radii;
+  float blur_radius;
+  float opacity;
+};
+
+struct BackdropBlurVertexOutput {
+  uint blur_id [[flat]];
+  float4 position [[position]];
+  float clip_distance [[clip_distance]][4];
+};
+
+struct BackdropBlurFragmentInput {
+  uint blur_id [[flat]];
+  float4 position [[position]];
+};
+
+vertex BackdropBlurVertexOutput backdrop_blur_vertex(
+    uint unit_vertex_id [[vertex_id]], uint blur_id [[instance_id]],
+    constant float2 *unit_vertices [[buffer(0)]],
+    constant BackdropBlur *blurs [[buffer(1)]],
+    constant Size_DevicePixels *viewport_size [[buffer(2)]]) {
+  float2 unit_vertex = unit_vertices[unit_vertex_id];
+  BackdropBlur blur = blurs[blur_id];
+  float4 device_position = to_device_position(unit_vertex, blur.bounds, viewport_size);
+  float4 clip_distance =
+      distance_from_clip_rect(unit_vertex, blur.bounds, blur.content_mask.bounds);
+  return BackdropBlurVertexOutput{
+      blur_id,
+      device_position,
+      {clip_distance.x, clip_distance.y, clip_distance.z, clip_distance.w}};
+}
+
+float backdrop_blur_coverage(BackdropBlurFragmentInput input, constant BackdropBlur *blurs,
+                             constant EdgeFadeRamps *fades) {
+  BackdropBlur blur = blurs[input.blur_id];
+  float distance = quad_sdf(input.position.xy, blur.bounds, blur.corner_radii);
+  return saturate(0.5 - distance) * blur.opacity *
+         edge_fade(input.position.xy, blur.fade, fades);
+}
+
+fragment float4 backdrop_blur_erase_fragment(
+    BackdropBlurFragmentInput input [[stage_in]], constant BackdropBlur *blurs [[buffer(1)]],
+    constant EdgeFadeRamps *fades [[buffer(EDGE_FADE_BUFFER)]]) {
+  return float4(0., 0., 0., backdrop_blur_coverage(input, blurs, fades));
+}
+
+fragment float4 backdrop_blur_fragment(
+    BackdropBlurFragmentInput input [[stage_in]], constant BackdropBlur *blurs [[buffer(1)]],
+    constant float4 &source_rect [[buffer(3)]],
+    texture2d<float> source [[texture(0)]],
+    constant EdgeFadeRamps *fades [[buffer(EDGE_FADE_BUFFER)]]) {
+  constexpr sampler source_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
+  float2 uv = (input.position.xy - source_rect.xy) / source_rect.zw;
+  return source.sample(source_sampler, uv) * backdrop_blur_coverage(input, blurs, fades);
+}
+
+// gpui-fast: blurred glyphs (gpui's fast/glyph_blur.rs; zui 0966d06). The blur's
+// standard deviation rides in the tile's padding as float bits; the quad is widened by
+// three of them a side, its margin addressing past the tile, and each pixel taps the tile
+// with the gaussian, taps outside it reading transparent and those inside clamped half a
+// texel in, so linear filtering never reads a neighbouring glyph.
+float glyph_blur_sigma(AtlasTile tile) {
+  float sigma = as_type<float>(tile.padding);
+  return isfinite(sigma) && sigma > 0. ? sigma : 0.;
+}
+
+void glyph_blur_widen(float2 unit_vertex, MonochromeSprite sprite, float sigma,
+                      constant Size_DevicePixels *viewport_size,
+                      constant Size_DevicePixels *atlas_size, thread float4 &device_position,
+                      thread float4 &clip_distance, thread float2 &tile_position) {
+  float pad = 3. * sigma;
+  Bounds_ScaledPixels bounds = sprite.bounds;
+  bounds.origin.x -= pad;
+  bounds.origin.y -= pad;
+  bounds.size.width += 2. * pad;
+  bounds.size.height += 2. * pad;
+  device_position =
+      to_device_position_transformed(unit_vertex, bounds, sprite.transformation, viewport_size);
+  clip_distance = distance_from_clip_rect_transformed(unit_vertex, bounds,
+                                                      sprite.content_mask.bounds,
+                                                      sprite.transformation);
+  float2 quad_size = float2(bounds.size.width, bounds.size.height);
+  float2 glyph_size = max(float2(sprite.bounds.size.width, sprite.bounds.size.height),
+                          float2(1e-6));
+  float2 tile_origin = float2(sprite.tile.bounds.origin.x, sprite.tile.bounds.origin.y);
+  float2 tile_size = float2(sprite.tile.bounds.size.width, sprite.tile.bounds.size.height);
+  float2 tile_px = (unit_vertex * quad_size - pad) * (tile_size / glyph_size);
+  tile_position = (tile_origin + tile_px) /
+                  float2((float)atlas_size->width, (float)atlas_size->height);
+}
+
+float glyph_blur_alpha(float2 tile_position, float4 tile, float sigma,
+                       texture2d<float> atlas_texture) {
+  constexpr sampler atlas_texture_sampler(mag_filter::linear, min_filter::linear);
+  float2 atlas_dims = float2(atlas_texture.get_width(), atlas_texture.get_height());
+  float2 texel = 1. / atlas_dims;
+  float2 tile_min = tile.xy / atlas_dims;
+  float2 tile_max = tile_min + tile.zw / atlas_dims;
+  float2 tile_mid = 0.5 * (tile_min + tile_max);
+  float2 inset_min = min(tile_min + 0.5 * texel, tile_mid);
+  float2 inset_max = max(tile_max - 0.5 * texel, tile_mid);
+  int radius = min(int(ceil(3. * sigma)), 12);
+  float accum = 0.;
+  float total = 0.;
+  for (int y = -radius; y <= radius; y++) {
+    for (int x = -radius; x <= radius; x++) {
+      float2 offset = float2(x, y);
+      float weight = exp(-dot(offset, offset) / (2. * sigma * sigma));
+      float2 uv = tile_position + offset * texel;
+      float tap = 0.;
+      if (all(uv >= tile_min) && all(uv <= tile_max)) {
+        tap = atlas_texture.sample(atlas_texture_sampler, clamp(uv, inset_min, inset_max),
+                                   level(0)).a;
+      }
+      accum += weight * tap;
+      total += weight;
+    }
+  }
+  return accum / max(total, 1e-6);
 }

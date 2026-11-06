@@ -994,6 +994,107 @@ fn a_view_that_read_a_changed_model_is_built_again_beside_a_notified_one() {
     assert_eq!(updated, draw_spliced(&mut cx, &s).0);
 }
 
+/// A view that writes what it was last told into a model as it renders,
+/// without notifying anyone: a component handing a sibling what to show.
+struct Teller {
+    model: Entity<Model>,
+    value: usize,
+}
+
+impl Render for Teller {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let value = self.value;
+        self.model.update(cx, |model, _| model.0 = value);
+        div().size(px(20.))
+    }
+}
+
+/// A view as wide as the model says.
+struct Gauge {
+    model: Entity<Model>,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for Gauge {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        let width = 10. + self.model.read(cx).0 as f32;
+        div().w(px(width)).h(px(10.)).bg(crate::red())
+    }
+}
+
+struct TellerAndGauge {
+    teller: Entity<Teller>,
+    gauge: Entity<Gauge>,
+}
+
+impl Render for TellerAndGauge {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .flex_col()
+            .child(self.teller.clone())
+            .child(self.gauge.clone())
+    }
+}
+
+/// A view built again in a gap of the view around it may write, as it
+/// renders, what a view copied around it read: that view is out of date in
+/// this very frame, drawn after the write, and is not copied showing what the
+/// model held before.
+#[test]
+fn a_view_a_gap_writes_to_as_it_renders_is_not_copied_around_it() {
+    let mut cx = TestAppContext::single();
+    let model = cx.new(|_| Model(0));
+    let gauge_builds = Rc::new(Cell::new(0));
+    let window = cx.add_window({
+        let gauge_builds = gauge_builds.clone();
+        move |_, cx| TellerAndGauge {
+            teller: cx.new(|_| Teller {
+                model: model.clone(),
+                value: 0,
+            }),
+            gauge: cx.new(|_| Gauge {
+                model,
+                builds: gauge_builds,
+            }),
+        }
+    });
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.describe_rendered_frame()
+        })
+        .unwrap()
+    };
+    draw(&mut cx);
+    let unchanged = draw(&mut cx);
+    let builds = gauge_builds.get();
+
+    let teller = window
+        .update(&mut cx, |view, _, _| view.teller.clone())
+        .unwrap();
+    // The test context draws the frame the notification asks for.
+    teller.update(&mut cx, |teller, cx| {
+        teller.value = 7;
+        cx.notify();
+    });
+    let told = cx
+        .update_window(window.into(), |_, window, _| {
+            window.describe_rendered_frame()
+        })
+        .unwrap();
+    assert_eq!(
+        gauge_builds.get(),
+        builds + 1,
+        "the view that read what the teller wrote is built again in that frame"
+    );
+    assert_ne!(unchanged, told, "showing what was written");
+    cx.update_window(window.into(), |_, window, _| window.forget_retained_state())
+        .unwrap();
+    assert_eq!(told, draw(&mut cx));
+}
+
 /// A view around [`SwatchAndCounted`], to notify from outside it.
 struct AroundSpliced {
     inner: Entity<SwatchAndCounted>,
@@ -2892,4 +2993,394 @@ fn a_view_that_scrolls_its_own_list_as_it_renders_is_not_built_again_beside_a_no
         built,
         "the view that scrolled its own list was drawn from last frame"
     );
+}
+
+/// What a [`HandingHost`] hands the view [`Handed`] draws in it.
+struct Shown(bool);
+
+/// A view drawn inside [`Handed`], reading what its host hands it.
+struct ShownReader {
+    shown: Entity<Shown>,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for ShownReader {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        let color = if self.shown.read(cx).0 {
+            crate::red()
+        } else {
+            crate::blue()
+        };
+        div().size(px(10.)).bg(color)
+    }
+}
+
+/// A cached view whose host writes into it, as it renders, whether it is
+/// active, as a window hands its panes whether they show.
+struct Handed {
+    active: bool,
+    reader: Entity<ShownReader>,
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for Handed {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        let color = if self.active {
+            crate::green()
+        } else {
+            crate::black()
+        };
+        div().size_full().bg(color).child(self.reader.clone())
+    }
+}
+
+/// A view that writes into the cached view it draws, and into a model a
+/// view drawn in that one reads, on every render, notifying the cached view
+/// if `notify` and the model never.
+struct HandingHost {
+    handed: Entity<Handed>,
+    shown: Entity<Shown>,
+    active: bool,
+    notify: bool,
+}
+
+impl Render for HandingHost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let (active, notify) = (self.active, self.notify);
+        self.handed.update(cx, |handed, cx| {
+            handed.active = active;
+            if notify {
+                cx.notify();
+            }
+        });
+        self.shown.update(cx, |shown, _| shown.0 = active);
+        div().size(px(300.)).child(
+            self.handed
+                .clone()
+                .cached(StyleRefinement::default().w(px(100.)).h(px(20.))),
+        )
+    }
+}
+
+struct Handing {
+    window: WindowHandle<HandingHost>,
+    handed_builds: Rc<Cell<usize>>,
+    reader_builds: Rc<Cell<usize>>,
+}
+
+fn handing(cx: &mut TestAppContext, notify: bool) -> Handing {
+    let handed_builds = Rc::new(Cell::new(0));
+    let reader_builds = Rc::new(Cell::new(0));
+    let window = cx.add_window({
+        let handed_builds = handed_builds.clone();
+        let reader_builds = reader_builds.clone();
+        move |_, cx| {
+            let shown = cx.new(|_| Shown(true));
+            let reader = cx.new(|_| ShownReader {
+                shown: shown.clone(),
+                builds: reader_builds,
+            });
+            HandingHost {
+                handed: cx.new(|_| Handed {
+                    active: true,
+                    reader,
+                    builds: handed_builds,
+                }),
+                shown,
+                active: true,
+                notify,
+            }
+        }
+    });
+    Handing {
+        window,
+        handed_builds,
+        reader_builds,
+    }
+}
+
+fn draw_handing(cx: &mut TestAppContext, window: WindowHandle<HandingHost>) -> Vec<String> {
+    cx.update_window(window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        window.describe_rendered_frame()
+    })
+    .unwrap()
+}
+
+/// A cached view whose host writes into it as it renders, without
+/// notifying it, is drawn from last frame while what was written is what it
+/// holds, as upstream draws a cached view again only when it is notified: a
+/// pane told on every render of the window around it whether it shows is
+/// not built again for it, nor is a view drawn in it reading a model the
+/// host writes the same way. The frame is the one drawn from scratch.
+#[test]
+fn a_cached_view_its_host_writes_without_notifying_is_drawn_from_last_frame() {
+    let mut cx = TestAppContext::single();
+    let h = handing(&mut cx, false);
+    let first = draw_handing(&mut cx, h.window);
+    assert_eq!((h.handed_builds.get(), h.reader_builds.get()), (1, 1));
+
+    for _ in 0..5 {
+        h.window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+        assert_eq!(first, draw_handing(&mut cx, h.window));
+    }
+    assert_eq!(
+        (h.handed_builds.get(), h.reader_builds.get()),
+        (1, 1),
+        "the cached view, and the view in it, were drawn from last frame"
+    );
+    let reused = cx
+        .update_window(h.window.into(), |_, window, _| {
+            window.layout_stats().views_reused
+        })
+        .unwrap();
+    assert!(reused > 0, "views were reused");
+
+    cx.update_window(h.window.into(), |_, window, _| {
+        window.forget_retained_state()
+    })
+    .unwrap();
+    assert_eq!(first, draw_handing(&mut cx, h.window));
+    assert_eq!(h.handed_builds.get(), 2, "drawn from scratch");
+
+    let off = handing(&mut cx, false);
+    cx.update_window(off.window.into(), |_, window, _| {
+        window.set_view_retention(false)
+    })
+    .unwrap();
+    for _ in 0..3 {
+        off.window.update(&mut cx, |_, _, cx| cx.notify()).unwrap();
+        assert_eq!(first, draw_handing(&mut cx, off.window));
+    }
+}
+
+/// A cached view its host writes into and notifies as it renders is built
+/// again, and shows what was written.
+#[test]
+fn a_cached_view_its_host_writes_and_notifies_is_built_again() {
+    let mut cx = TestAppContext::single();
+    let h = handing(&mut cx, true);
+    let active = draw_handing(&mut cx, h.window);
+    let builds = h.handed_builds.get();
+
+    h.window
+        .update(&mut cx, |host, _, cx| {
+            host.active = false;
+            cx.notify();
+        })
+        .unwrap();
+    let inactive = draw_handing(&mut cx, h.window);
+    assert_ne!(active, inactive, "what was written shows");
+    assert!(
+        h.handed_builds.get() > builds,
+        "the cached view was built again"
+    );
+
+    cx.update_window(h.window.into(), |_, window, _| {
+        window.forget_retained_state()
+    })
+    .unwrap();
+    assert_eq!(inactive, draw_handing(&mut cx, h.window));
+}
+
+/// A root drawing a [`PaintHost`] as a cached view.
+struct CachedPaintHost {
+    host: Entity<PaintHost>,
+}
+
+impl Render for CachedPaintHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(400.)).child(
+            self.host
+                .clone()
+                .cached(StyleRefinement::default().w(px(300.)).h(px(300.))),
+        )
+    }
+}
+
+/// A component writing into the view it renders, inside a cached view, as
+/// GPUI Kit's `Tree` writes its item renderer, writes as part of building
+/// the cached view: notified, the cached view is built again and the view
+/// written is drawn with what was written.
+#[test]
+fn a_view_written_inside_a_cached_view_is_rendered_again_with_it() {
+    let mut cx = TestAppContext::single();
+    let host = Rc::new(std::cell::RefCell::new(None));
+    let window = cx.add_window({
+        let host = host.clone();
+        move |_, cx| {
+            let painter = cx.new(|_| Painter {
+                color: crate::blue(),
+            });
+            let paint_host = cx.new(|_| PaintHost {
+                painter,
+                red: false,
+            });
+            *host.borrow_mut() = Some(paint_host.clone());
+            CachedPaintHost { host: paint_host }
+        }
+    });
+    let paint_host = host.borrow().clone().unwrap();
+    let blue = backgrounds(&mut cx, window.into());
+
+    paint_host.update(&mut cx, |host, cx| {
+        host.red = true;
+        cx.notify();
+    });
+    let red = backgrounds(&mut cx, window.into());
+    assert_ne!(blue, red, "the painter was drawn with the color written");
+    assert_eq!(red, backgrounds(&mut cx, window.into()));
+    cx.update_window(window.into(), |_, window, _| window.forget_retained_state())
+        .unwrap();
+    assert_eq!(red, backgrounds(&mut cx, window.into()));
+}
+
+/// The chips of a draft: a cached view whose names a listener on the view
+/// around it changes.
+struct Chips {
+    names: Vec<&'static str>,
+}
+
+impl Render for Chips {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().children(self.names.iter().map(|&name| {
+            div()
+                .id(name)
+                .debug_selector(move || name.to_owned())
+                .size(px(10.))
+        }))
+    }
+}
+
+/// A view drawing its [`Chips`] as a cached view, which takes a file
+/// dropped on it as a chip: it updates the chips without notifying them,
+/// and notifies itself, as a workspace hands a tile's composer a dropped
+/// file.
+struct ChipsHost {
+    chips: Entity<Chips>,
+}
+
+impl ChipsHost {
+    fn drop_file(&mut self, name: &'static str, cx: &mut Context<Self>) {
+        self.chips.update(cx, |chips, _| chips.names.push(name));
+        cx.notify();
+    }
+}
+
+impl Render for ChipsHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size(px(300.)).child(
+            self.chips
+                .clone()
+                .cached(StyleRefinement::default().w(px(100.)).h(px(20.))),
+        )
+    }
+}
+
+/// A cached view a listener updates outside drawing, under a view it
+/// notifies, is built again on the next frame, and the element it adds is
+/// there: its debug bounds are recorded. Upstream would wait for the cached
+/// view's own notification; #48's rule for cached views did too, and a chip
+/// dropped on a composer never showed.
+#[crate::test]
+fn a_cached_view_updated_under_a_notified_view_shows_the_update(cx: &mut TestAppContext) {
+    let (host, cx) = cx.add_window_view(|_, cx| ChipsHost {
+        chips: cx.new(|_| Chips {
+            names: vec!["first"],
+        }),
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("first").is_some(), "the first chip");
+    assert!(cx.debug_bounds("dropped").is_none());
+
+    host.update_in(cx, |host, _, cx| host.drop_file("dropped", cx));
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("dropped").is_some(),
+        "the dropped file's chip is drawn on the next frame"
+    );
+    assert!(cx.debug_bounds("first").is_some(), "the first chip stays");
+}
+
+/// A view that draws a box tests find by its selector, counting its builds.
+struct Labelled {
+    builds: Rc<Cell<usize>>,
+}
+
+impl Render for Labelled {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.builds.set(self.builds.get() + 1);
+        div()
+            .debug_selector(|| "kept".into())
+            .size(px(40.))
+            .bg(crate::blue())
+    }
+}
+
+/// A root holding a [`Labelled`] view, and a box of its own while `shown`.
+struct Shelf {
+    kept: Entity<Labelled>,
+    shown: bool,
+}
+
+impl Render for Shelf {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size(px(300.))
+            .child(self.kept.clone())
+            .when(self.shown, |this| {
+                this.child(
+                    div()
+                        .debug_selector(|| "gone".into())
+                        .size(px(20.))
+                        .bg(crate::red()),
+                )
+            })
+    }
+}
+
+/// An element the frame no longer draws is gone from the frame's debug
+/// bounds, though a view beside it was drawn again from the last frame, and
+/// that view's elements are still found where they are drawn.
+#[test]
+fn an_element_no_longer_drawn_leaves_the_debug_bounds_of_a_retained_frame() {
+    let mut cx = TestAppContext::single();
+    let builds = Rc::new(Cell::new(0));
+    let window = cx.add_window({
+        let builds = builds.clone();
+        move |_, cx| Shelf {
+            kept: cx.new(|_| Labelled { builds }),
+            shown: true,
+        }
+    });
+    let bounds = |cx: &mut TestAppContext, selector: &str| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.draw(cx).clear(cx);
+            window.rendered_frame.debug_bounds.get(selector).copied()
+        })
+        .unwrap()
+    };
+    let kept = bounds(&mut cx, "kept").expect("the view's box is drawn");
+    assert!(bounds(&mut cx, "gone").is_some(), "the root's box is drawn");
+    let builds_before = builds.get();
+
+    window
+        .update(&mut cx, |shelf, _, cx| {
+            shelf.shown = false;
+            cx.notify();
+        })
+        .unwrap();
+    assert_eq!(
+        bounds(&mut cx, "gone"),
+        None,
+        "the root's box is no longer drawn"
+    );
+    assert_eq!(
+        builds.get(),
+        builds_before,
+        "the view beside it was drawn from the last frame"
+    );
+    assert_eq!(bounds(&mut cx, "kept"), Some(kept));
 }

@@ -127,6 +127,10 @@ struct Root {
     /// layer is the retention of what it holds (see
     /// [`crate::fast::layers::paint::inside_layer`]).
     in_layer: bool,
+    /// Whether what it painted was drawn again from last frame under an
+    /// opacity other than the one it was painted at, which no later frame
+    /// can draw again from. See [`check_painted_opacity`].
+    stale: bool,
     /// Whether its records were built this frame, rather than taken over
     /// from an earlier one, so that the rests of those nested in it are
     /// this frame's.
@@ -276,12 +280,16 @@ struct ElementContext {
     bounds: Bounds<Pixels>,
     /// Where layout placed it within the device pixel its bounds snap to,
     /// which decides where what it holds snaps (see
-    /// [`crate::TaffyLayoutEngine::layout_phase`]).
+    /// [`crate::taffy::TaffyLayoutEngine::layout_phase`]).
     phase: Point<f32>,
     content_mask: ContentMask<Pixels>,
     /// The edge fade it was drawn in (see [`crate::fast::edge_fade`]).
     fade: u32,
+    /// The opacity prepaint foresaw for it, which it is drawn again under.
     opacity: f32,
+    /// The opacity it was painted at, which paint may find other than the
+    /// one prepaint foresaw. See [`check_painted_opacity`].
+    painted_opacity: f32,
     text_style: Rc<TextStyle>,
     rem_size: Pixels,
 }
@@ -292,7 +300,7 @@ impl ElementContext {
             && self.phase == other.phase
             && self.content_mask == other.content_mask
             && self.fade == other.fade
-            && self.opacity == other.opacity
+            && crate::fast::retained::same_opacity(self.opacity, other.opacity)
             && self.rem_size == other.rem_size
             && same_text_style(&self.text_style, &other.text_style)
     }
@@ -431,6 +439,7 @@ struct PrepaintAt {
     dispatch_tree: u32,
     accessed_element_states: u32,
     lines: LinesAt,
+    a11y: u32,
 }
 
 /// As [`PrepaintAt`], a place in each of a frame's paint lists.
@@ -446,6 +455,8 @@ struct PaintAt {
     accessed_element_states: u32,
     tab_handle: u32,
     lines: LinesAt,
+    a11y_actions: u32,
+    present: u32,
 }
 
 /// As [`PrepaintAt`], a place in each of a frame's line layout lists.
@@ -453,8 +464,6 @@ struct PaintAt {
 struct LinesAt {
     lines: u32,
     wrapped_lines: u32,
-    lines_by_hash: u32,
-    wrapped_lines_by_hash: u32,
 }
 
 /// The offset of `to` from `from`, which it is not before.
@@ -473,6 +482,7 @@ impl PrepaintAt {
             dispatch_tree_index,
             accessed_element_states_index,
             line_layout_index,
+            fast_a11y_index,
         } = to;
         PrepaintAt {
             hitboxes: offset(from.hitboxes_index, *hitboxes_index),
@@ -484,6 +494,7 @@ impl PrepaintAt {
                 *accessed_element_states_index,
             ),
             lines: LinesAt::between(&from.line_layout_index, line_layout_index),
+            a11y: offset(from.fast_a11y_index, *fast_a11y_index),
         }
     }
 
@@ -497,6 +508,7 @@ impl PrepaintAt {
             accessed_element_states_index: base.accessed_element_states_index
                 + self.accessed_element_states as usize,
             line_layout_index: self.lines.at(&base.line_layout_index),
+            fast_a11y_index: base.fast_a11y_index + self.a11y as usize,
         }
     }
 
@@ -508,6 +520,7 @@ impl PrepaintAt {
             dispatch_tree: self.dispatch_tree + other.dispatch_tree,
             accessed_element_states: self.accessed_element_states + other.accessed_element_states,
             lines: self.lines.plus(other.lines),
+            a11y: self.a11y + other.a11y,
         }
     }
 
@@ -519,6 +532,7 @@ impl PrepaintAt {
             dispatch_tree: self.dispatch_tree - other.dispatch_tree,
             accessed_element_states: self.accessed_element_states - other.accessed_element_states,
             lines: self.lines.minus(other.lines),
+            a11y: self.a11y - other.a11y,
         }
     }
 }
@@ -529,9 +543,9 @@ impl PaintAt {
         // Destructured, so that a field upstream adds can't be missed here.
         let PaintIndex {
             scene_index,
-            fast_window_control_hitboxes_index,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds_index,
+            fast,
             mouse_listeners_index,
             input_handlers_index,
             cursor_styles_index,
@@ -542,9 +556,11 @@ impl PaintAt {
         PaintAt {
             scene: offset(from.scene_index, *scene_index),
             window_control_hitboxes: offset(
-                from.fast_window_control_hitboxes_index,
-                *fast_window_control_hitboxes_index,
+                from.fast.window_control_hitboxes,
+                fast.window_control_hitboxes,
             ),
+            a11y_actions: offset(from.fast.a11y_actions, fast.a11y_actions),
+            present: offset(from.fast.present, fast.present),
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: offset(from.debug_bounds_index, *debug_bounds_index),
             mouse_listeners: offset(from.mouse_listeners_index, *mouse_listeners_index),
@@ -563,10 +579,14 @@ impl PaintAt {
     fn at(self, base: &PaintIndex) -> PaintIndex {
         PaintIndex {
             scene_index: base.scene_index + self.scene as usize,
-            fast_window_control_hitboxes_index: base.fast_window_control_hitboxes_index
-                + self.window_control_hitboxes as usize,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds_index: base.debug_bounds_index + self.debug_bounds as usize,
+            fast: crate::fast::retained::FastPaintIndex {
+                window_control_hitboxes: base.fast.window_control_hitboxes
+                    + self.window_control_hitboxes as usize,
+                a11y_actions: base.fast.a11y_actions + self.a11y_actions as usize,
+                present: base.fast.present + self.present as usize,
+            },
             mouse_listeners_index: base.mouse_listeners_index + self.mouse_listeners as usize,
             input_handlers_index: base.input_handlers_index + self.input_handlers as usize,
             cursor_styles_index: base.cursor_styles_index + self.cursor_styles as usize,
@@ -581,6 +601,8 @@ impl PaintAt {
         PaintAt {
             scene: self.scene + other.scene,
             window_control_hitboxes: self.window_control_hitboxes + other.window_control_hitboxes,
+            a11y_actions: self.a11y_actions + other.a11y_actions,
+            present: self.present + other.present,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: self.debug_bounds + other.debug_bounds,
             mouse_listeners: self.mouse_listeners + other.mouse_listeners,
@@ -596,6 +618,8 @@ impl PaintAt {
         PaintAt {
             scene: self.scene - other.scene,
             window_control_hitboxes: self.window_control_hitboxes - other.window_control_hitboxes,
+            a11y_actions: self.a11y_actions - other.a11y_actions,
+            present: self.present - other.present,
             #[cfg(any(test, feature = "test-support"))]
             debug_bounds: self.debug_bounds - other.debug_bounds,
             mouse_listeners: self.mouse_listeners - other.mouse_listeners,
@@ -616,17 +640,10 @@ impl LinesAt {
             font_generation: _,
             lines_index,
             wrapped_lines_index,
-            lines_by_hash_index,
-            wrapped_lines_by_hash_index,
         } = to;
         LinesAt {
             lines: offset(from.lines_index, *lines_index),
             wrapped_lines: offset(from.wrapped_lines_index, *wrapped_lines_index),
-            lines_by_hash: offset(from.lines_by_hash_index, *lines_by_hash_index),
-            wrapped_lines_by_hash: offset(
-                from.wrapped_lines_by_hash_index,
-                *wrapped_lines_by_hash_index,
-            ),
         }
     }
 
@@ -635,9 +652,6 @@ impl LinesAt {
             font_generation: base.font_generation,
             lines_index: base.lines_index + self.lines as usize,
             wrapped_lines_index: base.wrapped_lines_index + self.wrapped_lines as usize,
-            lines_by_hash_index: base.lines_by_hash_index + self.lines_by_hash as usize,
-            wrapped_lines_by_hash_index: base.wrapped_lines_by_hash_index
-                + self.wrapped_lines_by_hash as usize,
         }
     }
 
@@ -645,8 +659,6 @@ impl LinesAt {
         LinesAt {
             lines: self.lines + other.lines,
             wrapped_lines: self.wrapped_lines + other.wrapped_lines,
-            lines_by_hash: self.lines_by_hash + other.lines_by_hash,
-            wrapped_lines_by_hash: self.wrapped_lines_by_hash + other.wrapped_lines_by_hash,
         }
     }
 
@@ -654,8 +666,6 @@ impl LinesAt {
         LinesAt {
             lines: self.lines - other.lines,
             wrapped_lines: self.wrapped_lines - other.wrapped_lines,
-            lines_by_hash: self.lines_by_hash - other.lines_by_hash,
-            wrapped_lines_by_hash: self.wrapped_lines_by_hash - other.wrapped_lines_by_hash,
         }
     }
 }
@@ -696,7 +706,7 @@ impl ElementRecords {
         let root = &self.roots[root as usize];
         match &root.records {
             RootRecords::Frozen(subtree)
-                if root.paint == Paint::Painted && root.usable && !root.in_layer =>
+                if root.paint == Paint::Painted && root.usable && !root.in_layer && !root.stale =>
             {
                 Some(subtree)
             }
@@ -850,7 +860,7 @@ pub(crate) fn carry_records(
     let start = target.len();
     for root in &source.roots[range.start as usize..range.end as usize] {
         let (records, paint) = match (&root.records, root.paint) {
-            (RootRecords::Frozen(subtree), Paint::Painted) if !root.in_layer => {
+            (RootRecords::Frozen(subtree), Paint::Painted) if !root.in_layer && !root.stale => {
                 (RootRecords::Frozen(subtree.clone()), Paint::Pending)
             }
             _ => (RootRecords::Lost, Paint::Unpainted),
@@ -865,6 +875,7 @@ pub(crate) fn carry_records(
             usable: true,
             fresh: false,
             in_layer: false,
+            stale: false,
             rest: Rest::default(),
             motion: root.motion.saturating_sub(1),
         });
@@ -1192,8 +1203,9 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         mouse_move_listeners,
         mouse_exit_listeners,
         file_drop_exit_listeners,
-        scroll_wheel_listeners,
+        scroll_listeners,
         pinch_listeners,
+        back_gesture_listeners,
         fast_gesture_listeners,
         key_down_listeners,
         key_up_listeners,
@@ -1208,6 +1220,7 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         hover_listener_mode: _,
         tooltip_builder,
         tooltip_show_delay: _,
+        tooltip_placement: _,
         window_control,
         hitbox_behavior,
         tab_index,
@@ -1252,8 +1265,9 @@ fn plain_interactivity(interactivity: &Interactivity) -> bool {
         && mouse_move_listeners.is_empty()
         && mouse_exit_listeners.is_empty()
         && file_drop_exit_listeners.is_empty()
-        && scroll_wheel_listeners.is_empty()
+        && scroll_listeners.is_empty()
         && pinch_listeners.is_empty()
+        && back_gesture_listeners.is_empty()
         && fast_gesture_listeners.is_empty()
         && key_down_listeners.is_empty()
         && key_up_listeners.is_empty()
@@ -1845,6 +1859,7 @@ fn leave_placement(
         usable: true,
         fresh: false,
         in_layer: false,
+        stale: false,
         rest,
         motion,
     });
@@ -1908,6 +1923,7 @@ fn context(layout_id: LayoutId, window: &mut Window) -> ElementContext {
         content_mask: window.content_mask(),
         fade: crate::fast::edge_fade::current(window),
         opacity: window.element_opacity,
+        painted_opacity: window.element_opacity,
         text_style: crate::fast::text_style::text_style(window),
         rem_size: window.rem_size(),
     }
@@ -2017,6 +2033,7 @@ fn begin_record(built: BuiltLayout, window: &mut Window) -> (u32, u32) {
             usable: true,
             fresh: true,
             in_layer: false,
+            stale: false,
             rest: Rest::default(),
             motion,
         });
@@ -2189,6 +2206,7 @@ fn reuse_prepaint(kept: &KeptLayout, window: &mut Window) -> Option<Phase> {
             usable: true,
             fresh: false,
             in_layer: false,
+            stale: false,
             rest: Rest::default(),
             motion,
         });
@@ -2307,7 +2325,7 @@ fn moved_to(
     let old = &nested[0].context;
     if old.bounds.size != context.bounds.size
         || old.phase != context.phase
-        || old.opacity != context.opacity
+        || !crate::fast::retained::same_opacity(old.opacity, context.opacity)
         || old.rem_size != context.rem_size
         || !same_text_style(&old.text_style, &context.text_style)
     {
@@ -2423,10 +2441,10 @@ fn can_move(
     let (from, to) = (&prepaint.start, &prepaint.end);
     let placed_in_prepaint = from.hitboxes_index != to.hitboxes_index
         || from.tooltips_index != to.tooltips_index
-        || from.deferred_draws_index != to.deferred_draws_index;
+        || from.deferred_draws_index != to.deferred_draws_index
+        || from.fast_a11y_index != to.fast_a11y_index;
     let (from, to) = (&paint.start, &paint.end);
-    let placed_in_paint = from.fast_window_control_hitboxes_index
-        != to.fast_window_control_hitboxes_index
+    let placed_in_paint = from.fast != to.fast
         || from.mouse_listeners_index != to.mouse_listeners_index
         || from.input_handlers_index != to.input_handlers_index
         || from.cursor_styles_index != to.cursor_styles_index
@@ -2492,6 +2510,7 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
                 Noted::UNKNOWN
             };
             let end = window.paint_index();
+            let opacity = window.element_opacity;
             let elements = &mut window.next_frame.retained.elements;
             let root_start = &elements.roots[root as usize].paint_start;
             let range = PaintAt::between(root_start, &start)..PaintAt::between(root_start, &end);
@@ -2499,6 +2518,7 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
             record.paint_range = range;
             record.paint = Paint::Painted;
             record.noted = noted;
+            record.context.painted_opacity = opacity;
             // Painted, the element needs its style no more, which its record
             // takes over.
             if let Snapshot::Div {
@@ -2533,7 +2553,7 @@ pub(crate) fn paint<E: Element>(drawable: &mut Drawable<E>, window: &mut Window,
 /// Draws the root whose prepaint [`reuse_prepaint`] drew again as far as its
 /// paint goes, moved as the shift at `shift` says, if it moved.
 fn reuse_root_paint(root: u32, shift: u32, window: &mut Window) {
-    let (source, noted) = {
+    let (source, noted, painted_at) = {
         let root = &window.next_frame.retained.elements.roots[root as usize];
         let RootRecords::Frozen(subtree) = &root.records else {
             panic!("a root drawn again has a subtree");
@@ -2543,8 +2563,10 @@ fn reuse_root_paint(root: u32, shift: u32, window: &mut Window) {
         (
             range.start.at(&root.paint_start)..range.end.at(&root.paint_start),
             record.noted,
+            record.context.painted_opacity,
         )
     };
+    check_painted_opacity(painted_at, root, window);
     let start = window.paint_index();
     reuse_paint(source.clone(), noted, shift, window);
     debug_assert!(
@@ -2555,6 +2577,33 @@ fn reuse_root_paint(root: u32, shift: u32, window: &mut Window) {
     let root = &mut window.next_frame.retained.elements.roots[root as usize];
     root.paint_start = start;
     root.paint = Paint::Painted;
+}
+
+/// Checks that what is drawn again from a record painted at `painted_at`,
+/// in the root `root`, is painted at that opacity here.
+///
+/// Prepaint drew it again where it foresaw the opacity it foresaw then, but
+/// an ancestor's hover or drag-over style is known only to paint (see
+/// [`Window::note_painted_opacity`]). Under another, what it copied is
+/// stale, found too late to build it: no later frame draws the root again
+/// from it, and the view it is in is told to be built on the next frame,
+/// which is asked for.
+fn check_painted_opacity(painted_at: f32, root: u32, window: &mut Window) {
+    if crate::fast::retained::same_opacity(painted_at, window.element_opacity) {
+        return;
+    }
+    window.next_frame.retained.elements.roots[root as usize].stale = true;
+    crate::fast::retained::build_next_frame(window);
+}
+
+/// Has no later frame draw the roots `range` of `records` again from what
+/// they painted: copied with a view drawn again from last frame, it was
+/// painted under another opacity than it was painted at (see
+/// [`Window::build_stale_opacity_next_frame`]).
+pub(crate) fn mark_stale(records: &mut ElementRecords, range: Range<u32>) {
+    for root in &mut records.roots[range.start as usize..range.end as usize] {
+        root.stale = true;
+    }
 }
 
 /// Notes that the root `root` is painted into a scroll layer's scene, if it
@@ -2570,14 +2619,16 @@ fn mark_in_layer(root: u32, window: &mut Window) {
 /// moved as the shift at `shift` says, if they moved.
 fn reuse_nested_paint(root: u32, anchor: u32, source_root: u32, shift: u32, window: &mut Window) {
     let anchor = anchor as usize;
-    let (from, nested, noted) = {
+    let (from, nested, noted, painted_at) = {
         let record = &window.next_frame.retained.elements.pending(root)[anchor];
         (
             record.paint_range.clone(),
             record.nested as usize,
             record.noted,
+            record.context.painted_opacity,
         )
     };
+    check_painted_opacity(painted_at, root, window);
     let source = {
         let source_start =
             &window.rendered_frame.retained.elements.roots[source_root as usize].paint_start;

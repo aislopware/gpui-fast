@@ -66,6 +66,7 @@ pub extern "C" fn gpui_ios_set_window_scene(scene: *mut c_void) {
     unsafe {
         *app_state().window_scene.get() = scene;
     }
+    super::appearance::observe_scene();
 }
 
 pub(crate) fn window_scene() -> *mut objc2::runtime::AnyObject {

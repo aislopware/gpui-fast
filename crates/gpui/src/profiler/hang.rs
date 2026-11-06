@@ -228,8 +228,12 @@ impl HangDetector {
                 _ => None,
             });
         }
-        self.sealer
-            .push_entries(drained.entries)
+        let fast_snapshots = crate::fast::interval_deadline::push_entries(
+            &mut self.sealer,
+            drained.entries,
+            Instant::now(),
+        );
+        fast_snapshots
             .into_iter()
             .filter_map(|snapshot| {
                 let mut incident =
@@ -658,13 +662,13 @@ mod tests {
     use std::time::Duration;
 
     use proptest::prelude::*;
-    use rand::prelude::*;
+    use rand::{Rng as _, rngs::StdRng};
     use scheduler::SpawnTime;
 
     use crate::{
         self as gpui, AnyView, AppContext as _, Context, FocusHandle, InteractiveElement,
         IntoElement, Modifiers, MouseButton, ParentElement as _, Render, Styled, TestAppContext,
-        VisualTestContext, Window, WindowId, div, point, px,
+        VisualTestContext, Window, WindowId, actions, div, point, px,
     };
 
     use crate::profiler::{
@@ -1718,11 +1722,14 @@ mod tests {
             ForegroundEvent::View(timing) if timing.phase == ViewPhase::Paint
         )));
 
+        let fast_built_at = parent.start;
         let draw = events
             .iter()
             .rev()
             .find_map(|event| match event {
-                ForegroundEvent::Draw(timing) => Some(*timing),
+                ForegroundEvent::Draw(timing) if timing.draw_start <= fast_built_at => {
+                    Some(*timing)
+                }
                 _ => None,
             })
             .expect("a draw");

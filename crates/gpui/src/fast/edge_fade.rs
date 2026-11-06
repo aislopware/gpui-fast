@@ -11,7 +11,8 @@
 //!
 //! Every primitive kind already has four bytes of padding: `pad` in a
 //! shadow, an underline and the three sprites, and the padding at the end of
-//! a quad's and a path's [`crate::Background`]. A fade is a number in that
+//! a quad's and a path's [`crate::Background`]; a surface, which the GPU
+//! never reads as it lies, carries a `pad` of its own. A fade is a number in that
 //! slot, an index into the window's table of fades, 0 for none, so a fade
 //! adds no byte to any primitive: what retention copies every frame is what
 //! it copied without fades. The table ([`WindowFades`]) holds each fade once;
@@ -62,17 +63,43 @@
 //! the fade its child lays out to, and the next one finds everything noted
 //! in it.
 //!
+//! # Rounded clips
+//!
+//! A fade's entry also holds a rounded rectangle that clips what is drawn
+//! in it, per pixel, with an antialiased edge ([`Window::with_rounded_clip`]):
+//! content scrolling inside a rounded card over glass, where no corner
+//! painted over it can hide what passes the corners. It rides in the same
+//! table and the same index, so every kind of primitive that fades is
+//! clipped by the same shader path, and retention, moving and scroll layers
+//! treat it as they treat a fade: a stretch drawn again moved moves a clip
+//! set inside it and takes the one around it from where it is drawn now.
+//! Clips nest as an intersection: an entry holds the innermost clip and the
+//! one around it that it does not lie inside, a clip lying inside another
+//! making that one redundant (three that each poke out of the others keep
+//! the innermost and the outermost); fades of either keep nesting edge by
+//! edge. Every element clipping its overflow with rounded corners clips its
+//! children so ([`crate::fast::rounded_clip`], longbridge/gpui-fast#76), its
+//! padding edge's corners quarter ellipses where its borders differ. The
+//! clip and the API are ported from zui (<https://github.com/zeronsh/zui>,
+//! `361ff20`, "Clip to rounded rectangles per pixel"; Apache-2.0, by fate,
+//! Master0fFate; zui is a fork of Zed's GPUI), which carries it in its own
+//! per-primitive fade parameters; here it is fields of each table entry,
+//! and radii per corner.
+//!
 //! A scroll layer's content is painted into the layer's own scene, which
 //! starts with no fade, and the fade around the container is laid over the
-//! layer's tiles where they are composited, so the tiles move under it. A
-//! layer whose content sets fades of its own is drawn without its tiles,
-//! since those ramps would move with the tiles' content.
+//! layer's tiles where they are composited, so the tiles move under it.
+//! Fades the content sets of its own are moved into content space with it
+//! ([`Relocation`]); the content keeps a copy of the window's table
+//! ([`carry_table`]), from which each tile's scene gets its own, moved into
+//! the tile's space ([`TileFades`]), and what is drawn of the content into
+//! the frame moves them back.
 
 use crate::fast::shift::ShiftedOperation;
 use crate::{
-    AnyElement, App, Bounds, Edges, Element, ElementId, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, ListState, Pixels, Point, ScaledPixels, Scene, ScrollHandle, Window,
-    scene::Primitive,
+    AnyElement, App, Bounds, ContentMask, Corners, Edges, Element, ElementId, GlobalElementId,
+    InspectorElementId, IntoElement, LayoutId, ListState, Pixels, Point, ScaledPixels, Scene,
+    ScrollHandle, Window, scene::Primitive,
 };
 use collections::FxHashMap;
 
@@ -334,17 +361,22 @@ fn entered(window: &mut Window, bounds: Bounds<Pixels>, fade: EdgeFade) -> Optio
     if !ramps.fades() {
         return None;
     }
+    Some(entered_ramps(window, &ramps))
+}
+
+/// The index painting enters for `ramps` inside the fade it is in now.
+fn entered_ramps(window: &mut Window, ramps: &EdgeFadeRamps) -> u32 {
     let outer = current(window);
-    Some(if outer == NONE {
-        window.fast_edge_fade.intern(&ramps)
+    if outer == NONE {
+        window.fast_edge_fade.intern(ramps)
     } else {
         let around = window
             .fast_edge_fade
             .ramps(outer)
             .unwrap_or(&EdgeFadeRamps::NONE);
-        let within = around.within(&ramps);
+        let within = around.within(ramps);
         window.fast_edge_fade.intern(&within)
-    })
+    }
 }
 
 /// Where what is noted of the fades as an element prepaints begins: the
@@ -404,6 +436,13 @@ impl PaintNotes {
         let mut refade = Refade::new(shift, &mut window.fast_edge_fade);
         let scene = &mut window.next_frame.scene;
         map_since(scene, &self.starts, &mut |fade| refade.map(fade));
+        // A blur's paint operation, which retention draws again from, holds
+        // a copy of it.
+        for operation in &mut scene.paint_operations[self.operations..] {
+            if let crate::PaintOperation::Backdrop(blur) = operation {
+                blur.fade = refade.map(blur.fade);
+            }
+        }
         crate::fast::keyed::refade(
             &mut scene.fast_painted.keyed,
             self.operations..scene.paint_operations.len(),
@@ -464,12 +503,59 @@ impl Window {
         let Some(inner) = entered(self, bounds, fade) else {
             return f(self);
         };
-        self.fast_edge_fade.applied += 1;
         enter(&mut self.next_frame.scene, inner);
         let result = f(self);
         leave(&mut self.next_frame.scene);
         result
     }
+
+    /// Runs `f` with what it paints clipped to `bounds` with corners of
+    /// `radius`: the content mask narrows to `bounds`, and every primitive
+    /// is also cut along the corners' arcs per pixel, with an antialiased
+    /// edge. Content scrolling inside a rounded card then never shows past
+    /// its corners, which a corner painted over it can't do over glass.
+    ///
+    /// Call it around both the prepaint and the paint of what it clips, as
+    /// [`Window::with_edge_fade`]: retention notes the clip in prepaint, so
+    /// a view inside drawn again from last frame keeps the corners it was
+    /// painted in until the clip it was prepainted in changes. What is drawn
+    /// inside two clips is cut by both; fades nest inside and around them.
+    /// Only Metal cuts the corners; elsewhere the clip is the content mask's
+    /// rectangle.
+    pub fn with_rounded_clip<R>(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        radius: Pixels,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        self.with_content_mask(Some(ContentMask { bounds }), |window| {
+            if radius <= Pixels::ZERO {
+                return f(window);
+            }
+            let ramps = EdgeFadeRamps::NONE.rounded(
+                window.cover_bounds(bounds),
+                Corners::all(radius.scale(window.scale_factor())),
+            );
+            with_ramps(window, &ramps, f)
+        })
+    }
+}
+
+/// Runs `f` with what it paints drawn in `ramps`, inside the fade painting
+/// is in now.
+pub(crate) fn with_ramps<R>(
+    window: &mut Window,
+    ramps: &EdgeFadeRamps,
+    f: impl FnOnce(&mut Window) -> R,
+) -> R {
+    let inner = entered_ramps(window, ramps);
+    if inner == NONE {
+        return f(window);
+    }
+    enter(&mut window.next_frame.scene, inner);
+    let result = f(window);
+    leave(&mut window.next_frame.scene);
+    result
 }
 
 impl Scene {
@@ -490,6 +576,29 @@ impl Scene {
 pub(crate) const NONE: u32 = 0;
 
 #[cfg(any(test, feature = "test-support"))]
+/// The quads `scene` paints, each without the fade or clip its background's
+/// padding holds: a quad equals the background it was painted with, as
+/// upstream's does, wherever it was painted.
+pub(crate) fn painted_quads(scene: &Scene) -> Vec<crate::Quad> {
+    let mut quads = scene.quads.clone();
+    for quad in &mut quads {
+        quad.background.pad = NONE;
+    }
+    quads
+}
+
+#[cfg(any(test, feature = "test-support"))]
+/// The underlines `scene` paints, each without the fade or clip its padding
+/// holds.
+pub(crate) fn painted_underlines(scene: &Scene) -> Vec<crate::Underline> {
+    let mut underlines = scene.underlines.clone();
+    for underline in &mut underlines {
+        underline.pad = NONE;
+    }
+    underlines
+}
+
+#[cfg(any(test, feature = "test-support"))]
 /// Takes `primitive`'s fade away.
 pub(crate) fn unfade(primitive: &mut Primitive) {
     if let Some(slot) = slot_of(primitive) {
@@ -504,6 +613,21 @@ pub(crate) fn fade_of(primitive: &Primitive) -> u32 {
     slot_of(&mut primitive).map_or(NONE, |slot| *slot)
 }
 
+/// The index of the fade `primitive` is drawn in.
+#[inline]
+pub(crate) fn index_of(primitive: &Primitive) -> u32 {
+    match primitive {
+        Primitive::Shadow(shadow) => shadow.pad,
+        Primitive::Quad(quad) => quad.background.pad,
+        Primitive::Path(path) => path.color.pad,
+        Primitive::Underline(underline) => underline.pad,
+        Primitive::MonochromeSprite(sprite) => sprite.pad,
+        Primitive::SubpixelSprite(sprite) => sprite.pad,
+        Primitive::PolychromeSprite(sprite) => sprite.pad,
+        Primitive::Surface(surface) => surface.pad,
+    }
+}
+
 /// The fade of a primitive: its slot of padding.
 #[inline]
 fn slot_of(primitive: &mut Primitive) -> Option<&mut u32> {
@@ -515,10 +639,55 @@ fn slot_of(primitive: &mut Primitive) -> Option<&mut u32> {
         Primitive::MonochromeSprite(sprite) => &mut sprite.pad,
         Primitive::SubpixelSprite(sprite) => &mut sprite.pad,
         Primitive::PolychromeSprite(sprite) => &mut sprite.pad,
-        // A surface is composited by the system's video path, which takes
-        // no fade.
-        Primitive::Surface(_) => return None,
+        Primitive::Surface(surface) => &mut surface.pad,
     })
+}
+
+#[cfg(test)]
+/// `background` without the index of the fade it is drawn in, which two
+/// windows drawing the same thing may number differently: for upstream's
+/// tests comparing a window's quads with another's.
+pub(crate) fn without_fade(mut background: crate::Background) -> crate::Background {
+    background.pad = NONE;
+    background
+}
+
+#[cfg(test)]
+/// [`DescribeUnfaded::describe_unfaded`].
+pub(crate) fn unfaded(primitive: &impl DescribeUnfaded, scene: &Scene) -> String {
+    primitive.describe_unfaded(scene)
+}
+
+#[cfg(test)]
+/// The debug text of a shadow, an underline or a background with its fade
+/// index replaced by the ramps it stands for in `scene`: two windows drawing
+/// the same thing may number their fades apart. For upstream's tests
+/// comparing a window's primitives with another's.
+pub(crate) trait DescribeUnfaded {
+    fn describe_unfaded(&self, scene: &Scene) -> String;
+}
+
+#[cfg(test)]
+impl DescribeUnfaded for crate::Shadow {
+    fn describe_unfaded(&self, scene: &Scene) -> String {
+        let unfaded = crate::Shadow { pad: NONE, ..*self };
+        format!("{unfaded:?}{}", describe(scene, self.pad))
+    }
+}
+
+#[cfg(test)]
+impl DescribeUnfaded for crate::Underline {
+    fn describe_unfaded(&self, scene: &Scene) -> String {
+        let unfaded = crate::Underline { pad: NONE, ..*self };
+        format!("{unfaded:?}{}", describe(scene, self.pad))
+    }
+}
+
+#[cfg(test)]
+impl DescribeUnfaded for crate::Background {
+    fn describe_unfaded(&self, scene: &Scene) -> String {
+        format!("{:?}{}", without_fade(*self), describe(scene, self.pad))
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -537,9 +706,8 @@ pub(crate) fn current(window: &Window) -> u32 {
     window.next_frame.scene.fast_painted.fades.current
 }
 
-/// The kinds of primitive that take a fade: all but surfaces, which the
-/// system's video path composites.
-const KINDS: usize = 7;
+/// The kinds of primitive that take a fade: every one, and backdrop blurs.
+const KINDS: usize = 9;
 
 /// A fade painting entered in a scene, and how long each list of
 /// primitives that takes a fade was as it did.
@@ -607,6 +775,8 @@ fn lengths(scene: &Scene) -> [u32; KINDS] {
         scene.monochrome_sprites.len(),
         scene.subpixel_sprites.len(),
         scene.polychrome_sprites.len(),
+        scene.surfaces.len(),
+        scene.composition.blurs.len(),
     ]
     .map(|len| len as u32)
 }
@@ -635,6 +805,8 @@ fn map_since(scene: &mut Scene, starts: &[u32; KINDS], map: &mut impl FnMut(u32)
         monochrome,
         subpixel,
         polychrome,
+        surfaces,
+        blurs,
     ] = *starts;
     each(&mut scene.shadows, shadows, map, |shadow| &mut shadow.pad);
     each(&mut scene.quads, quads, map, |quad| {
@@ -653,13 +825,128 @@ fn map_since(scene: &mut Scene, starts: &[u32; KINDS], map: &mut impl FnMut(u32)
     each(&mut scene.polychrome_sprites, polychrome, map, |sprite| {
         &mut sprite.pad
     });
+    each(&mut scene.surfaces, surfaces, map, |surface| {
+        &mut surface.pad
+    });
+    each(&mut scene.composition.blurs, blurs, map, |blur| {
+        &mut blur.fade
+    });
 }
 
-/// How many times painting entered a fade, for a scroll layer to tell
-/// whether its content set fades of its own.
-#[inline(always)]
-pub(crate) fn applied(window: &Window) -> u64 {
-    window.fast_edge_fade.applied
+/// The fades of what is drawn `delta` away from where it was painted: a
+/// scroll layer's content, painted in the window and kept in content space,
+/// and drawn back into the frame at the layer's translation. A fade set
+/// inside what moves moves with it; each index is moved once and the moved
+/// fade kept in the window's table.
+pub(crate) struct Relocation {
+    delta: Point<ScaledPixels>,
+    moved: FxHashMap<u32, u32>,
+}
+
+impl Relocation {
+    pub(crate) fn new(delta: Point<ScaledPixels>) -> Self {
+        Self {
+            delta,
+            moved: FxHashMap::default(),
+        }
+    }
+
+    /// The index of the fade `id`, moved; no fade for one swept since.
+    #[inline]
+    pub(crate) fn index(&mut self, fades: &mut WindowFades, id: u32) -> u32 {
+        if id == NONE || self.delta == Point::default() {
+            return id;
+        }
+        if let Some(&moved) = self.moved.get(&id) {
+            return moved;
+        }
+        let moved = fades
+            .ramps(id)
+            .copied()
+            .map_or(NONE, |ramps| fades.intern(&ramps.translated(self.delta)));
+        self.moved.insert(id, moved);
+        moved
+    }
+
+    /// Gives `primitive` its fade, moved.
+    #[inline]
+    pub(crate) fn primitive(&mut self, fades: &mut WindowFades, primitive: &mut Primitive) {
+        if let Some(slot) = slot_of(primitive)
+            && *slot != NONE
+        {
+            *slot = self.index(fades, *slot);
+        }
+    }
+}
+
+/// Gives `scene`, a scroll layer's content in content space, a copy of the
+/// window's table of fades, which its primitives index, for the tiles
+/// rasterized from it however many frames later ([`TileFades`]); nothing
+/// when none of them is faded.
+pub(crate) fn carry_table(fades: &WindowFades, scene: &mut Scene) {
+    let mut faded = false;
+    mark_scene(scene, &mut |id| faded |= id != NONE);
+    if !faded {
+        return;
+    }
+    let table = &mut scene.fast_painted.fades.table;
+    table.clear();
+    table.extend_from_slice(&fades.ramps);
+    table[0].edge[0] = f32::from_bits(fades.ramps.len() as u32);
+}
+
+/// The table of fades of a tile's scene, rasterized from a layer's content
+/// moved by `delta` into the tile's space: each fade a primitive of a part
+/// holds, from the table the part carries ([`carry_table`]), moved, under
+/// an index of the tile's own.
+pub(crate) struct TileFades {
+    delta: Point<ScaledPixels>,
+    table: Vec<EdgeFadeRamps>,
+    local: FxHashMap<(usize, u32), u32>,
+}
+
+impl TileFades {
+    pub(crate) fn new(delta: Point<ScaledPixels>) -> Self {
+        Self {
+            delta,
+            table: Vec::new(),
+            local: FxHashMap::default(),
+        }
+    }
+
+    /// Gives `primitive`, of the part numbered `part` whose scene is
+    /// `source`, its fade in the tile's table.
+    #[inline]
+    pub(crate) fn primitive(&mut self, part: usize, source: &Scene, primitive: &mut Primitive) {
+        let Some(slot) = slot_of(primitive) else {
+            return;
+        };
+        if *slot == NONE {
+            return;
+        }
+        let id = *slot;
+        *slot = *self.local.entry((part, id)).or_insert_with(|| {
+            let table = source.edge_fades();
+            let index = (id & 0xffff) as usize;
+            let Some(ramps) = table.get(index).filter(|_| index > 0) else {
+                return NONE;
+            };
+            if self.table.is_empty() {
+                self.table.push(EdgeFadeRamps::NONE);
+            }
+            self.table.push(ramps.translated(self.delta));
+            self.table.len() as u32 - 1
+        });
+    }
+
+    /// Gives `scene`, the tile's, its table.
+    pub(crate) fn finish(mut self, scene: &mut Scene) {
+        if self.table.is_empty() {
+            return;
+        }
+        self.table[0].edge[0] = f32::from_bits(self.table.len() as u32);
+        scene.fast_painted.fades.table = self.table;
+    }
 }
 
 /// Whether a quad, the background a scroll layer bakes into its tiles, is
@@ -702,13 +989,46 @@ pub(crate) fn compose(fades: &mut WindowFades, outer: u32, primitive: &mut Primi
     *slot = fades.intern(&around.within(&own));
 }
 
-/// The ramps of an edge fade, in device pixels, as the renderers read them.
+/// The fade a blur (or anything else holding an index of its own) is drawn
+/// in when the fade `outer`, around a scroll layer drawn now, is laid over
+/// the fade `own` it was painted in, as [`compose`] lays it over a
+/// primitive's.
+pub(crate) fn compose_index(fades: &mut WindowFades, outer: u32, own: u32) -> u32 {
+    if outer == NONE {
+        return own;
+    }
+    if own == NONE {
+        return outer;
+    }
+    let around = fades.ramps(outer).copied().unwrap_or(EdgeFadeRamps::NONE);
+    let own = fades.ramps(own).copied().unwrap_or(EdgeFadeRamps::NONE);
+    fades.intern(&around.within(&own))
+}
+
+/// The ramps of an edge fade, and its rounded clip, in device pixels, as
+/// the renderers read them.
 ///
 /// For the left, top, right and bottom edges in that order, the ramp at a
 /// pixel is `start + rate × (coordinate − edge)`, the coordinate being the
 /// pixel centre's `x` at the left and right and `y` at the top and bottom,
 /// clamped to 0..1 and eased with smoothstep; what is drawn is multiplied
 /// by all four. An edge that does not fade has a rate of 0 and a start of 1.
+///
+/// What is drawn is also multiplied by how much of the pixel lies inside
+/// the rounded rectangle `clip` with corners `radii` across and `radii_y`
+/// down (a quarter ellipse where the two differ): `0.5 − d`, clamped to
+/// 0..1, for `d` the pixel centre's signed distance from its edge. With
+/// `clip`'s right at or left of its left, nothing is clipped. A second
+/// rounded rectangle, `outer_clip` with `outer_radii` and `outer_radii_y`,
+/// clips as well when it is set: the one around `clip` that `clip` does
+/// not lie inside, the lesser of the two coverages drawn.
+///
+/// And by the image alpha mask, when `mask_shape`'s feather is above 0
+/// ([`crate::ImageAlphaMask`]): smoothstep from 0 to the feather of `d − c`,
+/// for `d` the signed distance from the rounded rectangle `mask` with
+/// radius `mask_shape[0]` and `c` the clearance `mask_shape[2]`; the lesser
+/// of that and, when `mask_shape[3]` is above 0, smoothstep from 0 to it of
+/// `mask_bottom[0] − y`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(C)]
 pub struct EdgeFadeRamps {
@@ -719,6 +1039,26 @@ pub struct EdgeFadeRamps {
     pub rate: [f32; 4],
     /// Each ramp at its edge.
     pub start: [f32; 4],
+    /// The rounded clip's left, top, right and bottom.
+    pub clip: [f32; 4],
+    /// The rounded clip's corner radii: top left, top right, bottom right,
+    /// bottom left.
+    pub radii: [f32; 4],
+    /// The image alpha mask's excluded rectangle: left, top, right, bottom.
+    pub mask: [f32; 4],
+    /// The image alpha mask's radius, feather, clearance and bottom
+    /// feather; a feather of 0 masks nothing.
+    pub mask_shape: [f32; 4],
+    /// Where the image alpha mask's bottom fade ends, then three zeros.
+    pub mask_bottom: [f32; 4],
+    /// The rounded clip's vertical corner radii, in the order of `radii`.
+    pub radii_y: [f32; 4],
+    /// The second rounded clip's left, top, right and bottom.
+    pub outer_clip: [f32; 4],
+    /// The second rounded clip's horizontal corner radii.
+    pub outer_radii: [f32; 4],
+    /// The second rounded clip's vertical corner radii.
+    pub outer_radii_y: [f32; 4],
 }
 
 impl Default for EdgeFadeRamps {
@@ -733,11 +1073,162 @@ impl EdgeFadeRamps {
         edge: [0.; 4],
         rate: [0.; 4],
         start: [1.; 4],
+        clip: [0.; 4],
+        radii: [0.; 4],
+        mask: [0.; 4],
+        mask_shape: [0.; 4],
+        mask_bottom: [0.; 4],
+        radii_y: [0.; 4],
+        outer_clip: [0.; 4],
+        outer_radii: [0.; 4],
+        outer_radii_y: [0.; 4],
     };
 
-    /// Whether any edge fades.
+    /// Whether any edge fades, the clip cuts anything, or the mask masks.
     pub fn fades(&self) -> bool {
-        self.rate.iter().any(|rate| *rate != 0.)
+        self.rate.iter().any(|rate| *rate != 0.) || self.clips() || self.masks()
+    }
+
+    /// Whether these ramps hold an image alpha mask.
+    pub fn masks(&self) -> bool {
+        self.mask_shape[1] > 0.
+    }
+
+    /// Whether these ramps clip to a rounded rectangle.
+    pub fn clips(&self) -> bool {
+        self.clip[2] > self.clip[0]
+    }
+
+    /// These ramps clipping to `region` with corners `radii`, each no
+    /// larger than half the region's shorter side, in place of any clip
+    /// they held.
+    pub fn rounded(self, region: Bounds<ScaledPixels>, radii: Corners<ScaledPixels>) -> Self {
+        let most = region.size.width.0.min(region.size.height.0) / 2.;
+        let radius = |radius: ScaledPixels| {
+            if radius.0.is_finite() {
+                radius.0.min(most).max(0.)
+            } else {
+                0.
+            }
+        };
+        let radii = [
+            radius(radii.top_left),
+            radius(radii.top_right),
+            radius(radii.bottom_right),
+            radius(radii.bottom_left),
+        ];
+        self.rounded_elliptical(region, radii, radii)
+    }
+
+    /// These ramps clipping to `region` with corners of `horizontal` radii
+    /// across and `vertical` down, top left, top right, bottom right and
+    /// bottom left, in place of any clip they held: a padding edge inside
+    /// borders of unequal widths, whose corners are quarter ellipses.
+    pub(crate) fn rounded_elliptical(
+        mut self,
+        region: Bounds<ScaledPixels>,
+        horizontal: [f32; 4],
+        vertical: [f32; 4],
+    ) -> Self {
+        let (origin, size) = (region.origin, region.size);
+        let finite = [origin.x.0, origin.y.0, size.width.0, size.height.0]
+            .into_iter()
+            .all(f32::is_finite);
+        if !finite || region.size.width.0 <= 0. || region.size.height.0 <= 0. {
+            // Nothing shows inside an empty region; the content mask clips it.
+            return self;
+        }
+        let rect = [
+            region.left().0,
+            region.top().0,
+            region.right().0,
+            region.bottom().0,
+        ];
+        let finite_or_zero = |radius: f32| {
+            if radius.is_finite() {
+                radius.max(0.)
+            } else {
+                0.
+            }
+        };
+        self.set_clips(
+            Some(Clip {
+                rect,
+                rx: horizontal.map(finite_or_zero),
+                ry: vertical.map(finite_or_zero),
+            }),
+            None,
+        );
+        self
+    }
+
+    /// The rounded clips these ramps hold, the outer one first.
+    fn clip_list(&self) -> Vec<Clip> {
+        let mut clips = Vec::with_capacity(2);
+        if self.outer_clip[2] > self.outer_clip[0] {
+            clips.push(Clip {
+                rect: self.outer_clip,
+                rx: self.outer_radii,
+                ry: self.outer_radii_y,
+            });
+        }
+        if self.clips() {
+            clips.push(Clip {
+                rect: self.clip,
+                rx: self.radii,
+                ry: self.radii_y,
+            });
+        }
+        clips
+    }
+
+    /// Holds `inner` as the clip and `outer` as the second one.
+    fn set_clips(&mut self, inner: Option<Clip>, outer: Option<Clip>) {
+        let none = Clip {
+            rect: [0.; 4],
+            rx: [0.; 4],
+            ry: [0.; 4],
+        };
+        let inner = inner.unwrap_or(none);
+        let outer = outer.unwrap_or(none);
+        self.clip = inner.rect;
+        self.radii = inner.rx;
+        self.radii_y = inner.ry;
+        self.outer_clip = outer.rect;
+        self.outer_radii = outer.rx;
+        self.outer_radii_y = outer.ry;
+    }
+
+    /// Holds what `clips`, the outer ones first, clip together; see
+    /// [`intersect_clips`].
+    fn set_clip_list(&mut self, clips: Vec<Clip>) {
+        let (inner, outer) = intersect_clips(clips);
+        self.set_clips(inner, outer);
+    }
+
+    /// These ramps moved by `delta`: their edges, clips and mask.
+    pub(crate) fn translated(&self, delta: Point<ScaledPixels>) -> Self {
+        let (dx, dy) = (delta.x.0, delta.y.0);
+        let mut ramps = *self;
+        for slot in 0..4 {
+            if ramps.rate[slot] != 0. {
+                ramps.edge[slot] += if slot % 2 == 0 { dx } else { dy };
+            }
+        }
+        let clips = self
+            .clip_list()
+            .into_iter()
+            .map(|clip| clip.translated(dx, dy));
+        let mut clips = clips.collect::<Vec<_>>();
+        let inner = clips.pop();
+        ramps.set_clips(inner, clips.pop());
+        if self.masks() {
+            for (slot, side) in ramps.mask.iter_mut().enumerate() {
+                *side += if slot % 2 == 0 { dx } else { dy };
+            }
+            ramps.mask_bottom[0] += dy;
+        }
+        ramps
     }
 
     /// The ramps of a fade in `region`, whose edges lie on whole device
@@ -794,7 +1285,8 @@ impl EdgeFadeRamps {
     }
 
     /// These ramps with `inner`'s laid over them, edge by edge: where both
-    /// fade an edge, the ramp that reaches further in.
+    /// fade an edge, the ramp that reaches further in; and `inner`'s clip,
+    /// if it clips.
     pub(crate) fn within(&self, inner: &Self) -> Self {
         let mut ramps = *self;
         for slot in 0..4 {
@@ -802,6 +1294,16 @@ impl EdgeFadeRamps {
             if inner.1 != 0. && (outer.1 == 0. || Self::reach(inner) > Self::reach(outer)) {
                 ramps.set_ramp(slot, inner);
             }
+        }
+        if inner.clips() {
+            let mut clips = self.clip_list();
+            clips.extend(inner.clip_list());
+            ramps.set_clip_list(clips);
+        }
+        if inner.masks() {
+            ramps.mask = inner.mask;
+            ramps.mask_shape = inner.mask_shape;
+            ramps.mask_bottom = inner.mask_bottom;
         }
         ramps
     }
@@ -823,37 +1325,121 @@ impl EdgeFadeRamps {
                 ramps.edge[slot] += if slot % 2 == 0 { delta.x.0 } else { delta.y.0 };
             }
         }
+        let (clips, old_clips) = (self.clip_list(), old.clip_list());
+        if clips == old_clips {
+            ramps.set_clip_list(new.clip_list());
+        } else {
+            // The clips set inside what moved move with it, inside the ones
+            // around it where it is now.
+            let mut moved = new.clip_list();
+            moved.extend(
+                clips
+                    .into_iter()
+                    .filter(|clip| !old_clips.contains(clip))
+                    .map(|clip| clip.translated(delta.x.0, delta.y.0)),
+            );
+            ramps.set_clip_list(moved);
+        }
+        if (self.mask, self.mask_shape, self.mask_bottom)
+            == (old.mask, old.mask_shape, old.mask_bottom)
+        {
+            ramps.mask = new.mask;
+            ramps.mask_shape = new.mask_shape;
+            ramps.mask_bottom = new.mask_bottom;
+        } else if self.masks() {
+            for (slot, side) in ramps.mask.iter_mut().enumerate() {
+                *side += if slot % 2 == 0 { delta.x.0 } else { delta.y.0 };
+            }
+            ramps.mask_bottom[0] += delta.y.0;
+        }
         ramps
     }
 
     /// How strongly a pixel centred at `point` is drawn, as the renderers
     /// work it out.
     pub fn alpha_at(&self, point: Point<ScaledPixels>) -> f32 {
-        (0..4)
+        let faded: f32 = (0..4)
             .map(|slot| {
                 let coordinate = if slot % 2 == 0 { point.x.0 } else { point.y.0 };
                 let (edge, rate, start) = self.ramp(slot);
                 smoothstep((start + rate * (coordinate - edge)).clamp(0., 1.))
             })
-            .product()
+            .product();
+        faded * self.coverage_at(point) * self.mask_at(point)
+    }
+
+    /// How strongly the image alpha mask draws a pixel centred at `point`,
+    /// as the renderers work it out: 1 without a mask.
+    pub fn mask_at(&self, point: Point<ScaledPixels>) -> f32 {
+        if !self.masks() {
+            return 1.;
+        }
+        let [left, top, right, bottom] = self.mask;
+        let [radius, feather, clearance, bottom_feather] = self.mask_shape;
+        let half = ((right - left) * 0.5, (bottom - top) * 0.5);
+        let center = (left + half.0, top + half.1);
+        let q = (
+            (point.x.0 - center.0).abs() - half.0 + radius,
+            (point.y.0 - center.1).abs() - half.1 + radius,
+        );
+        let outside = (q.0.max(0.).powi(2) + q.1.max(0.).powi(2)).sqrt();
+        let distance = outside + q.0.max(q.1).min(0.) - radius;
+        let step = |edge: f32, x: f32| smoothstep((x / edge).clamp(0., 1.));
+        let mut alpha = step(feather, distance - clearance);
+        if bottom_feather > 0. {
+            alpha = alpha.min(step(bottom_feather, self.mask_bottom[0] - point.y.0));
+        }
+        alpha
+    }
+
+    /// How much of a pixel centred at `point` the rounded clip leaves, as
+    /// the renderers work it out: 1 without a clip.
+    pub fn coverage_at(&self, point: Point<ScaledPixels>) -> f32 {
+        self.clip_list()
+            .iter()
+            .map(|clip| clip.coverage(point.x.0, point.y.0))
+            .fold(1., f32::min)
     }
 
     /// The bits these ramps are told apart by, with no edge that does not
-    /// fade making a difference.
-    fn key(&self) -> [u32; 12] {
-        let mut key = [0; 12];
+    /// fade, nor a clip that clips nothing, making a difference.
+    fn key(&self) -> FadeKey {
+        let mut key = [0; KEY_LEN];
         for slot in 0..4 {
             if self.rate[slot] != 0. {
                 key[slot] = self.edge[slot].to_bits();
                 key[4 + slot] = self.rate[slot].to_bits();
                 key[8 + slot] = self.start[slot].to_bits();
             }
+            if self.clips() {
+                key[12 + slot] = self.clip[slot].to_bits();
+                key[16 + slot] = self.radii[slot].to_bits();
+            }
+            if self.masks() {
+                key[20 + slot] = self.mask[slot].to_bits();
+                key[24 + slot] = self.mask_shape[slot].to_bits();
+            }
+        }
+        if self.masks() {
+            key[28] = self.mask_bottom[0].to_bits();
+        }
+        if self.clips() {
+            for slot in 0..4 {
+                key[29 + slot] = self.radii_y[slot].to_bits();
+            }
+        }
+        if self.outer_clip[2] > self.outer_clip[0] {
+            for slot in 0..4 {
+                key[33 + slot] = self.outer_clip[slot].to_bits();
+                key[37 + slot] = self.outer_radii[slot].to_bits();
+                key[41 + slot] = self.outer_radii_y[slot].to_bits();
+            }
         }
         key
     }
 
-    /// These ramps with every edge that does not fade as [`Self::NONE`]
-    /// has it.
+    /// These ramps with every edge that does not fade, and a clip that
+    /// clips nothing, as [`Self::NONE`] has them.
     fn canonical(&self) -> Self {
         let mut ramps = Self::NONE;
         for slot in 0..4 {
@@ -861,8 +1447,150 @@ impl EdgeFadeRamps {
                 ramps.set_ramp(slot, self.ramp(slot));
             }
         }
+        if self.clips() {
+            let mut clips = self.clip_list();
+            let inner = clips.pop();
+            ramps.set_clips(inner, clips.pop());
+        }
+        if self.masks() {
+            ramps.mask = self.mask;
+            ramps.mask_shape = self.mask_shape;
+            ramps.mask_bottom = [self.mask_bottom[0], 0., 0., 0.];
+        }
         ramps
     }
+}
+
+/// How many words a fade is told apart by ([`EdgeFadeRamps::key`]).
+const KEY_LEN: usize = 45;
+
+/// The bits a fade is told apart by.
+type FadeKey = [u32; KEY_LEN];
+
+/// One rounded clip of [`EdgeFadeRamps`]: its rectangle, left, top, right
+/// and bottom, and each corner's radius across and down, top left, top
+/// right, bottom right and bottom left.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Clip {
+    rect: [f32; 4],
+    rx: [f32; 4],
+    ry: [f32; 4],
+}
+
+impl Clip {
+    fn translated(mut self, dx: f32, dy: f32) -> Self {
+        for (slot, side) in self.rect.iter_mut().enumerate() {
+            *side += if slot % 2 == 0 { dx } else { dy };
+        }
+        self
+    }
+
+    /// The radii of the corner of the quadrant `p`, relative to the centre,
+    /// lies in, as the renderers clamp them: each no larger than half the
+    /// rectangle's side along it, and a circle's no larger than half the
+    /// shorter side.
+    fn corner(&self, p: (f32, f32), half: (f32, f32)) -> (f32, f32, bool) {
+        let corner = match (p.0 < 0., p.1 < 0.) {
+            (true, true) => 0,
+            (false, true) => 1,
+            (false, false) => 2,
+            (true, false) => 3,
+        };
+        let (rx, ry) = (self.rx[corner], self.ry[corner]);
+        if rx == ry {
+            let radius = rx.min(half.0.min(half.1));
+            (radius, radius, true)
+        } else {
+            (rx.min(half.0), ry.min(half.1), false)
+        }
+    }
+
+    /// The signed distance of the point (`x`, `y`) from the clip's edge,
+    /// negative inside, as the renderers work it out (`rounded_clip_distance`
+    /// in `shaders.metal`): exact for a circular corner, and for a quarter
+    /// ellipse its implicit function over the length of its gradient.
+    fn distance(&self, x: f32, y: f32) -> f32 {
+        let [left, top, right, bottom] = self.rect;
+        let half = ((right - left) * 0.5, (bottom - top) * 0.5);
+        let p = (x - (left + half.0), y - (top + half.1));
+        let (rx, ry, circular) = self.corner(p, half);
+        if circular {
+            let radius = rx;
+            let q = (p.0.abs() - half.0 + radius, p.1.abs() - half.1 + radius);
+            let outside = (q.0.max(0.).powi(2) + q.1.max(0.).powi(2)).sqrt();
+            return outside + q.0.max(q.1).min(0.) - radius;
+        }
+        let q = (p.0.abs() - half.0 + rx, p.1.abs() - half.1 + ry);
+        if q.0 > 0. && q.1 > 0. && rx > 0. && ry > 0. {
+            let u = (q.0 / rx, q.1 / ry);
+            let length = (u.0 * u.0 + u.1 * u.1).sqrt();
+            let gradient = ((u.0 / rx).powi(2) + (u.1 / ry).powi(2)).sqrt() / length.max(1e-6);
+            (length - 1.) / gradient.max(1e-6)
+        } else {
+            (p.0.abs() - half.0).max(p.1.abs() - half.1)
+        }
+    }
+
+    /// How much of a pixel centred at (`x`, `y`) the clip leaves.
+    fn coverage(&self, x: f32, y: f32) -> f32 {
+        (0.5 - self.distance(x, y)).clamp(0., 1.)
+    }
+
+    /// Whether `inner` lies inside this clip, to a hundredth of a device
+    /// pixel: its rectangle inside this one's, and every corner of it, its
+    /// arc sampled, inside this clip, which is convex.
+    fn contains(&self, inner: &Clip) -> bool {
+        const SLACK: f32 = 0.01;
+        const STEPS: usize = 8;
+        let [left, top, right, bottom] = inner.rect;
+        let outer = self.rect;
+        if left < outer[0] - SLACK
+            || top < outer[1] - SLACK
+            || right > outer[2] + SLACK
+            || bottom > outer[3] + SLACK
+        {
+            return false;
+        }
+        let half = ((right - left) * 0.5, (bottom - top) * 0.5);
+        let centre = (left + half.0, top + half.1);
+        for (sx, sy) in [(-1., -1.), (1., -1.), (1., 1.), (-1., 1.)] {
+            let (rx, ry, _) = inner.corner((sx, sy), half);
+            let arc_centre = (centre.0 + sx * (half.0 - rx), centre.1 + sy * (half.1 - ry));
+            for step in 0..=STEPS {
+                let angle = std::f32::consts::FRAC_PI_2 * step as f32 / STEPS as f32;
+                let x = arc_centre.0 + sx * rx * angle.cos();
+                let y = arc_centre.1 + sy * ry * angle.sin();
+                if self.distance(x, y) > SLACK {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
+/// What `clips`, the outer ones first, clip together, as at most two of
+/// them: the innermost, and the one around it it does not lie inside. A
+/// clip around another that lies inside it clips nothing more and is
+/// dropped, as is a clip inside a later one of the same shape. Where three
+/// or more remain, none inside another, the innermost and the outermost
+/// are kept: what is drawn stays inside the region a scroll container or a
+/// window clips it to, and only a corner of a middle one is lost.
+fn intersect_clips(clips: Vec<Clip>) -> (Option<Clip>, Option<Clip>) {
+    let redundant = |index: usize, clip: &Clip| {
+        clips.iter().enumerate().any(|(other, inside)| {
+            other != index && clip.contains(inside) && (inside != clip || other > index)
+        })
+    };
+    let mut kept: Vec<Clip> = clips
+        .iter()
+        .enumerate()
+        .filter(|(index, clip)| !redundant(*index, clip))
+        .map(|(_, clip)| *clip)
+        .collect();
+    let inner = kept.pop();
+    let outer = if kept.is_empty() { None } else { Some(kept[0]) };
+    (inner, outer)
 }
 
 fn smoothstep(t: f32) -> f32 {
@@ -889,7 +1617,7 @@ pub(crate) struct WindowFades {
     /// kept past its slot's sweep is told from the slot's next fade.
     generations: Vec<u16>,
     /// The index of each fade held, by its [`EdgeFadeRamps::key`].
-    ids: FxHashMap<[u32; 12], u32>,
+    ids: FxHashMap<FadeKey, u32>,
     /// The slots swept free, reused before the table grows.
     free: Vec<u32>,
     /// Fades added since the table was last swept.
@@ -899,8 +1627,6 @@ pub(crate) struct WindowFades {
     /// Bumped whenever a slot is given a fade, for scenes to tell their
     /// copy is current.
     version: u64,
-    /// How many times painting entered a fade. See [`applied`].
-    applied: u64,
     #[cfg(test)]
     sweeps: usize,
 }
@@ -915,7 +1641,6 @@ impl Default for WindowFades {
             added: 0,
             live: 0,
             version: 0,
-            applied: 0,
             #[cfg(test)]
             sweeps: 0,
         }
@@ -1000,6 +1725,13 @@ pub(crate) fn finish_frame(window: &mut Window) {
         let live = live_slots(window);
         window.fast_edge_fade.sweep(&live);
     }
+    copy_table(window);
+}
+
+/// Gives the frame's scene a copy of the window's table, unless it holds
+/// the current one: a frame drawn from scratch to be checked against one
+/// drawn again needs it as much as one shown.
+pub(crate) fn copy_table(window: &mut Window) {
     let fades = &window.fast_edge_fade;
     let scene = &mut window.next_frame.scene.fast_painted.fades;
     if scene.version == fades.version {
@@ -1043,6 +1775,12 @@ pub(crate) fn mark_scene(scene: &Scene, mark: &mut impl FnMut(u32)) {
     scene.monochrome_sprites.iter().for_each(|p| mark(p.pad));
     scene.subpixel_sprites.iter().for_each(|p| mark(p.pad));
     scene.polychrome_sprites.iter().for_each(|p| mark(p.pad));
+    scene.surfaces.iter().for_each(|p| mark(p.pad));
+    scene
+        .composition
+        .blurs
+        .iter()
+        .for_each(|blur| mark(blur.fade));
 }
 
 /// How the fades of a stretch drawn again moved change: those of the
@@ -1127,12 +1865,58 @@ pub(crate) fn describe(scene: &Scene, id: u32) -> String {
 }
 
 #[cfg(any(test, feature = "test-support"))]
+/// The fade a primitive of a scroll layer's content, painted in `own` (in
+/// content space), is drawn in when its tiles are composited moved by
+/// `delta` in the fade `outer`, as drawing the content into the frame
+/// there gives it: `None` for a primitive with no fade of its own, which
+/// takes `outer`.
+pub(crate) fn moved_fade(
+    scene: &Scene,
+    outer: u32,
+    own: u32,
+    delta: Point<ScaledPixels>,
+) -> Option<EdgeFadeRamps> {
+    if own == NONE {
+        return None;
+    }
+    let table = scene.edge_fades();
+    let ramps = |id: u32| {
+        (id != NONE)
+            .then(|| table.get((id & 0xffff) as usize).copied())
+            .flatten()
+            .unwrap_or(EdgeFadeRamps::NONE)
+    };
+    Some(
+        ramps(outer)
+            .within(&ramps(own).translated(delta))
+            .canonical(),
+    )
+}
+
+#[cfg(any(test, feature = "test-support"))]
+/// `ramps` as text, as [`describe`] tells a fade: empty for none.
+pub(crate) fn describe_ramps(ramps: &EdgeFadeRamps) -> String {
+    if ramps.fades() {
+        format!(" fade {ramps:?}")
+    } else {
+        String::new()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
 impl Scene {
     /// The ramps of the fade `id` stands for in this finished scene.
     pub fn edge_fade_ramps(&self, id: u32) -> Option<EdgeFadeRamps> {
         (id != NONE)
             .then(|| self.edge_fades().get((id & 0xffff) as usize).copied())
             .flatten()
+    }
+
+    /// Gives this scene `source`'s table of fades, as a scroll layer's
+    /// content carries the window's: for renderer tests building a layer's
+    /// content from a window's scene.
+    pub fn copy_edge_fades(&mut self, source: &Scene) {
+        self.fast_painted.fades.table = source.fast_painted.fades.table.clone();
     }
 
     /// Adds `ramps` to this scene's table of fades, as a window's frame

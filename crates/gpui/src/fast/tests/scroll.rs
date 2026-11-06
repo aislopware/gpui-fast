@@ -14,6 +14,7 @@ fn touch(id: u64, phase: TouchPhase, y: f32) -> TouchEvent {
         position: point(px(100.), px(y)),
         predicted_position: None,
         force: None,
+        timestamp: None,
     }
 }
 

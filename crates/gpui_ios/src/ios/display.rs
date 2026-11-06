@@ -21,10 +21,16 @@ unsafe impl Send for IosDisplay {}
 unsafe impl Sync for IosDisplay {}
 
 impl IosDisplay {
-    /// Get the main screen.
+    /// The screen of the app's window scene, which follows the scene to an external display;
+    /// the device's main screen (deprecated since iOS 26) only before a scene connects.
     pub fn main() -> Self {
         unsafe {
-            let screen: *mut objc2::runtime::AnyObject = msg_send![class!(UIScreen), mainScreen];
+            let scene = super::ffi::window_scene();
+            let screen: *mut objc2::runtime::AnyObject = if scene.is_null() {
+                msg_send![class!(UIScreen), mainScreen]
+            } else {
+                msg_send![scene, screen]
+            };
             Self { screen }
         }
     }

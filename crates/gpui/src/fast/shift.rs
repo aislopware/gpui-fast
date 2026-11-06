@@ -13,7 +13,7 @@
 //!   its bounds, which are snapped from there: moved by part of a device
 //!   pixel, its bounds can snap by a whole one while a box inside, centred
 //!   half a pixel off a pixel's edge, snaps to the pixel beside (see
-//!   [`crate::TaffyLayoutEngine::layout_phase`]). Coordinates that round half toward zero round the
+//!   [`crate::taffy::TaffyLayoutEngine::layout_phase`]). Coordinates that round half toward zero round the
 //!   same way only on the same side of zero, so along the axes it moves,
 //!   every primitive, every element it holds and every glyph it placed lies
 //!   at or past the window's top and left edges, before and after (see
@@ -690,7 +690,11 @@ impl Shift {
                     ..*underline
                 })
             }
-            PaintedRef::MonochromeSprite(sprite) if sprite.transformation == unit => {
+            // A blurred glyph draws past its bounds: painted afresh.
+            PaintedRef::MonochromeSprite(sprite)
+                if sprite.transformation == unit
+                    && crate::fast::glyph_blur::sigma(sprite) == 0. =>
+            {
                 let (bounds, content_mask) =
                     self.place(&sprite.bounds, &sprite.content_mask, last)?;
                 ShiftedOperation::MonochromeSprite(MonochromeSprite {
@@ -764,7 +768,7 @@ pub(crate) fn shift_operations(
                 shift.layer(bounds).map(ShiftedOperation::StartLayer)
             }
             PaintOperation::EndLayer => Some(ShiftedOperation::EndLayer),
-            PaintOperation::Native(_) => None,
+            PaintOperation::Native(_) | PaintOperation::Backdrop(_) => None,
         };
         let Some(shifted) = shifted else {
             moved.truncate(start);

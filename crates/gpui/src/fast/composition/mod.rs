@@ -32,7 +32,7 @@ use crate::{
 };
 
 pub use element::{NativeView, native_view};
-pub use frame::{NativeFrame, NativeFramePlacement};
+pub use frame::{NativeFrame, NativeFrameBlur, NativeFramePlacement};
 pub use hit_map::{NativeHitEntry, NativeHitMap};
 pub use scene::{ComposedBatch, NativePlacement, SceneComposition};
 #[cfg(any(test, feature = "test-support"))]
@@ -78,6 +78,9 @@ impl Default for NativeHostOptions {
 pub struct NativeHost {
     id: NativeId,
     interactive: bool,
+    /// What assistive technologies call the native, where its element names
+    /// it nothing itself.
+    label: Option<SharedString>,
     platform: Rc<dyn PlatformNativeHost>,
 }
 
@@ -219,6 +222,7 @@ impl Window {
                 .detach();
         });
         let interactive = options.interactive;
+        let label = options.label.clone();
         let platform = self.platform_window.create_native_host(NativeHostParams {
             id,
             options,
@@ -229,6 +233,7 @@ impl Window {
         Ok(NativeHost {
             id,
             interactive,
+            label,
             platform,
         })
     }
@@ -345,6 +350,7 @@ impl Window {
 /// Hands `window`'s rendered frame to the platform: with its natives once a
 /// host exists, exactly as before otherwise.
 pub(crate) fn present_scene(window: &mut Window) {
+    crate::fast::present::run(window);
     if !window.composition.active {
         window.platform_window.draw(&window.rendered_frame.scene);
         return;

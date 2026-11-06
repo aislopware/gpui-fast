@@ -48,6 +48,13 @@ pub(crate) fn bake_operations(
                 }
                 continue;
             }
+            // A blur draws what is under it blurred: no colour of its own.
+            Operation::Backdrop(blur) => {
+                if blur.clipped_bounds().intersects(&viewport) {
+                    return None;
+                }
+                continue;
+            }
             Operation::StartLayer(_) | Operation::EndLayer => continue,
         };
         let visible = visible_bounds(&primitive);
@@ -132,7 +139,7 @@ fn contains(outer: &Bounds<ScaledPixels>, inner: &Bounds<ScaledPixels>) -> bool 
         && outer_max.y >= inner_max.y
 }
 
-fn draw_order(primitive: &Primitive) -> DrawOrder {
+pub(crate) fn draw_order(primitive: &Primitive) -> DrawOrder {
     match primitive {
         Primitive::Shadow(shadow) => shadow.order,
         Primitive::Quad(quad) => quad.order,

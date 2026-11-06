@@ -42,10 +42,19 @@ nodes and primitives are copied from the last frame. A view depends on:
   it cares about the event or not — counts as changed only for views drawn
   inside a view notified since the last frame. Upstream builds those again
   with everything under them, and a view often changes a model it renders and
-  notifies only itself.
+  notifies only itself. An entity updated while the window draws — a
+  component writing what it was given into the state of a view it renders,
+  as GPUI Kit's `Tree` does — counts as changed for the views that read it,
+  unless they wrote it themselves as they were built.
 - **Where it is drawn.** Its bounds, content mask, text style and opacity. A
   view that moved is built again, at the layout nodes it kept, and laid out at
-  the size its parent gave it.
+  the size its parent gave it. The opacity is the one prepaint foresees, which
+  an ancestor's hover or drag-over style can make other than the one paint
+  applies, since only paint has the frame's hit test: a view, element or
+  scroll layer drawn again under another opacity than it was painted at is
+  built (or painted) again on the next frame, which is asked for, while one
+  whose opacity is foreseen wrongly the same way every frame, under a `div`
+  without an id that shows a hover, is still drawn again.
 - **The hovers it was painted by**, and interactions inside it: a hover,
   scroll or press that changes how it looks draws it again. Only the
   innermost view it happened in is built again; the views around it are
@@ -59,7 +68,29 @@ drawn in.
 Nothing is drawn from the last frame while the window is being refreshed
 (`window.refresh()`, and what refreshes it, a resize for one), on the
 first frame after fonts were added (`TextSystem::add_fonts`), while something
-is dragged, while the inspector is picking, or while accessibility is active.
+is dragged, while the inspector is picking, or on the first frame after
+accessibility was turned on.
+
+### Accessibility
+
+While assistive technology is attached (on macOS, many ordinary apps attach:
+window managers, clipboard and password managers, input methods), the window
+builds an AccessKit tree every frame and hands the whole of it to the
+platform. Views are still drawn from the last frame then: each frame logs
+what building its tree did — a node pushed, a synthetic child added, a node
+finished, an element made focusable, an active descendant claimed — and a
+stretch of the frame drawn again does again what its part of the log did,
+through the same builder (`crates/gpui/src/fast/a11y.rs`). Its nodes hang off
+whatever node is open where the stretch lands, a node finished again has the
+children this frame gave it (a view spliced around a nested view built again
+gets the nested view's new nodes), and the focus is asked again, so the
+focused node is the one focused now. The listeners for accessibility actions
+an element registers as it paints are moved from the last frame as mouse
+listeners are. The tree is the one drawing from scratch builds; the oracle
+compares the two on every frame with accessibility forced on. To measure
+frames drawn with accessibility active, set `GPUI_A11Y_ACTIVE=1` (honored
+with the `test-support` feature): every window then builds its tree as
+though assistive technology had asked for it.
 
 A notified view marks the views around it dirty, because they have to be
 walked to reach it. A view that is dirty only for that reason — it was not
@@ -306,8 +337,31 @@ video included. The code is in `crates/gpui/src/fast/edge_fade.rs`.
 - A scroll layer's tiles take the fade around the container, so they move
   under it. A layer whose content sets fades of its own is drawn as content,
   without tiles (docs/scroll-layers.md).
-- Metal draws fades. The wgpu and Direct3D renderers draw everything unfaded,
-  and a `PaintSurface` is never faded.
+- Metal draws fades, a `PaintSurface`'s too. The wgpu and Direct3D renderers
+  draw everything unfaded.
+- `Window::with_rounded_clip(bounds, radius, f)` narrows the content mask to
+  `bounds` and cuts every primitive along the corners' arcs, per pixel, with
+  an antialiased edge (ported from zui `361ff20`). The clip is two more
+  fields of a fade's table entry (`EdgeFadeRamps::clip` and `radii`, a
+  radius per corner), so it takes the same index and the same shader path,
+  and everything above holds for it: views note it, a stretch moved moves a
+  clip set inside it, a layer's tiles take a clip around the container, and
+  content clipping of its own is drawn without tiles. Clips nest by the
+  innermost; fades nest edge by edge inside and around them. Like a fade,
+  it is called around both the prepaint and the paint of what it clips: a
+  view inside drawn again from last frame keeps the corners it was painted
+  in until what it was prepainted in changes. A radius of zero is the
+  content mask alone. Only Metal cuts the corners.
+- `Window::paint_image_fitted_masked(.., Some(ImageAlphaMask))` paints an
+  image with a rounded rectangle feathered out of it and its lower part
+  faded (ported from zui `aa00941`). The mask is three more fields of the
+  image sprite's fade entry (`EdgeFadeRamps::mask`, `mask_shape`,
+  `mask_bottom`), applied by the same shader path; moving it changes the
+  entry, never the image's atlas tile. Its rectangle is in window
+  coordinates, often another element's bounds: a view painting a masked
+  image and drawn again from last frame keeps the mask it was painted with,
+  so whatever the mask follows must notify that view. A stretch moved moves
+  the mask with the image.
 
 ### Records per retained subtree
 
@@ -324,8 +378,14 @@ therefore does not build everything nested in it.
 
 `Entity::cached(style)` and `AnyView::cached(style)` are upstream's API and
 work as upstream documents them. They are retained subtrees like any other
-view, so they are also built again when an entity or global they read changed,
-and keep their layout nodes while they are reused. A notified cached view is
+view, so they are also built again when an entity they read was notified, or
+a global they read changed, and keep their layout nodes while they are
+reused. An entity a cached view, or a view drawn in it, read that was updated
+without being notified — outside drawing, or while the window draws, as a
+window writing into the panes it holds whether they show does on every render
+— does not draw it again: upstream draws a cached view again only when it, or
+a view in it, is notified, so it never shows what such an update wrote
+either. A notified cached view is
 built again on its own, at the layout node it kept, inside the views around
 it drawn from the last frame, as any nested view is.
 
@@ -379,7 +439,11 @@ from being retained. Notify or write only when the value changes.
 
 To rule retention in or out when something looks stale, run with
 `GPUI_VIEW_RETENTION=0`: every view is then drawn from scratch each frame, as
-upstream does.
+upstream does. It does not bring back one notification upstream sends: an
+`InteractiveText` notifies its view as the pointer crosses its characters only
+when it has a hover listener, its hand being shown by hitboxes over its
+clickable ranges (`fast/interactive_text.rs`), where upstream notifies the
+view for every one.
 
 ## How it is verified
 

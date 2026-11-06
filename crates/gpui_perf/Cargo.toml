@@ -18,6 +18,14 @@ name = "gpui_perf"
 path = "src/main.rs"
 
 [[example]]
+name = "windows_idle_frames"
+required-features = ["fast"]
+
+[[example]]
+name = "content_mask"
+required-features = ["fast"]
+
+[[example]]
 name = "views_frames"
 required-features = ["fast"]
 
@@ -40,6 +48,10 @@ required-features = ["fast"]
 [[test]]
 name = "composition_macos"
 harness = false
+required-features = ["fast"]
+
+[[test]]
+name = "gpui_tokio"
 required-features = ["fast"]
 
 [[test]]
@@ -72,19 +84,31 @@ smol.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
+gpui_tokio.workspace = true
 raw-window-handle.workspace = true
 roxmltree = "0.21"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 cocoa.workspace = true
-core-graphics.workspace = true
-metal.workspace = true
+objc2-core-foundation = { workspace = true, features = ["CFCGTypes", "CFDictionary"] }
+objc2-core-video = { workspace = true, features = ["CVPixelBuffer", "CVReturn"] }
+objc2-metal = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "MTLCommandBuffer",
+    "MTLCommandEncoder",
+    "MTLCommandQueue",
+    "MTLDevice",
+    "MTLDrawable",
+    "MTLPixelFormat",
+    "MTLRenderCommandEncoder",
+    "MTLRenderPass",
+    "objc2-core-foundation",
+] }
+objc2-quartz-core = { workspace = true, features = ["CALayer", "CAMetalLayer", "objc2-core-foundation", "objc2-metal"] }
 objc.workspace = true
 objc2.workspace = true
 block2.workspace = true
-core-foundation.workspace = true
-core-video.workspace = true
 gpui_apple.workspace = true
-foreign-types.workspace = true
 gpui_macos.workspace = true
 parking_lot.workspace = true

@@ -66,16 +66,24 @@ pub(crate) struct ScrollLog {
     /// The scroll containers painted lately, by id.
     containers: FxHashMap<GlobalElementId, PaintedContainer>,
     /// How many times a wheel listener notified each view since the last
-    /// frame was drawn, for having scrolled a container it painted.
-    scroll_notifies: FxHashMap<EntityId, u64>,
+    /// frame was drawn, for having scrolled a container it painted. See also
+    /// [`crate::fast::layers::wheel`].
+    pub(crate) scroll_notifies: FxHashMap<EntityId, u64>,
     /// Whether each list about to be laid out this frame, by the address of
     /// its state's version counter, is scrolled to its end, for the reads of
     /// only that to be judged by it. See [`note_at_end_read`].
     list_ends: FxHashMap<usize, Option<bool>>,
-    /// The views that asked for an animation frame while this frame was
-    /// being drawn, and while the last one was. See [`note_animation_frame`].
-    animation_frames: RefCell<FxHashSet<EntityId>>,
-    animation_frames_before: FxHashSet<EntityId>,
+    /// Whether each list laid out this frame came out of its layout scrolled
+    /// to its end: what a view that asked before the list was laid out read
+    /// may no longer stand. See [`note_list_laid_out`].
+    ends_laid_out: FxHashMap<usize, Option<bool>>,
+    /// `ends_laid_out` of the last frame, for the views asked to be drawn
+    /// again this one.
+    ends_last_laid_out: FxHashMap<usize, Option<bool>>,
+    /// The animation frames asked for while this frame was being drawn, and
+    /// while the last one was. See [`note_animation_frame`].
+    animation_frames: RefCell<FxHashSet<AnimationRequest>>,
+    animation_frames_before: FxHashSet<AnimationRequest>,
     /// Where anchored elements were prepainted this frame, by the id of the
     /// element around them. See [`note_anchored`].
     pub(crate) anchored: Vec<GlobalElementId>,
@@ -83,6 +91,29 @@ pub(crate) struct ScrollLog {
     /// read something of their own written from outside them before they
     /// began to be built. See [`note_rebuild`].
     written_owners: FxHashSet<EntityId>,
+}
+
+/// An animation frame asked for while a frame was drawn: by which view, and
+/// from where. See [`note_animation_frame`].
+#[derive(PartialEq, Eq, Hash)]
+struct AnimationRequest {
+    /// The view current when it was asked for, which it notifies.
+    view: EntityId,
+    /// The element id stack then: the id of the element that asked, or of the
+    /// nearest one around it with an id.
+    path: GlobalElementId,
+    /// The scroll container whose layer's content was being laid out,
+    /// prepainted or painted then, if any: a `list`'s rows have no id
+    /// starting with the list's (see [`crate::fast::layers::lists::content_prefix`]).
+    painting: Option<GlobalElementId>,
+}
+
+impl AnimationRequest {
+    /// Whether it was asked for from inside the content of the scroll
+    /// container `id`: by an element in it, or by a view drawn in it.
+    fn inside(&self, id: &GlobalElementId) -> bool {
+        self.painting.as_ref() == Some(id) || self.path.starts_with(id)
+    }
 }
 
 /// What [`ScrollLog`] keeps of a scroll container it saw painted.
@@ -140,7 +171,11 @@ impl ScrollLog {
         let sources = OFFSETS_SET.with_borrow_mut(std::mem::take);
         for source in sources {
             for (id, container) in &self.containers {
-                if container.source == source {
+                let list = container
+                    .version
+                    .as_ref()
+                    .is_some_and(|(version, _)| ScrollSource::of_state(version) == source);
+                if container.source == source || list {
                     *self.scroll_notifies.entry(container.view).or_default() += 1;
                     self.scrolled.insert(id.clone());
                 }
@@ -156,6 +191,7 @@ impl ScrollLog {
         self.scrolled_sources.clear();
         self.scroll_notifies.clear();
         self.list_ends.clear();
+        self.ends_last_laid_out = std::mem::take(&mut self.ends_laid_out);
         self.animation_frames_before = std::mem::take(self.animation_frames.get_mut());
         self.anchored.clear();
         self.written_owners.clear();
@@ -383,6 +419,19 @@ pub(crate) fn offset_set(version: &StateVersion, moved: bool) {
     }
 }
 
+/// Notes that a scrollbar set the offset of the list whose state `version`
+/// counts changes of, as a scroll of it, as a wheel's is (see
+/// [`ScrollLog::take_offsets_set`]): the version, which counts changes of
+/// the list's content too, is not moved, and the list is drawn from its
+/// layer. Without layers it is moved, as for any change of the list.
+pub(crate) fn list_offset_set(version: &StateVersion) {
+    if COMPILED {
+        OFFSETS_SET.with_borrow_mut(|set| set.push(ScrollSource::of_state(version)));
+    } else {
+        version.bump();
+    }
+}
+
 /// Records, for any recording that is open, that the offset of the scroll
 /// state `version` counts changes of was read.
 #[inline]
@@ -424,6 +473,24 @@ pub(crate) fn note_list_at_end(window: &mut Window, version: &StateVersion, at_e
         .fast_layers
         .scrolls
         .list_ends
+        .insert(version.id(), at_end);
+}
+
+/// Notes whether the list whose state `version` counts changes of, just laid
+/// out, is scrolled to its end: a list laid out for the first time, or at a
+/// new size, or with rows measured anew, answers otherwise than it did before
+/// its layout, when a view drawn before it may have asked, as a view showing
+/// a "back to bottom" button beside its transcript does. That view is drawn
+/// again on the next frame, as it would be had the answer changed in between.
+pub(crate) fn note_list_laid_out(
+    window: &mut Window,
+    version: &StateVersion,
+    at_end: Option<bool>,
+) {
+    window
+        .fast_layers
+        .scrolls
+        .ends_laid_out
         .insert(version.id(), at_end);
 }
 
@@ -602,9 +669,35 @@ pub(crate) fn offset_read_changed(window: &Window, dependencies: &RenderDependen
         {
             return *now != at_end;
         }
+        if let Read::AtEnd(at_end) = read.read
+            && scrolls
+                .ends_last_laid_out
+                .get(&read.version.id())
+                .is_some_and(|laid_out| *laid_out != at_end)
+        {
+            return true;
+        }
         read.version.get() != read.read_at
             || (!scrolled.is_empty() && scrolled.contains(&ScrollSource::of_state(&read.version)))
     })
+}
+
+/// Whether a list whose state `dependencies` include a read of was scrolled
+/// since the last frame by code setting its offset (a scrollbar, a bounce),
+/// which leaves the state's version alone for the list to be drawn from its
+/// layer (see [`list_offset_set`]). The view that laid the list out is built
+/// again for it, as if notified, for the list to show the offset set and
+/// its listeners to scroll from there.
+pub(crate) fn list_state_scrolled(window: &Window, dependencies: &RenderDependencies) -> bool {
+    if !COMPILED {
+        return false;
+    }
+    let scrolled = &window.fast_layers.scrolls.scrolled_sources;
+    !scrolled.is_empty()
+        && dependencies
+            .states
+            .iter()
+            .any(|(version, _)| scrolled.contains(&ScrollSource::of_state(version)))
 }
 
 /// `dependencies` without the version of the scroll state at `source`, if
@@ -713,33 +806,82 @@ fn owner_notified_otherwise(window: &Window, id: &GlobalElementId) -> bool {
     }
 }
 
-/// Whether the view holding the scroll container `id`, or a view drawn
-/// inside the container last frame, asked for an animation frame while this
-/// frame or the last was drawn: what it animates changes every frame.
+/// Whether the content of the scroll container `id` asked for an animation
+/// frame while this frame or the last was drawn: an element in it, or a view
+/// drawn inside the container last frame, did. What it animates changes
+/// every frame.
+///
+/// An animation frame asked for from outside the content — by the view
+/// holding the container as it renders, or by an element of it beside the
+/// container, a scrollbar fading or a button pulsing — does not change the
+/// content. It notifies the view that asked on the next frame, which is told
+/// apart as any other notification of it is: one asked for by a view the
+/// container is drawn inside, around the one holding it, leaves the layer
+/// composited; one asked for by the view holding it is seen by
+/// [`owner_animating`].
 pub(crate) fn animation_frame_requested(window: &Window, id: &GlobalElementId) -> bool {
     let scrolls = &window.fast_layers.scrolls;
     let requested = scrolls.animation_frames.borrow();
     if requested.is_empty() && scrolls.animation_frames_before.is_empty() {
         return false;
     }
+    let mut requests = requested.iter().chain(&scrolls.animation_frames_before);
+    if requests.any(|request| request.inside(id)) {
+        return true;
+    }
     let animating = |view: EntityId| {
-        requested.contains(&view) || scrolls.animation_frames_before.contains(&view)
+        requested
+            .iter()
+            .chain(&scrolls.animation_frames_before)
+            .any(|request| request.view == view)
     };
-    owner_view(window).is_some_and(animating)
-        || any_content_view(window, id, animating)
+    any_content_view(window, id, animating)
         || crate::fast::layers::lists::any_held_view(window, id, animating)
 }
 
+/// Whether the view holding the scroll container `id` asked for an animation
+/// frame from outside the container's content while this frame or the last
+/// was drawn: it is rendered again on every frame its animation runs, for a
+/// notification nothing tells apart from a change of what it hands the
+/// content.
+///
+/// The content does not change for it, but the layer cannot tell that:
+/// painting the content into it again, or rendering again the rows of a
+/// list it shows, costs more than drawing them without it. The container is
+/// drawn without its layer while the animation runs, and gets it back as
+/// soon as the animation stops, without waiting for its content to be stable
+/// for a while as a demoted layer does.
+pub(crate) fn owner_animating(window: &Window, id: &GlobalElementId) -> bool {
+    let scrolls = &window.fast_layers.scrolls;
+    let requested = scrolls.animation_frames.borrow();
+    if requested.is_empty() && scrolls.animation_frames_before.is_empty() {
+        return false;
+    }
+    let Some(owner) = owner_view(window) else {
+        return false;
+    };
+    requested
+        .iter()
+        .chain(&scrolls.animation_frames_before)
+        .any(|request| request.view == owner && !request.inside(id))
+}
+
 /// Notes that the view `view` asked for an animation frame, as
-/// [`Window::request_animation_frame`] does.
+/// [`Window::request_animation_frame`] does, and from where: the element
+/// being drawn, and the layer whose content it is drawn in, if any.
 pub(crate) fn note_animation_frame(window: &Window, view: EntityId) {
     if COMPILED {
+        let request = AnimationRequest {
+            view,
+            path: window.element_id_stack.global_id(),
+            painting: window.fast_layers.painting.as_ref().map(|p| p.id.clone()),
+        };
         window
             .fast_layers
             .scrolls
             .animation_frames
             .borrow_mut()
-            .insert(view);
+            .insert(request);
     }
 }
 
@@ -823,6 +965,17 @@ impl Drop for OwnerWatch {
             }
         });
     }
+}
+
+/// How often each watched view has been notified since any watch of it
+/// began.
+pub(crate) fn watched_notifies() -> FxHashMap<EntityId, u64> {
+    OWNER_NOTIFIES.with_borrow(|watched| {
+        watched
+            .iter()
+            .map(|(view, notifies)| (*view, notifies.notifies))
+            .collect()
+    })
 }
 
 /// Counts a notification of `entity`, if it is a watched view. See
@@ -1123,4 +1276,42 @@ fn any_content_view(window: &Window, id: &GlobalElementId, f: impl Fn(EntityId) 
 pub(crate) fn changed_without_layer(window: &Window, cx: &App, id: &GlobalElementId) -> bool {
     let source = window.fast_layers.scrolls.source(id);
     nested_container_scrolled(window, id) || !owner_scrolled_only(window, cx, id, source.as_ref())
+}
+
+/// What the thread notes for the next frame's layers, kept while a frame is
+/// drawn that must leave no trace: the retained check's frame from scratch
+/// (see [`crate::fast::check_retained`]). Offsets set and views notified
+/// while it renders are its own, not the frame shown's.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) struct ThreadNotes {
+    offsets_set: Vec<ScrollSource>,
+    notifies: Vec<(EntityId, u64)>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl ThreadNotes {
+    /// Takes what the thread notes, leaving nothing noted.
+    pub(crate) fn take() -> Self {
+        ThreadNotes {
+            offsets_set: OFFSETS_SET.with_borrow_mut(std::mem::take),
+            notifies: OWNER_NOTIFIES.with_borrow(|watched| {
+                watched
+                    .iter()
+                    .map(|(view, notifies)| (*view, notifies.notifies))
+                    .collect()
+            }),
+        }
+    }
+
+    /// Puts back what was taken, dropping what was noted since.
+    pub(crate) fn restore(self) {
+        OFFSETS_SET.set(self.offsets_set);
+        OWNER_NOTIFIES.with_borrow_mut(|watched| {
+            for (view, count) in self.notifies {
+                if let Some(notifies) = watched.get_mut(&view) {
+                    notifies.notifies = count;
+                }
+            }
+        });
+    }
 }

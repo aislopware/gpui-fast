@@ -23,6 +23,12 @@ use super::NativeHost;
 /// focus: focusing it gives the native the keyboard, and the native taking
 /// the keyboard focuses it. Keys go through the `NativeView` key context
 /// first.
+///
+/// Given an id, the element is a node of the window's accessibility tree
+/// where the native shows, so assistive technologies and tests find it among
+/// GPUI's own: a group named by the host's label, unless the element is given
+/// a role or a label of its own. (A host may be placed by more than one
+/// element in a frame, the last showing it, so its id cannot be the node's.)
 #[track_caller]
 pub fn native_view(host: &NativeHost) -> NativeView {
     let slot = Rc::new(RefCell::new(None));
@@ -143,11 +149,16 @@ impl Element for NativeView {
     }
 
     fn a11y_role(&self) -> Option<accesskit::Role> {
-        self.div.a11y_role()
+        self.div.a11y_role().or(Some(accesskit::Role::Group))
     }
 
     fn write_a11y_info(&self, node: &mut accesskit::Node) {
         self.div.write_a11y_info(node);
+        if node.label().is_none()
+            && let Some(label) = &self.host.label
+        {
+            node.set_label(label.to_string());
+        }
     }
 }
 
