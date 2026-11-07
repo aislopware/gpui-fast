@@ -186,6 +186,9 @@ pub(crate) struct RetainedContext {
     pub(crate) painted_opacity: f32,
     /// The edge fade it was drawn in (see [`crate::fast::edge_fade`]).
     pub(crate) fade: u32,
+    /// Whether it was drawn inert (see [`crate::fast::inert`]): its hitboxes
+    /// are hit only out of an inert subtree.
+    pub(crate) inert: bool,
 }
 
 /// Whether two opacities are the same, by their bits, so that a NaN opacity
@@ -211,6 +214,7 @@ pub(crate) fn refade(records: &mut [RetainedSubtree], map: &mut impl FnMut(u32) 
                 opacity: context.opacity,
                 painted_opacity: context.painted_opacity,
                 fade,
+                inert: context.inert,
             });
         }
     }
@@ -796,6 +800,7 @@ impl Window {
             && same_opacity(context.opacity, self.element_opacity)
             && context.content_mask == self.content_mask()
             && context.fade == crate::fast::edge_fade::current(self)
+            && context.inert == self.fast_inert
             && context.text_style == self.text_style()
     }
 
@@ -1161,6 +1166,7 @@ impl Window {
                     opacity: 1.,
                     painted_opacity: 1.,
                     fade: crate::fast::edge_fade::NONE,
+                    inert: false,
                 }),
                 dependencies: RenderDependencies::default(),
                 own_dependencies: RenderDependencies::default(),
@@ -1245,6 +1251,7 @@ impl Window {
             opacity: self.element_opacity,
             painted_opacity: self.element_opacity,
             fade: crate::fast::edge_fade::current(self),
+            inert: self.fast_inert,
         };
         let end = self.prepaint_index();
         let retained = &mut self.next_frame.retained;

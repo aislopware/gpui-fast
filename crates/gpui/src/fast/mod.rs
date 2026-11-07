@@ -45,6 +45,7 @@ pub mod hover_intent;
 pub(crate) mod image_aspect;
 pub(crate) mod image_evict;
 pub(crate) mod image_mask;
+pub mod inert;
 pub(crate) mod inline_boxes;
 pub(crate) mod input_frame;
 pub(crate) mod interactive_text;

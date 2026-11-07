@@ -321,8 +321,11 @@ pub(crate) fn painted(window: &mut Window, id: &GlobalElementId, painting: Paint
 /// content against the viewport and its overscan, but only what shows in
 /// the viewport may be hit, as without a layer. The mask before clipping is
 /// kept, for the hitbox to be clipped anew once the content has scrolled.
+///
+/// Inside an inert subtree (see [`crate::fast::inert`]) the mask is empty, so
+/// the hitbox is never hit, in a layer or out of one.
 pub(crate) fn hitbox_mask(window: &mut Window) -> ContentMask<Pixels> {
-    let mask = window.content_mask();
+    let mask = crate::fast::inert::mask(window);
     let Some(painting) = window.fast_layers.painting.as_mut() else {
         return mask;
     };

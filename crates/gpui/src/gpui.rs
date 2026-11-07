@@ -120,6 +120,7 @@ pub use fast::gesture::{
     InteractiveGestures, PlatformGesture, RotateEvent, SmartMagnifyEvent, SwipeEvent,
 };
 pub use fast::hover_intent;
+pub use fast::inert::{Inert, inert};
 pub use fast::inline_boxes::InlineBox;
 pub use fast::input_frame::{prepare_input, prepare_keystroke};
 pub use fast::layers::scene::{
