@@ -119,6 +119,7 @@ pub use fast::focus_tooltip::{TOOLTIP_WARM_FOR, TooltipPlacement};
 pub use fast::gesture::{
     InteractiveGestures, PlatformGesture, RotateEvent, SmartMagnifyEvent, SwipeEvent,
 };
+pub use fast::hover_intent;
 pub use fast::inline_boxes::InlineBox;
 pub use fast::input_frame::{prepare_input, prepare_keystroke};
 pub use fast::layers::scene::{
@@ -141,7 +142,7 @@ pub use fast::{
     layer_mask::{GroupFade, LayerMask, LayerMaskCut},
 };
 #[cfg(any(test, feature = "test-support"))]
-pub use fast::{hover_intent, motion_gate, same_frame::PresentCounts};
+pub use fast::{motion_gate, same_frame::PresentCounts};
 pub use geometry::*;
 pub use gestures::*;
 pub use global::*;
