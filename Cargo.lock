@@ -922,6 +922,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cbindgen"
+version = "0.29.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ecb53484c9c167ba674026b656d8a27d7657a58e6066aa902bfb1a4aa00ae20"
+dependencies = [
+ "heck 0.5.0",
+ "indexmap",
+ "log",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+ "tempfile",
+ "toml 0.9.8",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2667,7 +2685,7 @@ checksum = "00053551517815ab169fda28fff78dbebf2712722593c7671c511785cb3f79d5"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
- "cbindgen",
+ "cbindgen 0.28.0",
  "cocoa 0.26.0",
  "core-foundation 0.10.0",
  "core-video",
@@ -3063,7 +3081,7 @@ dependencies = [
  "anyhow",
  "async-task",
  "block2 0.6.2",
- "cbindgen",
+ "cbindgen 0.29.4",
  "collections",
  "core-foundation 0.10.0",
  "core-foundation-sys",
