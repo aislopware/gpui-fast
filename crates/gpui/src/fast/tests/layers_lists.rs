@@ -3354,40 +3354,59 @@ mod rows {
     fn hover_listeners_hear_hover_as_the_freeze_holds_it(cx: &mut TestAppContext) {
         use crate::{HoverListenerMode, InteractiveElement as _};
 
+        type Hovers = Rc<RefCell<Vec<(Option<usize>, bool)>>>;
+
+        /// A panel with a hover listener around a view of rows, as
+        /// [`HoverPanel`] is: a list's scroll notifies the view holding it,
+        /// and a panel built again for that has a hitbox the wheel's hover
+        /// does not hold, its hover style showing none either.
         struct ListenerPanel {
-            state: ListState,
+            rows: Entity<ListenerRows>,
             mode: HoverListenerMode,
-            hovers: Rc<RefCell<Vec<(Option<usize>, bool)>>>,
+            hovers: Hovers,
+            renders: Rc<RefCell<usize>>,
         }
 
         impl Render for ListenerPanel {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                let mode = self.mode;
-                let panel = self.hovers.clone();
-                let rows = self.hovers.clone();
+                *self.renders.borrow_mut() += 1;
+                let hovers = self.hovers.clone();
                 div()
                     .id("panel")
                     .size_full()
                     .bg(rgb(0xffffff))
-                    .hover_listener_mode(mode)
-                    .on_hover(move |hovered, _, _| panel.borrow_mut().push((None, *hovered)))
-                    .child(
-                        crate::list(self.state.clone(), move |ix, _, _| {
-                            let hovers = rows.clone();
-                            div()
-                                .id(("row", ix))
-                                .w(px(VIEWPORT_WIDTH))
-                                .h(px(40.))
-                                .bg(row_color(ix))
-                                .hover_listener_mode(mode)
-                                .on_hover(move |hovered, _, _| {
-                                    hovers.borrow_mut().push((Some(ix), *hovered))
-                                })
-                                .into_any_element()
-                        })
+                    .hover_listener_mode(self.mode)
+                    .on_hover(move |hovered, _, _| hovers.borrow_mut().push((None, *hovered)))
+                    .child(self.rows.clone())
+            }
+        }
+
+        /// The rows of a [`ListenerPanel`], each with a hover listener.
+        struct ListenerRows {
+            state: ListState,
+            mode: HoverListenerMode,
+            hovers: Hovers,
+        }
+
+        impl Render for ListenerRows {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let mode = self.mode;
+                let hovers = self.hovers.clone();
+                crate::list(self.state.clone(), move |ix, _, _| {
+                    let hovers = hovers.clone();
+                    div()
+                        .id(("row", ix))
                         .w(px(VIEWPORT_WIDTH))
-                        .h(px(VIEWPORT_HEIGHT)),
-                    )
+                        .h(px(40.))
+                        .bg(row_color(ix))
+                        .hover_listener_mode(mode)
+                        .on_hover(move |hovered, _, _| {
+                            hovers.borrow_mut().push((Some(ix), *hovered))
+                        })
+                        .into_any_element()
+                })
+                .w(px(VIEWPORT_WIDTH))
+                .h(px(VIEWPORT_HEIGHT))
             }
         }
 
@@ -3395,14 +3414,21 @@ mod rows {
             HoverListenerMode::InputModalityAware,
             HoverListenerMode::InputModalityIndependent,
         ] {
-            let hovers = Rc::new(RefCell::new(Vec::new()));
+            let hovers: Hovers = Rc::new(RefCell::new(Vec::new()));
+            let renders = Rc::new(RefCell::new(0));
             let window: AnyWindowHandle = cx
                 .add_window({
                     let hovers = hovers.clone();
-                    move |_, _| ListenerPanel {
-                        state: ListState::new(300, ListAlignment::Top, px(0.)).measure_all(),
+                    let renders = renders.clone();
+                    move |_, cx| ListenerPanel {
+                        rows: cx.new(|_| ListenerRows {
+                            state: ListState::new(300, ListAlignment::Top, px(0.)).measure_all(),
+                            mode,
+                            hovers: hovers.clone(),
+                        }),
                         mode,
                         hovers,
+                        renders,
                     }
                 })
                 .into();
@@ -3426,6 +3452,8 @@ mod rows {
                 "{mode:?}: the pointer hovers the panel and the first row: {heard:?}"
             );
 
+            let rendered = *renders.borrow();
+
             // The first row moves under the pointer and stays on screen for
             // five frames; the next rows come under the pointer after it.
             for frame in 0..10 {
@@ -3437,6 +3465,11 @@ mod rows {
                     "{mode:?}, frame {frame}: only the row the wheel moved stops, once: {heard:?}"
                 );
             }
+            assert_eq!(
+                *renders.borrow(),
+                rendered,
+                "{mode:?}: the panel is not rendered for the wheel"
+            );
 
             // As HOVER_FREEZE passing would, on a clock the test does not advance.
             with_window(cx, window, |window, cx| window.end_hover_freeze(cx));
