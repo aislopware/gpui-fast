@@ -14,26 +14,15 @@ env:
   CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
 
+# The fork builds for macOS and iOS 27.2 on Apple silicon only (FORK.md, "Apple only"),
+# so every job runs on a Mac with Xcode 27: a binary built for 27.2 does not load on an
+# older system.
 jobs:
   test:
-    name: Test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: Test
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config \
-            libasound2-dev libfontconfig-dev libfreetype-dev libssl-dev \
-            libvulkan1 libwayland-dev libx11-xcb-dev libxcb1-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev
 
       # rust-toolchain.toml pins the toolchain; this installs it.
       - name: Install Rust
@@ -47,31 +36,26 @@ jobs:
       - name: Test gpui
         run: cargo test -p gpui --features test-support,profiler
 
-      - name: Link GPUI Fast with GPUI Pre
-        if: runner.os == 'Windows'
-        run: cargo test -p gpui_perf --features fast,upstream --test windows_manifest_coexistence
-
-      # Scroll layer tiles must match drawing directly, byte for byte, on
-      # each renderer; these run on the runner's GPU.
+      # Scroll layer tiles must match drawing directly, byte for byte; these
+      # run on the runner's GPU.
       - name: Test scroll layers on Metal
-        if: runner.os == 'macOS'
         run: cargo test -p gpui_apple fast::layers -- --nocapture
-
-      - name: Test scroll layers on Direct3D
-        if: runner.os == 'Windows'
-        run: cargo test -p gpui_windows --features test-support fast::layers -- --nocapture
 
       # gpui_macos's own: the immediate frame's slot, the frame park, the
       # cursor and text smoothing.
       - name: Test gpui_macos
-        if: runner.os == 'macOS'
         run: cargo test -p gpui_macos
 
       # gpui_ios's pure parts (hardware keys, described input, frame pacing, the
       # keyboard inset) are compiled on the host too, so their tests run here.
       - name: Test gpui_ios on the host
-        if: runner.os == 'macOS'
         run: cargo test -p gpui_ios
+
+      - name: Check gpui_ios for iOS
+        run: |
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+          cargo check -p gpui_platform --target aarch64-apple-ios
+          cargo check -p gpui_platform --target aarch64-apple-ios-sim
 
       - name: Check gpui_perf
         run: cargo check -p gpui_perf --all-targets
@@ -82,25 +66,16 @@ jobs:
         run: >-
           cargo check -p gpui-pre -p gpui-pre-platform -p gpui-pre-macros
           -p gpui-pre-reqwest-client -p gpui-pre-sum-tree
-          -p gpui-fast -p gpui-fast-platform -p gpui-fast-web --all-features
+          -p gpui-fast -p gpui-fast-platform --all-features
 
   lint:
     name: Lint and upstream check
-    runs-on: ubuntu-latest
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
         with:
           # script/check-upstream compares with the upstream import commit.
           fetch-depth: 0
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config \
-            libasound2-dev libfontconfig-dev libfreetype-dev libssl-dev \
-            libvulkan1 libwayland-dev libx11-xcb-dev libxcb1-dev \
-            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev
 
       - name: Install Rust
         run: rustup show

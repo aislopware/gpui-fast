@@ -9,7 +9,7 @@ GPUI is still in active development as we work on the Zed code editor, and is st
 
 ```toml
 gpui = { version = "*" }
-gpui_platform = { version = "*", features = ["font-kit", "wayland", "x11"] }
+gpui_platform = { version = "*", features = ["font-kit"] }
 ```
 
 Everything in a standalone GPUI app starts with an `Application`. You can create one with `gpui_platform::application()`, which picks the windowing and text backends for the host OS, and kick off your application by passing a callback to `Application::run()`. Inside this callback, you can create a new window with `App::open_window()` and register your first root view.
@@ -26,21 +26,7 @@ fn main() {
 
 ### `gpui_platform`
 
-The features on `gpui_platform` are platform-specific, so the list above is a safe cross-platform default. If you build for a single platform, you can trim it:
-
-- **macOS** — Rendering uses Metal and is always available, but glyph rasterization needs `font-kit`. Without it, GPUI falls back to a placeholder text system that lays text out but renders no glyphs.
-
-    ```toml
-    gpui_platform = { version = "*", features = ["font-kit"] }
-    ```
-
-- **Linux / FreeBSD** — enable at least one windowing backend for desktop windows: `wayland`, `x11`, or both. These features also compile the renderer and text system, so no separate text feature is needed.
-
-    ```toml
-    gpui_platform = { version = "*", features = ["wayland", "x11"] }
-    ```
-
-- **Windows** — no features are required. Windowing uses Win32 and text uses DirectWrite. `font-kit` has no effect here.
+This fork builds for macOS and iOS on Apple silicon only. Rendering uses Metal and is always available, but glyph rasterization on macOS needs `font-kit`. Without it, GPUI falls back to a placeholder text system that lays text out but renders no glyphs.
 
 ### Additional Topics
 

@@ -26,7 +26,7 @@ fn main() {
     macos::main();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "ios")]
 fn main() {
     eprintln!("video_latency measures macOS video");
 }

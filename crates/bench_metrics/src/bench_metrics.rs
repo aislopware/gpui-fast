@@ -189,9 +189,6 @@ impl HardwareEvent {
 /// (tens to hundreds of nanoseconds). Which events and scopes are available
 /// depends on the platform backend:
 ///
-/// * **Linux** (`perf_event_open`): every event, both scopes. Needs
-///   `CAP_PERFMON` or `perf_event_paranoid <= 2`. See [`perf`] for how
-///   process scope, hybrid CPUs, and multiplexing are handled.
 /// * **macOS** (`proc_pid_rusage` and `thread_selfcounts`): instructions and
 ///   cycles, both scopes, on Apple Silicon without privileges. Intel Macs and
 ///   the cache/branch events are unsupported.
@@ -280,379 +277,12 @@ impl Measurement for HardwareCounter {
     }
 }
 
-#[cfg(target_os = "macos")]
-use darwin as backend;
 /// The platform backend behind [`HardwareCounter`]. Each provides a `Counter`
 /// with `open`, `snapshot`, `advanced`, and `delta`, and a `Snapshot` type.
-#[cfg(target_os = "linux")]
-use perf as backend;
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(target_os = "macos")]
+use darwin as backend;
+#[cfg(target_os = "ios")]
 use unsupported as backend;
-
-/// Linux backend: `perf_event_open` through the `perf-event2` crate, whose
-/// items are referenced through the `perf_event` path so this module's own
-/// helpers are distinguishable from the crate's.
-///
-/// With [`MetricScope::Process`], one inherited counter is opened for every
-/// thread that exists at construction. Inheritance extends each counter to
-/// the threads that thread later creates, and live descendants are summed on
-/// read, so the whole process is covered for the counter's lifetime. With
-/// [`MetricScope::CallingThread`], a single non-inherited counter observes the
-/// constructing thread only.
-///
-/// Hybrid CPUs (separate performance and efficiency core PMUs) need one event
-/// per PMU, of which only the one matching the CPU a thread runs on can be
-/// scheduled; each PMU's encoding is read from sysfs. If the kernel
-/// multiplexes a conventional counter with other profiling, its count is
-/// scaled by `time_enabled / time_running` and a warning is printed once.
-#[cfg(target_os = "linux")]
-pub mod perf {
-    use super::*;
-
-    pub(super) struct Counter {
-        event: HardwareEvent,
-        counters: RefCell<Vec<PerfCounter>>,
-        multiplexing_reported: Cell<bool>,
-    }
-
-    struct PerfCounter {
-        counter: perf_event::Counter,
-        /// Generic events on conventional CPUs are scaled when multiplexed.
-        /// Hybrid per-PMU events are not, since a thread on the other core type
-        /// shows as "not running" for that PMU by design.
-        scale_for_multiplexing: bool,
-    }
-
-    /// Every counter's state at one instant.
-    #[doc(hidden)]
-    pub struct Snapshot(Vec<CounterState>);
-
-    #[derive(Clone, Copy)]
-    struct CounterState {
-        count: u64,
-        time_enabled: std::time::Duration,
-        time_running: std::time::Duration,
-    }
-
-    impl Counter {
-        pub(super) fn open(event: HardwareEvent, scope: MetricScope) -> Result<Self> {
-            let hybrid_events = perf::hybrid_pmu_events(event)?;
-            let mut counters = Vec::new();
-            match scope {
-                MetricScope::CallingThread => {
-                    Self::open_target(
-                        event,
-                        CounterTarget::CallingThread,
-                        &hybrid_events,
-                        &mut counters,
-                    )?;
-                }
-                MetricScope::Process => {
-                    for thread_id in perf::process_thread_ids()? {
-                        Self::open_target(
-                            event,
-                            CounterTarget::ThreadAndDescendants(thread_id),
-                            &hybrid_events,
-                            &mut counters,
-                        )?;
-                    }
-                }
-            }
-            if counters.is_empty() {
-                return Err(anyhow!(
-                    "no Linux {} counter could be opened for {}: the CPU does not expose this event",
-                    event.name(),
-                    scope.label()
-                ));
-            }
-            for counter in &mut counters {
-                counter
-                    .counter
-                    .enable()
-                    .map_err(|error| Self::operation_error(event, "enable", error))?;
-            }
-            Ok(Self {
-                event,
-                counters: RefCell::new(counters),
-                multiplexing_reported: Cell::new(false),
-            })
-        }
-
-        fn open_target(
-            event: HardwareEvent,
-            target: CounterTarget,
-            hybrid_events: &[(u32, u64)],
-            counters: &mut Vec<PerfCounter>,
-        ) -> Result<()> {
-            let opened: Vec<(std::io::Result<perf_event::Counter>, bool)> =
-                if hybrid_events.is_empty() {
-                    let mut builder = perf_event::Builder::new(generic_event(event));
-                    target.configure(&mut builder);
-                    vec![(builder.build(), true)]
-                } else {
-                    hybrid_events
-                        .iter()
-                        .map(|&(pmu_type, config)| {
-                            let mut builder =
-                                perf_event::Builder::new(perf_event::events::Raw::new(config));
-                            builder.attrs_mut().type_ = pmu_type;
-                            target.configure(&mut builder);
-                            (builder.build(), false)
-                        })
-                        .collect()
-                };
-            for (result, scale_for_multiplexing) in opened {
-                match result {
-                    Ok(counter) => counters.push(PerfCounter {
-                        counter,
-                        scale_for_multiplexing,
-                    }),
-                    // The thread exited between enumeration and open.
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(Self::open_error(event, target, error)),
-                }
-            }
-            Ok(())
-        }
-
-        fn open_error(
-            event: HardwareEvent,
-            target: CounterTarget,
-            error: std::io::Error,
-        ) -> anyhow::Error {
-            anyhow!(
-                "failed to open Linux {} counter for {target}: {error}. Grant this benchmark \
-                 CAP_PERFMON or adjust /proc/sys/kernel/perf_event_paranoid according to your CI \
-                 security policy",
-                event.name()
-            )
-        }
-
-        fn operation_error(
-            event: HardwareEvent,
-            operation: &str,
-            error: std::io::Error,
-        ) -> anyhow::Error {
-            anyhow!("Linux {} counter {operation} failed: {error}", event.name())
-        }
-
-        pub(super) fn snapshot(&self) -> Snapshot {
-            Snapshot(
-                self.counters
-                    .borrow_mut()
-                    .iter_mut()
-                    .map(|counter| {
-                        let data = counter.counter.read_full().unwrap_or_else(|error| {
-                            panic!("{}", Self::operation_error(self.event, "read", error))
-                        });
-                        CounterState {
-                            count: data.count(),
-                            time_enabled: data
-                                .time_enabled()
-                                .expect("time-enabled counter data was requested"),
-                            time_running: data
-                                .time_running()
-                                .expect("time-running counter data was requested"),
-                        }
-                    })
-                    .collect(),
-            )
-        }
-
-        pub(super) fn advanced(&self, before: &Snapshot, after: &Snapshot) -> bool {
-            before
-                .0
-                .iter()
-                .zip(&after.0)
-                .any(|(before, after)| after.time_running > before.time_running)
-        }
-
-        pub(super) fn delta(&self, start: &Snapshot, end: &Snapshot) -> f64 {
-            let counters = self.counters.borrow();
-            let mut total = 0.0;
-            let mut any_counter_ran = false;
-            for ((counter, start), end) in counters.iter().zip(&start.0).zip(&end.0) {
-                let count = end.count.saturating_sub(start.count) as f64;
-                let time_enabled = end.time_enabled.saturating_sub(start.time_enabled);
-                let time_running = end.time_running.saturating_sub(start.time_running);
-                if time_running.is_zero() {
-                    // Process-wide coverage includes threads that slept for the
-                    // whole interval, and hybrid PMUs whose core type this thread
-                    // never ran on.
-                    continue;
-                }
-                any_counter_ran = true;
-                if counter.scale_for_multiplexing && time_running < time_enabled {
-                    if !self.multiplexing_reported.replace(true) {
-                        eprintln!(
-                            "{} counters were multiplexed by the kernel; counts are scaled using \
-                             time_enabled/time_running",
-                            self.event.name()
-                        );
-                    }
-                    total += count * time_enabled.as_secs_f64() / time_running.as_secs_f64();
-                } else {
-                    total += count;
-                }
-            }
-            if !any_counter_ran {
-                panic!(
-                    "Linux {} counters did not run during the measured interval; ensure hardware \
-                     performance counters are available to this machine or CI runner",
-                    self.event.name()
-                );
-            }
-            total
-        }
-    }
-
-    fn generic_event(event: HardwareEvent) -> perf_event::events::Hardware {
-        use perf_event::events::Hardware;
-        match event {
-            HardwareEvent::Instructions => Hardware::INSTRUCTIONS,
-            HardwareEvent::Cycles => Hardware::CPU_CYCLES,
-            HardwareEvent::BranchMisses => Hardware::BRANCH_MISSES,
-            HardwareEvent::CacheMisses => Hardware::CACHE_MISSES,
-            HardwareEvent::CacheReferences => Hardware::CACHE_REFERENCES,
-        }
-    }
-
-    #[derive(Clone, Copy)]
-    enum CounterTarget {
-        /// `pid = 0` to `perf_event_open`: the calling thread, with no inheritance.
-        CallingThread,
-        /// A specific thread plus every thread it creates afterwards.
-        ThreadAndDescendants(i32),
-    }
-
-    impl CounterTarget {
-        fn configure(self, builder: &mut perf_event::Builder) {
-            use perf_event::ReadFormat;
-
-            match self {
-                Self::CallingThread => builder.observe_self().inherit(false),
-                Self::ThreadAndDescendants(thread_id) => {
-                    builder.observe_pid(thread_id).inherit(true)
-                }
-            };
-            builder.read_format(ReadFormat::TOTAL_TIME_ENABLED | ReadFormat::TOTAL_TIME_RUNNING);
-        }
-    }
-
-    impl std::fmt::Display for CounterTarget {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                Self::CallingThread => write!(f, "the calling thread"),
-                Self::ThreadAndDescendants(thread_id) => write!(f, "thread {thread_id}"),
-            }
-        }
-    }
-
-    fn process_thread_ids() -> Result<Vec<i32>> {
-        let mut thread_ids = Vec::new();
-        for entry in std::fs::read_dir("/proc/self/task")
-            .map_err(|error| anyhow!("failed to enumerate benchmark process threads: {error}"))?
-        {
-            let entry = entry.map_err(|error| {
-                anyhow!("failed to enumerate a benchmark process thread: {error}")
-            })?;
-            if let Some(thread_id) = entry
-                .file_name()
-                .to_str()
-                .and_then(|thread_id| thread_id.parse().ok())
-            {
-                thread_ids.push(thread_id);
-            }
-        }
-        Ok(thread_ids)
-    }
-
-    /// Returns `(pmu_type, config)` for `event` on each hybrid CPU PMU, or an
-    /// empty list on conventional CPUs where the generic hardware event suffices.
-    ///
-    /// A PMU (performance monitoring unit) is the per-core block of counter
-    /// registers; Linux exposes each as a device under
-    /// `/sys/bus/event_source/devices/`. Conventional CPUs have one, `cpu`, and
-    /// the generic events target it. Hybrid CPUs have `cpu_core` (performance
-    /// cores) and `cpu_atom` (efficiency cores) with distinct event encodings,
-    /// and the kernel refuses the generic event for a task that may run on
-    /// either, so one raw event per PMU is needed.
-    ///
-    /// Each PMU publishes its events as `term=value,...` strings and the bit
-    /// layout of each term under `format/`, e.g. `cache-misses` is
-    /// `event=0x2e,umask=0x41` with `event` at `config:0-7` and `umask` at
-    /// `config:8-15`.
-    fn hybrid_pmu_events(event: HardwareEvent) -> Result<Vec<(u32, u64)>> {
-        use anyhow::Context as _;
-
-        let mut events = Vec::new();
-        for pmu in ["cpu_core", "cpu_atom"] {
-            let pmu_path = std::path::Path::new("/sys/bus/event_source/devices").join(pmu);
-            if !pmu_path.exists() {
-                continue;
-            }
-            let pmu_type = std::fs::read_to_string(pmu_path.join("type"))
-                .with_context(|| format!("failed to read Linux {pmu} performance-counter type"))?
-                .trim()
-                .parse::<u32>()
-                .with_context(|| format!("invalid Linux {pmu} performance-counter type"))?;
-            let encoding = std::fs::read_to_string(pmu_path.join("events").join(event.name()))
-                .with_context(|| format!("failed to read Linux {pmu} {} event", event.name()))?;
-            let mut config = 0_u64;
-            for term in encoding.trim().split(',') {
-                let (name, value) = term.split_once('=').unwrap_or((term, "1"));
-                let value = value
-                    .strip_prefix("0x")
-                    .map_or_else(|| value.parse::<u64>(), |hex| u64::from_str_radix(hex, 16))
-                    .with_context(|| {
-                        format!("invalid Linux {pmu} {} event term {term:?}", event.name())
-                    })?;
-                let layout = std::fs::read_to_string(pmu_path.join("format").join(name))
-                    .with_context(|| format!("failed to read Linux {pmu} format for {name:?}"))?;
-                let bits = layout.trim().strip_prefix("config:").ok_or_else(|| {
-                    anyhow!(
-                        "unsupported Linux {pmu} format {:?} for {name:?}",
-                        layout.trim()
-                    )
-                })?;
-                let (low, high) = match bits.split_once('-') {
-                    Some((low, high)) => (low.parse::<u32>()?, high.parse::<u32>()?),
-                    None => {
-                        let bit = bits.parse::<u32>()?;
-                        (bit, bit)
-                    }
-                };
-                let width = high - low + 1;
-                let mask = if width >= 64 {
-                    u64::MAX
-                } else {
-                    (1_u64 << width) - 1
-                };
-                config |= (value & mask) << low;
-            }
-            events.push((pmu_type, config));
-        }
-        Ok(events)
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn perf_permission_error_is_actionable() {
-            let error = Counter::open_error(
-                HardwareEvent::Instructions,
-                CounterTarget::ThreadAndDescendants(42),
-                std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-            );
-            let message = error.to_string();
-            assert!(message.contains("CAP_PERFMON"));
-            assert!(message.contains("perf_event_paranoid"));
-            assert!(message.contains("thread 42"));
-        }
-    }
-}
 
 /// macOS backend. Apple Silicon exposes retired instructions and cycles to
 /// unprivileged processes through two XNU interfaces: `proc_pid_rusage` with
@@ -825,8 +455,8 @@ pub mod darwin {
     }
 }
 
-/// Fallback backend for platforms without a hardware-counter source.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// iOS backend: no hardware-counter source.
+#[cfg(target_os = "ios")]
 pub mod unsupported {
     use super::*;
 
@@ -883,7 +513,6 @@ impl ResourceMetric {
         }
     }
 
-    #[cfg(unix)]
     fn read(self, usage: &libc::rusage) -> u64 {
         let value = match self {
             Self::VoluntaryContextSwitches => usage.ru_nvcsw,
@@ -895,10 +524,10 @@ impl ResourceMetric {
 
 /// Criterion measurement for a `getrusage` statistic.
 ///
-/// Unlike hardware counters this needs no privileges and works on every Unix.
-/// [`MetricScope::CallingThread`] uses `RUSAGE_THREAD`, which only Linux
-/// provides; [`MetricScope::Process`] uses `RUSAGE_SELF`, which sums every
-/// thread in the process.
+/// Unlike hardware counters this needs no privileges. Only
+/// [`MetricScope::Process`] is available: it uses `RUSAGE_SELF`, which sums
+/// every thread in the process. [`MetricScope::CallingThread`] would need
+/// `RUSAGE_THREAD`, which Apple's systems lack.
 pub struct ResourceCounter {
     metric: ResourceMetric,
     scope: MetricScope,
@@ -927,13 +556,9 @@ impl ResourceCounter {
         self.scope
     }
 
-    #[cfg(unix)]
     fn read(&self) -> Result<u64> {
         let who = match self.scope {
             MetricScope::Process => libc::RUSAGE_SELF,
-            #[cfg(target_os = "linux")]
-            MetricScope::CallingThread => libc::RUSAGE_THREAD,
-            #[cfg(not(target_os = "linux"))]
             MetricScope::CallingThread => {
                 return Err(anyhow!(
                     "getrusage statistics for {} need RUSAGE_THREAD, which only Linux provides",
@@ -952,14 +577,6 @@ impl ResourceCounter {
             ));
         }
         Ok(self.metric.read(&usage))
-    }
-
-    #[cfg(not(unix))]
-    fn read(&self) -> Result<u64> {
-        Err(anyhow!(
-            "getrusage statistics for {} are unavailable on this platform",
-            self.scope.label()
-        ))
     }
 }
 
@@ -2116,9 +1733,8 @@ mod tests {
         assert_eq!(formatter.scale_for_machines(&mut values), "cycles");
     }
 
-    #[cfg(unix)]
     #[test]
-    fn resource_counter_counts_page_faults_and_context_switches() {
+    fn resource_counter_counts_page_faults() {
         let faults = ResourceCounter::new(ResourceMetric::MinorPageFaults, MetricScope::Process)
             .expect("RUSAGE_SELF is always available");
         let start = faults.start();
@@ -2126,20 +1742,6 @@ mod tests {
         let buffer = vec![1_u8; 4 << 20];
         std::hint::black_box(&buffer);
         assert!(faults.end(start) > 100.0);
-
-        #[cfg(target_os = "linux")]
-        {
-            let switches = ResourceCounter::new(
-                ResourceMetric::VoluntaryContextSwitches,
-                MetricScope::CallingThread,
-            )
-            .expect("RUSAGE_THREAD is available on Linux");
-            let start = switches.start();
-            for _ in 0..5 {
-                std::thread::sleep(std::time::Duration::from_micros(100));
-            }
-            assert!(switches.end(start) >= 5.0);
-        }
     }
 
     /// Returns a closure measuring a background thread spinning `iterations`

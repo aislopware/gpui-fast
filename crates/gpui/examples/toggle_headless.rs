@@ -1,37 +1,29 @@
-#![cfg_attr(target_family = "wasm", no_main)]
-
-#[cfg(not(target_family = "wasm"))]
 use std::{
     io::{self, BufRead as _},
     sync::mpsc,
     time::Duration,
 };
 
-#[cfg(not(target_family = "wasm"))]
 use gpui::{
     AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, GraphicalEnvironment,
     QuitMode, Render, Subscription, TitlebarOptions, Window, WindowOptions, WindowingRequest, div,
     prelude::*,
 };
 
-#[cfg(not(target_family = "wasm"))]
 struct Todo {
     message: String,
 }
 
-#[cfg(not(target_family = "wasm"))]
 struct Todos {
     items: Vec<Entity<Todo>>,
     window: Option<AnyWindowHandle>,
 }
 
-#[cfg(not(target_family = "wasm"))]
 struct TodoWindow {
     todos: Entity<Todos>,
     _todos_subscription: Subscription,
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl Render for TodoWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self
@@ -61,7 +53,6 @@ impl Render for TodoWindow {
 }
 
 /// English, Chinese, Japanese and Korean for a word, then an emoji for it.
-#[cfg(not(target_family = "wasm"))]
 const SAMPLE_TODOS: [&str; 5] = [
     "milk / 牛奶 / 牛乳 / 우유 🥛",
     "apple / 苹果 / りんご / 사과 🍎",
@@ -70,7 +61,6 @@ const SAMPLE_TODOS: [&str; 5] = [
     "rain / 雨 / あめ / 비 🌧️",
 ];
 
-#[cfg(not(target_family = "wasm"))]
 fn describe_todo(index: usize, todo: &Entity<Todo>, cx: &App) -> String {
     let todo_reference: &Todo = todo.read(cx);
     format!(
@@ -81,7 +71,6 @@ fn describe_todo(index: usize, todo: &Entity<Todo>, cx: &App) -> String {
     )
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn print_todos(todos: &Entity<Todos>, cx: &App) {
     if todos.read(cx).items.is_empty() {
         println!("no todos");
@@ -91,7 +80,6 @@ fn print_todos(todos: &Entity<Todos>, cx: &App) {
     }
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn open_window(todos: &Entity<Todos>, cx: &mut App) -> anyhow::Result<()> {
     if todos.read(cx).window.is_some() {
         return Ok(());
@@ -117,49 +105,11 @@ fn open_window(todos: &Entity<Todos>, cx: &mut App) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Builds the environment for `open`: the given `NAME=value` pairs, or this process's
-/// environment when none are given.
-#[cfg(target_os = "linux")]
-fn display_environment(arguments: &str) -> anyhow::Result<GraphicalEnvironment> {
-    if arguments.trim().is_empty() {
-        return Ok(GraphicalEnvironment::detect());
-    }
-    let mut environment = GraphicalEnvironment::default();
-    for assignment in arguments.split_whitespace() {
-        let (name, value) = assignment
-            .split_once('=')
-            .ok_or_else(|| anyhow::anyhow!("expected NAME=value, got {assignment:?}"))?;
-        match name {
-            "WAYLAND_DISPLAY" => environment.wayland_display = Some(value.into()),
-            "DISPLAY" => environment.x11_display = Some(value.into()),
-            "XDG_RUNTIME_DIR" => environment.xdg_runtime_dir = Some(value.into()),
-            "XDG_ACTIVATION_TOKEN" => environment.activation_token = Some(value.into()),
-            _ => anyhow::bail!("unknown display variable {name}"),
-        }
-    }
-    Ok(environment)
-}
-
-/// Builds the environment for `open`: `SESSION=id`, or this process's session when not given.
-#[cfg(target_os = "windows")]
-fn display_environment(arguments: &str) -> anyhow::Result<GraphicalEnvironment> {
-    let mut environment = GraphicalEnvironment::detect();
-    for assignment in arguments.split_whitespace() {
-        let session = assignment
-            .strip_prefix("SESSION=")
-            .ok_or_else(|| anyhow::anyhow!("expected SESSION=id, got {assignment:?}"))?;
-        environment.session_id = Some(session.parse()?);
-    }
-    Ok(environment)
-}
-
 /// Builds the environment for `open`, which carries nothing on this platform.
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_family = "wasm")))]
 fn display_environment(_arguments: &str) -> anyhow::Result<GraphicalEnvironment> {
     Ok(GraphicalEnvironment::detect())
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn handle_command(
     command: &str,
     todos: &Entity<Todos>,
@@ -204,16 +154,8 @@ fn handle_command(
     Ok(None)
 }
 
-#[cfg(target_os = "linux")]
-const USAGE: &str = "commands: ls | create [message] | open [DISPLAY=… WAYLAND_DISPLAY=… XDG_RUNTIME_DIR=… XDG_ACTIVATION_TOKEN=…] | close | quit";
-
-#[cfg(target_os = "windows")]
-const USAGE: &str = "commands: ls | create [message] | open [SESSION=…] | close | quit";
-
-#[cfg(not(any(target_os = "linux", target_os = "windows", target_family = "wasm")))]
 const USAGE: &str = "commands: ls | create [message] | open | close | quit";
 
-#[cfg(not(target_family = "wasm"))]
 async fn run_command(
     command: String,
     todos: &Entity<Todos>,
@@ -245,13 +187,8 @@ async fn run_command(
     Ok(())
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn main() {
-    #[cfg(target_os = "linux")]
-    let application = gpui_platform::linux(gpui::WindowingModes::all());
-    #[cfg(not(target_os = "linux"))]
-    let application = gpui_platform::application();
-    application
+    gpui_platform::application()
         .with_windowing(WindowingRequest::Headless)
         .with_quit_mode(QuitMode::Explicit)
         .run(|cx| {

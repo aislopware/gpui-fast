@@ -40,8 +40,6 @@
 //! `missed` counts refreshes that showed no new frame while the view wanted one each refresh,
 //! and `dropped` counts frames the system discarded unshown.
 
-#![cfg_attr(target_family = "wasm", no_main)]
-
 use std::{
     cell::RefCell,
     collections::VecDeque,

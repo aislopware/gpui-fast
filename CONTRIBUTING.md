@@ -65,9 +65,9 @@ setting one up.
   rows every 33 ms, and `Retained views` (`V`). The arrow keys move through
   the sidebar.
 - The status bar shows, every half second: frames per second, the CPU of the
-  whole process and of the main thread, on macOS the share of that CPU time
-  spent on performance cores, the process's memory (resident on Linux, its
-  footprint on macOS), what the main thread spent per frame
+  whole process and of the main thread, the share of that CPU time spent on
+  performance cores, the process's memory footprint, what the main thread
+  spent per frame
   and on build, prepaint, layout (Taffy's share of prepaint) and paint, and how
   many views were built and reused per frame.
 
@@ -80,9 +80,8 @@ cargo run -p gpui_perf --release -- --auto
 cargo run -p gpui_perf --release -- --auto --only ScrollPage --retention on --frames 1000
 ```
 
-On macOS, `--auto` holds the CPU's clock up while it measures, with a helper
-process spinning on a performance core, as the performance governor does on
-Linux. Without it macOS runs a lightly loaded process on efficiency cores and
+`--auto` holds the CPU's clock up while it measures, with a helper process
+spinning on a performance core. Without it macOS runs a lightly loaded process on efficiency cores and
 at low clocks, so the less work a frame does, the longer each instruction of
 it takes: CPU time per frame differs twofold from one run of the same build
 to the next, and retained views can report as much CPU time as drawing from
@@ -152,8 +151,9 @@ from scratch, and requires every frame to match; `gpui_perf --headless
 ```
 crates/gpui                 the framework; gpui-fast's code is in src/fast/
 crates/gpui_platform        platform backend dispatch
-crates/gpui_{linux,macos,windows,web,apple,wgpu}
-                            per-platform backends and renderers
+crates/gpui_{macos,ios,apple}
+                            the macOS and iOS backends and their shared Metal
+                            renderer and Core Text text system
 crates/{collections,util,sum_tree,scheduler,refineable,...}
                             supporting crates from Zed
 crates/gpui_perf            gpui-fast's benchmarks (not upstream)

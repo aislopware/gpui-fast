@@ -174,7 +174,7 @@ unchanged, and a new entry needs as good a reason.
   three-finger trackpad swipes for itself.
 - `TouchEvent::timestamp` is a new public field (`fast/touch_time.rs`): when the touch was in
   its phase, by the platform's clock (`UITouch.timestamp` on iOS), `None` where the platform
-  says nothing (the web, tests). Upstream's recognizer times each touch as it handles it, so a
+  says nothing (tests). Upstream's recognizer times each touch as it handles it, so a
   main thread busy when a lift arrives makes every fling a finger threw read as one that had
   stopped (a lift more than 40 ms after the last move), and moves that waited and came all at
   once read as faster than the finger was. Only the platform knows when the finger moved, and
@@ -193,8 +193,7 @@ unchanged, and a new entry needs as good a reason.
   platform. Upstream's only way to the Mac's text system is the platform, which
   panics off the main thread, and a test never runs on the main thread; Core Text
   needs none, so a test that shapes and rasterises real glyphs (Slopty's terminal
-  paint oracle) takes it from here. Windows' and Linux's text systems need their
-  platform's devices and still come from a headless platform.
+  paint oracle) takes it from here.
 - `InlineBox`, `StyledText::with_inline_boxes`, `LineLayout::with_inline_boxes`,
   `WrappedLineLayout::glyph_position_for_index` and `TextLayout::baseline_for_index` are new
   public API (`fast/inline_boxes.rs`). Upstream's text runs are glyphs only, so a formula, an
@@ -230,8 +229,7 @@ unchanged, and a new entry needs as good a reason.
   pixels; and its test window drew every frame opaque. Slopty renders its whole interface
   in a test window with Core Text, its icons and the Metal renderer, and compares the picture
   with the one its app draws (frosted surfaces included), in its test process. Metal's
-  headless renderer forwards the transparency to `update_transparency`; wgpu's keeps
-  drawing opaque.
+  headless renderer forwards the transparency to `update_transparency`.
 - `TextSmoothing`, `App::set_text_smoothing`, `App::text_smoothing`,
   `Window::with_text_smoothing` and `Window::text_smoothing` are new public API
   (`fast/text_smoothing.rs`). Upstream dilates light glyphs on macOS as Core
@@ -254,8 +252,7 @@ unchanged, and a new entry needs as good a reason.
   primitive's fade is kept under goes in the padding every primitive
   already has: `pad` in a shadow, an underline and the three sprites, and
   `Background`'s padding, now `pub(crate)`, in a quad and a path. The
-  primitives keep upstream's layout and size. Only Metal draws the fade;
-  the wgpu and Direct3D renderers draw everything unfaded. With
+  primitives keep upstream's layout and size. Metal draws the fade. With
   `test-support`, `Scene::edge_fade_ramps`, `Scene::add_edge_fade` and
   `Scene::insert_faded_primitive` let a renderer's test build a faded scene.
 - `radial_gradient(center, radius, from, to)` is new public API
@@ -265,7 +262,7 @@ unchanged, and a new entry needs as good a reason.
   fractions of the bounds, and rides fields a linear gradient leaves alone in
   `Background`'s shared `repr(C)` layout (the radii in `solid`'s hue and
   saturation, the centre in the stops' percentages), so the struct keeps
-  upstream's size. Metal, wgpu and Direct3D all draw it, in the colour space
+  upstream's size. Metal draws it, in the colour space
   the background asks for.
 - A tooltip (`.tooltip(..)`, `.hoverable_tooltip(..)`) on an element that
   tracks a focus handle also shows while the element is focus-visible:
@@ -542,6 +539,11 @@ commit our copy was taken from is `zed_commit` in `UPSTREAM`, and
    short target Zed commit, for example `chore: Sync GPUI upstream a1b71072e5`.
    Do not start its title with `Merge`; replayed vendor commits keep their
    original upstream messages.
+   This fork builds for macOS and iOS 27.2 only (FORK.md, "Apple only", since
+   2026-11-07): drop upstream's changes to the deleted platform crates
+   (`gpui_linux`, `gpui_windows`, `gpui_web`, `gpui_wgpu`) by keeping the
+   deletion on a modify/delete conflict, and leave out other-platform `cfg`
+   arms, features and dependencies in the files we keep.
 3. For every file we redirect with `#[path = "fast/..."]`, look at what
    upstream changed in the original (`git diff <old vendor commit> <new vendor
    commit> -- <file>`) and port it into our copy by hand. The merge won't

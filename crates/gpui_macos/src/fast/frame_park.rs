@@ -26,7 +26,7 @@
 //! back.
 //!
 //! A window takes its frames from a `CVDisplayLink` until the process's windows move to their
-//! `CAMetalDisplayLink` (macOS 14 and later), as `gpui_apple::fast::frame_source` decides: when
+//! `CAMetalDisplayLink`, as `gpui_apple::fast::frame_source` decides: when
 //! `nextDrawable` blocks. The window moves at its next tick, or as its link next starts. A
 //! `CAMetalDisplayLink` pauses itself after an update that drew nothing (`MetalFrames`), so it
 //! is never parked here; what stays is the immediate frame. The link hands each update its
@@ -68,9 +68,8 @@ pub(crate) struct FramePark {
     idle_since: Option<Instant>,
     /// The link was stopped because the window was idle, not for any other reason.
     parked: bool,
-    /// The window's `CAMetalDisplayLink`, for when the process's windows move to it (macOS 14
-    /// and later).
-    metal_frames: Option<Rc<MetalFrames>>,
+    /// The window's `CAMetalDisplayLink`, for when the process's windows move to it.
+    metal_frames: Rc<MetalFrames>,
 }
 
 impl FramePark {
@@ -118,7 +117,7 @@ impl FramePark {
 }
 
 /// A new window's park, which holds its `CAMetalDisplayLink` for later.
-pub(crate) fn new(metal_frames: &Option<Rc<MetalFrames>>) -> FramePark {
+pub(crate) fn new(metal_frames: &Rc<MetalFrames>) -> FramePark {
     FramePark {
         metal_frames: metal_frames.clone(),
         ..FramePark::default()
@@ -127,12 +126,11 @@ pub(crate) fn new(metal_frames: &Option<Rc<MetalFrames>>) -> FramePark {
 
 /// What a new window takes its frames from: its `CAMetalDisplayLink` once the process's windows
 /// take theirs (`gpui_apple::fast::frame_source`), else a `CVDisplayLink`.
-pub(crate) fn frame_source(metal_frames: &Option<Rc<MetalFrames>>) -> FrameSource {
-    match metal_frames {
-        Some(metal_frames) if gpui_apple::fast::frame_source::metal_link() => {
-            FrameSource::Metal(metal_frames.clone())
-        }
-        _ => FrameSource::DisplayLink(None),
+pub(crate) fn frame_source(metal_frames: &Rc<MetalFrames>) -> FrameSource {
+    if gpui_apple::fast::frame_source::metal_link() {
+        FrameSource::Metal(metal_frames.clone())
+    } else {
+        FrameSource::DisplayLink(None)
     }
 }
 
@@ -235,14 +233,14 @@ pub(crate) fn link_update(state: &mut MacWindowState) {
 
 /// What GPUI's frame waker holds of a window's `CAMetalDisplayLink`: weak, as the window
 /// state owns the waker.
-pub(crate) fn link_waker(metal_frames: &Option<Rc<MetalFrames>>) -> Option<Weak<MetalFrames>> {
-    metal_frames.as_ref().map(Rc::downgrade)
+pub(crate) fn link_waker(metal_frames: &Rc<MetalFrames>) -> Weak<MetalFrames> {
+    Rc::downgrade(metal_frames)
 }
 
 /// GPUI's frame waker ran: a paused `CAMetalDisplayLink` runs again, so its next update draws
 /// the frame if the immediate frame does not.
-pub(crate) fn wake_link(metal_frames: &Option<Weak<MetalFrames>>) {
-    if let Some(metal_frames) = metal_frames.as_ref().and_then(Weak::upgrade) {
+pub(crate) fn wake_link(metal_frames: &Weak<MetalFrames>) {
+    if let Some(metal_frames) = metal_frames.upgrade() {
         metal_frames.wake();
     }
 }
@@ -251,17 +249,14 @@ pub(crate) fn wake_link(metal_frames: &Option<Weak<MetalFrames>>) {
 /// `CAMetalDisplayLink` in place of the `CVDisplayLink` once the process's windows take theirs.
 pub(crate) fn before_start(state: &mut MacWindowState) {
     note_refresh(state);
-    if moves_to_metal(state)
-        && let Some(metal_frames) = &state.fast_frame_park.metal_frames
-    {
-        state.frame_source = FrameSource::Metal(metal_frames.clone());
+    if moves_to_metal(state) {
+        state.frame_source = FrameSource::Metal(state.fast_frame_park.metal_frames.clone());
     }
 }
 
 /// Whether a window on a `CVDisplayLink` takes its `CAMetalDisplayLink` now.
 fn moves_to_metal(state: &MacWindowState) -> bool {
     matches!(state.frame_source, FrameSource::DisplayLink(_))
-        && state.fast_frame_park.metal_frames.is_some()
         && gpui_apple::fast::frame_source::metal_link()
 }
 

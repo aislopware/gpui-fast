@@ -1,14 +1,7 @@
 #![allow(clippy::disallowed_methods, reason = "build scripts are exempt")]
 
 fn main() {
-    // Slopty: a build script's `cfg` is the host's, so the target decides. An Apple target is
-    // then checked (clippy, rustdoc) from a Linux host too.
-    if matches!(
-        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
-        Ok("macos" | "ios")
-    ) {
-        apple_build::run();
-    }
+    apple_build::run();
 }
 
 mod apple_build {
@@ -137,16 +130,16 @@ mod apple_build {
         println!("cargo:rerun-if-env-changed=DEVELOPER_DIR");
 
         // Build scripts run on the host, so the target platform must come from
-        // Cargo's environment rather than `cfg!`. The target environment, not the
-        // target name, identifies simulators: `x86_64-apple-ios` has no `-sim` suffix.
+        // Cargo's environment rather than `cfg!`. The target environment identifies
+        // the simulator.
         let target_os = env::var("CARGO_CFG_TARGET_OS")
             .expect("Cargo sets CARGO_CFG_TARGET_OS for build scripts");
         let target_env = env::var("CARGO_CFG_TARGET_ENV")
             .expect("Cargo sets CARGO_CFG_TARGET_ENV for build scripts");
         let (sdk, minimum_version_argument) = match (target_os.as_str(), target_env.as_str()) {
-            ("macos", _) => ("macosx", "-mmacosx-version-min=12.0"),
-            ("ios", "sim") => ("iphonesimulator", "-mios-simulator-version-min=15.0"),
-            ("ios", "") => ("iphoneos", "-mios-version-min=15.0"),
+            ("macos", _) => ("macosx", "-mmacosx-version-min=27.2"),
+            ("ios", "sim") => ("iphonesimulator", "-mios-simulator-version-min=27.2"),
+            ("ios", "") => ("iphoneos", "-mios-version-min=27.2"),
             _ => {
                 println!(
                     "cargo::error=unsupported Metal shader target: target_os={target_os}, target_env={target_env}"
@@ -163,13 +156,6 @@ mod apple_build {
 
         let shader_path = "./src/shaders.metal";
         let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-        // Slopty: a host without Xcode has no Metal compiler. A check never loads the library
-        // `metal_renderer.rs` includes, so it gets an empty one; a binary built so would not run.
-        if !cfg!(target_os = "macos") {
-            std::fs::write(out_dir.join("shaders.metallib"), []).unwrap();
-            println!("cargo::warning=no Metal compiler on this host: shaders.metallib is empty");
-            return;
-        }
         let air_output_path = out_dir.join("shaders.air");
         let metallib_output_path = out_dir.join("shaders.metallib");
         println!("cargo:rerun-if-changed={}", shader_path);
@@ -181,9 +167,8 @@ mod apple_build {
         let staged_shader_path = out_dir.join("shaders.metal");
         std::fs::copy(shader_path, &staged_shader_path).unwrap();
 
-        // When targeting macOS 12+, both `metal` and `metallib` also record
-        // their working directory in the metallib. Run them from OUT_DIR so
-        // that path isn't the checkout either.
+        // `metal` and `metallib` also record their working directory in the
+        // metallib. Run them from OUT_DIR so that path isn't the checkout either.
         let output = Command::new("xcrun")
             .current_dir(&out_dir)
             .arg("-sdk")
@@ -191,6 +176,7 @@ mod apple_build {
             .args([
                 "metal",
                 "-gline-tables-only",
+                "-std=metal4.1",
                 minimum_version_argument,
                 "-MO",
                 "-c",

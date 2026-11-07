@@ -1,4 +1,4 @@
-//! Holding the CPU's clock up while `--auto` measures, on macOS.
+//! Holding the CPU's clock up while `--auto` measures.
 //!
 //! macOS clocks a core by how busy it keeps, and runs a thread that leaves
 //! most of each frame idle on efficiency cores or at a low clock. The less a
@@ -19,10 +19,9 @@ pub const HOLD_CLOCK_FLAG: &str = "--hold-clock";
 pub struct ClockHold(Option<Child>);
 
 impl ClockHold {
-    /// Starts the helper where the platform needs one, unless
-    /// `--no-hold-clock` was given.
+    /// Starts the helper, unless `--no-hold-clock` was given.
     pub fn start() -> Self {
-        if !cfg!(target_os = "macos") || std::env::args().any(|arg| arg == "--no-hold-clock") {
+        if std::env::args().any(|arg| arg == "--no-hold-clock") {
             return Self(None);
         }
         let child = std::env::current_exe()
@@ -49,7 +48,6 @@ impl ClockHold {
 
 /// The helper process: spins at the main thread's quality of service, which
 /// macOS runs on performance cores, until its parent exits.
-#[cfg(target_os = "macos")]
 pub fn hold() -> ! {
     const QOS_CLASS_USER_INTERACTIVE: libc::c_uint = 0x21;
     unsafe extern "C" {
@@ -74,10 +72,4 @@ pub fn hold() -> ! {
             std::process::exit(0);
         }
     }
-}
-
-/// Only macOS starts the helper.
-#[cfg(not(target_os = "macos"))]
-pub fn hold() -> ! {
-    std::process::exit(0)
 }

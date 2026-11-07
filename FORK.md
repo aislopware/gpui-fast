@@ -14,6 +14,33 @@ Two upstreams feed it:
   ([docs/upstream-sync.md](docs/upstream-sync.md)), so this fork follows zed even when
   longbridge has not taken a newer zed yet.
 
+## Apple only
+
+2026-11-07, the owner's ruling for onicode and so for this fork: it builds for macOS 27.2
+and iOS 27.2 on Apple silicon only (`aarch64-apple-darwin`, `aarch64-apple-ios`,
+`aarch64-apple-ios-sim`), on the newest APIs those systems have, with nothing kept for
+another platform or an older system.
+
+- `gpui_linux`, `gpui_windows`, `gpui_web` and `gpui_wgpu` are deleted, with the
+  `compat/` web stand-ins, the wasm, Wayland, X11 and Windows-manifest features, the
+  dependencies only they used (wgpu, windows-rs, web-sys, wasm-bindgen, ashpd, oo7, scap,
+  xkbcommon and the rest) and longbridge's crates.io release tooling, which published them.
+  `UPSTREAM` no longer tracks them.
+- The remaining crates hold no `cfg` for Linux, Windows, FreeBSD, Android, wasm or x86_64,
+  and no `cfg(unix)`: what was Unix-only is plain code, and a path that only another
+  platform took is gone. Where iOS needs its own path it is `target_os = "ios"`.
+- `gpui_macos`, `gpui_apple` and `gpui_ios` assume 27.2: no `respondsToSelector:` probe,
+  OS version comparison or weak symbol lookup for an API 27.2 has, and no legacy path kept
+  beside the modern one for an older system. A choice that still measures differently on
+  27.2 (`GPUI_DRAWABLE_COUNT`) stays. The deployment targets (`.cargo/config.toml`) and
+  the Metal shaders' compile flags name 27.2.
+- Merging longbridge/gpui-fast drops its changes to the deleted crates: a modify/delete
+  conflict there is resolved by keeping the deletion (`git rm -r` the paths), and a
+  change in a kept file that only serves another platform (a `cfg` arm, a feature, a
+  dependency) is left out. A zed import replays only the directories `UPSTREAM` tracks,
+  so the deleted crates never come back that way. `script/check-upstream`'s allowlist
+  names the upstream files this sweep changed beyond a hook.
+
 ## History layout
 
 - 2026-11-06: `7f051e5` "Merge longbridge/gpui-fast 5bf7480 (#82, #85, #88, #91, #95-#99,
@@ -1204,6 +1231,10 @@ git fetch origin
 git merge origin/main
 script/check-upstream && cargo test -p gpui --features test-support
 ```
+
+Changes to `gpui_linux`, `gpui_windows`, `gpui_web` and `gpui_wgpu`, and other-platform
+`cfg` arms, are dropped on merge; resolve a modify/delete conflict by keeping the deletion
+("Apple only").
 
 Our zed imports sit on longbridge's vendor line, so a longbridge sync to a zed older
 than ours merges without touching zed's code, and one to a newer zed brings only what

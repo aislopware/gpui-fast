@@ -50,8 +50,7 @@ use objc2_app_kit::{
 };
 use objc2_core_graphics::CGColor;
 use objc2_foundation::{
-    NSArray, NSInteger, NSNotFound, NSOperatingSystemVersion, NSPoint, NSProcessInfo, NSRect,
-    NSSize, NSString, NSUInteger, NSURL,
+    NSArray, NSInteger, NSNotFound, NSPoint, NSRect, NSSize, NSString, NSUInteger, NSURL,
 };
 use objc2_uniform_type_identifiers::{UTType, UTTypeData, UTTypeFolder};
 use parking_lot::Mutex;
@@ -67,15 +66,13 @@ use std::{
     ptr::{self, NonNull},
     rc::{Rc, Weak},
     sync::{
-        Arc, Once,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
 const WINDOW_STATE_IVAR: &CStr = c"windowState";
-
-static RESTORES_WORKSPACE_AT_LAUNCH_DEFAULT: Once = Once::new();
 
 static mut WINDOW_CLASS: *const AnyClass = ptr::null();
 static mut PANEL_CLASS: *const AnyClass = ptr::null();
@@ -348,19 +345,12 @@ extern "C" fn window_state_archiver_will_encode_object(
 
 // Override of the private `_windowRestorationOptions` on our NSKeyedUnarchiver subclass.
 // Returning a default-initialized `NSWindowRestorationOptions` tells AppKit to restore the
-// window to its original Space. This is the macOS 15+ path (FB15644170: the
-// `NSWindowRestoresWorkspaceAtLaunch` user default no longer works there).
+// window to its original Space (FB15644170: the `NSWindowRestoresWorkspaceAtLaunch` user
+// default no longer works).
 extern "C" fn window_state_unarchiver_restoration_options(
     _this: &AnyObject,
     _sel: Sel,
 ) -> *mut AnyObject {
-    if !is_macos_version_at_least(NSOperatingSystemVersion {
-        majorVersion: 15,
-        minorVersion: 0,
-        patchVersion: 0,
-    }) {
-        return ptr::null_mut();
-    }
     // SAFETY: we look the class up by name and only send it `alloc`/`init`/`autorelease`, all of
     // which have the standard `-> id` signature. Returning `nil` when the class is absent is valid.
     unsafe {
@@ -652,12 +642,11 @@ unsafe fn apply_simple_fullscreen_plan(
     }
 }
 
-/// What paces a window's frames. The choice depends only on the OS version,
-/// so it is made once per window.
+/// What paces a window's frames, as `gpui_apple::fast::frame_source` decides.
 pub(crate) enum FrameSource {
-    /// macOS 14+: a `CAMetalDisplayLink` that hands out each frame's drawable.
+    /// A `CAMetalDisplayLink` that hands out each frame's drawable.
     Metal(Rc<MetalFrames>),
-    /// Earlier systems: the shared `CVDisplayLink` registry, joined on first start.
+    /// The shared `CVDisplayLink` registry, joined on first start.
     DisplayLink(Option<WindowFrameSource>),
 }
 
@@ -867,10 +856,8 @@ impl MacWindowState {
                         metal_frame(&window_state, update);
                     }
                 });
-                if let Some(source) = source {
-                    metal_frames.replace(Some(source));
-                    self.renderer.set_display_link_attached(true);
-                }
+                metal_frames.replace(Some(source));
+                self.renderer.set_display_link_attached(true);
             }
             FrameSource::DisplayLink(frame_source) => {
                 let screen: *mut AnyObject = unsafe { msg_send![self.native_window, screen] };
@@ -997,8 +984,8 @@ pub(crate) struct MacWindow(
     pub(crate) Rc<Mutex<MacWindowState>>,
     MainThreadMarker,
     /// The Metal link's frame waker, kept outside the lock so waking never
-    /// waits on it. `None` when a `CVDisplayLink` paces frames.
-    Option<Rc<MetalFrames>>,
+    /// waits on it.
+    Rc<MetalFrames>,
 );
 
 impl MacWindow {
@@ -1129,7 +1116,7 @@ impl MacWindow {
             let native_view: *mut AnyObject = msg_send![native_view, initWithFrame: content_bounds];
             assert!(!native_view.is_null());
 
-            let metal_frames = MetalFrameSource::is_available().then(Rc::<MetalFrames>::default);
+            let metal_frames = Rc::<MetalFrames>::default();
             let state = Rc::new(Mutex::new(MacWindowState {
                 handle,
                 foreground_executor,
@@ -1314,11 +1301,9 @@ impl MacWindow {
                         && main_window_is_fullscreen;
 
                 if should_add_as_tab {
-                    let main_window_can_tab: Bool =
-                        msg_send![main_window, respondsToSelector: sel!(addTabbedWindow:ordered:)];
                     let main_window_visible: Bool = msg_send![main_window, isVisible];
 
-                    if main_window_can_tab == Bool::YES && main_window_visible == Bool::YES {
+                    if main_window_visible == Bool::YES {
                         let _: () = msg_send![main_window, addTabbedWindow: native_window, ordered: NSWindowOrderingMode::Above];
 
                         // Ensure the window is visible immediately after adding the tab, since the tab bar is updated with a new entry at this point.
@@ -1632,30 +1617,8 @@ impl PlatformWindow for MacWindow {
                 return;
             }
 
-            // On macOS < 15 the `NSWindowRestoresWorkspaceAtLaunch` user default controls whether
-            // the window is restored to its original Space. On macOS 15+ that default is broken
-            // (FB15644170), and the `_windowRestorationOptions` override on our unarchiver subclass
-            // handles it instead.
-            if !is_macos_version_at_least(NSOperatingSystemVersion {
-                majorVersion: 15,
-                minorVersion: 0,
-                patchVersion: 0,
-            }) {
-                RESTORES_WORKSPACE_AT_LAUNCH_DEFAULT.call_once(|| {
-                    let defaults: *mut AnyObject =
-                        msg_send![class!(NSUserDefaults), standardUserDefaults];
-                    let key = ns_string("NSWindowRestoresWorkspaceAtLaunch");
-                    let yes_value: *mut AnyObject =
-                        msg_send![class!(NSNumber), numberWithBool: Bool::YES];
-                    let dict: *mut AnyObject = msg_send![
-                        class!(NSDictionary),
-                        dictionaryWithObject: yes_value,
-                        forKey: key
-                    ];
-                    let _: () = msg_send![defaults, registerDefaults: dict];
-                });
-            }
-
+            // The `_windowRestorationOptions` override on our unarchiver subclass restores the
+            // window to its original Space (FB15644170).
             let unarchiver: *mut AnyObject = msg_send![WINDOW_STATE_UNARCHIVER_CLASS, alloc];
             let mut error: *mut AnyObject = ptr::null_mut::<AnyObject>();
             let unarchiver: *mut AnyObject =
@@ -2067,9 +2030,7 @@ impl PlatformWindow for MacWindow {
     // GPUI calls this without waking the frame waker when a window only needs
     // a present, so a paused Metal link must resume here too.
     fn schedule_frame(&self) {
-        if let Some(metal_frames) = &self.2 {
-            metal_frames.wake();
-        }
+        self.2.wake();
         crate::fast::frame_park::schedule_frame(&self.0);
     }
 
@@ -3183,16 +3144,8 @@ extern "C" fn window_will_enter_fullscreen(this: &AnyObject, _: Sel, _: *mut Any
     lock.pre_fullscreen_traffic_light_frames = lock.traffic_light_frames;
     lock.restore_traffic_light();
 
-    let min_version = NSOperatingSystemVersion {
-        majorVersion: 15,
-        minorVersion: 3,
-        patchVersion: 0,
-    };
-
-    if is_macos_version_at_least(min_version) {
-        unsafe {
-            let _: () = msg_send![lock.native_window, setTitlebarAppearsTransparent: Bool::NO];
-        }
+    unsafe {
+        let _: () = msg_send![lock.native_window, setTitlebarAppearsTransparent: Bool::NO];
     }
 }
 
@@ -3201,13 +3154,7 @@ extern "C" fn window_will_exit_fullscreen(this: &AnyObject, _: Sel, _: *mut AnyO
     let mut lock = window_state.as_ref().lock();
     lock.is_exiting_fullscreen = true;
 
-    let min_version = NSOperatingSystemVersion {
-        majorVersion: 15,
-        minorVersion: 3,
-        patchVersion: 0,
-    };
-
-    if is_macos_version_at_least(min_version) && lock.transparent_titlebar {
+    if lock.transparent_titlebar {
         unsafe {
             let _: () = msg_send![lock.native_window, setTitlebarAppearsTransparent: Bool::YES];
         }
@@ -3233,10 +3180,6 @@ extern "C" fn window_did_exit_fullscreen(this: &AnyObject, _: Sel, _: *mut AnyOb
     // Keep using the native windowed frames when restoring them on the next entry.
     lock.traffic_light_frames = lock.pre_fullscreen_traffic_light_frames.take();
     lock.move_traffic_light();
-}
-
-pub(crate) fn is_macos_version_at_least(version: NSOperatingSystemVersion) -> bool {
-    NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(version)
 }
 
 fn ns_error_description(error: *mut AnyObject) -> String {

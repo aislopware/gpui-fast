@@ -972,14 +972,6 @@ fn handle_scroll_gesture(view: *mut AnyObject, recognizer: *mut AnyObject) {
     }
 }
 
-/// Whether UIKit can resolve corner configurations, which arrived in iOS 26.
-fn reports_corner_radii(view: *mut AnyObject) -> bool {
-    // SAFETY: `view` is a live UIView; `respondsToSelector:` is NSObject's.
-    let responds: Bool =
-        unsafe { msg_send![view, respondsToSelector: sel!(effectiveRadiusForCorner:)] };
-    responds.as_bool()
-}
-
 #[allow(clippy::type_complexity)]
 pub(crate) struct IosWindow {
     /// GPUI's handle for it.
@@ -1115,17 +1107,15 @@ impl IosWindow {
             let _: () = msg_send![view, setUserInteractionEnabled: true];
             let _: () = msg_send![view, setMultipleTouchEnabled: true];
 
-            // UIKit has no public API for the display's corner radius, but since iOS 26 a view
-            // filling the window with a container-concentric corner configuration resolves its
-            // radii to the display's (zed #65806). This only sets the layer's corner radius;
-            // without `masksToBounds` the Metal drawable is not clipped.
-            if reports_corner_radii(view) {
-                let radius: *mut AnyObject =
-                    msg_send![class!(UICornerRadius), containerConcentricRadius];
-                let configuration: *mut AnyObject =
-                    msg_send![class!(UICornerConfiguration), configurationWithRadius: radius];
-                let _: () = msg_send![view, setCornerConfiguration: configuration];
-            }
+            // UIKit has no public API for the display's corner radius, but a view filling the
+            // window with a container-concentric corner configuration resolves its radii to the
+            // display's (zed #65806). This only sets the layer's corner radius; without
+            // `masksToBounds` the Metal drawable is not clipped.
+            let radius: *mut AnyObject =
+                msg_send![class!(UICornerRadius), containerConcentricRadius];
+            let configuration: *mut AnyObject =
+                msg_send![class!(UICornerConfiguration), configurationWithRadius: radius];
+            let _: () = msg_send![view, setCornerConfiguration: configuration];
 
             // Pinch to zoom, recognized by UIKit and delivered as `PinchEvent`s (see
             // `handle_pinch_gesture`). The view is its own target.
@@ -1684,13 +1674,13 @@ impl IosWindow {
     /// The display's corner radii as UIKit resolved the view's container-concentric corner
     /// configuration, zero where it cannot tell.
     fn display_corner_radii(&self) -> Corners<Pixels> {
-        if self.view.is_null() || !reports_corner_radii(self.view) {
+        if self.view.is_null() {
             return Corners::default();
         }
         // UIRectCorner (UIKit/UIGeometry.h): an NSUInteger bit per corner.
         let radius = |corner: usize| {
             // SAFETY: `view` is the window's live UIView, which answers
-            // `effectiveRadiusForCorner:` (checked above) with a CGFloat.
+            // `effectiveRadiusForCorner:` with a CGFloat.
             let radius: core_graphics::base::CGFloat =
                 unsafe { msg_send![self.view, effectiveRadiusForCorner: corner] };
             px(radius as f32)

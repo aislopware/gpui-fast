@@ -3,10 +3,6 @@ mod keyboard;
 mod keystroke;
 mod platform_info;
 
-#[cfg(all(target_os = "linux", feature = "wayland"))]
-#[expect(missing_docs)]
-pub mod layer_shell;
-
 /// Types for configuring parent-anchored popup windows such as menus, dropdowns and tooltips.
 pub mod popup;
 
@@ -19,17 +15,6 @@ mod test;
 #[cfg(all(target_os = "macos", any(test, feature = "test-support")))]
 mod visual_test;
 
-#[cfg(all(
-    feature = "screen-capture",
-    any(target_os = "windows", target_os = "linux", target_os = "freebsd",)
-))]
-pub mod scap_screen_capture;
-
-#[cfg(all(
-    any(target_os = "windows", target_os = "linux"),
-    feature = "screen-capture"
-))]
-pub(crate) type PlatformScreenCaptureFrame = scap::frame::Frame;
 #[cfg(not(feature = "screen-capture"))]
 pub(crate) type PlatformScreenCaptureFrame = ();
 #[cfg(all(target_os = "macos", feature = "screen-capture"))]
@@ -45,8 +30,6 @@ use crate::{
     ShapedRun, SharedString, Size, SvgRenderer, SystemWindowTab, Task, Window, WindowControlArea,
     hash, point, px, size,
 };
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-use anyhow::bail;
 use anyhow::{Context as _, Result};
 use async_task::Runnable;
 use collections::FxHashMap;
@@ -90,19 +73,8 @@ pub use keystroke::*;
 /// Space or virtual desktop, or on a display that is asleep is `Hidden`. A
 /// window only partly covered by other windows is `Visible`.
 ///
-/// Each platform reports from a single source, and what that source can see
-/// differs:
-///
-/// * macOS: `NSWindow.occlusionState`. Covers all of the cases above.
-/// * Windows: `WS_VISIBLE` and the minimized state. Windows keeps compositing
-///   covered windows for thumbnails and Alt-Tab and offers no occlusion
-///   notification, so a fully covered window stays `Visible`. Display sleep is
-///   not reported either.
-/// * Wayland: the `xdg_toplevel` `suspended` state (xdg-shell v6). Compositors
-///   that don't support it never report `Hidden`.
-/// * X11: mapped state plus `VisibilityNotify`. Compositing window managers
-///   generally never report a window as fully obscured, so covering is only
-///   detected without compositing.
+/// macOS reports it from `NSWindow.occlusionState`, which covers all of the
+/// cases above.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowVisibility {
     /// At least part of the window is being presented; frames drawn for it
@@ -158,7 +130,7 @@ pub fn refresh_interval_from_hz(hertz: f64) -> Option<Duration> {
 
 /// Controls whether the application participates in the system's foreground UI.
 ///
-/// Only has an effect on macOS; other platforms ignore this setting. There,
+/// Only has an effect on macOS; iOS ignores this setting. There,
 /// [`App::request_windowing`] sets it: `Accessory` while headless and `Regular` while windowed.
 /// Set it directly with [`App::set_activation_policy`] for the one case that doesn't cover: an
 /// accessory app that shows windows, such as a menu bar utility.
@@ -202,84 +174,10 @@ impl ActivityGuard {
     }
 }
 
-// TODO(jk): return an enum instead of a string
-/// Return which compositor we're guessing we'll use.
-/// Does not attempt to connect to the given compositor.
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-#[inline]
-pub fn guess_compositor() -> &'static str {
-    if std::env::var_os("ZED_HEADLESS").is_some() {
-        return "Headless";
-    }
-    GraphicalEnvironment::detect().guess_compositor()
-}
-
-/// The graphical session to connect to: the variables that locate its display server, as some
-/// process sees them.
-///
-/// A long-running process can outlive the graphical session it was started in, so a platform
-/// that attaches to a display server later can be given a fresher environment than its own.
-/// While connected, programs the platform launches (for example to open a URL) get these
-/// variables instead of the ones this process started with. Apply
-/// [`App::graphical_environment`] to the programs an app launches, for the same reason.
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-#[derive(Clone, Debug, Default)]
-pub struct GraphicalEnvironment {
-    /// `WAYLAND_DISPLAY`: a socket name relative to `xdg_runtime_dir`, or an absolute path.
-    pub wayland_display: Option<OsString>,
-    /// `DISPLAY`: the X11 display name.
-    pub x11_display: Option<OsString>,
-    /// `XDG_RUNTIME_DIR`: the directory containing Wayland sockets.
-    pub xdg_runtime_dir: Option<OsString>,
-    /// `XDG_ACTIVATION_TOKEN`: lets the first window take focus on Wayland.
-    ///
-    /// A platform takes this process's token from its environment when it's created, and uses
-    /// it if it starts windowed. Pass one here to switch to windowed mode later, for example
-    /// the token of the process that asked for a window.
-    pub activation_token: Option<String>,
-}
-
-/// The graphical session to connect to: the Windows session whose desktop windows appear on.
-///
-/// A process can only show windows in its own session, so switching to windowed mode fails if
-/// this names another one, for example when a process started over SSH is asked to show a
-/// window on the desktop.
-#[cfg(target_os = "windows")]
-#[derive(Clone, Debug, Default)]
-pub struct GraphicalEnvironment {
-    /// The session ID, as `ProcessIdToSessionId` reports it. `None` means this process's own
-    /// session.
-    pub session_id: Option<u32>,
-}
-
-#[cfg(target_os = "windows")]
-impl GraphicalEnvironment {
-    /// Returns the environment of this process's session.
-    pub fn detect() -> Self {
-        let mut session_id = 0;
-        // SAFETY: `session_id` is a valid pointer for the call's duration.
-        let result = unsafe {
-            windows::Win32::System::RemoteDesktop::ProcessIdToSessionId(
-                windows::Win32::System::Threading::GetCurrentProcessId(),
-                &mut session_id,
-            )
-        };
-        Self {
-            session_id: result.is_ok().then_some(session_id),
-        }
-    }
-
-    /// Does nothing on this platform: programs inherit the session of the process that
-    /// starts them.
-    pub fn apply_to(&self, _command: &mut std::process::Command) {}
-}
-
 /// The graphical session to connect to. Carries nothing yet on this platform.
-#[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "windows")))]
 #[derive(Clone, Debug, Default)]
 pub struct GraphicalEnvironment;
 
-#[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "windows")))]
 impl GraphicalEnvironment {
     /// Returns the environment of this process's graphical session.
     pub fn detect() -> Self {
@@ -299,72 +197,11 @@ pub enum WindowingRequest {
     Windowed(GraphicalEnvironment),
 }
 
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-impl GraphicalEnvironment {
-    /// Reads the display variables from this process's environment.
-    ///
-    /// This only reads environment variables: whether they name a reachable display server is
-    /// checked when a platform connects. Leaves `activation_token` unset: see its documentation.
-    pub fn detect() -> Self {
-        Self {
-            wayland_display: std::env::var_os("WAYLAND_DISPLAY"),
-            x11_display: std::env::var_os("DISPLAY"),
-            xdg_runtime_dir: std::env::var_os("XDG_RUNTIME_DIR"),
-            activation_token: None,
-        }
-    }
-
-    /// Sets this environment's display variables on `command`, and removes the ones it doesn't
-    /// set, so the program connects to this graphical session rather than the one this process
-    /// started in. Leaves `XDG_ACTIVATION_TOKEN` alone.
-    pub fn apply_to(&self, command: &mut std::process::Command) {
-        for (name, value) in [
-            ("WAYLAND_DISPLAY", &self.wayland_display),
-            ("DISPLAY", &self.x11_display),
-            ("XDG_RUNTIME_DIR", &self.xdg_runtime_dir),
-        ] {
-            match value {
-                Some(value) => command.env(name, value),
-                None => command.env_remove(name),
-            };
-        }
-    }
-
-    /// Returns the compositor this environment selects: Wayland, then X11, then headless.
-    ///
-    /// Does not attempt to connect to the compositor.
-    pub fn guess_compositor(&self) -> &'static str {
-        let is_set =
-            |value: &Option<OsString>| value.as_ref().is_some_and(|value| !value.is_empty());
-        if cfg!(feature = "wayland") && is_set(&self.wayland_display) {
-            "Wayland"
-        } else if cfg!(feature = "x11") && is_set(&self.x11_display) {
-            "X11"
-        } else {
-            "Headless"
-        }
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-bitflags::bitflags! {
-    /// The windowing modes a platform may start in or switch to.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct WindowingModes: u8 {
-        /// Connected to a Wayland compositor.
-        const WAYLAND = 1 << 0;
-        /// Connected to an X server.
-        const X11 = 1 << 1;
-        /// No display server. Windows lay out and handle input but draw nothing.
-        const HEADLESS = 1 << 2;
-    }
-}
-
-pub use platform_info::{OperatingSystem, PlatformInfo, PlatformTarget};
+pub use platform_info::{OperatingSystem, PlatformInfo};
 
 #[expect(missing_docs)]
 pub trait Platform: 'static {
-    /// Returns the host OS and application target reported by this backend.
+    /// Returns the host OS reported by this backend.
     fn platform_info(&self) -> PlatformInfo;
 
     fn background_executor(&self) -> BackgroundExecutor;
@@ -499,15 +336,7 @@ pub trait Platform: 'static {
     }
 
     fn set_dock_menu(&self, menu: Vec<MenuItem>, keymap: &Keymap);
-    fn perform_dock_menu_action(&self, _action: usize) {}
     fn add_recent_document(&self, _path: &Path) {}
-    fn update_jump_list(
-        &self,
-        _menus: Vec<MenuItem>,
-        _entries: Vec<SmallVec<[PathBuf; 2]>>,
-    ) -> Task<Vec<SmallVec<[PathBuf; 2]>>> {
-        Task::ready(Vec::new())
-    }
     fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn Action)>);
     fn on_will_open_app_menu(&self, callback: Box<dyn FnMut()>);
     fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(&dyn Action) -> bool>);
@@ -607,11 +436,6 @@ pub trait Platform: 'static {
     fn read_from_clipboard_async(&self) -> Task<Result<Option<ClipboardItem>, ClipboardReadError>> {
         Task::ready(Ok(self.read_from_clipboard()))
     }
-
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn read_from_primary(&self) -> Option<ClipboardItem>;
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn write_to_primary(&self, item: ClipboardItem);
 
     #[cfg(target_os = "macos")]
     fn read_from_find_pasteboard(&self) -> Option<ClipboardItem>;
@@ -900,123 +724,18 @@ impl WindowButton {
             WindowButton::Close => "close",
         }
     }
-
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn index(&self) -> usize {
-        match self {
-            WindowButton::Minimize => 0,
-            WindowButton::Maximize => 1,
-            WindowButton::Close => 2,
-        }
-    }
 }
 
 /// Maximum number of [`WindowButton`]s per side in the titlebar.
 pub const MAX_BUTTONS_PER_SIDE: usize = 3;
 
 /// Describes which [`WindowButton`]s appear on each side of the titlebar.
-///
-/// On Linux, this is read from the desktop environment's configuration
-/// (e.g. GNOME's `gtk-decoration-layout` gsetting) via [`WindowButtonLayout::parse`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowButtonLayout {
     /// Buttons on the left side of the titlebar.
     pub left: [Option<WindowButton>; MAX_BUTTONS_PER_SIDE],
     /// Buttons on the right side of the titlebar.
     pub right: [Option<WindowButton>; MAX_BUTTONS_PER_SIDE],
-}
-
-#[cfg(any(target_os = "linux", target_os = "freebsd"))]
-impl WindowButtonLayout {
-    /// Returns Zed's built-in fallback button layout for Linux titlebars.
-    pub fn linux_default() -> Self {
-        Self {
-            left: [None; MAX_BUTTONS_PER_SIDE],
-            right: [
-                Some(WindowButton::Minimize),
-                Some(WindowButton::Maximize),
-                Some(WindowButton::Close),
-            ],
-        }
-    }
-
-    /// Parses a GNOME-style `button-layout` string (e.g. `"close,minimize:maximize"`).
-    pub fn parse(layout_string: &str) -> Result<Self> {
-        fn parse_side(
-            s: &str,
-            seen_buttons: &mut [bool; MAX_BUTTONS_PER_SIDE],
-            unrecognized: &mut Vec<String>,
-        ) -> [Option<WindowButton>; MAX_BUTTONS_PER_SIDE] {
-            let mut result = [None; MAX_BUTTONS_PER_SIDE];
-            let mut i = 0;
-            for name in s.split(',') {
-                let trimmed = name.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let button = match trimmed {
-                    "minimize" => Some(WindowButton::Minimize),
-                    "maximize" => Some(WindowButton::Maximize),
-                    "close" => Some(WindowButton::Close),
-                    other => {
-                        unrecognized.push(other.to_string());
-                        None
-                    }
-                };
-                if let Some(button) = button {
-                    if seen_buttons[button.index()] {
-                        continue;
-                    }
-                    if let Some(slot) = result.get_mut(i) {
-                        *slot = Some(button);
-                        seen_buttons[button.index()] = true;
-                        i += 1;
-                    }
-                }
-            }
-            result
-        }
-
-        let (left_str, right_str) = layout_string.split_once(':').unwrap_or(("", layout_string));
-        let mut unrecognized = Vec::new();
-        let mut seen_buttons = [false; MAX_BUTTONS_PER_SIDE];
-        let layout = Self {
-            left: parse_side(left_str, &mut seen_buttons, &mut unrecognized),
-            right: parse_side(right_str, &mut seen_buttons, &mut unrecognized),
-        };
-
-        if !unrecognized.is_empty()
-            && layout.left.iter().all(Option::is_none)
-            && layout.right.iter().all(Option::is_none)
-        {
-            bail!(
-                "button layout string {:?} contains no valid buttons (unrecognized: {})",
-                layout_string,
-                unrecognized.join(", ")
-            );
-        }
-
-        Ok(layout)
-    }
-
-    /// Formats the layout back into a GNOME-style `button-layout` string.
-    #[cfg(test)]
-    pub fn format(&self) -> String {
-        fn format_side(buttons: &[Option<WindowButton>; MAX_BUTTONS_PER_SIDE]) -> String {
-            buttons
-                .iter()
-                .flatten()
-                .map(|button| match button {
-                    WindowButton::Minimize => "minimize",
-                    WindowButton::Maximize => "maximize",
-                    WindowButton::Close => "close",
-                })
-                .collect::<Vec<_>>()
-                .join(",")
-        }
-
-        format!("{}:{}", format_side(&self.left), format_side(&self.right))
-    }
 }
 
 /// A type to describe which sides of the window are currently tiled in some way
@@ -1407,9 +1126,6 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     }
     fn restore_native_window_state(&self, _state: &[u8]) {}
 
-    #[cfg(target_os = "windows")]
-    fn get_raw_handle(&self) -> windows::Win32::Foundation::HWND;
-
     // Linux specific methods
     fn inner_window_bounds(&self) -> WindowBounds {
         self.window_bounds()
@@ -1425,8 +1141,6 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     }
     fn start_window_resize(&self, _edge: ResizeEdge) {}
     fn set_exclusive_zone(&self, _zone: Pixels) {}
-    #[cfg(all(target_os = "linux", feature = "wayland"))]
-    fn set_exclusive_edge(&self, _edge: layer_shell::Anchor) {}
     fn set_input_region(&self, _region: Option<&[Bounds<Pixels>]>) {}
     fn window_decorations(&self) -> Decorations {
         Decorations::Server
@@ -2064,13 +1778,6 @@ pub struct AtlasTextureId {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(C)]
-#[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
-    ),
-    allow(dead_code)
-)]
 #[expect(missing_docs)]
 pub enum AtlasTextureKind {
     Monochrome = 0,
@@ -2103,13 +1810,6 @@ pub struct PlatformInputHandler {
 }
 
 #[expect(missing_docs)]
-#[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
-    ),
-    allow(dead_code)
-)]
 impl PlatformInputHandler {
     pub fn new(cx: AsyncWindowContext, handler: Box<dyn InputHandler>) -> Self {
         Self {
@@ -2142,7 +1842,6 @@ impl PlatformInputHandler {
             .flatten()
     }
 
-    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub fn marked_text_range(&mut self) -> Option<Range<usize>> {
         self.cx
             .update(|window, cx| self.handler.marked_text_range(window, cx))
@@ -2150,10 +1849,6 @@ impl PlatformInputHandler {
             .flatten()
     }
 
-    #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
-        allow(dead_code)
-    )]
     pub fn text_for_range(
         &mut self,
         range_utf16: Range<usize>,
@@ -2196,7 +1891,6 @@ impl PlatformInputHandler {
             .ok();
     }
 
-    #[cfg_attr(target_os = "windows", allow(dead_code))]
     pub fn unmark_text(&mut self) {
         self.cx
             .update(|window, cx| self.handler.unmark_text(window, cx))
@@ -2759,61 +2453,37 @@ pub struct WindowOptions {
 
 /// The variables that can be configured when creating a new window
 #[derive(Debug)]
-#[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
-    ),
-    allow(dead_code)
-)]
 #[allow(missing_docs)]
 pub struct WindowParams {
     pub bounds: Bounds<Pixels>,
 
     /// The titlebar configuration of the window
-    #[cfg_attr(feature = "wayland", allow(dead_code))]
     pub titlebar: Option<TitlebarOptions>,
 
     /// The kind of window to create
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
     pub kind: WindowKind,
 
     /// Whether the window should be movable by the user
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
     pub is_movable: bool,
 
     /// Whether the application owns dragging of the (custom) titlebar (macOS only)
-    #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
-        allow(dead_code)
-    )]
     pub app_owns_titlebar_drag: bool,
 
     /// Whether the window should be resizable by the user
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
     pub is_resizable: bool,
 
     /// Whether the window should be minimized by the user
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
     pub is_minimizable: bool,
 
-    #[cfg_attr(
-        any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
-        allow(dead_code)
-    )]
     pub focus: bool,
 
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
     pub show: bool,
 
     /// An image to set as the window icon (x11 only)
-    #[cfg_attr(feature = "wayland", allow(dead_code))]
     pub icon: Option<Arc<image::RgbaImage>>,
 
-    #[cfg_attr(feature = "wayland", allow(dead_code))]
     pub display_id: Option<DisplayId>,
 
-    #[cfg_attr(feature = "wayland", allow(dead_code))]
     pub app_id: Option<String>,
 
     pub window_min_size: Option<Size<Pixels>>,
@@ -2926,11 +2596,6 @@ pub enum WindowKind {
     /// A floating window that appears on top of its parent window
     Floating,
 
-    /// A Wayland LayerShell window, used to draw overlays or backgrounds for applications such as
-    /// docks, notifications or wallpapers.
-    #[cfg(all(target_os = "linux", feature = "wayland"))]
-    LayerShell(layer_shell::LayerShellOptions),
-
     /// A window that appears on top of its parent window and blocks interaction with it
     /// until the modal window is closed
     Dialog,
@@ -2983,10 +2648,6 @@ pub enum WindowBackgroundAppearance {
     ///
     /// Not always supported.
     Blurred,
-    /// The Mica backdrop material, supported on Windows 11.
-    MicaBackdrop,
-    /// The Mica Alt backdrop material, supported on Windows 11.
-    MicaAltBackdrop,
 }
 
 /// The text rendering mode to use for drawing glyphs.
@@ -3292,7 +2953,6 @@ impl ClipboardItem {
     }
 
     /// If this item is one ClipboardEntry::String, returns its metadata.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub fn metadata(&self) -> Option<&String> {
         match self.entries().first() {
             Some(ClipboardEntry::String(clipboard_string)) if self.entries.len() == 1 => {
@@ -3647,7 +3307,6 @@ impl ClipboardString {
             .and_then(|m| serde_json::from_str(m).ok())
     }
 
-    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
     /// Compute a hash of the given text for clipboard change detection.
     pub fn text_hash(text: &str) -> u64 {
         let mut hasher = SeaHasher::new();
@@ -3898,10 +3557,9 @@ mod frame_signal_tests {
     }
 }
 
-#[cfg(all(test, any(target_os = "linux", target_os = "freebsd")))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     #[test]
     fn test_refresh_interval_from_hz() {
@@ -3916,181 +3574,5 @@ mod tests {
         for unknown in [0.0, -60.0, f64::NAN, f64::INFINITY] {
             assert_eq!(refresh_interval_from_hz(unknown), None);
         }
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_standard() {
-        let layout = WindowButtonLayout::parse("close,minimize:maximize").unwrap();
-        assert_eq!(
-            layout.left,
-            [
-                Some(WindowButton::Close),
-                Some(WindowButton::Minimize),
-                None
-            ]
-        );
-        assert_eq!(layout.right, [Some(WindowButton::Maximize), None, None]);
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_right_only() {
-        let layout = WindowButtonLayout::parse("minimize,maximize,close").unwrap();
-        assert_eq!(layout.left, [None, None, None]);
-        assert_eq!(
-            layout.right,
-            [
-                Some(WindowButton::Minimize),
-                Some(WindowButton::Maximize),
-                Some(WindowButton::Close)
-            ]
-        );
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_left_only() {
-        let layout = WindowButtonLayout::parse("close,minimize,maximize:").unwrap();
-        assert_eq!(
-            layout.left,
-            [
-                Some(WindowButton::Close),
-                Some(WindowButton::Minimize),
-                Some(WindowButton::Maximize)
-            ]
-        );
-        assert_eq!(layout.right, [None, None, None]);
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_with_whitespace() {
-        let layout = WindowButtonLayout::parse(" close , minimize : maximize ").unwrap();
-        assert_eq!(
-            layout.left,
-            [
-                Some(WindowButton::Close),
-                Some(WindowButton::Minimize),
-                None
-            ]
-        );
-        assert_eq!(layout.right, [Some(WindowButton::Maximize), None, None]);
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_empty() {
-        let layout = WindowButtonLayout::parse("").unwrap();
-        assert_eq!(layout.left, [None, None, None]);
-        assert_eq!(layout.right, [None, None, None]);
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_intentionally_empty() {
-        let layout = WindowButtonLayout::parse(":").unwrap();
-        assert_eq!(layout.left, [None, None, None]);
-        assert_eq!(layout.right, [None, None, None]);
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_invalid_buttons() {
-        let layout = WindowButtonLayout::parse("close,invalid,minimize:maximize,foo").unwrap();
-        assert_eq!(
-            layout.left,
-            [
-                Some(WindowButton::Close),
-                Some(WindowButton::Minimize),
-                None
-            ]
-        );
-        assert_eq!(layout.right, [Some(WindowButton::Maximize), None, None]);
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_deduplicates_same_side_buttons() {
-        let layout = WindowButtonLayout::parse("close,close,minimize").unwrap();
-        assert_eq!(
-            layout.right,
-            [
-                Some(WindowButton::Close),
-                Some(WindowButton::Minimize),
-                None
-            ]
-        );
-        assert_eq!(layout.format(), ":close,minimize");
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_deduplicates_buttons_across_sides() {
-        let layout = WindowButtonLayout::parse("close:maximize,close,minimize").unwrap();
-        assert_eq!(layout.left, [Some(WindowButton::Close), None, None]);
-        assert_eq!(
-            layout.right,
-            [
-                Some(WindowButton::Maximize),
-                Some(WindowButton::Minimize),
-                None
-            ]
-        );
-
-        let button_ids: Vec<_> = layout
-            .left
-            .iter()
-            .chain(layout.right.iter())
-            .flatten()
-            .map(WindowButton::id)
-            .collect();
-        let unique_button_ids = button_ids.iter().copied().collect::<HashSet<_>>();
-        assert_eq!(unique_button_ids.len(), button_ids.len());
-        assert_eq!(layout.format(), "close:maximize,minimize");
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_gnome_style() {
-        let layout = WindowButtonLayout::parse("close").unwrap();
-        assert_eq!(layout.left, [None, None, None]);
-        assert_eq!(layout.right, [Some(WindowButton::Close), None, None]);
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_elementary_style() {
-        let layout = WindowButtonLayout::parse("close:maximize").unwrap();
-        assert_eq!(layout.left, [Some(WindowButton::Close), None, None]);
-        assert_eq!(layout.right, [Some(WindowButton::Maximize), None, None]);
-    }
-
-    #[test]
-    fn test_window_button_layout_round_trip() {
-        let cases = [
-            "close:minimize,maximize",
-            "minimize,maximize,close:",
-            ":close",
-            "close:",
-            "close:maximize",
-            ":",
-        ];
-
-        for case in cases {
-            let layout = WindowButtonLayout::parse(case).unwrap();
-            assert_eq!(layout.format(), case, "Round-trip failed for: {}", case);
-        }
-    }
-
-    #[test]
-    fn test_window_button_layout_linux_default() {
-        let layout = WindowButtonLayout::linux_default();
-        assert_eq!(layout.left, [None, None, None]);
-        assert_eq!(
-            layout.right,
-            [
-                Some(WindowButton::Minimize),
-                Some(WindowButton::Maximize),
-                Some(WindowButton::Close)
-            ]
-        );
-
-        let round_tripped = WindowButtonLayout::parse(&layout.format()).unwrap();
-        assert_eq!(round_tripped, layout);
-    }
-
-    #[test]
-    fn test_window_button_layout_parse_all_invalid() {
-        assert!(WindowButtonLayout::parse("asdfghjkl").is_err());
     }
 }

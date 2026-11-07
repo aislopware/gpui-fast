@@ -692,15 +692,9 @@ impl Scene {
 /// ([`Scene::describe`], the retained check): its buffer, so a frame that
 /// shows an older one than a frame drawn afresh does not read the same. Both
 /// frames hold their buffers while they are compared.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn picture(surface: &PaintSurface) -> String {
     format!(" buffer {:p}", std::ptr::from_ref(&*surface.image_buffer))
-}
-
-/// Elsewhere a surface holds no buffer to name.
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
-pub(crate) fn picture(_: &PaintSurface) -> String {
-    String::new()
 }
 
 /// What [`Scene::finish`] does: puts every primitive in drawing order.

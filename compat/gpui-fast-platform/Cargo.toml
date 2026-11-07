@@ -16,12 +16,9 @@ default = ["gpui_fast/default"]
 bench-support = ["gpui_fast/bench-support"]
 font-kit = ["gpui_fast/font-kit"]
 inspector = ["gpui/inspector"]
-multithreaded = ["gpui_fast/multithreaded"]
 runtime_shaders = ["gpui_fast/runtime_shaders"]
 screen-capture = ["gpui_fast/screen-capture"]
 test-support = ["gpui_fast/test-support"]
-wayland = ["gpui_fast/wayland"]
-x11 = ["gpui_fast/x11"]
 
 [dependencies]
 gpui_fast = { package = "gpui_platform", path = "../../crates/gpui_platform", default-features = false }

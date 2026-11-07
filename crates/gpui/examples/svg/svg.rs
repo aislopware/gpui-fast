@@ -1,8 +1,3 @@
-#![cfg_attr(target_family = "wasm", no_main)]
-
-#[path = "../example_support/fonts.rs"]
-mod example_support;
-
 use std::fs;
 use std::path::PathBuf;
 
@@ -79,9 +74,6 @@ fn run_example() {
             base: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples"),
         })
         .run(|cx: &mut App| {
-            if !example_support::load_fonts(cx) {
-                return;
-            }
             let bounds = Bounds::centered(None, size(px(300.0), px(300.0)), cx);
             cx.open_window(
                 WindowOptions {
@@ -95,14 +87,6 @@ fn run_example() {
         });
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn main() {
-    run_example();
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
-    gpui_platform::web_init();
     run_example();
 }

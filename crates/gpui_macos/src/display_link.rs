@@ -1,8 +1,9 @@
 //! Frame pacing for macOS windows.
 //!
-//! On macOS 14 and later a window is paced by a `CAMetalDisplayLink` on its
-//! layer ([`gpui_apple::display_link::MetalFrameSource`]). Earlier systems use
-//! the shared `CVDisplayLink` registry described below ([`WindowFrameSource`]).
+//! A window is paced by the shared `CVDisplayLink` registry described below
+//! ([`WindowFrameSource`]), or by a `CAMetalDisplayLink` on its layer
+//! ([`gpui_apple::display_link::MetalFrameSource`]), as
+//! `gpui_apple::fast::frame_source` decides.
 //!
 //! CVDisplayLink has no safe teardown: `CVDisplayLinkStop` merely flags the
 //! link's io thread to exit "soon" and returns immediately, and there is no
@@ -625,9 +626,6 @@ mod tests {
 
     #[test]
     fn a_renderer_draws_normally_after_its_display_link_is_invalidated() {
-        if !MetalFrameSource::is_available() {
-            return;
-        }
         let mut renderer =
             crate::renderer::MetalRenderer::new(Default::default(), false, false).unwrap();
         renderer.update_drawable_size(gpui::size(gpui::DevicePixels(64), gpui::DevicePixels(64)));

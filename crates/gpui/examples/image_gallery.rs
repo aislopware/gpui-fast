@@ -1,15 +1,9 @@
-#![cfg_attr(target_family = "wasm", no_main)]
-
-#[path = "example_support/fonts.rs"]
-mod example_support;
-
 use gpui::{
     App, AppContext, Bounds, ClickEvent, Context, ElementId, Entity, ImageCache,
     ImageCacheProvider, KeyBinding, Menu, MenuItem, RetainAllImageCache, SharedString,
     TitlebarOptions, Window, WindowBounds, WindowOptions, actions, div, hash, image_cache, img,
     prelude::*, px, rgb, size,
 };
-#[cfg(not(target_family = "wasm"))]
 use reqwest_client::ReqwestClient;
 use std::{collections::HashMap, sync::Arc};
 
@@ -237,22 +231,12 @@ impl ImageCache for SimpleLruCache {
 actions!(image, [Quit]);
 
 fn run_example() {
-    #[cfg(not(target_family = "wasm"))]
     let app = gpui_platform::application();
-    #[cfg(target_family = "wasm")]
-    let app = gpui_platform::single_threaded_web();
-    #[cfg(not(target_family = "wasm"))]
     let http_client =
         ReqwestClient::user_agent("gpui example").expect("failed to create HTTP client");
-    #[cfg(target_family = "wasm")]
-    let http_client = gpui_web::FetchHttpClient::new(app.foreground_executor().to_send());
     let app = app.with_http_client(Arc::new(http_client));
 
     app.run(move |cx: &mut App| {
-        if !example_support::load_fonts(cx) {
-            return;
-        }
-
         cx.activate(true);
         cx.on_action(|_: &Quit, cx| cx.quit());
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
@@ -286,15 +270,7 @@ fn run_example() {
     });
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn main() {
     env_logger::init();
-    run_example();
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
-    gpui_platform::web_init();
     run_example();
 }

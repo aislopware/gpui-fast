@@ -119,8 +119,8 @@ method.
 ```rust
 use gpui::composition::{NativeHost, NativeHostOptions, native_view};
 
-// Once, when the content is created (main thread). Fails where the platform cannot
-// compose (Linux, Windows, the web).
+// Once, when the content is created (main thread). Fails if the platform cannot make
+// the host.
 let host: NativeHost = window.create_native_host(
     NativeHostOptions { opaque: true, interactive: true, label: Some("Web page".into()) },
     cx,
@@ -488,7 +488,6 @@ tenth of what it is on the native beside the menu.
   reach: what the native shows just outside the region is not gathered into its edge,
   where GPUI's Metal blur gathers its own content. A blur reading near a native ordered
   above it may read the native's cleared interior as transparent.
-- **Blurs elsewhere**: the wgpu and Direct3D renderers draw no blur.
 - **Translucent natives** (`NativeHostOptions::opaque = false`) are drawn as if opaque:
   what GPUI painted under a native is cleared by its hole. A native faded by element
   opacity blends with what is *under the GPUI layer* (the window background), not with

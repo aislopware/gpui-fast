@@ -40,8 +40,6 @@ pub(crate) struct TestPlatform {
     displays: RefCell<Vec<TestDisplay>>,
     displays_changed_callback: RefCell<Option<Box<dyn FnMut()>>>,
     current_clipboard_item: Mutex<Option<ClipboardItem>>,
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    current_primary_item: Mutex<Option<ClipboardItem>>,
     #[cfg(target_os = "macos")]
     current_find_pasteboard_item: Mutex<Option<ClipboardItem>>,
     #[cfg(any(test, feature = "test-support"))]
@@ -220,28 +218,7 @@ impl TestPlatform {
             platform_info: Cell::new(crate::PlatformInfo {
                 os: std::cfg_select! {
                     target_os = "macos" => { crate::OperatingSystem::Mac }
-                    target_os = "windows" => { crate::OperatingSystem::Windows }
-                    target_os = "linux" => { crate::OperatingSystem::Linux }
-                    target_os = "freebsd" => { crate::OperatingSystem::FreeBsd }
                     target_os = "ios" => { crate::OperatingSystem::Ios }
-                    target_os = "android" => { crate::OperatingSystem::Android }
-                    target_family = "wasm" => {
-                        // Browser tests must supply the host OS with set_platform_info.
-                        crate::OperatingSystem::Unknown
-                    }
-                    _ => { compile_error!("unsupported test platform operating system") }
-                },
-                target: std::cfg_select! {
-                    target_family = "wasm" => { crate::PlatformTarget::Web }
-                    any(
-                        target_os = "macos",
-                        target_os = "windows",
-                        target_os = "linux",
-                        target_os = "freebsd",
-                        target_os = "ios",
-                        target_os = "android"
-                    ) => { crate::PlatformTarget::Native }
-                    _ => { compile_error!("unsupported test platform target") }
                 },
             }),
             background_executor: executor,
@@ -257,8 +234,6 @@ impl TestPlatform {
             active_window: Default::default(),
             expect_restart: Default::default(),
             current_clipboard_item: Mutex::new(None),
-            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-            current_primary_item: Mutex::new(None),
             #[cfg(target_os = "macos")]
             current_find_pasteboard_item: Mutex::new(None),
             idle_sleep_prevention_count: Arc::new(AtomicUsize::new(0)),
@@ -819,16 +794,6 @@ impl Platform for TestPlatform {
 
     fn write_to_clipboard(&self, item: ClipboardItem) {
         *self.current_clipboard_item.lock() = Some(item);
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn read_from_primary(&self) -> Option<ClipboardItem> {
-        self.current_primary_item.lock().clone()
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    fn write_to_primary(&self, item: ClipboardItem) {
-        *self.current_primary_item.lock() = Some(item);
     }
 
     #[cfg(target_os = "macos")]

@@ -1,9 +1,4 @@
-#![cfg_attr(target_family = "wasm", no_main)]
-
 //! Demonstrates posting, replacing, dismissing, and responding to system notifications.
-
-#[path = "example_support/fonts.rs"]
-mod example_support;
 
 use gpui::{
     App, Bounds, Context, Div, SharedString, Stateful, SystemNotification,
@@ -100,9 +95,6 @@ fn button(id: &'static str, label: &'static str) -> Stateful<Div> {
 
 fn run_example() {
     application().run(|cx: &mut App| {
-        if !example_support::load_fonts(cx) {
-            return;
-        }
         cx.set_app_identity("dev.zed.gpui.system-notifications", "GPUI Notifications");
 
         let view = cx.new(|_| SystemNotificationExample {
@@ -142,14 +134,6 @@ fn run_example() {
     });
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn main() {
-    run_example();
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
-    gpui_platform::web_init();
     run_example();
 }

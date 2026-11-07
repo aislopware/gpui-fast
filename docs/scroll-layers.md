@@ -15,9 +15,8 @@ drawing as it does without layers, and how to verify and measure layers.
 
 ## Where layers apply
 
-- Linux, on the wgpu renderer; macOS, on the Metal renderer; and Windows, on
-  the Direct3D 11 renderer. Everywhere else layers are compiled out
-  (`fast::layers::COMPILED`), and nothing changes.
+- macOS and iOS, on the Metal renderer, the only platforms this fork builds
+  for (FORK.md, "Apple only").
 - Scrolling `div`s (`overflow_x_scroll` / `overflow_y_scroll`), whether their
   content is a child view or plain elements in the same view.
 - `uniform_list` and `list` (`fast::layers::lists`), unless flipped
@@ -303,21 +302,17 @@ them out afresh.
   hovers, clicks, keys and content changes through a window with layers and a
   window without. Every frame it compares the expanded scenes, hit tests and
   the positions listeners observe.
-- `cargo test -p gpui_wgpu` compares rasterized and composited tiles with
-  direct drawing, byte for byte, on a surfaceless device.
-- `cargo test -p gpui_apple fast::layers` does the same on macOS with a
-  headless Metal renderer (`crates/gpui_apple/src/fast/layers/`), which draws
-  tiles as the wgpu renderer does.
-- `cargo test -p gpui_windows --features test-support fast::layers` does the
-  same for the Direct3D 11 renderer (`gpui_windows/src/fast/layers/`), on a
-  hardware device or WARP, on Windows.
+- `cargo test -p gpui_apple fast::layers` compares rasterized and composited
+  tiles with direct drawing, byte for byte, with a headless Metal renderer
+  (`crates/gpui_apple/src/fast/layers/`).
 - `cargo run -p gpui_perf --release -- --headless --verify` also runs the
   scroll scenarios with layers on and off.
 
 ## Measuring
 
 The `gpui_perf` headless scroll scenarios dispatch real wheel events with the
-pointer over the content. Linux, release build, retained views on, 300 frames:
+pointer over the content. Linux (wgpu, before this fork went Apple-only), release
+build, retained views on, 300 frames:
 
 | Scenario | Layers off | Layers on |
 |---|---|---|

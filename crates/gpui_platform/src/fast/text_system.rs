@@ -10,8 +10,7 @@ use std::sync::Arc;
 /// used on any thread. There this builds the text system alone, as the
 /// platform builds it: Core Text through font-kit on macOS (GPUI's no-op text
 /// system without the `font-kit` feature, as the platform then has), Core
-/// Text on iOS. Elsewhere the text system comes with its platform's devices
-/// and is taken from a headless platform.
+/// Text on iOS.
 pub fn text_system() -> Arc<dyn PlatformTextSystem> {
     #[cfg(all(target_os = "macos", feature = "font-kit"))]
     {
@@ -26,11 +25,6 @@ pub fn text_system() -> Arc<dyn PlatformTextSystem> {
     #[cfg(target_os = "ios")]
     {
         gpui_ios::text_system()
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    {
-        crate::current_platform(true).text_system()
     }
 }
 

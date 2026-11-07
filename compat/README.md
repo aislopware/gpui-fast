@@ -14,24 +14,25 @@ gpui-pre = { git = "https://github.com/longbridge/gpui-fast" }
 gpui-pre-platform = { git = "https://github.com/longbridge/gpui-fast" }
 gpui-pre-macros = { git = "https://github.com/longbridge/gpui-fast" }
 gpui-pre-sum-tree = { git = "https://github.com/longbridge/gpui-fast" }
-# and gpui-pre-web / gpui-pre-reqwest-client when the graph has them
+# and gpui-pre-reqwest-client when the graph has it
 ```
 
 GPUI Kit's `gpui-fast` feature names GPUI Fast's crates.io release instead
-(`gpui-fast`, `gpui-fast-platform`, `gpui-fast-web`, `0.1.13` today), and
-`gpui-fast`, `gpui-fast-platform` and `gpui-fast-web` here stand in for those
-the same way, so that feature builds on this repository too:
+(`gpui-fast`, `gpui-fast-platform`, `0.1.13` today), and `gpui-fast` and
+`gpui-fast-platform` here stand in for those the same way, so that feature
+builds on this repository too:
 
 ```toml
 [patch.crates-io]
 gpui-fast = { git = "https://github.com/longbridge/gpui-fast" }
 gpui-fast-platform = { git = "https://github.com/longbridge/gpui-fast" }
-gpui-fast-web = { git = "https://github.com/longbridge/gpui-fast" }
 ```
 
 Each crate exposes the same features as the crate it stands in for,
-forwarded to ours. Nothing else lives here: gpui-fast's own crates keep
-upstream's names and versions.
+forwarded to ours, except the Linux, Windows and web ones (`wayland`, `x11`,
+`windows-manifest*`, `multithreaded`) and the web crates: this fork builds for
+macOS and iOS only (FORK.md, "Apple only"). Nothing else lives here:
+gpui-fast's own crates keep upstream's names and versions.
 
 Two things to keep in mind:
 

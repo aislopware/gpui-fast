@@ -2,6 +2,4 @@
 channel = "1.98.1"
 profile = "minimal"
 components = [ "rustfmt", "clippy", "rust-analyzer", "rust-src" ]
-targets = [
-    "wasm32-unknown-unknown", # gpui on the web
-]
+targets = [ "aarch64-apple-ios", "aarch64-apple-ios-sim" ]

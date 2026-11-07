@@ -46,9 +46,6 @@ mod pages;
 mod theme;
 mod workspace;
 
-#[path = "../../../gpui/examples/example_support/fonts.rs"]
-mod example_support;
-
 use std::{
     cell::RefCell,
     rc::Rc,
@@ -264,9 +261,6 @@ pub fn run(auto: bool, demo: bool) {
         return;
     }
     application().run(move |cx: &mut App| {
-        if !example_support::load_fonts(cx) {
-            return;
-        }
         cx.bind_keys([
             KeyBinding::new("1", ScrollOff, Some(KEY_CONTEXT)),
             KeyBinding::new("2", ScrollSidebar, Some(KEY_CONTEXT)),

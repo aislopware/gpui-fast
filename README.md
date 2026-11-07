@@ -6,11 +6,15 @@
 > composition for embedded WebKit, presentation reports and pacing, scroll layers, edge fades, backdrop blur, and
 > many retained-mode and macOS fixes. Onicode pins a rev on `main`. Upstream changes are read one by one and taken
 > by intent, never merged blindly; [FORK.md](FORK.md) records every sync, what the fork carries and why.
+>
+> It builds for macOS 27.2 and iOS 27.2 on Apple silicon only (`aarch64-apple-darwin`, `aarch64-apple-ios`,
+> `aarch64-apple-ios-sim`): the Linux, Windows, web and wgpu backends are deleted, and so is every fallback for an
+> older system ([FORK.md](FORK.md), "Apple only"). The rest of this README is longbridge's, about its builds.
 
 A performance-focused fork of [Zed's GPUI](https://gpui.rs) with incremental rendering and native window composition. [v0.1.0](https://github.com/longbridge/gpui-fast/releases/tag/v0.1.0) is available on crates.io. The project remains experimental.
 
 - **Retained Mode** reuses unchanged views, layout nodes and text measurements.
-- **Scroll layers** reuse cached GPU tiles and list rows while scrolling, on macOS, Linux and Windows.
+- **Scroll layers** reuse cached GPU tiles and list rows while scrolling, on Metal.
 - **Window composition** embeds native content while keeping GPUI menus, popovers and dialogs above it.
 
 ## Performance vs GPUI
@@ -44,25 +48,25 @@ GPUI Fast tracks rendering dependencies and rebuilds only what changed: a window
 
 ## Window composition
 
-Opt-in composition supports macOS, Windows, Linux Wayland and X11, based on [zed#62379](https://github.com/zed-industries/zed/pull/62379).
+Opt-in composition supports macOS and iOS, based on [zed#62379](https://github.com/zed-industries/zed/pull/62379).
 
 ```sh
 cargo run -p gpui_perf --example native_webview
 ```
 
-The example embeds WKWebView on macOS and WebView2 on Windows. Linux demonstrates an independent GPU surface rather than a WebView.
+The example embeds WKWebView on macOS.
 
 ## Using it
 
-Alias the published crates to GPUI's library names:
+Depend on the crates by git, pinned to a rev on `main`, as onicode does:
 
 ```toml
 [dependencies]
-gpui = { package = "gpui-fast", version = "0.1.0" }
-gpui_platform = { package = "gpui-fast-platform", version = "0.1.0", features = ["wayland", "x11"] }
+gpui = { git = "https://github.com/aislopware/gpui-fast", rev = "<rev>", default-features = false }
+gpui_platform = { git = "https://github.com/aislopware/gpui-fast", rev = "<rev>", default-features = false, features = ["font-kit"] }
 ```
 
-The platform features above select Linux backends; omit them on macOS and Windows. GPUI Kit applications should follow the [compatibility setup](compat/README.md) to use the same GPUI core.
+GPUI Kit applications should follow the [compatibility setup](compat/README.md) to use the same GPUI core.
 
 Changes to render state outside tracked entities, globals and list/scroll state need `cx.notify()`. See [Retained Mode](docs/retained-mode.md#what-an-application-needs-to-know) for details.
 

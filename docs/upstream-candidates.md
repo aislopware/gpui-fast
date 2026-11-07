@@ -266,9 +266,6 @@ arrived. Test: `retained::every_view_is_rendered_again_once_fonts_are_added`.
   too.** Longbridge's pipelines blend destination alpha with `One`, so a non-opaque window's
   alpha comes out wrong. Ours use `OneMinusSourceAlpha`, and an opaque window renders
   bit-identically either way. Shown by composition's pixel tests over natives.
-- **gpui_apple's build script decided on the target (`bea273f`). Fix, wanted.** A build
-  script's `cfg` is the host's, so clippy or rustdoc for an Apple target could not run from
-  Linux. No test; it is shown by checking an Apple target from Linux.
 - **A headless atlas with one texture per kind (`48b0c1a`). Fix, wanted.** The headless atlas
   gave every tile its own texture, so a headless frame batched sprites one glyph each and
   measured what no window does (strip-clock 1.79 to 1.68 M instructions a frame).

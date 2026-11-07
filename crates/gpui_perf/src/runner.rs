@@ -1,9 +1,8 @@
 //! Drives the scenarios headlessly and measures what their frames cost.
 //!
 //! Every scenario runs in its own [`HeadlessAppContext`], with a real text
-//! system (cosmic-text, loaded with the repository's embedded IBM Plex Sans
-//! and Lilex fonts only, so results don't depend on the fonts installed), in
-//! one window of a fixed size. It runs once per retention mode, each time from
+//! system (Core Text, loaded with the repository's embedded IBM Plex Sans
+//! and Lilex fonts, which the scenarios name), in one window of a fixed size. It runs once per retention mode, each time from
 //! a freshly built scenario, so the two runs draw the same frames.
 //!
 //! # What a frame costs
@@ -16,8 +15,7 @@
 //! and taken out. If a step leaves the window clean, so that nothing drew, the
 //! window is drawn explicitly and that draw counts instead (`forced_draws`).
 //!
-//! Times are per-thread CPU time (`CLOCK_THREAD_CPUTIME_ID`) where available,
-//! which doesn't count time the thread spent descheduled; wall time is kept
+//! Times are per-thread CPU time (`CLOCK_THREAD_CPUTIME_ID`), which doesn't count time the thread spent descheduled; wall time is kept
 //! alongside.
 //!
 //! Allocations are counted process-wide by [`crate::alloc::CountingAllocator`]
@@ -387,9 +385,7 @@ fn load_fonts(cx: &App) {
 }
 
 fn new_context() -> HeadlessAppContext {
-    let text_system = Arc::new(gpui_wgpu::CosmicTextSystem::new_without_system_fonts(
-        "IBM Plex Sans",
-    ));
+    let text_system = gpui_platform_fast::text_system();
     let mut cx = HeadlessAppContext::with_asset_source(text_system, Arc::new(Icons));
     cx.update(|cx| load_fonts(cx));
     cx
@@ -483,7 +479,6 @@ impl Stamp {
     }
 }
 
-#[cfg(unix)]
 fn thread_cpu_time() -> Option<Duration> {
     let mut ts = libc::timespec {
         tv_sec: 0,
@@ -492,11 +487,6 @@ fn thread_cpu_time() -> Option<Duration> {
     // SAFETY: `ts` is a valid, writable timespec.
     let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
     (result == 0).then(|| Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32))
-}
-
-#[cfg(not(unix))]
-fn thread_cpu_time() -> Option<Duration> {
-    None
 }
 
 struct FrameSample {

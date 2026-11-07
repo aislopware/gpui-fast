@@ -2,17 +2,8 @@
 # v0 mangling scheme provides more detailed backtraces around closures
 rustflags = ["-C", "symbol-mangling-version=v0"]
 
-[target.'cfg(target_os = "windows")']
-rustflags = [
-    "--cfg",
-    "windows_slim_errors",        # This cfg will reduce the size of `windows::core::Error` from 16 bytes to 4 bytes
-    "-C",
-    "target-feature=+crt-static",
-]
-
-# We need lld to link successfully on aarch64-linux
-[target.aarch64-unknown-linux-gnu]
-rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-
+# The Apple-only floor (FORK.md). IPHONEOS_DEPLOYMENT_TARGET is not set here: with both set, a clang
+# run that names no target builds for iOS, and the Mac kills what it built (aws-lc-sys refuses to build).
+# iOS builds set it themselves.
 [env]
-MACOSX_DEPLOYMENT_TARGET = "10.15.7"
+MACOSX_DEPLOYMENT_TARGET = "27.2"

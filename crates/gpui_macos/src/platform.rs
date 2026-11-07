@@ -37,11 +37,9 @@ use objc2_app_kit::{
     NSScrollerStyle, NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
 };
 use objc2_foundation::{
-    NSActivityOptions, NSArray, NSBundle, NSError, NSInteger, NSProcessInfo, NSString, NSURL,
-    NSUTF8StringEncoding,
+    NSActivityOptions, NSArray, NSBundle, NSError, NSInteger, NSString, NSURL, NSUTF8StringEncoding,
 };
 use parking_lot::Mutex;
-use semver::Version;
 use std::{
     cell::Cell,
     ffi::{CStr, OsStr, c_void},
@@ -405,9 +403,7 @@ impl MacPlatform {
                                     key_to_menu_equivalent(keystroke.key()).as_ref(),
                                 ),
                             );
-                            if Self::os_version() >= Version::new(12, 0, 0) {
-                                item.setAllowsAutomaticKeyEquivalentLocalization(false);
-                            }
+                            item.setAllowsAutomaticKeyEquivalentLocalization(false);
                             item.setKeyEquivalentModifierMask(mask);
                         } else {
                             item = NSMenuItem::initWithTitle_action_keyEquivalent(
@@ -472,15 +468,6 @@ impl MacPlatform {
         }
     }
 
-    fn os_version() -> Version {
-        let version = NSProcessInfo::processInfo().operatingSystemVersion();
-        Version::new(
-            version.majorVersion as u64,
-            version.minorVersion as u64,
-            version.patchVersion as u64,
-        )
-    }
-
     // Before the app finishes launching there is no delegate yet;
     // `did_finish_launching` registers the observers then.
     fn ensure_system_power_observers(&self) {
@@ -508,7 +495,6 @@ impl Platform for MacPlatform {
     fn platform_info(&self) -> gpui::PlatformInfo {
         gpui::PlatformInfo {
             os: gpui::OperatingSystem::Mac,
-            target: gpui::PlatformTarget::Native,
         }
     }
 
@@ -720,12 +706,7 @@ impl Platform for MacPlatform {
 
     #[cfg(feature = "screen-capture")]
     fn is_screen_capture_supported(&self) -> bool {
-        let min_version = objc2_foundation::NSOperatingSystemVersion {
-            majorVersion: 12,
-            minorVersion: 3,
-            patchVersion: 0,
-        };
-        NSProcessInfo::processInfo().isOperatingSystemAtLeastVersion(min_version)
+        true
     }
 
     #[cfg(feature = "screen-capture")]
@@ -816,14 +797,8 @@ impl Platform for MacPlatform {
     }
 
     fn register_url_scheme(&self, scheme: &str) -> Task<anyhow::Result<()>> {
-        // API only available post Monterey
         // https://developer.apple.com/documentation/appkit/nsworkspace/3753004-setdefaultapplicationaturl
         let (done_tx, done_rx) = oneshot::channel();
-        if Self::os_version() < Version::new(12, 0, 0) {
-            return Task::ready(Err(anyhow!(
-                "macOS 12.0 or later is required to register URL schemes"
-            )));
-        }
 
         let Some(bundle_id) = NSBundle::mainBundle().bundleIdentifier() else {
             return Task::ready(Err(anyhow!("Can only register URL scheme in bundled apps")));
@@ -974,15 +949,13 @@ impl Platform for MacPlatform {
                                         .collect::<Vec<_>>();
 
                                     // https://github.com/zed-industries/zed/issues/16969
-                                    // Workaround a bug in macOS Sequoia that adds an extra file-extension
+                                    // Workaround a bug in macOS Sequoia and later that adds an extra file-extension
                                     // sometimes. e.g. `a.sql` becomes `a.sql.s` or `a.txtx` becomes `a.txtx.txt`
                                     //
-                                    // This is conditional on OS version because I'd like to get rid of it, so that
-                                    // you can manually create a file called `a.sql.s`. That said it seems better
-                                    // to break that use-case than breaking `a.sql`.
+                                    // This breaks manually creating a file called `a.sql.s`, which seems better
+                                    // than breaking `a.sql`.
                                     if let &[_, second, third] = chunks.as_slice()
                                         && second.starts_with(third)
-                                        && Self::os_version() >= Version::new(15, 0, 0)
                                     {
                                         path.set_extension("");
                                     }

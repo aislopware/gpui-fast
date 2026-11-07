@@ -185,9 +185,7 @@ impl AutoRun {
     ) -> bool {
         let Some(&(scenario, retention)) = self.runs.get(self.index) else {
             // The platform window holds the focused search box's input
-            // handler until a frame is drawn without it, and on Wayland a
-            // closed window's state, handler included, is only dropped by a
-            // task that never runs once the app quits. So the search box is
+            // handler until a frame is drawn without it. So the search box is
             // blurred and one more frame drawn, which takes the handler back,
             // before the window is closed and the app checks for leaked
             // entities as it quits.
@@ -366,7 +364,7 @@ impl AutoRun {
             "\ncpu p50/p95: main thread CPU per frame. instr p50: main thread instructions per \
              frame, which unlike CPU time do not depend on the core or the clock the thread got. \
              proc: the whole process, render threads included. p-cores: the share of the \
-             process's CPU time on performance cores. memory: the process's memory at the end, resident on Linux, its footprint on macOS. build, prepaint, paint: per frame; layout is Taffy's share of prepaint. \
+             process's CPU time on performance cores. memory: the process's memory footprint at the end. build, prepaint, paint: per frame; layout is Taffy's share of prepaint. \
              built, reused: views per frame. layers: scroll containers drawn from a scroll \
              layer's cached tiles, tiles: scroll layer tiles repainted, rebuilds: scroll layers \
              painted again before an input event, per frame. \"-\": not counted by upstream GPUI."

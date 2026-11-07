@@ -1,7 +1,7 @@
 name: GPUIIosExample
 options:
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "27.2"
 settings:
   base:
     ARCHS: arm64

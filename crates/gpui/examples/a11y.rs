@@ -1,10 +1,6 @@
-#![cfg_attr(target_family = "wasm", no_main)]
-
 //! Accessibility (AccessKit) demo app.
 //!
 //! Run with: `cargo run -p gpui --example a11y`
-//!
-//! Or on Linux: `cargo run -p gpui --features gpui_platform/wayland,gpui_platform/x11 --example a11y`
 //!
 //! This app uses GPUI's accessibility APIs to attach structured information to
 //! the element tree, which allows assistive technology to see and interact with
@@ -29,9 +25,6 @@
 //!     - "1. Write code"
 //!     - "2. Run tests"
 //!     - "3. Ship it"
-
-#[path = "example_support/fonts.rs"]
-mod example_support;
 
 use gpui::{
     AccessibleAction, App, Bounds, Context, FocusHandle, KeyBinding, Role, SharedString, Toggled,
@@ -229,9 +222,6 @@ impl Render for A11yDemo {
 
 fn run_example() {
     application().run(|cx: &mut App| {
-        if !example_support::load_fonts(cx) {
-            return;
-        }
         cx.bind_keys([
             KeyBinding::new("tab", Tab, None),
             KeyBinding::new("shift-tab", TabPrev, None),
@@ -255,18 +245,10 @@ fn run_example() {
     });
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn main() {
     env_logger::builder()
         .filter_level(log::LevelFilter::Warn)
         .filter_module("gpui", log::LevelFilter::Info)
         .init();
-    run_example();
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
-    gpui_platform::web_init();
     run_example();
 }

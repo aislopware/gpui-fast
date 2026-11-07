@@ -77,7 +77,6 @@ pathfinder_geometry = { workspace = true, optional = true }
 smallvec.workspace = true
 thiserror.workspace = true
 
-# Slopty: for every target, since the build script runs on the host and decides on the target.
 [build-dependencies]
 cbindgen.workspace = true
 

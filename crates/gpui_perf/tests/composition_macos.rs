@@ -32,7 +32,7 @@
 extern crate gpui_fast as gpui;
 extern crate gpui_platform_fast as gpui_platform;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "ios")]
 fn main() {}
 
 #[cfg(target_os = "macos")]

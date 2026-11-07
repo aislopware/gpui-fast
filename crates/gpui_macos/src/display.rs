@@ -6,9 +6,9 @@ use core_graphics::display::{
     CGDirectDisplayID, CGDisplay, CGDisplayBounds, CGGetActiveDisplayList,
 };
 use gpui::{Bounds, DisplayId, Pixels, PlatformDisplay, point, px, refresh_interval_from_hz, size};
-use objc2::{msg_send, rc::Retained, sel};
+use objc2::{msg_send, rc::Retained};
 use objc2_app_kit::NSScreen;
-use objc2_foundation::{NSObjectProtocol, ns_string};
+use objc2_foundation::ns_string;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -154,7 +154,6 @@ impl PlatformDisplay for MacDisplay {
         // display mode's rate is 0 on built-in panels.
         let screen_hertz = self
             .get_nsscreen()
-            .filter(|screen| screen.respondsToSelector(sel!(maximumFramesPerSecond)))
             .map_or(0.0, |screen| screen.maximumFramesPerSecond() as f64);
         refresh_interval_from_hz(screen_hertz).or_else(|| {
             CGDisplay::new(self.0)

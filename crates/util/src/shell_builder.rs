@@ -217,8 +217,6 @@ impl ShellBuilder {
         mut task_command: Option<String>,
         task_args: &[String],
     ) -> std::process::Command {
-        #[cfg(windows)]
-        let kind = self.kind;
         if task_args.is_empty() {
             task_command = task_command
                 .as_ref()
@@ -229,18 +227,6 @@ impl ShellBuilder {
 
         let mut child = crate::command::new_std_command(program);
 
-        #[cfg(windows)]
-        if kind == ShellKind::Cmd {
-            use std::os::windows::process::CommandExt;
-
-            for arg in args {
-                child.raw_arg(arg);
-            }
-        } else {
-            child.args(args);
-        }
-
-        #[cfg(not(windows))]
         child.args(args);
 
         child

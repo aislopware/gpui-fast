@@ -1,5 +1,3 @@
-#![cfg_attr(target_family = "wasm", no_main)]
-
 //! View example — composing a text input from the `View` primitives.
 //!
 //! The whole point: a text input is deceptively complicated, and `View` makes it
@@ -12,9 +10,6 @@
 //!                 the editor internally) OR an `Editor` (so you can read the cursor).
 //!
 //! Run: `cargo run -p gpui --example view_example`
-
-#[path = "../example_support/fonts.rs"]
-mod example_support;
 
 mod example_editor;
 mod example_input;
@@ -137,9 +132,6 @@ fn section(title: &str) -> Div {
 
 fn run_example() {
     application().run(|cx: &mut App| {
-        if !example_support::load_fonts(cx) {
-            return;
-        }
         let bounds = Bounds::centered(None, size(px(560.0), px(480.0)), cx);
         cx.bind_keys([
             KeyBinding::new("backspace", Backspace, None),
@@ -166,14 +158,6 @@ fn run_example() {
     });
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn main() {
-    run_example();
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
-    gpui_platform::web_init();
     run_example();
 }

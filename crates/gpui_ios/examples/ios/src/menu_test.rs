@@ -5,7 +5,7 @@
 //! the app exits with the number of failures.
 //!
 //! ```text
-//! IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo build -p gpui_ios_example --features menu-test \
+//! IPHONEOS_DEPLOYMENT_TARGET=27.2 cargo build -p gpui_ios_example --features menu-test \
 //!     --target aarch64-apple-ios-sim
 //! (cd crates/gpui_ios/examples/ios/app && xcodegen generate)
 //! xcodebuild -project crates/gpui_ios/examples/ios/app/GPUIIosExample.xcodeproj \

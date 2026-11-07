@@ -10,7 +10,7 @@
 //!
 //! So a window starts on the `CVDisplayLink`. Once `nextDrawable` has blocked for more than a
 //! refresh on [`BLOCKED_OF_RECENT`] of the last eight frames, every window of the process
-//! moves to its `CAMetalDisplayLink` (macOS 14 and later) and stays there.
+//! moves to its `CAMetalDisplayLink` and stays there.
 //! `GPUI_METAL_DISPLAY_LINK=1` starts them there, and `GPUI_METAL_DISPLAY_LINK=0` keeps them
 //! off it.
 

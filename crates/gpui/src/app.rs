@@ -295,10 +295,8 @@ impl Application {
 
     /// Sets the windowing mode the app starts in. See [`App::request_windowing`].
     ///
-    /// Defaults to windowed. On Linux, the default environment is the process's own, and the app
-    /// starts headless if that names no allowed display server. On macOS, headless means the app
-    /// starts without a Dock icon or menu bar ([`ActivationPolicy::Accessory`]). Has no effect on
-    /// other platforms.
+    /// Defaults to windowed. On macOS, headless means the app starts without a Dock icon or menu
+    /// bar ([`ActivationPolicy::Accessory`]). Has no effect on iOS.
     pub fn with_windowing(self, request: WindowingRequest) -> Self {
         self.0.borrow().platform.set_initial_windowing(request);
         self
@@ -306,9 +304,6 @@ impl Application {
 
     /// Start the application. The provided callback will be called once the
     /// app is fully launched.
-    ///
-    /// On WebAssembly, this returns immediately and retains the app for the lifetime
-    /// of the Wasm instance. Use [`Self::run_embedded`] to control its lifetime explicitly.
     pub fn run<F>(self, on_finish_launching: F)
     where
         F: 'static + FnOnce(&mut App),
@@ -323,17 +318,14 @@ impl Application {
             crate::hot_reload::init(cx);
             on_finish_launching(cx);
         }));
-
-        #[cfg(target_family = "wasm")]
-        std::mem::forget(self);
     }
 
     /// Start the application for an embedder that drives the run loop itself.
     ///
     /// On ordinary platforms `Platform::run` blocks for the lifetime of the app, and the
     /// app state is kept alive by [`Application::run`]'s stack frame. Embedded platforms —
-    /// where the run loop belongs to someone else, e.g. GPUI compiled into a Wasm guest,
-    /// or a GPUI view hosted inside a foreign native application — implement
+    /// where the run loop belongs to someone else, e.g. a GPUI view hosted inside a
+    /// foreign native application — implement
     /// `Platform::run` to invoke the launch callback and return immediately. This method
     /// supports that shape: it returns an [`ApplicationHandle`] that keeps the app alive
     /// and lets the embedder re-enter it whenever the external run loop yields control.
@@ -524,7 +516,7 @@ impl MissingGlyphCallbackSlot {
 /// Defines when the application should automatically quit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QuitMode {
-    /// Use [`QuitMode::Explicit`] on macOS and [`QuitMode::LastWindowClosed`] on other platforms.
+    /// Use [`QuitMode::Explicit`] on macOS and [`QuitMode::LastWindowClosed`] on iOS.
     #[default]
     Default,
     /// Quit automatically when the last window is closed.
@@ -893,7 +885,7 @@ pub struct App {
     pub(crate) foreground_executor: ForegroundExecutor,
     #[cfg(feature = "profiler")]
     foreground_journal: crate::profiler::journal::ForegroundJournal,
-    #[cfg(all(feature = "profiler", not(target_family = "wasm")))]
+    #[cfg(feature = "profiler")]
     hang_monitor: Option<crate::profiler::hang::HangMonitor>,
     pub(crate) entities: EntityMap,
     pub(crate) new_entity_observers: SubscriberSet<TypeId, NewEntityListener>,
@@ -1036,7 +1028,7 @@ impl App {
                 foreground_executor,
                 #[cfg(feature = "profiler")]
                 foreground_journal,
-                #[cfg(all(feature = "profiler", not(target_family = "wasm")))]
+                #[cfg(feature = "profiler")]
                 hang_monitor: None,
                 svg_renderer: SvgRenderer::new(asset_source.clone()),
                 loading_assets: Default::default(),
@@ -1281,7 +1273,7 @@ impl App {
     pub fn shutdown(&mut self) {
         // Requested first so the final hang poll overlaps with the quit
         // handlers. It's awaited alongside them, within `SHUTDOWN_TIMEOUT`.
-        #[cfg(all(feature = "profiler", not(target_family = "wasm")))]
+        #[cfg(feature = "profiler")]
         let hang_monitor_flush = self
             .hang_monitor
             .as_ref()
@@ -1293,7 +1285,7 @@ impl App {
             futures.push(observer(self));
         }
 
-        #[cfg(all(feature = "profiler", not(target_family = "wasm")))]
+        #[cfg(feature = "profiler")]
         if let Some(flushed) = hang_monitor_flush {
             futures.push(
                 async move {
@@ -1311,7 +1303,6 @@ impl App {
         self.quitting = true;
 
         let futures = futures::future::join_all(futures);
-        #[cfg(not(target_family = "wasm"))]
         if self
             .foreground_executor
             .block_with_timeout(SHUTDOWN_TIMEOUT, futures)
@@ -1319,8 +1310,6 @@ impl App {
         {
             log::error!("timed out waiting on app_will_quit");
         }
-        #[cfg(target_family = "wasm")]
-        self.foreground_executor.spawn(futures).detach();
 
         self.quitting = false;
     }
@@ -1353,9 +1342,7 @@ impl App {
 
     /// Switches the platform between headless and windowed modes.
     ///
-    /// On Linux, headless means no display server: windows opened afterwards lay out and handle
-    /// input but draw nothing. Windowed, the platform connects to the display server the
-    /// environment names. On macOS, the modes set the [`ActivationPolicy`]: headless is
+    /// On macOS, the modes set the [`ActivationPolicy`]: headless is
     /// `Accessory` (no Dock icon or menu bar) and windowed is `Regular`. Switching to windowed
     /// doesn't activate the app: call [`App::activate`] for that.
     ///
@@ -1850,20 +1837,6 @@ impl App {
     /// Writes data to the platform clipboard.
     pub fn write_to_clipboard(&self, item: ClipboardItem) {
         self.platform.write_to_clipboard(item)
-    }
-
-    /// Reads data from the primary selection buffer.
-    /// Only available on Linux.
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    pub fn read_from_primary(&self) -> Option<ClipboardItem> {
-        self.platform.read_from_primary()
-    }
-
-    /// Writes data to the primary selection buffer.
-    /// Only available on Linux.
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    pub fn write_to_primary(&self, item: ClipboardItem) {
-        self.platform.write_to_primary(item)
     }
 
     /// Reads data from macOS's "Find" pasteboard.
@@ -2407,7 +2380,7 @@ impl App {
     /// spawned.
     ///
     /// [`HangMonitorPollReason::Flush`]: crate::profiler::hang::HangMonitorPollReason::Flush
-    #[cfg(all(feature = "profiler", not(target_family = "wasm")))]
+    #[cfg(feature = "profiler")]
     pub fn start_hang_monitor(
         &mut self,
         config: crate::profiler::hang::HangMonitorConfig,
@@ -2908,27 +2881,12 @@ impl App {
         self.platform.set_dock_menu(menus, &self.keymap.borrow())
     }
 
-    /// Performs the action associated with the given dock menu item, only used on Windows for now.
-    pub fn perform_dock_menu_action(&self, action: usize) {
-        self.platform.perform_dock_menu_action(action);
-    }
-
     /// Adds given path to the bottom of the list of recent paths for the application.
     /// The list is usually shown on the application icon's context menu in the dock,
     /// and allows to open the recent files via that context menu.
     /// If the path is already in the list, it will be moved to the bottom of the list.
     pub fn add_recent_document(&self, path: &Path) {
         self.platform.add_recent_document(path);
-    }
-
-    /// Updates the jump list with the updated list of recent paths for the application, only used on Windows for now.
-    /// Note that this also sets the dock menu on Windows.
-    pub fn update_jump_list(
-        &self,
-        menus: Vec<MenuItem>,
-        entries: Vec<SmallVec<[PathBuf; 2]>>,
-    ) -> Task<Vec<SmallVec<[PathBuf; 2]>>> {
-        self.platform.update_jump_list(menus, entries)
     }
 
     /// Dispatch an action to the currently active window or global action handler
@@ -3289,7 +3247,7 @@ impl App {
                     let quit_on_empty = match cx.quit_mode {
                         QuitMode::Explicit => false,
                         QuitMode::LastWindowClosed => true,
-                        QuitMode::Default => cfg!(not(target_os = "macos")),
+                        QuitMode::Default => cfg!(target_os = "ios"),
                     };
 
                     if quit_on_empty && cx.windows.is_empty() {
@@ -3684,7 +3642,6 @@ mod test {
         rc::Rc,
     };
 
-    #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
 
     use crate::{
@@ -3859,10 +3816,7 @@ mod test {
 
     #[gpui::test]
     async fn test_restart_preserves_path_and_arguments(cx: &mut TestAppContext) {
-        #[cfg(unix)]
         let user_data_dir = OsString::from_vec(b"/tmp/zed data/\xff".to_vec());
-        #[cfg(not(unix))]
-        let user_data_dir = OsString::from("C:\\zed data");
         let arguments = vec![OsString::from("--user-data-dir"), user_data_dir];
         let restart_path = PathBuf::from("updated-zed");
         let _application =

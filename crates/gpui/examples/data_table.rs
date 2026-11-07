@@ -1,8 +1,3 @@
-#![cfg_attr(target_family = "wasm", no_main)]
-
-#[path = "example_support/fonts.rs"]
-mod example_support;
-
 use std::{ops::Range, rc::Rc, time::Duration};
 
 use gpui::{
@@ -454,9 +449,6 @@ impl Render for DataTable {
 
 fn run_example() {
     application().run(|cx: &mut App| {
-        if !example_support::load_fonts(cx) {
-            return;
-        }
         cx.open_window(
             WindowOptions {
                 focus: true,
@@ -481,14 +473,6 @@ fn run_example() {
     });
 }
 
-#[cfg(not(target_family = "wasm"))]
 fn main() {
-    run_example();
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
-    gpui_platform::web_init();
     run_example();
 }

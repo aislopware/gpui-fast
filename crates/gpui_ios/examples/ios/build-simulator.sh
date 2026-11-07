@@ -5,7 +5,7 @@ set -euo pipefail
 repository_root="$(git rev-parse --show-toplevel)"
 example_directory="$repository_root/crates/gpui_ios/examples/ios"
 
-IPHONEOS_DEPLOYMENT_TARGET=15.0 \
+IPHONEOS_DEPLOYMENT_TARGET=27.2 \
     cargo build -p gpui_ios_example --target aarch64-apple-ios-sim
 (
     cd "$example_directory/app"

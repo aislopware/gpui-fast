@@ -7,15 +7,7 @@ pub extern crate http_client;
 #[cfg(any(test, feature = "test-support"))]
 pub extern crate proptest;
 /// Subsecond entry points for hot-patching callbacks outside GPUI's render boundaries.
-#[cfg(all(
-    feature = "hot-reload",
-    any(
-        target_os = "macos",
-        target_os = "linux",
-        target_os = "windows",
-        target_os = "ios"
-    )
-))]
+#[cfg(feature = "hot-reload")]
 pub extern crate subsecond;
 
 extern crate self as gpui;
@@ -70,14 +62,7 @@ pub use debug_overlay::*;
 
 #[cfg(gpui_hot_reload)]
 mod hot_reload;
-#[cfg(any(
-    test,
-    target_os = "windows",
-    target_os = "linux",
-    target_family = "wasm",
-    feature = "test-support",
-    feature = "bench-support"
-))]
+#[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 pub mod queue;
 
 #[cfg(any(test, feature = "bench-support"))]
@@ -110,9 +95,6 @@ pub mod private {
     pub use serde;
     pub use serde_json;
 }
-
-#[cfg(any(target_os = "windows", target_os = "linux", target_family = "wasm"))]
-pub use queue::{PriorityQueueReceiver, PriorityQueueSender};
 
 pub use accesskit::{Action as AccessibleAction, Orientation, Role, Toggled};
 pub use action::*;
@@ -186,7 +168,6 @@ pub use util::{FutureExt, Timeout};
 pub use view::*;
 pub use window::*;
 
-#[cfg(not(target_family = "wasm"))]
 pub use pollster::block_on;
 
 pub(crate) use arena::*;

@@ -1,6 +1,3 @@
-// todo("windows"): remove
-#![cfg_attr(windows, allow(dead_code))]
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -152,13 +149,6 @@ impl Scene {
         crate::fast::scene::sort_in_drawing_order(self);
     }
 
-    #[cfg_attr(
-        all(
-            any(target_os = "linux", target_os = "freebsd"),
-            not(any(feature = "x11", feature = "wayland"))
-        ),
-        allow(dead_code)
-    )]
     pub fn batches(&self) -> impl Iterator<Item = PrimitiveBatch> + '_ {
         BatchIterator {
             shadows_start: 0,
@@ -182,13 +172,6 @@ impl Scene {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Default)]
-#[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
-    ),
-    allow(dead_code)
-)]
 pub(crate) enum PrimitiveKind {
     Shadow,
     #[default]
@@ -252,13 +235,6 @@ impl Primitive {
     }
 }
 
-#[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
-    ),
-    allow(dead_code)
-)]
 struct BatchIterator<'a> {
     shadows_start: usize,
     shadows_iter: Peekable<slice::Iter<'a, Shadow>>,
@@ -459,13 +435,6 @@ impl<'a> Iterator for BatchIterator<'a> {
 }
 
 #[derive(Debug)]
-#[cfg_attr(
-    all(
-        any(target_os = "linux", target_os = "freebsd"),
-        not(any(feature = "x11", feature = "wayland"))
-    ),
-    allow(dead_code)
-)]
 #[allow(missing_docs)]
 pub enum PrimitiveBatch {
     Shadows(Range<usize>),

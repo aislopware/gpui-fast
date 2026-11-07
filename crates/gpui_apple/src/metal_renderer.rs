@@ -26,8 +26,6 @@ use objc2_core_video::{
     kCVPixelFormatType_444YpCbCr10BiPlanarVideoRange, kCVReturnSuccess,
 };
 use objc2_foundation::{NSRange, NSString};
-#[cfg(target_os = "macos")]
-use objc2_metal::MTLCopyAllDevices;
 use objc2_metal::{
     MTLBlendFactor, MTLBlendOperation, MTLBuffer, MTLClearColor, MTLCommandBuffer,
     MTLCommandEncoder, MTLCommandQueue, MTLCreateSystemDefaultDevice, MTLDevice, MTLDrawable,
@@ -373,32 +371,7 @@ impl MetalRenderer {
         Self::new_internal(device, None, true, instance_buffer_pool)
     }
 
-    #[cfg(target_os = "macos")]
     fn create_device() -> Result<Retained<ProtocolObject<dyn MTLDevice>>> {
-        // Prefer low‐power integrated GPUs on Intel Mac. On Apple
-        // Silicon, there is only ever one GPU, so this is equivalent to
-        // `metal::Device::system_default()`.
-        if let Some(device) = MTLCopyAllDevices()
-            .iter()
-            .min_by_key(|device| (device.isRemovable(), !device.isLowPower()))
-        {
-            Ok(device)
-        } else {
-            // For some reason `all()` can return an empty list, see https://github.com/zed-industries/zed/issues/37689
-            // In that case, we fall back to the system default device.
-            log::error!(
-                "Unable to enumerate Metal devices; attempting to use system default device"
-            );
-            Self::system_default_device()
-        }
-    }
-
-    #[cfg(target_os = "ios")]
-    fn create_device() -> Result<Retained<ProtocolObject<dyn MTLDevice>>> {
-        Self::system_default_device()
-    }
-
-    fn system_default_device() -> Result<Retained<ProtocolObject<dyn MTLDevice>>> {
         MTLCreateSystemDefaultDevice().context("accessing a compatible Metal device")
     }
 

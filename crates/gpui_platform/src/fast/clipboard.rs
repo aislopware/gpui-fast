@@ -1,5 +1,4 @@
-//! Naming the pasteboard GPUI's clipboard uses, on the platforms that have
-//! named pasteboards.
+//! Naming the pasteboard GPUI's clipboard uses.
 
 /// Makes GPUI's clipboard (`App::write_to_clipboard`, `App::read_from_clipboard`)
 /// the pasteboard named `name` in place of the general one, for the rest of the

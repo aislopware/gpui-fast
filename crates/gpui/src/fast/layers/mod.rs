@@ -26,22 +26,12 @@ pub(crate) mod work;
 use crate::{App, GlobalElementId, Window};
 use collections::FxHashMap;
 
-/// Whether scroll layers are compiled in. Elsewhere every layer entry point
-/// is a no-op and today's path runs.
-///
-/// Upstream compiles them on Linux (wgpu), macOS (Metal) and Windows
-/// (Direct3D 11). This fork compiles them on macOS and iOS, which share the
-/// Metal renderer, and on Windows, and leaves out Linux, whose wgpu renderer
-/// is zed's without gpui-fast's frame recording (FORK.md, "Scroll
-/// layers"). GPUI's own tests compile them in on every platform, where the
-/// test platform draws no pixels and the oracles compare layer scenes,
-/// composites expanded, with scenes drawn without them.
-pub(crate) const COMPILED: bool = cfg!(any(
-    test,
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "windows"
-));
+/// Whether scroll layers are compiled in: always, since this fork builds only
+/// for macOS and iOS, which share the Metal renderer (FORK.md, "Scroll
+/// layers"). GPUI's own tests compile them in too, where the test platform
+/// draws no pixels and the oracles compare layer scenes, composites expanded,
+/// with scenes drawn without them.
+pub(crate) const COMPILED: bool = true;
 
 /// A window's scroll layers, by the scroll container's global id.
 #[allow(

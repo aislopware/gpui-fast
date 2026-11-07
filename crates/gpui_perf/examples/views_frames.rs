@@ -18,9 +18,6 @@
 extern crate gpui_fast as gpui;
 extern crate gpui_platform_fast as gpui_platform;
 
-#[path = "../../gpui/examples/example_support/fonts.rs"]
-mod example_support;
-
 use gpui::{
     Bounds, Context, Entity, Render, SharedString, Window, WindowBounds, WindowOptions, div, hsla,
     prelude::*, px, size,
@@ -174,7 +171,6 @@ impl Dashboard {
 
 /// CPU time the calling thread has used so far, which has to be the main
 /// thread, where gpui builds, lays out and paints.
-#[cfg(unix)]
 fn main_thread_cpu_time() -> Option<Duration> {
     let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
     // SAFETY: `clock_gettime` fills in the whole struct when it returns 0.
@@ -187,21 +183,13 @@ fn main_thread_cpu_time() -> Option<Duration> {
     Some(Duration::new(time.tv_sec as u64, time.tv_nsec as u32))
 }
 
-#[cfg(not(unix))]
-fn main_thread_cpu_time() -> Option<Duration> {
-    None
-}
-
-fn run_example() {
+fn main() {
     let mut args = std::env::args().skip(1);
     let panels: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(60);
     let labels_per_panel: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(64);
     let changing: usize = args.next().and_then(|a| a.parse().ok()).unwrap_or(2);
 
     application().run(move |cx| {
-        if !example_support::load_fonts(cx) {
-            return;
-        }
         cx.open_window(
             WindowOptions {
                 focus: true,
@@ -247,16 +235,4 @@ fn run_example() {
         .unwrap();
         cx.activate(true);
     });
-}
-
-#[cfg(not(target_family = "wasm"))]
-fn main() {
-    run_example();
-}
-
-#[cfg(target_family = "wasm")]
-#[wasm_bindgen::prelude::wasm_bindgen(start)]
-pub fn start() {
-    gpui_platform::web_init();
-    run_example();
 }

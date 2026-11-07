@@ -275,18 +275,15 @@ pub fn status_bar(stats: &Stats, cx: &App) -> impl IntoElement {
 
 /// CPU time the calling thread has used so far, which has to be the main
 /// thread, where gpui builds, lays out and paints.
-#[cfg(unix)]
 pub fn main_thread_cpu_time() -> Duration {
     clock_time(libc::CLOCK_THREAD_CPUTIME_ID)
 }
 
 /// CPU time every thread of the process has used so far.
-#[cfg(unix)]
 fn process_cpu_time() -> Duration {
     clock_time(libc::CLOCK_PROCESS_CPUTIME_ID)
 }
 
-#[cfg(unix)]
 fn clock_time(clock: libc::clockid_t) -> Duration {
     let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
     // SAFETY: `clock_gettime` fills in the whole struct when it returns 0.
@@ -301,20 +298,10 @@ fn clock_time(clock: libc::clockid_t) -> Duration {
 
 pub use gpui_perf::instructions::main_thread_instructions;
 
-#[cfg(not(unix))]
-pub fn main_thread_cpu_time() -> Duration {
-    Duration::ZERO
-}
-
-#[cfg(not(unix))]
-fn process_cpu_time() -> Duration {
-    Duration::ZERO
-}
-
 /// CPU time the process has used, in the platform's units. Only macOS says
 /// which cores it was spent on.
 #[derive(Clone, Copy)]
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg_attr(target_os = "ios", allow(dead_code))]
 struct CoreCpu {
     all: u64,
     /// The part of `all` spent on performance cores.
@@ -363,7 +350,7 @@ fn core_cpu_time() -> Option<CoreCpu> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "ios")]
 fn core_cpu_time() -> Option<CoreCpu> {
     None
 }
@@ -375,19 +362,7 @@ fn resident_memory() -> Option<u64> {
     Some(rusage_info()?.phys_footprint)
 }
 
-/// The process's resident memory, in bytes: what it holds in RAM, as a system
-/// monitor shows it.
-#[cfg(target_os = "linux")]
-fn resident_memory() -> Option<u64> {
-    // The second field of statm is the resident set, in pages.
-    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
-    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-    // SAFETY: `sysconf` only reads a system constant.
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    Some(pages * u64::try_from(page_size).ok()?)
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(target_os = "ios")]
 fn resident_memory() -> Option<u64> {
     None
 }

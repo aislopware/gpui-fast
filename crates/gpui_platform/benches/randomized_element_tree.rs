@@ -962,20 +962,11 @@ impl Render for TextPanelRoot {
 /// Whether this build shapes and rasterizes text with the platform's real text system.
 /// Without it, text workloads paint no glyphs, so they are skipped rather than measured.
 fn text_shaping_available() -> bool {
-    if cfg!(all(
-        target_os = "linux",
-        not(any(feature = "x11", feature = "wayland"))
-    )) {
-        eprintln!("text benchmarks require x11 or wayland on Linux for production text shaping");
-        false
-    } else if cfg!(all(target_os = "macos", not(feature = "font-kit"))) {
+    if cfg!(feature = "font-kit") {
+        true
+    } else {
         eprintln!("text benchmarks require font-kit on macOS for production text shaping");
         false
-    } else if cfg!(target_os = "windows") {
-        eprintln!("text benchmarks are unavailable on Windows: headless platforms shape no text");
-        false
-    } else {
-        true
     }
 }
 
@@ -994,11 +985,8 @@ fn text_panel_updates(panel_count: &usize, cx: &mut BenchAppContext) {
 
 /// A monospace family the text workloads name explicitly, so they measure shaping and
 /// rasterization with one known font rather than whatever the platform's `monospace`
-/// fallback resolves to. Linux machines must install it; macOS ships it.
-#[cfg(target_os = "macos")]
+/// fallback resolves to. macOS ships it.
 const INSTALLED_FONT: &str = "Menlo";
-#[cfg(not(target_os = "macos"))]
-const INSTALLED_FONT: &str = "Noto Sans Mono";
 
 /// Fails setup, before anything is measured, if the named font would fall back to another
 /// family: the workload would then measure a different font than its name says.

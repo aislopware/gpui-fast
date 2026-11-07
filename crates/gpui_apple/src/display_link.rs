@@ -1,7 +1,6 @@
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
-    rc::Retained,
-    runtime::{AnyClass, ProtocolObject},
+    rc::Retained, runtime::ProtocolObject,
 };
 use objc2_foundation::{NSObject, NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes};
 use objc2_quartz_core::{
@@ -44,7 +43,7 @@ impl MetalDisplayLinkDelegate {
     }
 }
 
-/// A main-run-loop source of Metal drawables on macOS 14+ and iOS/iPadOS 17+.
+/// A main-run-loop source of Metal drawables.
 ///
 /// Callbacks run on the run loop the link is registered with:
 /// <https://developer.apple.com/documentation/quartzcore/cametaldisplaylink>.
@@ -57,21 +56,12 @@ pub struct MetalFrameSource {
 }
 
 impl MetalFrameSource {
-    /// Whether this system has `CAMetalDisplayLink` (macOS 14+, iOS/iPadOS 17+).
-    pub fn is_available() -> bool {
-        AnyClass::get(c"CAMetalDisplayLink").is_some()
-    }
-
-    /// Starts delivering updates for `layer`, or returns `None` where
-    /// `CAMetalDisplayLink` is unavailable.
+    /// Starts delivering updates for `layer`.
     pub fn new(
         layer: &CAMetalLayer,
         main_thread: MainThreadMarker,
         callback: impl Fn(&CAMetalDisplayLinkUpdate) + 'static,
-    ) -> Option<Self> {
-        if !Self::is_available() {
-            return None;
-        }
+    ) -> Self {
         let delegate = MetalDisplayLinkDelegate::new(main_thread, callback);
         let link = CAMetalDisplayLink::initWithMetalLayer(CAMetalDisplayLink::alloc(), layer);
         link.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
@@ -80,11 +70,11 @@ impl MetalFrameSource {
         // SAFETY: the retained marker confines the source to the main thread,
         // and the main run loop outlives the source.
         unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
-        Some(Self {
+        Self {
             link,
             _delegate: delegate,
             _main_thread: main_thread,
-        })
+        }
     }
 
     /// A paused link delivers no updates and acquires no drawables.

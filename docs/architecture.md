@@ -602,10 +602,8 @@ A renderer keeps tile textures by layer and generation, marks dirty tiles
 stale, rasterizes the stale and missing tiles the frame composites before its
 main pass from `LayerFrame::tile_scene`, and binds a
 tile's texture when it meets a tile sprite. Nothing flows back to the core.
-Layers are compiled in only where a renderer implements this
-(`fast::layers::COMPILED`): Linux (wgpu), macOS (Metal) and Windows
-(Direct3D 11). Each renderer is verified by the same pixel
-tests on its platform's CI. Metal's gradient dither is seeded from the
+The Metal renderer, on macOS and iOS, is the only one this fork keeps
+(FORK.md, "Apple only"), and its pixel tests verify it. Metal's gradient dither is seeded from the
 position within the quad rather than on screen, so a gradient rasterized into
 a tile gets the same noise as one drawn in the window.
 
@@ -683,8 +681,7 @@ compares the two directly.
   window with layers and one without. Every frame it compares the scenes
   with each layer's tiles expanded into their primitives, hit tests at random
   points, and the positions every listener observed.
-- **Renderer pixel tests** (`gpui_wgpu`, and each renderer that implements
-  layers) rasterize and composite tiles and compare them with the same
+- **Renderer pixel tests** (`gpui_apple`'s `fast::layers`) rasterize and composite tiles and compare them with the same
   content drawn directly, byte for byte, on a real device.
 - **`GPUI_VIEW_RETENTION=0`** draws every frame from scratch at runtime, to
   rule retention in or out when something looks wrong in an application;
@@ -723,7 +720,7 @@ changes without a notification is outside what any such test can see (see
 ## Results
 
 From [`README.md`](../README.md), main-thread CPU per frame, release builds
-on Linux.
+on Linux, measured upstream before this fork went Apple-only.
 
 Headless, 60 panel views of 64 labels each (`retained_bench`):
 
