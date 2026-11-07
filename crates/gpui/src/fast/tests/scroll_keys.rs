@@ -4,7 +4,8 @@
 use crate::{
     AnyWindowHandle, AppContext as _, Context, FocusHandle, InputEvent as _,
     InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, ParentElement as _, Render,
-    ScrollHandle, StatefulInteractiveElement as _, Styled as _, TestAppContext, Window, div, px,
+    ScrollHandle, StatefulInteractiveElement as _, Styled as _, TestAppContext, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 /// A 400 pt tall scroller over 2000 pt of content, with a focusable child.
@@ -12,6 +13,8 @@ struct Scroller {
     focus: FocusHandle,
     child: FocusHandle,
     scroll: ScrollHandle,
+    /// The scroller handles Down itself.
+    claims_down: bool,
 }
 
 impl Render for Scroller {
@@ -24,6 +27,13 @@ impl Render for Scroller {
                 .overflow_y_scroll()
                 .track_focus(&self.focus)
                 .track_scroll(&self.scroll)
+                .when(self.claims_down, |this| {
+                    this.on_key_down(|event, _, cx| {
+                        if event.keystroke.key == "down" {
+                            cx.stop_propagation();
+                        }
+                    })
+                })
                 .child(div().id("child").h(px(20.)).track_focus(&self.child))
                 .child(div().h(px(1980.))),
         )
@@ -39,7 +49,7 @@ struct Setup {
 }
 
 impl Setup {
-    fn new() -> Self {
+    fn new(claims_down: bool) -> Self {
         let mut cx = TestAppContext::single();
         let (focus, child) = cx.update(|cx| (cx.focus_handle(), cx.focus_handle()));
         let scroll = ScrollHandle::new();
@@ -50,6 +60,7 @@ impl Setup {
                     focus,
                     child,
                     scroll,
+                    claims_down,
                 }
             })
             .into();
@@ -103,7 +114,7 @@ impl Setup {
 
 #[test]
 fn a_focused_scroller_takes_the_scrolling_keys() {
-    let mut s = Setup::new();
+    let mut s = Setup::new(false);
     let focus = s.focus.clone();
     s.focus(&focus);
     s.press("down");
@@ -122,10 +133,21 @@ fn a_focused_scroller_takes_the_scrolling_keys() {
 
 #[test]
 fn a_focused_child_keeps_its_keys() {
-    let mut s = Setup::new();
+    let mut s = Setup::new(false);
     let child = s.child.clone();
     s.focus(&child);
     s.press("pagedown");
     s.press("space");
     assert_eq!(s.offset(), 0.);
+}
+
+#[test]
+fn a_scroller_that_handles_a_key_itself_keeps_it() {
+    let mut s = Setup::new(true);
+    let focus = s.focus.clone();
+    s.focus(&focus);
+    s.press("down");
+    assert_eq!(s.offset(), 0.);
+    s.press("pagedown");
+    assert_eq!(s.offset(), -360.);
 }

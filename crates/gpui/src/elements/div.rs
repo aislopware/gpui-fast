@@ -2727,6 +2727,9 @@ impl Interactivity {
                                         }
 
                                         self.paint_keyboard_listeners(window, cx);
+                                        crate::fast::scroll_keys::listen(
+                                            self, hitbox, &style, window,
+                                        );
 
                                         if window.a11y.is_active() {
                                             if let Some(global_id) = global_id {
@@ -3498,7 +3501,6 @@ impl Interactivity {
         window: &mut Window,
         _cx: &mut App,
     ) {
-        crate::fast::scroll_keys::listen(self, hitbox, style, window);
         if let Some(scroll_offset) = self.scroll_offset.clone() {
             let ongoing_scroll = self.ongoing_scroll.clone();
             let overflow = style.overflow;

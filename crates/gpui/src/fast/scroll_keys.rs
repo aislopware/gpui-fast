@@ -75,7 +75,17 @@ pub(crate) fn land(
 
 /// Listens, for a container that tracks focus and scrolls, for the keys that
 /// scroll it while it holds the focus.
-pub(crate) fn listen(element: &Interactivity, hitbox: &Hitbox, style: &Style, window: &mut Window) {
+/// It listens after the container's own key listeners, so a container that
+/// handles a key itself keeps it.
+pub(crate) fn listen(
+    element: &Interactivity,
+    hitbox: Option<&Hitbox>,
+    style: &Style,
+    window: &mut Window,
+) {
+    let Some(hitbox) = hitbox else {
+        return;
+    };
     let (Some(focus), Some(offset)) = (
         element.tracked_focus_handle.clone(),
         element.scroll_offset.clone(),
