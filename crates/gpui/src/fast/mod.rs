@@ -83,6 +83,7 @@ pub(crate) mod rounded_clip;
 pub(crate) mod same_frame;
 pub(crate) mod scene;
 pub(crate) mod scroll;
+pub(crate) mod scroll_keys;
 pub(crate) mod settle;
 pub(crate) mod shift;
 pub(crate) mod splice;

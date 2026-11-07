@@ -3498,6 +3498,7 @@ impl Interactivity {
         window: &mut Window,
         _cx: &mut App,
     ) {
+        crate::fast::scroll_keys::listen(self, hitbox, style, window);
         if let Some(scroll_offset) = self.scroll_offset.clone() {
             let ongoing_scroll = self.ongoing_scroll.clone();
             let overflow = style.overflow;
