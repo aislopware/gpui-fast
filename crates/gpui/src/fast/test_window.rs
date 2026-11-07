@@ -1,7 +1,7 @@
 //! What a test window records of what GPUI asked the platform to do, for
 //! tests to assert on.
 
-use crate::{AnyWindowHandle, Bounds, Pixels, TestAppContext};
+use crate::{AnyWindowHandle, Bounds, Pixels, TestAppContext, Window};
 
 impl TestAppContext {
     /// Sets what the test window says of what it draws with
@@ -20,6 +20,17 @@ impl TestAppContext {
     /// had it look them up again.
     pub fn ime_positions(&self, window: AnyWindowHandle) -> Vec<Bounds<Pixels>> {
         self.test_window(window).0.lock().fast_ime_positions.clone()
+    }
+}
+
+impl Window {
+    /// The bounds the element marked with `selector` (`debug_selector`) took
+    /// in the frame drawn last, as
+    /// [`VisualTestContext::debug_bounds`](crate::VisualTestContext::debug_bounds)
+    /// reads them, for a test that must look at a frame before the update it
+    /// draws in ends and draws whatever that frame left dirty.
+    pub fn debug_bounds(&self, selector: &str) -> Option<Bounds<Pixels>> {
+        self.rendered_frame.debug_bounds.get(selector).copied()
     }
 }
 
