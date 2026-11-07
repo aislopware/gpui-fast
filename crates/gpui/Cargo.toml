@@ -27,7 +27,6 @@ test-support = [
     "x11",
     "proptest",
     "dep:futures-concurrency",
-    "dep:postage",
     "dep:web-time",
 ]
 bench-support = ["profiler", "dep:criterion", "dep:bench_metrics"]
@@ -86,7 +85,6 @@ log.workspace = true
 num_cpus = "1.13"
 parking = "2.0.0"
 parking_lot.workspace = true
-postage = { workspace = true, features = ["blocking"], optional = true }
 proptest = { workspace = true, optional = true }
 chrono = { workspace = true, default-features = true }
 profiling.workspace = true
@@ -179,7 +177,6 @@ backtrace.workspace = true
 collections = { workspace = true, features = ["test-support"] }
 env_logger.workspace = true
 futures-concurrency.workspace = true
-postage = { workspace = true, features = ["blocking"] }
 web-time.workspace = true
 gpui_platform = { workspace = true, features = ["font-kit", "wayland", "x11"] }
 gpui_util.workspace = true

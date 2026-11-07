@@ -783,9 +783,9 @@ impl<V: 'static> Entity<V> {
         advance_clock_by: Duration,
         cx: &TestAppContext,
     ) -> impl Future<Output = ()> {
-        use postage::prelude::{Sink as _, Stream as _};
+        use futures::StreamExt as _;
 
-        let (mut tx, mut rx) = postage::mpsc::channel(1);
+        let (mut tx, mut rx) = futures::channel::mpsc::channel(1);
         let subscription = cx.app.borrow_mut().observe(self, move |_, _| {
             tx.try_send(()).ok();
         });
@@ -793,7 +793,7 @@ impl<V: 'static> Entity<V> {
         cx.executor().advance_clock(advance_clock_by);
 
         async move {
-            rx.recv()
+            rx.next()
                 .await
                 .expect("entity dropped while test was waiting for its next notification");
             drop(subscription);
@@ -812,22 +812,22 @@ impl<V> Entity<V> {
         Evt: 'static,
         V: EventEmitter<Evt>,
     {
-        use postage::prelude::{Sink as _, Stream as _};
+        use futures::StreamExt as _;
 
-        let (tx, mut rx) = postage::mpsc::channel(1024);
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
 
         let mut cx = cx.app.borrow_mut();
         let subscriptions = (
             cx.observe(self, {
-                let mut tx = tx.clone();
+                let tx = tx.clone();
                 move |_, _| {
-                    tx.blocking_send(()).ok();
+                    tx.unbounded_send(()).ok();
                 }
             }),
             cx.subscribe(self, {
-                let mut tx = tx;
+                let tx = tx;
                 move |_, _: &Evt, _| {
-                    tx.blocking_send(()).ok();
+                    tx.unbounded_send(()).ok();
                 }
             }),
         );
@@ -851,7 +851,7 @@ impl<V> Entity<V> {
                     }
                 }
 
-                rx.recv()
+                rx.next()
                     .await
                     .expect("view dropped with pending condition");
             }

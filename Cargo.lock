@@ -2675,7 +2675,6 @@ dependencies = [
  "parking_lot 0.13.0",
  "pin-project",
  "pollster 0.4.0",
- "postage",
  "profiling",
  "proptest",
  "rand 0.9.4",
