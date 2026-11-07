@@ -1087,6 +1087,10 @@ pub trait PlatformWindow: HasWindowHandle + HasDisplayHandle {
     /// presented, or removes it with `None`. Called on the main thread; the sink may run on
     /// any thread. A platform that cannot observe presentation ignores the sink.
     fn set_presented_frame_sink(&self, _sink: Option<PresentedFrameSink>) {}
+    /// See [`crate::fast::same_frame`]: `None` presents every frame.
+    fn presentation_epoch(&self) -> Option<u64> {
+        None
+    }
     fn schedule_frame(&self) {}
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas>;
     fn is_subpixel_rendering_supported(&self) -> bool;
@@ -1598,6 +1602,7 @@ pub trait AtlasBackend {
 pub struct AtlasState<Backend> {
     tiles_by_key: FxHashMap<AtlasKey, AtlasTile>,
     pub backend: Backend,
+    pub(crate) fast_generation: crate::fast::atlas_generation::AtlasGeneration,
 }
 
 impl<Backend> AtlasState<Backend> {
@@ -1605,6 +1610,7 @@ impl<Backend> AtlasState<Backend> {
         Self {
             tiles_by_key: FxHashMap::default(),
             backend,
+            fast_generation: Default::default(),
         }
     }
 
@@ -1615,6 +1621,7 @@ impl<Backend> AtlasState<Backend> {
     pub fn clear(&mut self, reset_backend: impl FnOnce(&mut Backend)) {
         self.tiles_by_key.clear();
         reset_backend(&mut self.backend);
+        crate::fast::atlas_generation::AtlasGeneration::bump(&mut self.fast_generation);
     }
 }
 
@@ -1641,6 +1648,7 @@ impl<Backend: AtlasBackend> AtlasState<Backend> {
                     .backend
                     .insert(entry.key().texture_kind(), size, &bytes)?;
                 entry.insert(tile);
+                crate::fast::atlas_generation::AtlasGeneration::bump(&mut self.fast_generation);
                 Ok(Some(tile))
             }
         }
@@ -1649,6 +1657,7 @@ impl<Backend: AtlasBackend> AtlasState<Backend> {
     pub fn remove(&mut self, key: &AtlasKey) {
         if let Some(tile) = self.tiles_by_key.remove(key) {
             self.backend.remove(tile);
+            crate::fast::atlas_generation::AtlasGeneration::bump(&mut self.fast_generation);
         }
     }
 }

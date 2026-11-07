@@ -375,6 +375,9 @@ pub(crate) struct RetainedState {
     pub(crate) render_writes: FxHashMap<EntityId, Range<u64>>,
     /// The retained check's state. See [`crate::fast::check_retained`].
     pub(crate) check: crate::fast::check_retained::CheckState,
+    /// Debug builds' warnings for views built too often. See
+    /// [`crate::fast::churn`].
+    pub(crate) churn: crate::fast::churn::Churn,
     /// The focus of the input handler last given to the platform window, if
     /// one was. See [`note_restored_input_handler`].
     pub(crate) installed_input_focus: Option<Option<crate::FocusId>>,
@@ -407,6 +410,7 @@ impl RetainedState {
             rendering_since: FxHashMap::default(),
             render_writes: FxHashMap::default(),
             check: crate::fast::check_retained::CheckState::new(),
+            churn: crate::fast::churn::Churn::from_env(),
             installed_input_focus: None,
         }
     }
@@ -1852,6 +1856,7 @@ impl<V: View> ViewElement<V> {
                         {
                             return (root, ViewLayout::Spliced(splice));
                         }
+                        crate::fast::churn::built(window, entity_id, name);
                         let start = note_rendering(window, cx, entity_id);
                         crate::fast::layers::invalidate::note_rebuild(
                             window, cx, global_id, entity_id,

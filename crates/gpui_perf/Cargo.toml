@@ -41,6 +41,10 @@ required-features = ["fast"]
 name = "video_latency"
 required-features = ["fast"]
 
+[[example]]
+name = "idle_presents"
+required-features = ["fast"]
+
 [[test]]
 name = "composition_macos"
 harness = false

@@ -725,6 +725,8 @@ impl Shadow {
     /// Sets aside what drawing the frame from scratch would change.
     fn enter(window: &mut Window, cx: &mut App) -> Self {
         let mut retained = crate::fast::retained::RetainedState::new(cx);
+        // The frame from scratch is no frame of the window's to meter.
+        retained.churn = crate::fast::churn::Churn::default();
         retained.view_retention = window.retained_state.view_retention;
         retained.element_retention = window.retained_state.element_retention;
         retained.font_generation = window.retained_state.font_generation;

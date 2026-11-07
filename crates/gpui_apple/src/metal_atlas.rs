@@ -46,6 +46,11 @@ impl MetalAtlas {
         let all = all.chain(&backend.polychrome_textures.textures).flatten();
         all.map(|texture| texture.metal_texture.clone()).collect()
     }
+
+    /// fast::presentation: the atlas's change count.
+    pub(crate) fn fast_generation(&self) -> u64 {
+        self.0.lock().generation()
+    }
 }
 
 struct MetalAtlasTextures {

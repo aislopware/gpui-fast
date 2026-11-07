@@ -139,6 +139,8 @@ pub use fast::{
     image_mask::ImageAlphaMask,
     layer_mask::{GroupFade, LayerMask, LayerMaskCut},
 };
+#[cfg(any(test, feature = "test-support"))]
+pub use fast::{motion_gate, same_frame::PresentCounts};
 pub use geometry::*;
 pub use gestures::*;
 pub use global::*;

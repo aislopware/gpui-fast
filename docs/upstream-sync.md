@@ -139,6 +139,10 @@ unchanged, and a new entry needs as good a reason.
   layers from the scene. Polychrome sprites whose texture index is at or
   above `LAYER_TILE_TEXTURE_BASE` are scroll layer tiles, not atlas textures.
 - `crates/gpui/Cargo.toml` names this repository and sets `publish = false`.
+- `PlatformWindow::presentation_epoch` (defaulted to `None`) and
+  `AtlasState::generation`: a renderer in another crate says whether anything
+  but the scene that the next frame draws with changed, so that a frame drawing
+  what the screen shows goes unpresented (`fast/same_frame.rs`).
 - `Window::paint_keyed(key, origin, paint)` is new public API, the one
   addition that is not forced (`fast/keyed.rs`; docs/retained-mode.md,
   "Keyed paint"). An element that paints itself — a terminal's grid, a

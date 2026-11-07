@@ -31,11 +31,14 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// After a platform frame's draw: settle `handle`'s window ([`settle`]), then present it.
-pub(crate) fn settle_and_present(handle: AnyWindowHandle, cx: &mut AsyncApp) {
+/// After a platform frame's draw: settle `handle`'s window ([`settle`]), then present it,
+/// unless it draws what the screen shows ([`crate::fast::same_frame`]). `forced` when the
+/// platform frame asked for a presentation regardless.
+pub(crate) fn settle_and_present(handle: AnyWindowHandle, cx: &mut AsyncApp, forced: bool) {
     settle(handle, cx);
     handle
         .update(cx, |_, window, _| {
+            crate::fast::same_frame::before_present(window, forced);
             window.present();
             #[cfg(test)]
             note_presented(window);

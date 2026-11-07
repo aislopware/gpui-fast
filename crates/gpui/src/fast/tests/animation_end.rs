@@ -23,10 +23,13 @@ const FADE: Duration = Duration::from_millis(60);
 struct Pane {
     rows: usize,
     scroll: bool,
+    /// The fade drops out for a moment halfway (the motion gate's injected glitch).
+    glitch: bool,
 }
 
 impl Render for Pane {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let glitch = self.glitch;
         let rows = (0..self.rows).map(|ix| {
             let row = div()
                 .h(px(20.))
@@ -35,7 +38,13 @@ impl Render for Pane {
             if ix + 1 == self.rows && ix > 0 {
                 div()
                     .child(row)
-                    .with_animation(("row-in", ix), Animation::new(FADE), |el, t| el.opacity(t))
+                    .with_animation(("row-in", ix), Animation::new(FADE), move |el, t| {
+                        el.opacity(if glitch && (0.4..0.7).contains(&t) {
+                            0.
+                        } else {
+                            t
+                        })
+                    })
                     .into_any_element()
             } else {
                 row.into_any_element()
@@ -107,7 +116,11 @@ fn run_frames(cx: &mut TestAppContext, window: WindowHandle<Root>, rows: usize) 
 fn ends_at_one(cached: bool, scroll: bool) {
     let mut cx = TestAppContext::single();
     let window = cx.add_window(move |_, cx| Root {
-        pane: cx.new(|_| Pane { rows: 1, scroll }),
+        pane: cx.new(|_| Pane {
+            rows: 1,
+            scroll,
+            glitch: false,
+        }),
         cached,
     });
     cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
@@ -158,6 +171,7 @@ fn a_frame_drawn_again_at_the_last_frames_moment_paints_the_same_fade() {
         pane: cx.new(|_| Pane {
             rows: 3,
             scroll: false,
+            glitch: false,
         }),
         cached: true,
     });
@@ -379,4 +393,52 @@ fn a_fade_in_a_long_lists_new_row_ends_at_its_end() {
 #[test]
 fn a_fade_in_a_scrolled_lists_new_row_ends_at_its_end() {
     list_fade_ends_at_one(40, true);
+}
+
+/// The motion gate ([`crate::fast::motion_gate`]) over the fade of a row that
+/// arrives, frame by frame at 60 Hz: the fade passes, and the same fade with a
+/// glitch injected, dropping out for a frame halfway, is found as a pop.
+fn gate_the_fade(glitch: bool) -> Vec<crate::motion_gate::Finding> {
+    use crate::motion_gate::{MotionRun, TrackKind};
+    let mut cx = TestAppContext::single();
+    let pane = cx.new(|_| Pane {
+        rows: 1,
+        scroll: false,
+        glitch,
+    });
+    let window = cx.add_window({
+        let pane = pane.clone();
+        move |_, _| Root {
+            pane,
+            cached: false,
+        }
+    });
+    let mut run = MotionRun::new(&mut cx, window, 60.);
+    run.track("new row", TrackKind::Opacity, |window| alpha(window, 3));
+    run.play(&mut cx, 0.1);
+    run.act(&mut cx, "two rows arrive", |cx| {
+        pane.update(cx, |pane, cx| {
+            pane.rows = 3;
+            cx.notify();
+        });
+    });
+    run.play(&mut cx, 0.3);
+    run.findings()
+}
+
+#[test]
+fn the_fade_passes_the_motion_gate() {
+    let found = gate_the_fade(false);
+    assert!(found.is_empty(), "{found:#?}");
+}
+
+#[test]
+fn the_motion_gate_finds_a_fade_that_drops_out() {
+    let found = gate_the_fade(true);
+    assert!(
+        found
+            .iter()
+            .any(|finding| finding.kind == "pop" && finding.place == "new row"),
+        "{found:#?}"
+    );
 }

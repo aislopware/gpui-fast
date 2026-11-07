@@ -22,6 +22,7 @@ pub(crate) mod layer_mask;
 pub(crate) mod layers;
 pub(crate) mod occlusion;
 pub(crate) mod paths;
+pub(crate) mod presentation;
 #[cfg(test)]
 mod shader_parity;
 pub(crate) mod surfaces;

@@ -2173,6 +2173,10 @@ impl PlatformWindow for MacWindow {
         self.0.lock().renderer.set_presented_frame_sink(sink);
     }
 
+    fn presentation_epoch(&self) -> Option<u64> {
+        Some(self.0.lock().renderer.fast_presentation_epoch())
+    }
+
     fn sprite_atlas(&self) -> Arc<dyn PlatformAtlas> {
         self.0.lock().renderer.sprite_atlas().clone()
     }

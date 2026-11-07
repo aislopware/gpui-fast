@@ -815,6 +815,29 @@ Added in this fork:
   frame drawn afresh read the same. Both now carry the buffer (`fast::scene::picture`), which
   both frames hold while they are compared. Test:
   `a_frames_description_names_the_buffer_each_surface_shows`
+- perf(gpui, gpui_apple): a frame that draws what the screen already shows is not presented
+  (`fast::same_frame`, from rune's `window/presented.rs`, `6a6c8302`/`a777e03d`). A frame drawn
+  on a platform frame that neither required a presentation, forced a render nor came during
+  high-rate input, with no animation asking for the next frame, whose scene equals the one on
+  screen (every field the renderer reads, compared field by field; any surface counts as
+  changed), presented into the same viewport, scale and zoom, while the platform's
+  `PlatformWindow::presentation_epoch` held (Metal: the atlas's `AtlasState::generation`, the
+  drawable's size, the layer's opacity), and composing no natives, takes no drawable and
+  presents nothing. Frame callbacks, `on_next_frame`, `on_present` and video layers are
+  untouched. `GPUI_SAME_FRAME=0` turns it off; `gpui_perf`'s `idle_presents` example measures
+  it. Tests: `fast/tests/same_frame.rs`
+- feat(gpui): debug builds' churn warnings (`fast::churn`, from rune's
+  `tooling/perf_warn.rs`, `4cb8f788`). With `GPUI_CHURN_WARN=1`, a view built on 30 frames
+  that drew exactly what the frame before drew, or on 120 frames in a row, is named once on
+  `log::warn!` with its type, entity and why it was built. Release builds hold none of it.
+  Tests: `fast/tests/churn.rs`
+- feat(gpui): a motion gate for tests (`gpui::motion_gate`, test-support, from rune's
+  `motion_gate`, region rules `e6371c48` #71, `8b7e8cad`). `MotionRun` draws a window frame
+  by frame on the virtual clock, rasterizes each scene into 12-point OKLab cells (or reads
+  rendered frames), follows values a test names, and reports `flicker`, `snap`,
+  `changes-twice`, `pop` and `stale`. Tests: `fast/motion_gate/series.rs`,
+  `fast/tests/motion_gate.rs`, and the gate over `animation_end`'s fade, clean and with an
+  injected drop-out
 
 ### Candidates for longbridge
 

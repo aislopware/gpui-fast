@@ -356,6 +356,9 @@ impl Window {
 /// host exists, exactly as before otherwise.
 pub(crate) fn present_scene(window: &mut Window) {
     crate::fast::present::run(window);
+    if crate::fast::same_frame::unchanged(window, window.composition.active) {
+        return;
+    }
     if !window.composition.active {
         window.platform_window.draw(&window.rendered_frame.scene);
         return;

@@ -63,6 +63,7 @@ pub(crate) struct TestWindowState {
     start_external_drag_result: bool,
     pub(crate) fast_drag_promises: crate::fast::file_promise::TestDragPromises,
     pub(crate) fast_ime_positions: Vec<Bounds<Pixels>>,
+    pub(crate) fast_presentation_epoch: Option<u64>,
     pub(crate) fast_appearance: Option<WindowAppearance>,
     pub(crate) fast_background: WindowBackgroundAppearance,
 }
@@ -145,6 +146,7 @@ impl TestWindow {
             start_external_drag_result: false,
             fast_drag_promises: crate::fast::file_promise::TestDragPromises::default(),
             fast_ime_positions: Vec::new(),
+            fast_presentation_epoch: None,
             fast_appearance: None,
             fast_background: WindowBackgroundAppearance::Opaque,
         })))
@@ -535,6 +537,10 @@ impl PlatformWindow for TestWindow {
 
     fn set_presented_frame_sink(&self, sink: Option<PresentedFrameSink>) {
         self.0.lock().presented_frame_sink = sink;
+    }
+
+    fn presentation_epoch(&self) -> Option<u64> {
+        self.0.lock().fast_presentation_epoch
     }
 
     fn schedule_frame(&self) {

@@ -16,8 +16,10 @@
 
 pub(crate) mod a11y;
 pub(crate) mod atlas_clear;
+pub(crate) mod atlas_generation;
 pub(crate) mod backdrop;
 pub mod check_retained;
+pub(crate) mod churn;
 pub mod composition;
 pub(crate) mod content_zoom;
 pub mod cursor;
@@ -65,6 +67,8 @@ pub(crate) mod list_tail;
 pub(crate) mod live_region;
 pub(crate) mod mask;
 pub(crate) mod misc;
+#[cfg(any(test, feature = "test-support"))]
+pub mod motion_gate;
 pub(crate) mod number_shaping;
 pub(crate) mod path_cache;
 pub(crate) mod present;
@@ -74,6 +78,7 @@ pub(crate) mod render_at;
 pub(crate) mod retained;
 pub(crate) mod role_cursor;
 pub(crate) mod rounded_clip;
+pub(crate) mod same_frame;
 pub(crate) mod scene;
 pub(crate) mod scroll;
 pub(crate) mod settle;

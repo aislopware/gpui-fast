@@ -229,6 +229,7 @@ pub struct MetalRenderer {
     pub(crate) fast_layers: crate::fast::layers::TileCache,
     fast_drawable_waits: crate::fast::frame_source::DrawableWaits,
     pub(crate) fast_gpu_stats: crate::fast::gpu_stats::GpuStats,
+    pub(crate) fast_presentation: crate::fast::presentation::PresentationEpoch,
 }
 
 /// Records the frame in `drawable` for the pacer, and hands it to `sink`, once the display
@@ -574,6 +575,7 @@ impl MetalRenderer {
             fast_layers: crate::fast::layers::TileCache::default(),
             fast_drawable_waits: crate::fast::frame_source::DrawableWaits::default(),
             fast_gpu_stats: crate::fast::gpu_stats::GpuStats::default(),
+            fast_presentation: Default::default(),
         })
     }
 
@@ -676,6 +678,7 @@ impl MetalRenderer {
     }
 
     pub fn update_drawable_size(&mut self, size: Size<DevicePixels>) {
+        crate::fast::presentation::drawable_size(self, size);
         if let Some(layer) = &self.layer {
             layer.setDrawableSize(CGSize::new(size.width.0 as f64, size.height.0 as f64));
         }
@@ -755,6 +758,7 @@ impl MetalRenderer {
     }
 
     pub fn update_transparency(&mut self, transparent: bool) {
+        crate::fast::presentation::transparency(self, transparent);
         self.opaque = !transparent;
         if let Some(layer) = &self.layer {
             layer.setOpaque(!transparent);

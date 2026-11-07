@@ -4,6 +4,15 @@
 use crate::{AnyWindowHandle, Bounds, Pixels, TestAppContext};
 
 impl TestAppContext {
+    /// Sets what the test window says of what it draws with
+    /// ([`crate::PlatformWindow::presentation_epoch`]): `None`, as by default,
+    /// has every frame presented; a number lets a frame that draws what the
+    /// screen shows go unpresented while it stays the same
+    /// ([`crate::fast::same_frame`]).
+    pub fn set_presentation_epoch(&self, window: AnyWindowHandle, epoch: Option<u64>) {
+        self.test_window(window).0.lock().fast_presentation_epoch = epoch;
+    }
+
     /// Every place the platform was asked to put the input method's
     /// candidate window at, in the window's coordinates, oldest first: the
     /// selected bounds of the focused input, each time

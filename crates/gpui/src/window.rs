@@ -1254,6 +1254,7 @@ pub struct Window {
     pub(crate) fast_edge_fade: crate::fast::edge_fade::WindowFades,
     pub(crate) fast_layers: crate::fast::layers::WindowLayers,
     pub(crate) fast_frame_time: crate::fast::frame_time::FrameTime,
+    pub(crate) fast_same_frame: crate::fast::same_frame::SameFrame,
     pub(crate) fast_tooltip_exit: crate::fast::tooltip_exit::TooltipExit,
     pub(crate) fast_focus_tooltip: crate::fast::focus_tooltip::WindowFocusTooltip,
     pub(crate) rendered_entity_stack: Vec<EntityId>,
@@ -2066,7 +2067,13 @@ impl Window {
                                 )
                             })
                             .log_err();
-                        crate::fast::settle::settle_and_present(handle, &mut cx);
+                        crate::fast::settle::settle_and_present(
+                            handle,
+                            &mut cx,
+                            request_frame_options.require_presentation
+                                || high_rate_input
+                                || force_render,
+                        );
                     })
                 } else if needs_present {
                     handle
@@ -2356,6 +2363,7 @@ impl Window {
             fast_edge_fade: crate::fast::edge_fade::WindowFades::default(),
             fast_layers: crate::fast::layers::WindowLayers::default(),
             fast_frame_time: crate::fast::frame_time::FrameTime::default(),
+            fast_same_frame: crate::fast::same_frame::SameFrame::default(),
             fast_tooltip_exit: crate::fast::tooltip_exit::TooltipExit::default(),
             fast_focus_tooltip: crate::fast::focus_tooltip::WindowFocusTooltip::default(),
             rendered_entity_stack: Vec::new(),
@@ -3778,6 +3786,7 @@ impl Window {
         let previous_focus_path = self.rendered_frame.focus_path();
         let previous_window_active = self.rendered_frame.window_active;
         mem::swap(&mut self.rendered_frame, &mut self.next_frame);
+        crate::fast::same_frame::drawn(self);
         self.next_frame.clear();
         crate::fast::scene::take_orderings(
             &mut self.next_frame.scene,
