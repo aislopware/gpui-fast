@@ -1220,6 +1220,7 @@ impl App {
             }
         }));
 
+        crate::fast::app_init::run(&mut app.borrow_mut());
         app
     }
 

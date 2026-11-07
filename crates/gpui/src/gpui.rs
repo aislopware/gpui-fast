@@ -106,6 +106,7 @@ pub use color::*;
 pub use element::*;
 pub use elements::*;
 pub use executor::*;
+pub use fast::app_init::AppInit;
 pub use fast::check_retained::RetainedCheck;
 pub use fast::composition;
 pub use fast::cursor::{CURSOR_IMAGE_MAX_SIDE, CursorImage, CursorImageId};
