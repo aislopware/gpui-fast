@@ -1831,10 +1831,12 @@ pub enum HoverListenerMode {
 }
 
 impl HoverListenerMode {
-    fn is_hovered(self, hitbox: &Hitbox, window: &Window) -> bool {
+    pub(crate) fn is_hovered(self, hitbox: &Hitbox, window: &Window) -> bool {
         match self {
             Self::InputModalityAware => crate::fast::touch_hover::hovered(hitbox, window),
-            Self::InputModalityIndependent => hitbox.id.is_hovered_ignoring_last_input(window),
+            Self::InputModalityIndependent => {
+                crate::fast::layers::hover_freeze::hovered_ignoring_last_input(hitbox.id, window)
+            }
         }
     }
 }
@@ -3288,7 +3290,14 @@ impl Interactivity {
                     .pending_mouse_down
                     .get_or_insert_with(Default::default)
                     .clone();
-                let hover_listener = Rc::new(hover_listener);
+                let hover_listener = crate::fast::layers::hover_freeze::track_listener(
+                    window,
+                    &was_hovered,
+                    &has_mouse_down,
+                    hover_listener,
+                    hitbox,
+                    self.hover_listener_mode,
+                );
                 let hover_listener_state = was_hovered.clone();
                 let update_hover = move |is_hovered: bool, window: &mut Window, cx: &mut App| {
                     let mut was_hovered = hover_listener_state.borrow_mut();

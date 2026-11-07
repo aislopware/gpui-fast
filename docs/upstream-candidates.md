@@ -51,6 +51,11 @@ again. Slopty's navigator panel showed the bug (Slopty's
 `a_scroll_of_the_navigator_draws_its_rows_alone`). Test: `layers_lists::rows::hover_held_still_keeps_the_hover_of_what_the_wheel_does_not_move`.
 Longbridge's own `hover_held_still_while_the_wheel_scrolls_renders_no_row_for_it` keeps
 passing, with "nothing is hovered" narrowed to "no row is hovered".
+Longbridge #105 then made hover listeners hear nothing while frozen. Here they hear what hover
+styling shows instead: what stays hovered keeps `true`, what the wheel moved hears `false` once,
+and an input-modality-independent listener reads hover through `hover_freeze` too (the cursor
+still follows the geometry). #105's tracking of listeners that last heard `true`, told at the
+first unfrozen frame, is kept. Test: `layers_lists::rows::hover_listeners_hear_hover_as_the_freeze_holds_it`.
 
 ### A node a lingering parent takes back (`2a63006`). Fix, wanted
 

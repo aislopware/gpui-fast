@@ -106,7 +106,13 @@ the list off its layer; and clearing every hover instead would render the
 views around the list again for theirs. Only drawing is held: the hit test
 stays the geometry under the pointer, so the cursor follows it and a click
 right after the wheel reaches its handler, and `is_hovered` answers from what
-hover holds only while a frame is drawn. When the wheel stops the window is
+hover holds only while a frame is drawn. Hover listeners of either
+`HoverListenerMode` hear the same as they are painted: what stays hovered keeps
+hearing `true`, what the wheel moved hears `false` once, and what it brings
+under the pointer hears nothing. A listener that last heard `true` is tracked,
+so one no frame paints again (its row scrolled out of the list, or composited
+from a layer) is told its hover ended by the first frame drawn after the
+freeze (longbridge #105). When the wheel stops the window is
 drawn again, building again only what hovers differently, not refreshing it;
 a pointer that moves ends it at once. The crate's own
 tests, which scroll under a still pointer to test hover as rows move, turn it
