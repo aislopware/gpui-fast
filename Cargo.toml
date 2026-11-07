@@ -223,7 +223,9 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
     "UNNotificationTrigger",
     "UNUserNotificationCenter",
 ] }
-parking_lot = "0.13.0"
+# 0.12, as onicode: 0.13 measured slower with two to four threads on one lock (two threads, 200k short
+# critical sections each: 18 ms against 5.7 ms for a Mutex), faster only from eight threads up.
+parking_lot = "0.12.5"
 pathfinder_geometry = "0.5"
 percent-encoding = "2.3.2"
 proc-macro2 = "1.0.93"
