@@ -121,7 +121,7 @@ impl DispatchPhase {
     }
 }
 
-struct WindowInvalidatorInner {
+pub(crate) struct WindowInvalidatorInner {
     #[cfg(feature = "profiler")]
     pub window_id: WindowId,
     pub dirty: bool,
@@ -140,14 +140,14 @@ struct WindowInvalidatorInner {
 /// `profiler::trace_enabled()` controls, not this measurement.
 #[cfg(feature = "profiler")]
 #[derive(Default)]
-struct FrameDirtyAccumulator {
+pub(crate) struct FrameDirtyAccumulator {
     dirty_at: Option<Instant>,
     invalidations: u64,
 }
 
 #[derive(Clone)]
 pub(crate) struct WindowInvalidator {
-    inner: Rc<RefCell<WindowInvalidatorInner>>,
+    pub(crate) inner: Rc<RefCell<WindowInvalidatorInner>>,
 }
 
 impl WindowInvalidator {
