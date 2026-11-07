@@ -3858,6 +3858,8 @@ pub(crate) enum ActiveTooltip {
     /// before hiding it.
     WaitingForHide {
         tooltip: AnyTooltip,
+        /// Where the pointer was when it left; fast::hover_intent hides it once it turns away.
+        apex: Point<Pixels>,
         _task: Task<()>,
     },
 }
@@ -4054,16 +4056,9 @@ fn handle_tooltip_mouse_move(
                 Action::None
             }
         }
-        Some(ActiveTooltip::WaitingForHide { .. }) => {
-            if phase.capture()
-                && (check_is_hovered(window)
-                    || tooltip_id.is_some_and(|tooltip_id| tooltip_id.is_hovered(window)))
-            {
-                Action::CheckVisible
-            } else {
-                Action::None
-            }
-        }
+        // Any move re-checks: back over either one keeps it, turning away hides it (fast::hover_intent).
+        Some(ActiveTooltip::WaitingForHide { .. }) if phase.capture() => Action::CheckVisible,
+        Some(ActiveTooltip::WaitingForHide { .. }) => Action::None,
     };
 
     match action {
@@ -4184,11 +4179,12 @@ fn handle_tooltip_check_visible_and_update(
                 }
             }
         }
-        Some(ActiveTooltip::WaitingForHide { tooltip, .. }) => {
-            if is_hovered {
-                Action::CancelHide(tooltip.clone())
-            } else {
-                Action::None
+        Some(ActiveTooltip::WaitingForHide { tooltip, apex, .. }) => {
+            match crate::fast::hover_intent::travel(is_hovered, *apex, tooltip_bounds, window) {
+                crate::fast::hover_intent::Travel::Arrived => Action::CancelHide(tooltip.clone()),
+                crate::fast::hover_intent::Travel::Resting => Action::None,
+                crate::fast::hover_intent::Travel::Heading => Action::ScheduleHide(tooltip.clone()),
+                crate::fast::hover_intent::Travel::Away => Action::Hide,
             }
         }
         None | Some(ActiveTooltip::WaitingForShow { .. }) => Action::None,
@@ -4216,6 +4212,7 @@ fn handle_tooltip_check_visible_and_update(
                 .borrow_mut()
                 .replace(ActiveTooltip::WaitingForHide {
                     tooltip,
+                    apex: window.mouse_position(),
                     _task: delayed_hide_task,
                 });
         }
