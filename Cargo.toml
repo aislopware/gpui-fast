@@ -255,7 +255,7 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
     "UNUserNotificationCenter",
 ] }
 open = "5.0.0"
-parking_lot = "0.13.0"
+parking_lot = "0.12.1"
 pathfinder_geometry = "0.5"
 percent-encoding = "2.3.2"
 perf-event = { package = "perf-event2", version = "0.7.4" }
