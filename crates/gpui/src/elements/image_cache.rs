@@ -63,7 +63,11 @@ mod any_image_cache {
         cx: &mut App,
     ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
         let image_cache = image_cache.clone().downcast::<I>().unwrap();
-        image_cache.update(cx, |image_cache, cx| image_cache.load(resource, window, cx))
+        // fast: a load asks the cache, it does not change what the views sharing it drew (a finished
+        // load notifies the views waiting on it), so they stay retained.
+        crate::fast::dependencies::query(&image_cache, cx, |image_cache, cx| {
+            image_cache.load(resource, window, cx)
+        })
     }
 }
 
