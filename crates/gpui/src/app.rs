@@ -45,18 +45,18 @@ use crate::InspectorElementRegistry;
 use crate::asset_cache::CachedLoad;
 use crate::subscription::SingleSubscriberSet;
 use crate::{
-    Action, ActionBuildError, ActionRegistry, ActivationPolicy, ActivityGuard, Any, AnyView,
-    AnyWindowHandle, AppContext, AppLifecyclePhase, Arena, ArenaBox, Asset, AssetSource,
-    BackgroundExecutor, Bounds, ClipboardItem, ClipboardReadError, CursorStyle, DispatchPhase,
-    DisplayChanges, DisplayEvent, DisplayId, EventEmitter, ExternalDragPayload, FocusHandle,
-    FocusMap, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap, Keystroke, LayoutId,
-    Menu, MenuItem, MissingGlyph, OwnedMenu, PathPromptOptions, Pixels, Platform, PlatformDisplay,
-    PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PowerMode, Priority, PromptBuilder,
-    PromptButton, PromptHandle, PromptLevel, Render, RenderImage, RenderablePromptHandle,
-    Reservation, ScreenCaptureSource, SharedString, SubscriberSet, Subscription, SvgRenderer,
-    SystemNotification, SystemNotificationResponse, Task, TextRenderingMode, TextSystem,
-    ThermalState, Window, WindowAppearance, WindowButtonLayout, WindowHandle, WindowId,
-    WindowInvalidator, WindowingRequest,
+    AccessibilityDisplay, Action, ActionBuildError, ActionRegistry, ActivationPolicy,
+    ActivityGuard, Any, AnyView, AnyWindowHandle, AppContext, AppLifecyclePhase, Arena, ArenaBox,
+    Asset, AssetSource, BackgroundExecutor, Bounds, ClipboardItem, ClipboardReadError, CursorStyle,
+    DispatchPhase, DisplayChanges, DisplayEvent, DisplayId, EventEmitter, ExternalDragPayload,
+    FocusHandle, FocusMap, ForegroundExecutor, Global, KeyBinding, KeyContext, Keymap, Keystroke,
+    LayoutId, Menu, MenuItem, MissingGlyph, OwnedMenu, PathPromptOptions, Pixels, Platform,
+    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, Point, PowerMode, Priority,
+    PromptBuilder, PromptButton, PromptHandle, PromptLevel, Render, RenderImage,
+    RenderablePromptHandle, Reservation, ScreenCaptureSource, SharedString, SubscriberSet,
+    Subscription, SvgRenderer, SystemNotification, SystemNotificationResponse, Task,
+    TextRenderingMode, TextSystem, ThermalState, Window, WindowAppearance, WindowButtonLayout,
+    WindowHandle, WindowId, WindowInvalidator, WindowingRequest,
     colors::{Colors, GlobalColors},
     hash, init_app_menus,
 };
@@ -914,6 +914,7 @@ pub struct App {
     pub(crate) system_wake_observers: SingleSubscriberSet<Handler>,
     app_lifecycle_observers: SingleSubscriberSet<AppLifecycleHandler>,
     memory_warning_observers: SingleSubscriberSet<Handler>,
+    accessibility_display_observers: SingleSubscriberSet<Handler>,
     pub(crate) release_listeners: SubscriberSet<EntityId, ReleaseListener>,
     pub(crate) global_observers: SubscriberSet<TypeId, Handler>,
     pub(crate) quit_observers: SingleSubscriberSet<QuitHandler>,
@@ -971,6 +972,7 @@ pub struct App {
     pub(crate) cursor_hide_mode: CursorHideMode,
     pub(crate) reduce_motion: bool,
     increase_contrast: bool,
+    reduce_transparency: bool,
     /// Origin of the shared clock that phase-locks synced repeating animations.
     pub(crate) synced_animation_epoch: Instant,
     power_mode: PowerMode,
@@ -1070,6 +1072,7 @@ impl App {
                 system_wake_observers: SingleSubscriberSet::new(),
                 app_lifecycle_observers: SingleSubscriberSet::new(),
                 memory_warning_observers: SingleSubscriberSet::new(),
+                accessibility_display_observers: SingleSubscriberSet::new(),
                 global_observers: SubscriberSet::new(),
                 quit_observers: SingleSubscriberSet::new(),
                 restart_observers: SingleSubscriberSet::new(),
@@ -1088,6 +1091,7 @@ impl App {
                 cursor_hide_mode: CursorHideMode::default(),
                 reduce_motion: display.reduce_motion,
                 increase_contrast: display.increase_contrast,
+                reduce_transparency: display.reduce_transparency,
                 synced_animation_epoch,
                 power_mode,
                 accessibility_force_disabled: false,
@@ -1207,10 +1211,10 @@ impl App {
             let app = Rc::downgrade(&app);
             move || {
                 if let Some(app) = app.upgrade() {
-                    let mut app = app.borrow_mut();
-                    let display = app.platform.accessibility_display();
-                    app.set_reduce_motion(display.reduce_motion);
-                    app.set_increase_contrast(display.increase_contrast);
+                    app.borrow_mut().update(|cx| {
+                        let display = cx.platform.accessibility_display();
+                        cx.set_accessibility_display(display);
+                    });
                 }
             }
         }));
@@ -1420,10 +1424,11 @@ impl App {
     /// Sets whether non-essential animations (e.g. loading spinners) should be
     /// rendered in a static state instead of animating.
     pub fn set_reduce_motion(&mut self, reduce_motion: bool) {
-        if self.reduce_motion != reduce_motion {
-            self.reduce_motion = reduce_motion;
-            self.refresh_windows();
-        }
+        let display = AccessibilityDisplay {
+            reduce_motion,
+            ..self.accessibility_display()
+        };
+        self.set_accessibility_display(display);
     }
 
     /// Returns whether edges and separators should stand out more (macOS Increase Contrast),
@@ -1432,12 +1437,56 @@ impl App {
         self.increase_contrast
     }
 
+    /// Returns whether surfaces should be opaque rather than translucent (macOS Reduce
+    /// Transparency), read from the system at launch and kept current.
+    pub fn reduce_transparency(&self) -> bool {
+        self.reduce_transparency
+    }
+
     /// Sets whether edges and separators should stand out more.
     pub fn set_increase_contrast(&mut self, increase_contrast: bool) {
-        if self.increase_contrast != increase_contrast {
-            self.increase_contrast = increase_contrast;
-            self.refresh_windows();
+        let display = AccessibilityDisplay {
+            increase_contrast,
+            ..self.accessibility_display()
+        };
+        self.set_accessibility_display(display);
+    }
+
+    /// The accessibility display options as the app last read them.
+    pub fn accessibility_display(&self) -> AccessibilityDisplay {
+        AccessibilityDisplay {
+            reduce_motion: self.reduce_motion,
+            increase_contrast: self.increase_contrast,
+            reduce_transparency: self.reduce_transparency,
         }
+    }
+
+    /// Takes new accessibility display options: when any changed, every window redraws and
+    /// [`App::observe_accessibility_display`] observers run.
+    pub fn set_accessibility_display(&mut self, display: AccessibilityDisplay) {
+        if self.accessibility_display() == display {
+            return;
+        }
+        self.reduce_motion = display.reduce_motion;
+        self.increase_contrast = display.increase_contrast;
+        self.reduce_transparency = display.reduce_transparency;
+        self.refresh_windows();
+        self.accessibility_display_observers
+            .clone()
+            .retain(|callback| callback(self));
+    }
+
+    /// Runs `callback` each time the accessibility display options change. Dropping the
+    /// subscription removes the observer.
+    pub fn observe_accessibility_display(
+        &self,
+        mut callback: impl FnMut(&mut App) + 'static,
+    ) -> Subscription {
+        self.accessibility_display_observers
+            .insert(Box::new(move |cx| {
+                callback(cx);
+                true
+            }))
     }
 
     /// Schedules all windows in the application to be redrawn. This can be called

@@ -1082,6 +1082,7 @@ impl Platform for MacPlatform {
         AccessibilityDisplay {
             reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
             increase_contrast: workspace.accessibilityDisplayShouldIncreaseContrast(),
+            reduce_transparency: workspace.accessibilityDisplayShouldReduceTransparency(),
         }
     }
 

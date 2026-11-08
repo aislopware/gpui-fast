@@ -557,6 +557,8 @@ pub struct AccessibilityDisplay {
     pub reduce_motion: bool,
     /// Edges and separators should stand out more (macOS Increase Contrast).
     pub increase_contrast: bool,
+    /// Surfaces should be opaque rather than translucent (macOS Reduce Transparency).
+    pub reduce_transparency: bool,
 }
 
 /// The operating system's preference for energy use versus performance.

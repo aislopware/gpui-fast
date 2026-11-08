@@ -2,6 +2,7 @@
 
 mod a11y;
 mod a11y_bounds;
+mod accessibility_display;
 mod animation_end;
 mod atlas_clear;
 mod backdrop;
