@@ -32,15 +32,15 @@
 //! directly is ordered above it: a layer that the last frame blurred over
 //! draws its content into the frame instead (`fast::layers::paint`).
 //!
-//! A blur can be glass ([`Window::paint_glass`], [`Glass`]): within a bevel along its rounded
-//! edge the blurred backdrop is read refracted, pulled in toward the region along the edge's
-//! normal on a quarter-circle profile, as a convex lens's rim bends what lies under it, its three
-//! colour channels pulled by slightly different amounts (dispersion), and a specular rim lit from
-//! the top left is added where the bevel faces the light: a custom Liquid Glass for surfaces over
-//! what the app draws itself, such as a window background image, which the system's glass, which
-//! sees only what is behind the window, cannot sample. Its parameters follow the published
-//! re-implementations fitted to Apple's (a bevel of about 20 points and a refraction of a few
-//! points); none is zero only for a plain blur.
+//! A blur can be glass ([`Window::paint_glass`], [`Glass`]): a custom Liquid Glass for surfaces
+//! over what the app draws itself, such as a window background image, which the system's glass,
+//! seeing only what is behind the window, cannot sample. Within a bevel along its rounded edge the
+//! lightly blurred backdrop is read refracted, pulled in along the edge's normal on a
+//! quarter-circle profile as a convex lens's rim bends what lies under it; the whole region is
+//! carried through a face transfer that lifts and compresses its luminance and keeps its colour; a
+//! thin glint recolours the walls facing the light toward a brighter, more saturated face; and a
+//! dark contour just outside draws the edge. Its parameters are whynotmake-it's fit of regular
+//! glass to iOS 27 captures; none is zero only for a plain blur.
 //!
 //! Ported from zui (<https://github.com/zeronsh/zui>, the backdrop blur in
 //! `crates/gpui/src/{window,scene}.rs` and `crates/gpui_macos`, at
@@ -55,7 +55,7 @@
 
 use crate::{
     Bounds, ContentMask, Corners, DrawOrder, PaintOperation, Pixels, Point, ScaledPixels, Scene,
-    Window,
+    Window, px,
 };
 
 /// A region of the window whose backdrop, everything drawn under it, is
@@ -87,36 +87,100 @@ pub struct BackdropBlur {
     pub glass: Glass,
 }
 
-/// How a glass blur bends and lights its edge ([`Window::paint_glass`]), in device pixels once
-/// placed. All zero is a plain blur.
+/// How a glass blur bends, colours and lights its region ([`Window::paint_glass`]), fitted to
+/// Apple's regular Liquid Glass (whynotmake-it's liquid_glass_renderer, matched to iOS 27
+/// captures of public SwiftUI glass). Distances are in device pixels once placed. All zero is a
+/// plain blur.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(C)]
 pub struct Glass {
-    /// How far, at the very edge, the backdrop is read from further in.
+    /// How far, at the very edge, the backdrop is read from further in; the shader keeps it to
+    /// half the shorter side, so the edge never reads past the centre line.
     pub refraction: f32,
-    /// How wide the bevel along the edge is, where the backdrop is refracted and the rim lit.
+    /// How wide the bevel is, where the backdrop is refracted on a quarter-circle profile; at
+    /// most a quarter of the shorter side. The face beyond it is not displaced.
     pub bevel: f32,
-    /// How bright the specular rim is where the bevel faces the light, from 0 to 1.
-    pub rim: f32,
-    /// How much more the blue channel is refracted than the red, as a fraction of the refraction.
-    pub dispersion: f32,
+    /// How strongly the 1.2-point glint along the walls facing the light (top and bottom)
+    /// recolours the face toward a brighter, more saturated version of itself.
+    pub glint: f32,
+    /// How dark the 0.75-point contour just outside the edge is: what draws the edge on a dark
+    /// interface, rather than a glow.
+    pub contour: f32,
+    /// How far the contour gives way where the glint is: 0 keeps it all round, 1 lifts it
+    /// entirely where the wall faces the light.
+    pub contour_direction: f32,
+    /// The face transfer: `emission + transmittance * lift(luma) + chroma * (backdrop - luma)`,
+    /// with `lift(Y) = Y + lift * Y * (1 - Y)`. The light added to every pixel.
+    pub emission: f32,
+    /// How much of the backdrop's (lifted) luminance passes.
+    pub transmittance: f32,
+    /// How much the backdrop's mid-tones are lifted.
+    pub lift: f32,
+    /// How much of the backdrop's colour passes: above 1 saturates it.
+    pub chroma: f32,
+    /// How deep the faint shadow is that the rim casts inward from the light.
+    pub shadow: f32,
+    /// Device pixels per point, for the glint, contour and shadow widths.
+    pub unit: f32,
 }
 
 impl Glass {
-    /// Apple's regular Liquid Glass, as the published re-implementations fit it, at a 1x scale.
-    pub const REGULAR: Self = Self {
-        refraction: 6.,
+    /// Regular glass over a dark interface: the face lifts toward grey, the contour is strong and
+    /// lifts where the glint is, at a 1x scale.
+    pub const DARK: Self = Self {
+        refraction: 60.,
         bevel: 20.,
-        rim: 0.35,
-        dispersion: 0.12,
+        glint: 0.2,
+        contour: 0.88,
+        contour_direction: 1.,
+        emission: 32. / 255.,
+        transmittance: 0.526,
+        lift: 0.583,
+        chroma: 1.005,
+        shadow: 0.036,
+        unit: 1.,
     };
 
-    fn scale(self, factor: f32) -> Self {
+    /// Regular glass over a light interface: the face whitens and keeps more colour, the contour
+    /// is fainter and stays on most of the edge, at a 1x scale.
+    pub const LIGHT: Self = Self {
+        refraction: 60.,
+        bevel: 20.,
+        glint: 0.2,
+        contour: 0.43,
+        contour_direction: 0.77,
+        emission: 0.4,
+        transmittance: 0.599,
+        lift: 0.216,
+        chroma: 1.169,
+        shadow: 0.036,
+        unit: 1.,
+    };
+
+    /// This glass at `factor` device pixels per point.
+    #[must_use]
+    pub fn scale(self, factor: f32) -> Self {
         Self {
             refraction: self.refraction * factor,
             bevel: self.bevel * factor,
+            unit: self.unit * factor,
             ..self
         }
+    }
+
+    /// The blur behind glass whose shorter side is `short`: light, so the backdrop still reads,
+    /// and softer on larger glass, as the fit measures it (2.1, 4.5, 5.6 and 8 points at 63, 94,
+    /// 118 and 150 points), kept between 1.5 points and 1.78 times the largest measure.
+    #[must_use]
+    pub fn blur_for(short: Pixels) -> Pixels {
+        const FIT: [(f32, f32); 4] = [(63., 2.1), (94., 4.5), (118., 5.6), (150., 8.)];
+        let side = short.as_f32();
+        let at = FIT
+            .windows(2)
+            .find(|pair| side <= pair[1].0)
+            .unwrap_or(&FIT[2..]);
+        let ((x0, y0), (x1, y1)) = (at[0], at[1]);
+        px((y0 + (side - x0) * (y1 - y0) / (x1 - x0)).clamp(1.5, 8. * 1.78))
     }
 }
 
@@ -177,9 +241,10 @@ impl Window {
         self.place_backdrop_blur(bounds, corner_radii, blur_radius, 1., Glass::default());
     }
 
-    /// Paints a backdrop blur as [`Window::paint_backdrop_blur_whole`] does, through `glass`:
-    /// the backdrop refracted within the bevel along its edge and a specular rim lit there
-    /// ([`Glass`]). `glass` is in pixels and scaled with the window.
+    /// Paints glass over `bounds`: the backdrop blurred as [`Glass::blur_for`] its size says,
+    /// refracted within the bevel along its edge, carried through the glass's face transfer,
+    /// glinting along the walls facing the light and edged by a dark contour just outside
+    /// ([`Glass`]). `glass` is in points and scaled with the window.
     ///
     /// This method should only be called as part of the paint phase of
     /// element drawing.
@@ -187,11 +252,11 @@ impl Window {
         &mut self,
         bounds: Bounds<Pixels>,
         corner_radii: Corners<Pixels>,
-        blur_radius: Pixels,
         glass: Glass,
     ) {
+        let blur = Glass::blur_for(bounds.size.width.min(bounds.size.height));
         let glass = glass.scale(self.scale_factor());
-        self.place_backdrop_blur(bounds, corner_radii, blur_radius, 1., glass);
+        self.place_backdrop_blur(bounds, corner_radii, blur, 1., glass);
     }
 
     fn place_backdrop_blur(
@@ -208,7 +273,10 @@ impl Window {
         }
         let scale_factor = self.scale_factor();
         let snapped = self.snap_bounds(bounds);
-        let scaled_corners = corner_radii.scale(scale_factor);
+        // A radius past half the shorter side would bend the distance field the glass reads.
+        let scaled_corners = corner_radii
+            .clamp_radii_for_quad_size(bounds.size)
+            .scale(scale_factor);
         let blur = BackdropBlur {
             order: 0,
             fade: crate::fast::rounded_clip::uncut_fade(self, snapped, scaled_corners)

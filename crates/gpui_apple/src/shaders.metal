@@ -1495,9 +1495,21 @@ struct BackdropBlur {
   // Glass (gpui's fast/backdrop.rs, Glass); all zero for a plain blur.
   float glass_refraction;
   float glass_bevel;
-  float glass_rim;
-  float glass_dispersion;
+  float glass_glint;
+  float glass_contour;
+  float glass_contour_direction;
+  float glass_emission;
+  float glass_transmittance;
+  float glass_lift;
+  float glass_chroma;
+  float glass_shadow;
+  float glass_unit;
 };
+
+// How far glass draws past its edge: its dark contour, 0.75 points and a pixel to filter it.
+float glass_overhang(BackdropBlur blur) {
+  return blur.glass_bevel > 0. ? 0.75 * blur.glass_unit + 1. : 0.;
+}
 
 struct BackdropBlurVertexOutput {
   uint blur_id [[flat]];
@@ -1517,9 +1529,14 @@ vertex BackdropBlurVertexOutput backdrop_blur_vertex(
     constant Size_DevicePixels *viewport_size [[buffer(2)]]) {
   float2 unit_vertex = unit_vertices[unit_vertex_id];
   BackdropBlur blur = blurs[blur_id];
-  float4 device_position = to_device_position(unit_vertex, blur.bounds, viewport_size);
-  float4 clip_distance =
-      distance_from_clip_rect(unit_vertex, blur.bounds, blur.content_mask.bounds);
+  Bounds_ScaledPixels bounds = blur.bounds;
+  float overhang = glass_overhang(blur);
+  bounds.origin.x -= overhang;
+  bounds.origin.y -= overhang;
+  bounds.size.width += 2. * overhang;
+  bounds.size.height += 2. * overhang;
+  float4 device_position = to_device_position(unit_vertex, bounds, viewport_size);
+  float4 clip_distance = distance_from_clip_rect(unit_vertex, bounds, blur.content_mask.bounds);
   return BackdropBlurVertexOutput{
       blur_id,
       device_position,
@@ -1548,8 +1565,8 @@ fragment float4 backdrop_blur_fragment(
     float2 uv = (position - source_rect.xy) / source_rect.zw;
     return mix(destination, source.sample(source_sampler, uv), coverage);
   }
-  // Glass: the edge's outward normal from the rounded rectangle's distance field, and how far
-  // into the bevel this pixel lies (0 at the edge, 1 where the bevel ends).
+  // Glass (gpui's fast/backdrop.rs, Glass): the edge's outward normal from the rounded
+  // rectangle's distance field, and how far inside the edge this pixel lies.
   float distance = quad_sdf(position, blur.bounds, blur.corner_radii);
   float2 step = float2(0.5, 0.);
   float2 normal = float2(quad_sdf(position + step.xy, blur.bounds, blur.corner_radii) -
@@ -1557,25 +1574,44 @@ fragment float4 backdrop_blur_fragment(
                          quad_sdf(position + step.yx, blur.bounds, blur.corner_radii) -
                              quad_sdf(position - step.yx, blur.bounds, blur.corner_radii));
   normal = length(normal) > 1e-4 ? normalize(normal) : float2(0.);
-  float depth = saturate(-distance / blur.glass_bevel);
-  // A quarter circle: steepest at the edge, flat where the bevel meets the face.
-  float bend = 1. - sqrt(saturate(1. - (1. - depth) * (1. - depth)));
-  float2 pull = -normal * bend * blur.glass_refraction;
-  float spread = blur.glass_dispersion;
-  float2 uv_r = (position + pull * (1. - spread) - source_rect.xy) / source_rect.zw;
-  float2 uv_g = (position + pull - source_rect.xy) / source_rect.zw;
-  float2 uv_b = (position + pull * (1. + spread) - source_rect.xy) / source_rect.zw;
-  float4 green = source.sample(source_sampler, uv_g);
-  float4 bent = float4(source.sample(source_sampler, uv_r).r, green.g,
-                       source.sample(source_sampler, uv_b).b, green.a);
-  // The specular rim: brightest where the bevel faces the light from the top left, a fainter
-  // glint on the opposite edge, fading across the bevel.
-  float2 light = normalize(float2(-1., -1.));
-  float facing = dot(normal, light);
-  float glint = pow(saturate(facing), 3.) + 0.35 * pow(saturate(-facing), 3.);
-  float rim = blur.glass_rim * glint * (1. - smoothstep(0., 0.35, depth));
-  bent.rgb = mix(bent.rgb, float3(1.), rim * bent.a);
-  return mix(destination, bent, coverage);
+  float unit = blur.glass_unit;
+  float inward = max(-distance, 0.);
+  float shorter = min(blur.bounds.size.width, blur.bounds.size.height);
+  // The lens: a quarter circle across the bevel, steepest at the edge, never reading past the
+  // centre line. The face beyond the bevel shows the backdrop undisplaced.
+  float bevel = max(min(blur.glass_bevel, 0.25 * shorter), 1e-3);
+  float amount = min(blur.glass_refraction, 0.5 * shorter);
+  float rim = 1. - saturate(inward / bevel);
+  float bend = amount * (1. - sqrt(saturate(1. - rim * rim)));
+  float2 uv = (position - normal * bend - source_rect.xy) / source_rect.zw;
+  float4 backdrop = source.sample(source_sampler, uv);
+  // The face: lifted, compressed luminance, colour passed through.
+  const float3 luma = float3(0.2126, 0.7152, 0.0722);
+  float y = dot(backdrop.rgb, luma);
+  float lifted = y + blur.glass_lift * y * (1. - y);
+  float3 face = blur.glass_emission + blur.glass_transmittance * lifted +
+                blur.glass_chroma * (backdrop.rgb - y);
+  // The faint shadow the rim casts inward, from a light above (y grows down), on the light the
+  // glass passes and never on what it emits.
+  float facing = dot(normal, float2(0., -1.));
+  float shift = 6. * unit * facing;
+  float band = (shift > 1e-3 ? smoothstep(0., 2. * shift, inward) : 1.) *
+               (1. - smoothstep(0., 16. * unit, inward - shift));
+  float toward = mix(1., smoothstep(0., 1., facing * 0.5 + 0.5), 0.5);
+  face -= blur.glass_transmittance * lifted * band * toward * blur.glass_shadow;
+  // The glint: a 1.2 point line with a faint tail along both walls on the light's axis,
+  // recolouring the face toward a brighter, more saturated version of itself.
+  float profile = saturate(1. - inward / (1.2 * unit)) + 0.21 * saturate(1. - inward / (4.8 * unit));
+  float glint = saturate(blur.glass_glint * (1. - abs(normal.x)) * profile);
+  float3 lit = saturate(mix(face, 1.6 + 2.85 * (face - dot(face, luma)), glint));
+  // The contour: black just outside the edge, giving way where the glint is.
+  float outward = max(distance, 0.);
+  float reach = max(0.75 * unit, 1.);
+  float contour = blur.glass_contour * saturate(1. - outward / reach) *
+                  mix(1., abs(normal.x), blur.glass_contour_direction) * blur.opacity *
+                  edge_fade(position, blur.fade, fades);
+  float4 under = mix(destination, float4(0., 0., 0., 1.), contour);
+  return mix(under, float4(lit, backdrop.a), coverage);
 }
 
 // gpui-fast: blurred glyphs (gpui's fast/glyph_blur.rs; zui 0966d06). The blur's

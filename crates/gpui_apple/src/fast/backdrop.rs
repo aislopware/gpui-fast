@@ -621,56 +621,51 @@ mod tests {
         assert_eq!(image.get_pixel(180, 80)[0], 255);
     }
 
-    /// Glass reads the backdrop refracted within its bevel and lights a rim there: over a flat
-    /// grey, the top left edge (facing the light) is brighter than the face, the face matches a
-    /// plain blur, and at a step the edge reads from further in than a plain blur does.
+    /// Dark glass over a flat grey lifts its face, glints along its top wall and draws a dark
+    /// contour just outside its side; and within its bevel it reads the backdrop from further in,
+    /// so at a step its edge reads past the step where a plain blur does not.
     #[test]
-    fn glass_bends_its_edge_and_lights_its_rim() {
+    fn glass_lifts_its_face_glints_its_wall_and_bends_its_edge() {
         let Some(mut renderer) = renderer() else {
             return;
         };
-        let glass = Glass {
-            refraction: 12.,
-            bevel: 20.,
-            rim: 0.5,
-            dispersion: 0.,
-        };
         let panel = sp(40., 40., 120., 80.);
-        let grey = |scene: &mut Scene| {
-            scene.insert_primitive(quad(sp(0., 0., W as f32, H as f32), 0x404040ff));
-        };
         let mut scene = Scene::default();
-        grey(&mut scene);
-        let mut lit = blur(panel, 4.);
-        lit.corner_radii = Corners::all(ScaledPixels(16.));
-        lit.glass = glass;
-        scene.insert_backdrop_blur(lit);
+        scene.insert_primitive(quad(sp(0., 0., W as f32, H as f32), 0x404040ff));
+        let mut dark = blur(panel, 2.);
+        dark.corner_radii = Corners::all(ScaledPixels(16.));
+        dark.glass = Glass::DARK;
+        scene.insert_backdrop_blur(dark);
         let image = render(&mut renderer, &mut scene);
         let face = image.get_pixel(100, 80)[0];
-        let edge = image.get_pixel(60, 41)[0];
-        assert!(face.abs_diff(0x40) <= 1, "the face is the backdrop: {face}");
+        let wall = image.get_pixel(100, 40)[0];
+        let beside = image.get_pixel(39, 80)[0];
+        assert!(face > 0x40 + 10, "the face lifts the grey: {face}");
+        assert!(wall > face + 10, "the top wall glints: {wall} over {face}");
         assert!(
-            edge > face + 20,
-            "the lit edge is brighter: {edge} over {face}"
+            beside + 20 < 0x40,
+            "the contour darkens outside the side: {beside}"
         );
-        // Black left of x = 120, white right of it; the panel's right edge at x = 160 reads
-        // white either way, but its left edge, at x = 40, reads from further in.
+        // Black left of x = 120, white right of it; through clear glass, just inside the left
+        // edge at x = 100, the lens reads past the step.
+        let clear = Glass {
+            refraction: 60.,
+            bevel: 20.,
+            transmittance: 1.,
+            chroma: 1.,
+            unit: 1.,
+            ..Glass::default()
+        };
         let mut plain = Scene::default();
         halves(&mut plain);
-        plain.insert_backdrop_blur(blur(sp(100., 40., 40., 80.), 1.));
+        plain.insert_backdrop_blur(blur(sp(100., 40., 80., 80.), 1.));
         let plain = render(&mut renderer, &mut plain);
         let mut bent = Scene::default();
         halves(&mut bent);
-        let mut through = blur(sp(100., 40., 40., 80.), 1.);
-        through.glass = Glass {
-            refraction: 30.,
-            rim: 0.,
-            ..glass
-        };
+        let mut through = blur(sp(100., 40., 80., 80.), 1.);
+        through.glass = clear;
         bent.insert_backdrop_blur(through);
         let bent = render(&mut renderer, &mut bent);
-        // Just inside the left edge the step is 19 px in: a plain blur reads black there; the
-        // glass, pulling about 20 px in at a pixel into its bevel, reads past the step.
         let (flat, refracted) = (plain.get_pixel(101, 80)[0], bent.get_pixel(101, 80)[0]);
         assert!(
             refracted > flat + 60,
@@ -1157,5 +1152,95 @@ mod tests {
                 at(gpu, 95),
             );
         }
+    }
+
+    /// Glass over a dark and a light code view, at Retina scale, for the eye: run with
+    /// `GLASS_BENCH=<dir>` (and `--run-ignored only`) to write `glass-bench.png` there.
+    #[test]
+    #[ignore = "writes an image for review; GLASS_BENCH names the directory"]
+    fn glass_bench() {
+        let (Some(dir), Some(mut renderer)) = (std::env::var_os("GLASS_BENCH"), renderer()) else {
+            return;
+        };
+        const S: f32 = 2.;
+        let (w, h) = (1200., 560.);
+        let all = ContentMask {
+            bounds: sp(0., 0., w, h),
+        };
+        let fill = |scene: &mut Scene, b: Bounds<ScaledPixels>, color: u32, radius: f32| {
+            scene.insert_primitive(Quad {
+                bounds: b,
+                content_mask: all,
+                background: Hsla::from(rgba(color)).into(),
+                corner_radii: Corners::all(ScaledPixels(radius)),
+                ..Default::default()
+            });
+        };
+        let mut scene = Scene::default();
+        let themes = [
+            (
+                0x22212cffu32,
+                [
+                    0xf8f8f2ff, 0xff80bfff, 0x8aff80ff, 0xffff80ff, 0x80ffeaff, 0x9580ffff,
+                    0x7970a9ff,
+                ],
+            ),
+            (
+                0xfffbebff,
+                [
+                    0x1f1f1fff, 0xa3144dff, 0x14710aff, 0x846e15ff, 0x036a96ff, 0x644ac9ff,
+                    0x6c664bff,
+                ],
+            ),
+        ];
+        for (half, (ground, inks)) in themes.iter().enumerate() {
+            let x0 = half as f32 * w / 2.;
+            fill(&mut scene, sp(x0, 0., w / 2., h), *ground, 0.);
+            // Lines of "code": words as short bars of the theme's inks.
+            let mut seed = 7u32 + half as u32;
+            for line in 0..26 {
+                let y = 14. + line as f32 * 20.;
+                let mut x = x0 + 20. + (line % 4) as f32 * 16.;
+                while x < x0 + w / 2. - 30. {
+                    seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                    let word = 14. + (seed >> 16) as f32 % 60.;
+                    let ink = inks[(seed >> 8) as usize % inks.len()];
+                    fill(&mut scene, sp(x, y, word, 9.), ink, 2.);
+                    x += word + 10.;
+                }
+            }
+            // A saturated block, so refraction and tint show on colour too.
+            fill(
+                &mut scene,
+                sp(x0 + 380., 300., 140., 90.),
+                if half == 0 { 0xff9580ff } else { 0x036a96ff },
+                18.,
+            );
+        }
+        let glass = |scene: &mut Scene, b: Bounds<ScaledPixels>, radius: f32, light: bool| {
+            let short = gpui::px(b.size.width.0.min(b.size.height.0) / S);
+            let mut blur = BackdropBlur {
+                content_mask: all,
+                ..blur(b, Glass::blur_for(short).as_f32() * S)
+            };
+            blur.corner_radii = Corners::all(ScaledPixels(radius * S));
+            blur.glass = if light { Glass::LIGHT } else { Glass::DARK }.scale(S);
+            scene.insert_backdrop_blur(blur);
+        };
+        for half in 0..2 {
+            let x0 = half as f32 * w / 2.;
+            let light = half == 1;
+            // A composer, a card and a pill button, as the app paints them.
+            glass(&mut scene, sp(x0 + 30., 380., 520., 150.), 16., light);
+            glass(&mut scene, sp(x0 + 300., 40., 260., 140.), 12., light);
+            glass(&mut scene, sp(x0 + 60., 230., 120., 56.), 14., light);
+        }
+        scene.finish();
+        let image = renderer
+            .render_scene_to_image(&scene, size(DevicePixels(w as i32), DevicePixels(h as i32)))
+            .expect("scene rendered");
+        image
+            .save(std::path::Path::new(&dir).join("glass-bench.png"))
+            .unwrap();
     }
 }

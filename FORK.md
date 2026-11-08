@@ -1241,12 +1241,17 @@ alike here (onicode's `docs/onicode/golden.md`):
   (1 − k)`, then `+ blurred × k`) rounded twice and left a frosted composer's antialiased
   corners a level off monocode's. Test: `a_blurs_antialiased_corners_mix_what_is_under_them_rounded_once`
   (within half a level of the exact mix on the ring; the two draws were 0.89 off).
-- Glass: `Window::paint_glass(bounds, corner_radii, blur_radius, Glass)` (`fast::backdrop`) is a
-  backdrop blur whose edge is Liquid Glass: within a bevel along the rounded edge the blurred
-  backdrop is read refracted inward on a quarter-circle profile, each channel by a slightly
-  different amount, and a specular rim lit from the top left is added. It is for surfaces over
-  what the app draws itself (a window background image), which the system's glass cannot
-  sample. Test: `glass_bends_its_edge_and_lights_its_rim`.
+- Glass: `Window::paint_glass(bounds, corner_radii, Glass)` (`fast::backdrop`) is Liquid Glass
+  drawn by the renderer, fitted to Apple's regular glass (whynotmake-it's iOS 27 fit,
+  `Glass::DARK` and `Glass::LIGHT`): the backdrop lightly blurred by size (`Glass::blur_for`),
+  refracted inward across a 20-point bevel on a quarter-circle profile (up to 60 points, never
+  past the centre line), carried through a face transfer that lifts and compresses luminance and
+  keeps colour, a faint inner shadow from the rim, a 1.2-point glint recolouring the top and
+  bottom walls toward a brighter, more saturated face, and a 0.75-point dark contour drawn just
+  outside the edge. It is for surfaces over what the app draws itself (a window background
+  image), which the system's glass cannot sample. A backdrop blur's corner radii are clamped to
+  half its shorter side. Tests: `glass_lifts_its_face_glints_its_wall_and_bends_its_edge`; the
+  ignored `glass_bench` writes a review image (`GLASS_BENCH=<dir>`).
 - `WindowBackgroundAppearance::Glass`: Liquid Glass (`NSGlassEffectView`, regular style, the
   window's corner radius) behind the content in place of the behind-window blur, for a window
   that shows the desktop through its glass (`gpui_macos`'s `fast::window_backdrop`).
