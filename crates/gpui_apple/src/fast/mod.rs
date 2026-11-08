@@ -12,6 +12,8 @@ pub(crate) mod atlas;
 pub(crate) mod backdrop;
 pub(crate) mod drawable_count;
 pub(crate) mod edge_fade;
+#[cfg(feature = "font-kit")]
+pub(crate) mod font_fallbacks;
 pub mod font_weight;
 pub mod frame_source;
 #[cfg(test)]

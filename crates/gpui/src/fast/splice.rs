@@ -30,7 +30,7 @@ use crate::key_dispatch::{DispatchNodeId, DispatchTree};
 use crate::window::DeferredDraw;
 use crate::window::{PaintIndex, PrepaintStateIndex};
 use crate::{
-    AnyView, AnyWeakView, App, ContentMask, ElementId, ElementIdStack, EntityId, FocusId,
+    AnyView, AnyWeakView, App, Bounds, ContentMask, ElementId, ElementIdStack, EntityId, FocusId,
     GlobalElementId, HitboxId, LayoutId, Pixels, Point, StyleRefinement, View, ViewElement, Window,
 };
 use collections::FxHashSet;
@@ -139,6 +139,10 @@ pub(crate) struct Gap {
     view: ViewElement<AnyView>,
     layout: ViewLayoutState,
     layout_id: LayoutId,
+    /// Where a cached view nested in a cached view is drawn, and its phase
+    /// there: it is laid out on its own, where it was, not at a node of the
+    /// view around it.
+    placed: Option<(Bounds<Pixels>, Point<f32>)>,
     layout_key: u64,
     /// The layout nodes it claimed.
     claimed: Vec<u64>,
@@ -227,8 +231,16 @@ pub(crate) struct Splice {
     held: Vec<(LayoutId, taffy::Layout)>,
     /// What of the view's layout is drawn from last frame: its nodes and
     /// element states less the gaps'. With the gaps' own, once built, it is
-    /// the layout the view is drawn from next.
-    kept_layout: RetainedLayout,
+    /// the layout the view is drawn from next. A cached view's is the one its
+    /// style node was requested with this frame, if it has one.
+    kept_layout: Option<RetainedLayout>,
+}
+
+impl SplicedPrepaint {
+    /// Its record in this frame.
+    pub(crate) fn index(&self) -> usize {
+        self.index
+    }
 }
 
 impl Splice {
@@ -429,9 +441,155 @@ impl Window {
         Some(Splice {
             previous,
             gaps: built,
-            kept_layout,
+            kept_layout: Some(kept_layout),
             checked,
             held,
+        })
+    }
+
+    /// Draws the cached view `id` at `place` from last frame around the
+    /// cached views nested in it that have to be built again, if it can be:
+    /// it is dirty only because they are, nothing it read itself changed, it
+    /// is drawn where and as it was, and every out-of-date view in it is a
+    /// painted cached view. A cached view is laid out on its own at the bounds
+    /// its style gave it, so building one again where it was leaves the view
+    /// around it laid out as it was, and no layout is redone around it.
+    pub(crate) fn splice_cached(
+        &mut self,
+        id: &GlobalElementId,
+        (bounds, phase): (Bounds<Pixels>, Point<f32>),
+        layout: Option<Rc<RetainedLayout>>,
+        cx: &mut App,
+    ) -> Option<Splice> {
+        if self.refreshing
+            || cx.has_active_drag()
+            || crate::fast::a11y::stale(&self.a11y)
+            || self.is_inspector_picking(cx)
+            || self.retained_state.dirty_subtrees.contains(id)
+            || self.next_frame.retained.by_id.contains_key(id)
+            || crate::fast::layers::paint::inside_layer(self)
+        {
+            return None;
+        }
+        let entity = view_entity(id)?;
+        if self.retained_state.notified_entities.contains(&entity) {
+            return None;
+        }
+        let previous = self.rendered_frame.retained.find(id)?;
+        if !self.retained_context_matches(previous, bounds, phase) {
+            return None;
+        }
+        let record = &self.rendered_frame.retained.records[previous];
+        if cx.dependencies_changed(&record.own_dependencies, self.inside_notified_view())
+            || crate::fast::layers::invalidate::offset_read_changed(self, &record.own_dependencies)
+            || !self.hovers_unchanged(&record.own_hovers)
+        {
+            return None;
+        }
+        let checked = cx.dependencies_checked();
+        let gaps = self.cached_splice_gaps(previous, entity, cx)?;
+        let gaps = gaps
+            .into_iter()
+            .map(|gap| self.cached_gap(gap, cx))
+            .collect::<Option<Vec<_>>>()?;
+        Some(Splice {
+            previous,
+            gaps,
+            // Its style node's, requested this frame; nothing else holds it
+            // once the splice takes it.
+            kept_layout: layout.map(|layout| {
+                Rc::try_unwrap(layout).unwrap_or_else(|layout| RetainedLayout {
+                    root: layout.root,
+                    keys: layout.keys.clone(),
+                    element_states: layout.element_states.clone(),
+                    text_style: layout.text_style.clone(),
+                    rem_size: layout.rem_size,
+                    parent_layout_key: layout.parent_layout_key,
+                })
+            }),
+            checked,
+            held: Vec::new(),
+        })
+    }
+
+    /// [`Window::splice_gaps`] for a cached view: the outermost out-of-date
+    /// views nested in it, each of which has to be a painted cached view.
+    fn cached_splice_gaps(
+        &self,
+        previous: usize,
+        entity: EntityId,
+        cx: &App,
+    ) -> Option<Vec<usize>> {
+        let records = &self.rendered_frame.retained.records;
+        let mut gaps = Vec::new();
+        let mut index = previous + 1;
+        while index <= previous + records[previous].nested {
+            let nested = &records[index];
+            let out_of_date = view_entity(&nested.id)
+                .is_some_and(|entity| self.dirty_views.contains(&entity))
+                || self.retained_state.dirty_subtrees.contains(&nested.id)
+                || cx.dependencies_changed(&nested.dependencies, self.inside_notified_view())
+                || crate::fast::layers::invalidate::offset_read_changed(self, &nested.dependencies)
+                || !self.hovers_unchanged(&nested.hover_dependencies);
+            if out_of_date {
+                if !nested
+                    .rebuild
+                    .as_ref()
+                    .is_some_and(|rebuild| rebuild.cached_style.is_some())
+                    || nested.layout.is_none()
+                    || !matches!(nested.paint, PaintStatus::Painted { .. })
+                {
+                    return None;
+                }
+                gaps.push(index);
+            }
+            index += nested.nested + 1;
+        }
+        if gaps.is_empty() || self.deferred_out_of_date(previous, entity, &gaps, cx) {
+            return None;
+        }
+        Some(gaps)
+    }
+
+    /// The cached view last frame's record `record` stands for, to be built
+    /// again where it was, at the bounds and phase it had.
+    fn cached_gap(&mut self, record: usize, cx: &mut App) -> Option<Gap> {
+        let nested = &self.rendered_frame.retained.records[record];
+        let rebuild = nested.rebuild.clone()?;
+        let previous_layout = nested.layout.clone()?;
+        let rebuilt = rebuild.view.upgrade()?;
+        let global_id = nested.id.clone();
+        let placed = (nested.context.bounds, nested.context.phase);
+        let element_id = global_id.last().cloned()?;
+        let layout_id = previous_layout.root;
+        let layout_key = self.with_parent_layout_key(rebuild.parent_layout_key, |window| {
+            let key = crate::fast::layout_key::push_layout_key(window, Some(&element_id));
+            crate::fast::layout_key::pop_layout_key(window);
+            key
+        });
+        let mut view = ViewElement::new(rebuilt.clone()).rebuildable(rebuilt);
+        view.cached_style = rebuild.cached_style.clone();
+        // Nothing is read laying it out, but what it reads from here on is
+        // checked from now.
+        let recording = cx.begin_recording_dependencies();
+        let dependencies = cx.finish_recording_dependencies(recording);
+        let read = dependencies.all.clone();
+        Some(Gap {
+            record,
+            global_id,
+            view,
+            layout: crate::fast::retained::cached_layout_state(
+                Some(previous_layout),
+                dependencies,
+                layout_id,
+            ),
+            layout_id,
+            placed: Some(placed),
+            layout_key,
+            claimed: Vec::new(),
+            element_states: Vec::new(),
+            dependencies: read,
+            prepainted: None,
         })
     }
 
@@ -612,6 +770,7 @@ impl Window {
                 view,
                 layout,
                 layout_id,
+                placed: None,
                 layout_key,
                 claimed,
                 element_states,
@@ -764,21 +923,32 @@ impl Window {
                 context.fade,
             );
             // What its element's prepaint does, inside the view around it.
-            let bounds = self.layout_bounds(gap.layout_id);
+            let placed = gap.placed;
+            let bounds = placed.map_or_else(|| self.layout_bounds(gap.layout_id), |(b, _)| b);
             self.element_id_stack.push(gap.element_id());
             let node = match copied_node {
                 Some(node) => node,
                 None => self.next_frame.dispatch_tree.push_node(),
             };
             let scope = crate::fast::layout_key::enter_prepaint_scope(self, gap.layout_key);
-            let prepaint = crate::fast::retained::prepaint_view(
-                &mut gap.view,
-                Some(&gap.global_id),
-                bounds,
-                &mut gap.layout,
-                self,
-                cx,
-            );
+            let prepaint = match placed {
+                Some(place) => crate::fast::retained::prepaint_view_at(
+                    &mut gap.view,
+                    Some(&gap.global_id),
+                    place,
+                    &mut gap.layout,
+                    self,
+                    cx,
+                ),
+                None => crate::fast::retained::prepaint_view(
+                    &mut gap.view,
+                    Some(&gap.global_id),
+                    bounds,
+                    &mut gap.layout,
+                    self,
+                    cx,
+                ),
+            };
             crate::fast::layout_key::exit_prepaint_scope(self, scope);
             if copied_node.is_none() {
                 self.next_frame.dispatch_tree.pop_node();
@@ -814,7 +984,7 @@ impl Window {
         // The gaps' layout keys, layouts, dependencies and hovers are this
         // frame's.
         let mut layout_keys = kept_layout_keys;
-        let mut layout = Some(kept_layout);
+        let mut layout = kept_layout;
         // What the view read itself, and what the views copied along with it
         // read, was found unchanged before it was spliced, and the gaps were
         // built since: it is up to date as of then, and with every write so

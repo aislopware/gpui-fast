@@ -2020,6 +2020,24 @@ impl<V: View> ViewElement<V> {
                 ViewLayout::Cached {
                     retained: (layout, layout_dependencies),
                 } => {
+                    // Dirty only because cached views nested in it are: drawn
+                    // from last frame around them.
+                    if window.dirty_views.contains(&entity_id)
+                        && let Some(splice) =
+                            window.splice_cached(global_id, (bounds, phase), layout.clone(), cx)
+                    {
+                        let rebuild = window.rebuild_here(
+                            &self.rebuild,
+                            self.cached_style.as_ref(),
+                            layout.as_ref().and_then(|layout| layout.parent_layout_key),
+                        );
+                        let prepaint = window.splice_prepaint(global_id, splice, cx);
+                        if let ViewPrepaint::Spliced(spliced) = &prepaint {
+                            window.next_frame.retained.records[spliced.index()].rebuild =
+                                rebuild.map(Rc::new);
+                        }
+                        return prepaint;
+                    }
                     if !window.dirty_views.contains(&entity_id)
                         && let Some(previous) = window.reusable_cached(global_id, cx)
                         && window.retained_context_matches(previous, bounds, phase)
@@ -2228,6 +2246,21 @@ pub(crate) fn request_view_layout<V: View>(
     (layout_id, ViewLayoutState(layout, layout_id))
 }
 
+/// The layout of a cached view laid out as it was, at the style node `root` it
+/// had, for a cached view built again inside a view drawn from last frame.
+pub(crate) fn cached_layout_state(
+    layout: Option<Rc<RetainedLayout>>,
+    dependencies: RecordedDependencies,
+    root: LayoutId,
+) -> ViewLayoutState {
+    ViewLayoutState(
+        ViewLayout::Cached {
+            retained: (layout, dependencies),
+        },
+        root,
+    )
+}
+
 /// Prepaints the view as [`crate::Element::prepaint`] does, following up on how
 /// [`request_view_layout`] laid it out.
 #[inline(always)]
@@ -2244,6 +2277,21 @@ pub(crate) fn prepaint_view<V: View>(
         .as_ref()
         .unwrap()
         .layout_phase(layout.1);
+    prepaint_view_at(view, global_id, (bounds, phase), layout, window, cx)
+}
+
+/// [`prepaint_view`] at `bounds` and `phase` given rather than read off its
+/// layout node: a cached view built again inside a cached view drawn from last
+/// frame is drawn where and as it was, laid out on its own.
+#[inline(always)]
+pub(crate) fn prepaint_view_at<V: View>(
+    view: &mut ViewElement<V>,
+    global_id: Option<&GlobalElementId>,
+    (bounds, phase): (Bounds<Pixels>, Point<f32>),
+    layout: &mut ViewLayoutState,
+    window: &mut Window,
+    cx: &mut App,
+) -> ViewPrepaintState {
     let layout = mem::replace(&mut layout.0, ViewLayout::Taken);
     #[cfg(feature = "profiler")]
     let start = view.entity_id.map(|_| window.window_profiler.begin_view());
