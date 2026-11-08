@@ -25,7 +25,7 @@ use gpui::{
     PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, PowerMode,
     Result, Task, ThermalState, WindowAppearance, WindowParams,
 };
-use gpui_apple::process_info::{self, ProcessInfoObserver};
+use gpui_apple::process_info::{self, NotificationObserver};
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{class, msg_send};
 use parking_lot::Mutex;
@@ -64,8 +64,8 @@ pub(crate) struct IosPlatformState {
     background_executor: BackgroundExecutor,
     foreground_executor: ForegroundExecutor,
     text_system: Arc<dyn PlatformTextSystem>,
-    thermal_observer: Option<ProcessInfoObserver>,
-    power_mode_observer: Option<ProcessInfoObserver>,
+    thermal_observer: Option<NotificationObserver>,
+    power_mode_observer: Option<NotificationObserver>,
 }
 
 impl Default for IosPlatform {

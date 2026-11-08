@@ -1,7 +1,10 @@
 use block2::RcBlock;
 use futures::{StreamExt, channel::mpsc};
 use gpui::{ForegroundExecutor, PowerMode, Task, ThermalState};
-use objc2::{rc::Retained, runtime::ProtocolObject};
+use objc2::{
+    rc::Retained,
+    runtime::{AnyObject, ProtocolObject},
+};
 use objc2_foundation::{
     NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSProcessInfo,
     NSProcessInfoPowerStateDidChangeNotification, NSProcessInfoThermalState,
@@ -29,11 +32,11 @@ pub fn power_mode() -> PowerMode {
 pub fn observe_thermal_state(
     executor: &ForegroundExecutor,
     callback: Box<dyn FnMut()>,
-) -> ProcessInfoObserver {
+) -> NotificationObserver {
     // Foundation requires reading thermalState before registering for changes.
     // https://developer.apple.com/documentation/foundation/processinfo/thermalstatedidchangenotification
     thermal_state();
-    ProcessInfoObserver::new(
+    NotificationObserver::process_info(
         unsafe { NSProcessInfoThermalStateDidChangeNotification },
         executor,
         callback,
@@ -43,37 +46,42 @@ pub fn observe_thermal_state(
 pub fn observe_power_mode(
     executor: &ForegroundExecutor,
     callback: Box<dyn FnMut()>,
-) -> ProcessInfoObserver {
-    ProcessInfoObserver::new(
+) -> NotificationObserver {
+    NotificationObserver::process_info(
         unsafe { NSProcessInfoPowerStateDidChangeNotification },
         executor,
         callback,
     )
 }
 
-pub struct ProcessInfoObserver {
+pub struct NotificationObserver {
     center: Retained<NSNotificationCenter>,
     observer: Retained<ProtocolObject<dyn NSObjectProtocol>>,
     _task: Task<()>,
 }
 
-impl ProcessInfoObserver {
-    fn new(
+/// A notification observed on the foreground executor until dropped.
+impl NotificationObserver {
+    fn process_info(
         name: &NSNotificationName,
         executor: &ForegroundExecutor,
         callback: Box<dyn FnMut()>,
     ) -> Self {
-        Self::with_center(
+        Self::new(
             NSNotificationCenter::defaultCenter(),
             name,
+            Some(&NSProcessInfo::processInfo()),
             executor,
             callback,
         )
     }
 
-    fn with_center(
+    /// Calls `callback` on `executor` for every `name` that `center` posts from `object`
+    /// (from any object when `None`).
+    pub fn new(
         center: Retained<NSNotificationCenter>,
         name: &NSNotificationName,
+        object: Option<&AnyObject>,
         executor: &ForegroundExecutor,
         mut callback: Box<dyn FnMut()>,
     ) -> Self {
@@ -86,12 +94,7 @@ impl ProcessInfoObserver {
             }
         });
         let observer = unsafe {
-            center.addObserverForName_object_queue_usingBlock(
-                Some(name),
-                Some(&NSProcessInfo::processInfo()),
-                None,
-                &block,
-            )
+            center.addObserverForName_object_queue_usingBlock(Some(name), object, None, &block)
         };
         let task = executor.spawn(async move {
             while receiver.next().await.is_some() {
@@ -106,7 +109,7 @@ impl ProcessInfoObserver {
     }
 }
 
-impl Drop for ProcessInfoObserver {
+impl Drop for NotificationObserver {
     fn drop(&mut self) {
         unsafe {
             self.center.removeObserver(self.observer.as_ref());
@@ -137,6 +140,27 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    fn an_observer_without_an_object_hears_any_poster(cx: &mut gpui::TestAppContext) {
+        // The accessibility display options arrive this way, from NSWorkspace's own center.
+        let center = NSNotificationCenter::new();
+        let name = objc2_foundation::NSString::from_str("OnicodeDisplayOptionsProbe");
+        let calls = Rc::new(Cell::new(0));
+        let _observer = NotificationObserver::new(
+            center.clone(),
+            &name,
+            None,
+            &cx.foreground_executor,
+            Box::new({
+                let calls = calls.clone();
+                move || calls.set(calls.get() + 1)
+            }),
+        );
+        unsafe { center.postNotificationName_object(&name, None) };
+        cx.run_until_parked();
+        assert_eq!(calls.get(), 1);
+    }
+
     fn check_notification_lifecycle(
         cx: &mut gpui::TestAppContext,
         name: &'static NSNotificationName,
@@ -144,9 +168,10 @@ mod tests {
         // Tests cannot share the default center because they run concurrently.
         let center = NSNotificationCenter::new();
         let calls = Rc::new(Cell::new(0));
-        let observer = ProcessInfoObserver::with_center(
+        let observer = NotificationObserver::new(
             center.clone(),
             name,
+            Some(&NSProcessInfo::processInfo()),
             &cx.foreground_executor,
             Box::new({
                 let calls = calls.clone();

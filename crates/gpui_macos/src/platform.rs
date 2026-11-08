@@ -10,16 +10,16 @@ use ctor::ctor;
 use dispatch2::DispatchQueue;
 use futures::channel::oneshot;
 use gpui::{
-    Action, ActivationPolicy, ActivityGuard, AnyWindowHandle, BackgroundExecutor, ClipboardItem,
-    CursorStyle, ForegroundExecutor, GraphicalEnvironment, KeyContext, Keymap, Menu, MenuItem,
-    OsMenu, OwnedMenu, PathPromptOptions, Platform, PlatformDisplay, PlatformKeyboardLayout,
-    PlatformKeyboardMapper, PlatformTextSystem, PlatformWindow, PowerMode, Result, SystemMenuType,
-    Task, ThermalState, WindowAppearance, WindowKind, WindowParams, WindowingRequest,
-    popup::PopupNotSupportedError,
+    AccessibilityDisplay, Action, ActivationPolicy, ActivityGuard, AnyWindowHandle,
+    BackgroundExecutor, ClipboardItem, CursorStyle, ForegroundExecutor, GraphicalEnvironment,
+    KeyContext, Keymap, Menu, MenuItem, OsMenu, OwnedMenu, PathPromptOptions, Platform,
+    PlatformDisplay, PlatformKeyboardLayout, PlatformKeyboardMapper, PlatformTextSystem,
+    PlatformWindow, PowerMode, Result, SystemMenuType, Task, ThermalState, WindowAppearance,
+    WindowKind, WindowParams, WindowingRequest, popup::PopupNotSupportedError,
 };
 use gpui_apple::{
     keychain,
-    process_info::{self, ProcessInfoObserver},
+    process_info::{self, NotificationObserver},
 };
 use gpui_util::{ResultExt, new_std_command};
 use itertools::Itertools;
@@ -34,7 +34,8 @@ use objc2_app_kit::{
     NSAppearanceNameVibrantLight, NSApplication, NSApplicationActivationPolicy,
     NSControlStateValueOn, NSCursor, NSDocumentController, NSEventModifierFlags, NSMenu,
     NSMenuItem, NSModalResponse, NSModalResponseOK, NSOpenPanel, NSSavePanel, NSScroller,
-    NSScrollerStyle, NSWorkspace, NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
+    NSScrollerStyle, NSWorkspace, NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification,
+    NSWorkspaceDidWakeNotification, NSWorkspaceWillSleepNotification,
 };
 use objc2_foundation::{
     NSActivityOptions, NSArray, NSBundle, NSError, NSInteger, NSString, NSURL, NSUTF8StringEncoding,
@@ -173,8 +174,9 @@ pub(crate) struct MacPlatformState {
     find_pasteboard: Pasteboard,
     reopen: Option<Box<dyn FnMut()>>,
     on_keyboard_layout_change: Option<Box<dyn FnMut()>>,
-    thermal_observer: Option<ProcessInfoObserver>,
-    power_mode_observer: Option<ProcessInfoObserver>,
+    thermal_observer: Option<NotificationObserver>,
+    power_mode_observer: Option<NotificationObserver>,
+    accessibility_display_observer: Option<NotificationObserver>,
     on_displays_changed: Option<Box<dyn FnMut()>>,
     on_system_sleep: Option<Box<dyn FnMut()>>,
     on_system_wake: Option<Box<dyn FnMut()>>,
@@ -253,6 +255,7 @@ impl MacPlatform {
             on_keyboard_layout_change: None,
             thermal_observer: None,
             power_mode_observer: None,
+            accessibility_display_observer: None,
             on_displays_changed: None,
             on_system_sleep: None,
             on_system_wake: None,
@@ -1072,6 +1075,27 @@ impl Platform for MacPlatform {
 
     fn power_mode(&self) -> PowerMode {
         process_info::power_mode()
+    }
+
+    fn accessibility_display(&self) -> AccessibilityDisplay {
+        let workspace = NSWorkspace::sharedWorkspace();
+        AccessibilityDisplay {
+            reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
+            increase_contrast: workspace.accessibilityDisplayShouldIncreaseContrast(),
+        }
+    }
+
+    fn on_accessibility_display_change(&self, callback: Box<dyn FnMut()>) {
+        let workspace = NSWorkspace::sharedWorkspace();
+        // AppKit posts the change on the workspace's own notification center.
+        let observer = NotificationObserver::new(
+            workspace.notificationCenter(),
+            unsafe { NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification },
+            Some(&workspace),
+            &self.foreground_executor(),
+            callback,
+        );
+        self.0.lock().accessibility_display_observer = Some(observer);
     }
 
     fn show_system_notification(&self, notification: gpui::SystemNotification) {

@@ -353,6 +353,13 @@ pub trait Platform: 'static {
     /// Registers a callback invoked when the reported power mode changes.
     fn on_power_mode_change(&self, _callback: Box<dyn FnMut()>) {}
 
+    /// The system's accessibility display options, or all off when the platform has none.
+    fn accessibility_display(&self) -> AccessibilityDisplay {
+        AccessibilityDisplay::default()
+    }
+    /// Registers a callback invoked when the accessibility display options change.
+    fn on_accessibility_display_change(&self, _callback: Box<dyn FnMut()>) {}
+
     /// Sets the application's process-wide identity and user-visible name.
     ///
     /// The identifier is used for platform identity mechanisms such as the
@@ -541,6 +548,15 @@ pub struct SystemNotificationResponse {
     /// The pressed action button's [`SystemNotificationAction::id`], or
     /// `None` when the user activated the notification body itself.
     pub action_id: Option<SharedString>,
+}
+
+/// The system's accessibility display options that change how an app draws.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AccessibilityDisplay {
+    /// Non-essential motion should stop (macOS Reduce Motion).
+    pub reduce_motion: bool,
+    /// Edges and separators should stand out more (macOS Increase Contrast).
+    pub increase_contrast: bool,
 }
 
 /// The operating system's preference for energy use versus performance.

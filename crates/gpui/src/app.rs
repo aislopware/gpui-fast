@@ -970,6 +970,7 @@ pub struct App {
     pub(crate) mode: GpuiMode,
     pub(crate) cursor_hide_mode: CursorHideMode,
     pub(crate) reduce_motion: bool,
+    increase_contrast: bool,
     /// Origin of the shared clock that phase-locks synced repeating animations.
     pub(crate) synced_animation_epoch: Instant,
     power_mode: PowerMode,
@@ -1008,6 +1009,7 @@ impl App {
         let keyboard_layout = platform.keyboard_layout();
         let keyboard_mapper = platform.keyboard_mapper();
         let power_mode = platform.power_mode();
+        let display = platform.accessibility_display();
 
         #[cfg(any(test, gpui_leak_detection))]
         let _ref_counts = entities.ref_counts_drop_handle();
@@ -1084,7 +1086,8 @@ impl App {
                 quit_mode: QuitMode::default(),
                 quitting: false,
                 cursor_hide_mode: CursorHideMode::default(),
-                reduce_motion: false,
+                reduce_motion: display.reduce_motion,
+                increase_contrast: display.increase_contrast,
                 synced_animation_epoch,
                 power_mode,
                 accessibility_force_disabled: false,
@@ -1196,6 +1199,18 @@ impl App {
                 if let Some(app) = app.upgrade() {
                     let power_mode = app.borrow().platform.power_mode();
                     app.borrow_mut().power_mode = power_mode;
+                }
+            }
+        }));
+
+        platform.on_accessibility_display_change(Box::new({
+            let app = Rc::downgrade(&app);
+            move || {
+                if let Some(app) = app.upgrade() {
+                    let mut app = app.borrow_mut();
+                    let display = app.platform.accessibility_display();
+                    app.set_reduce_motion(display.reduce_motion);
+                    app.set_increase_contrast(display.increase_contrast);
                 }
             }
         }));
@@ -1396,7 +1411,8 @@ impl App {
     }
 
     /// Returns whether non-essential animations (e.g. loading spinners) should
-    /// be rendered in a static state instead of animating.
+    /// be rendered in a static state instead of animating: the system's Reduce
+    /// Motion, read at launch and kept current.
     pub fn reduce_motion(&self) -> bool {
         self.reduce_motion
     }
@@ -1406,6 +1422,20 @@ impl App {
     pub fn set_reduce_motion(&mut self, reduce_motion: bool) {
         if self.reduce_motion != reduce_motion {
             self.reduce_motion = reduce_motion;
+            self.refresh_windows();
+        }
+    }
+
+    /// Returns whether edges and separators should stand out more (macOS Increase Contrast),
+    /// read from the system at launch and kept current.
+    pub fn increase_contrast(&self) -> bool {
+        self.increase_contrast
+    }
+
+    /// Sets whether edges and separators should stand out more.
+    pub fn set_increase_contrast(&mut self, increase_contrast: bool) {
+        if self.increase_contrast != increase_contrast {
+            self.increase_contrast = increase_contrast;
             self.refresh_windows();
         }
     }
