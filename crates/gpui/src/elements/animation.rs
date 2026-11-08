@@ -232,7 +232,7 @@ impl<E: IntoElement + 'static> IntoElement for AnimationElement<E> {
 }
 
 struct AnimationState {
-    start: Instant,
+    start: crate::fast::frame_time::Start,
     animation_ix: usize,
     /// Whether a throttled re-render (see [`Animation::with_max_fps`]) is
     /// already scheduled, so overlapping renders don't stack extra timers.
@@ -246,6 +246,7 @@ struct SpringElementState {
     initial: f32,
     playback: SpringPlayback,
     updated_at: Instant,
+    fast_start: crate::fast::frame_time::SpringStart,
 }
 
 impl<E: IntoElement + 'static> Element for SpringAnimationElement<E> {
@@ -280,7 +281,14 @@ impl<E: IntoElement + 'static> Element for SpringAnimationElement<E> {
                 initial,
                 playback: self.playback,
                 updated_at: now,
+                fast_start: Default::default(),
             });
+            crate::fast::frame_time::SpringStart::step(
+                &mut state.fast_start,
+                &mut state.updated_at,
+                state.spring.velocity == 0.0 && state.spring.position == state.target,
+                window,
+            );
 
             let elapsed = now.duration_since(state.updated_at).as_secs_f32();
             match state.playback {
@@ -340,6 +348,10 @@ impl<E: IntoElement + 'static> Element for SpringAnimationElement<E> {
             };
             state.playback = self.playback;
             state.updated_at = now;
+            crate::fast::frame_time::SpringStart::set(
+                &mut state.fast_start,
+                !done && state.spring.position != state.target,
+            );
 
             let element = self.element.take().expect("should only be called once");
             let animator = self.animator.take().expect("should only be called once");
@@ -400,7 +412,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
     ) -> (crate::LayoutId, Self::RequestLayoutState) {
         window.with_element_state(global_id.unwrap(), |state, window| {
             let mut state = state.unwrap_or_else(|| AnimationState {
-                start: crate::fast::frame_time::now(window, cx),
+                start: crate::fast::frame_time::Start::new(window, cx),
                 animation_ix: 0,
                 delayed_frame_pending: Rc::new(Cell::new(false)),
             });
@@ -422,7 +434,11 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                     // Reduce modulo the duration before f32 conversion, which loses sub-second precision at scale.
                     Duration::from_nanos((elapsed.as_nanos() % duration.as_nanos()) as u64)
                 } else {
-                    crate::fast::frame_time::since(window, cx, state.start)
+                    crate::fast::frame_time::since(
+                        window,
+                        cx,
+                        crate::fast::frame_time::Start::at(&mut state.start, window, cx),
+                    )
                 };
                 let mut delta = elapsed.as_secs_f32() / duration.as_secs_f32();
 
@@ -432,7 +448,7 @@ impl<E: IntoElement + 'static> Element for AnimationElement<E> {
                         if animation_ix >= self.animations.len() - 1 {
                             done = true;
                         } else {
-                            state.start = crate::fast::frame_time::now(window, cx);
+                            state.start = crate::fast::frame_time::Start::running(window, cx);
                             state.animation_ix += 1;
                         }
                         delta = 1.0;

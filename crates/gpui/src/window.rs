@@ -3857,7 +3857,7 @@ impl Window {
         }
 
         crate::fast::draw_timing::drawn(self, draw_started, cx);
-        crate::fast::frame_time::end_frame();
+        crate::fast::frame_time::end_shown_frame(self, cx);
 
         // Exit the scope to obtain the arena-clear token this draw owes; the
         // scope's teardown itself happens in `ElementArenaScope::drop`.

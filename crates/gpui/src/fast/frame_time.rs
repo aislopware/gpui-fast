@@ -7,6 +7,15 @@
 //! more from scratch, to compare the two, draws it at the same moment, and an
 //! animation a hair short of its end in the one is not at its end in the
 //! other.
+//!
+//! A frame can be late because of what it did itself: one that took 50 ms to
+//! lay out the motion it started shows that motion 50 ms after its moment.
+//! That motion then starts from when the frame finished drawing ([`shown`]),
+//! as Core Animation starts what a transaction adds when the transaction
+//! commits, so the next frame moves it about one frame on rather than by how
+//! long the frame took. Motion already running keeps real time.
+
+use std::time::Duration;
 
 use scheduler::Instant;
 
@@ -19,6 +28,9 @@ pub(crate) struct FrameTime {
     now: Option<Instant>,
     /// Whether the next frame shows that moment again.
     repeat: bool,
+    /// The last frame the window drew to show: its moment and how long after
+    /// that moment it finished drawing, on the same clock.
+    finished: Option<(Instant, Duration)>,
 }
 
 thread_local! {
@@ -35,6 +47,33 @@ pub(crate) fn begin_frame(window: &mut Window, cx: &App) {
         time.now = Some(cx.background_executor().now());
     }
     DRAWING.set(time.now);
+}
+
+/// Ends the frame begun by [`begin_frame`], one the window shows, recording
+/// that it finished drawing now, for [`shown`]. A frame drawn again only to
+/// check the one shown ends with [`end_frame`] and records nothing, so it
+/// never hides how late that one was.
+pub(crate) fn end_shown_frame(window: &mut Window, cx: &App) {
+    let time = &mut window.fast_frame_time;
+    time.finished = time.now.map(|moment| {
+        (
+            moment,
+            cx.background_executor()
+                .now()
+                .saturating_duration_since(moment),
+        )
+    });
+    end_frame();
+}
+
+/// Where motion that started at `start` starts once the frame that started it
+/// has shown: a start at the moment of the last frame drawn moves to when that
+/// frame finished drawing. Any other start is kept.
+pub(crate) fn shown(window: &Window, start: Instant) -> Instant {
+    match window.fast_frame_time.finished {
+        Some((moment, took)) if moment == start => start + took,
+        _ => start,
+    }
 }
 
 /// Ends the frame begun by [`begin_frame`]: what reads the time from here on
@@ -86,5 +125,68 @@ impl Window {
     /// frame shown again, from scratch, and compares the two.
     pub fn repeat_frame_time(&mut self) {
         self.fast_frame_time.repeat = true;
+    }
+}
+
+/// When an animation started. A start stamped on a frame moves to when that
+/// frame finished drawing once a later frame draws the animation ([`shown`]).
+pub(crate) struct Start {
+    at: Instant,
+    /// Whether no frame since the one that stamped it has drawn the animation.
+    fresh: bool,
+}
+
+impl Start {
+    /// An animation the frame being drawn starts.
+    pub(crate) fn new(window: &Window, cx: &App) -> Self {
+        Self {
+            at: now(window, cx),
+            fresh: true,
+        }
+    }
+
+    /// The next step of a sequence already running, which keeps real time.
+    pub(crate) fn running(window: &Window, cx: &App) -> Self {
+        Self {
+            at: now(window, cx),
+            fresh: false,
+        }
+    }
+
+    /// When the animation started, as the frame being drawn sees it.
+    pub(crate) fn at(&mut self, window: &Window, cx: &App) -> Instant {
+        if self.fresh && now(window, cx) != self.at {
+            self.at = shown(window, self.at);
+            self.fresh = false;
+        }
+        self.at
+    }
+}
+
+/// Whether a spring rests and whether the last frame set it moving from rest,
+/// which moves the time it was last stepped to when that frame showed.
+#[derive(Default)]
+pub(crate) struct SpringStart {
+    /// Whether a frame has stepped the spring; one just mounted rests.
+    stepped: bool,
+    resting: bool,
+    starting: bool,
+}
+
+impl SpringStart {
+    /// As a frame steps the spring, before its target changes: `updated_at`
+    /// moves when the last frame started the spring, and `resting` is whether
+    /// it rests.
+    pub(crate) fn step(&mut self, updated_at: &mut Instant, resting: bool, window: &Window) {
+        if std::mem::take(&mut self.starting) {
+            *updated_at = shown(window, *updated_at);
+        }
+        self.resting = resting || !std::mem::replace(&mut self.stepped, true);
+    }
+
+    /// Once the frame has set the spring's target: `moving` is whether the
+    /// spring now has somewhere to go.
+    pub(crate) fn set(&mut self, moving: bool) {
+        self.starting = self.resting && moving;
     }
 }
