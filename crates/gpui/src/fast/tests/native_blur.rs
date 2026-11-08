@@ -54,6 +54,7 @@ fn blur(bounds: Bounds<ScaledPixels>, corner: f32, radius: f32) -> BackdropBlur 
         blur_radius: ScaledPixels(radius),
         opacity: 1.,
         quads_before: 0,
+        glass: Default::default(),
     }
 }
 

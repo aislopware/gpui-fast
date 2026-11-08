@@ -1492,6 +1492,11 @@ struct BackdropBlur {
   float blur_radius;
   float opacity;
   uint quads_before;
+  // Glass (gpui's fast/backdrop.rs, Glass); all zero for a plain blur.
+  float glass_refraction;
+  float glass_bevel;
+  float glass_rim;
+  float glass_dispersion;
 };
 
 struct BackdropBlurVertexOutput {
@@ -1536,9 +1541,41 @@ fragment float4 backdrop_blur_fragment(
     constant EdgeFadeRamps *fades [[buffer(EDGE_FADE_BUFFER)]],
     float4 destination [[color(0)]]) {
   constexpr sampler source_sampler(coord::normalized, address::clamp_to_edge, filter::linear);
-  float2 uv = (input.position.xy - source_rect.xy) / source_rect.zw;
-  return mix(destination, source.sample(source_sampler, uv),
-             backdrop_blur_coverage(input, blurs, fades));
+  float coverage = backdrop_blur_coverage(input, blurs, fades);
+  BackdropBlur blur = blurs[input.blur_id];
+  float2 position = input.position.xy;
+  if (blur.glass_bevel <= 0.) {
+    float2 uv = (position - source_rect.xy) / source_rect.zw;
+    return mix(destination, source.sample(source_sampler, uv), coverage);
+  }
+  // Glass: the edge's outward normal from the rounded rectangle's distance field, and how far
+  // into the bevel this pixel lies (0 at the edge, 1 where the bevel ends).
+  float distance = quad_sdf(position, blur.bounds, blur.corner_radii);
+  float2 step = float2(0.5, 0.);
+  float2 normal = float2(quad_sdf(position + step.xy, blur.bounds, blur.corner_radii) -
+                             quad_sdf(position - step.xy, blur.bounds, blur.corner_radii),
+                         quad_sdf(position + step.yx, blur.bounds, blur.corner_radii) -
+                             quad_sdf(position - step.yx, blur.bounds, blur.corner_radii));
+  normal = length(normal) > 1e-4 ? normalize(normal) : float2(0.);
+  float depth = saturate(-distance / blur.glass_bevel);
+  // A quarter circle: steepest at the edge, flat where the bevel meets the face.
+  float bend = 1. - sqrt(saturate(1. - (1. - depth) * (1. - depth)));
+  float2 pull = -normal * bend * blur.glass_refraction;
+  float spread = blur.glass_dispersion;
+  float2 uv_r = (position + pull * (1. - spread) - source_rect.xy) / source_rect.zw;
+  float2 uv_g = (position + pull - source_rect.xy) / source_rect.zw;
+  float2 uv_b = (position + pull * (1. + spread) - source_rect.xy) / source_rect.zw;
+  float4 green = source.sample(source_sampler, uv_g);
+  float4 bent = float4(source.sample(source_sampler, uv_r).r, green.g,
+                       source.sample(source_sampler, uv_b).b, green.a);
+  // The specular rim: brightest where the bevel faces the light from the top left, a fainter
+  // glint on the opposite edge, fading across the bevel.
+  float2 light = normalize(float2(-1., -1.));
+  float facing = dot(normal, light);
+  float glint = pow(saturate(facing), 3.) + 0.35 * pow(saturate(-facing), 3.);
+  float rim = blur.glass_rim * glint * (1. - smoothstep(0., 0.35, depth));
+  bent.rgb = mix(bent.rgb, float3(1.), rim * bent.a);
+  return mix(destination, bent, coverage);
 }
 
 // gpui-fast: blurred glyphs (gpui's fast/glyph_blur.rs; zui 0966d06). The blur's

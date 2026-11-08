@@ -32,6 +32,16 @@
 //! directly is ordered above it: a layer that the last frame blurred over
 //! draws its content into the frame instead (`fast::layers::paint`).
 //!
+//! A blur can be glass ([`Window::paint_glass`], [`Glass`]): within a bevel along its rounded
+//! edge the blurred backdrop is read refracted, pulled in toward the region along the edge's
+//! normal on a quarter-circle profile, as a convex lens's rim bends what lies under it, its three
+//! colour channels pulled by slightly different amounts (dispersion), and a specular rim lit from
+//! the top left is added where the bevel faces the light: a custom Liquid Glass for surfaces over
+//! what the app draws itself, such as a window background image, which the system's glass, which
+//! sees only what is behind the window, cannot sample. Its parameters follow the published
+//! re-implementations fitted to Apple's (a bevel of about 20 points and a refraction of a few
+//! points); none is zero only for a plain blur.
+//!
 //! Ported from zui (<https://github.com/zeronsh/zui>, the backdrop blur in
 //! `crates/gpui/src/{window,scene}.rs` and `crates/gpui_macos`, at
 //! `361ff20`; Apache-2.0, by Wing and the zui contributors; zui is a fork of
@@ -73,6 +83,41 @@ pub struct BackdropBlur {
     /// before it, as monocode drew its marker quad after them (FORK.md,
     /// "Onicode"). Everything else of its order but shadows is drawn over it.
     pub quads_before: u32,
+    /// Its glass, all zero for a plain blur.
+    pub glass: Glass,
+}
+
+/// How a glass blur bends and lights its edge ([`Window::paint_glass`]), in device pixels once
+/// placed. All zero is a plain blur.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)]
+pub struct Glass {
+    /// How far, at the very edge, the backdrop is read from further in.
+    pub refraction: f32,
+    /// How wide the bevel along the edge is, where the backdrop is refracted and the rim lit.
+    pub bevel: f32,
+    /// How bright the specular rim is where the bevel faces the light, from 0 to 1.
+    pub rim: f32,
+    /// How much more the blue channel is refracted than the red, as a fraction of the refraction.
+    pub dispersion: f32,
+}
+
+impl Glass {
+    /// Apple's regular Liquid Glass, as the published re-implementations fit it, at a 1x scale.
+    pub const REGULAR: Self = Self {
+        refraction: 6.,
+        bevel: 20.,
+        rim: 0.35,
+        dispersion: 0.12,
+    };
+
+    fn scale(self, factor: f32) -> Self {
+        Self {
+            refraction: self.refraction * factor,
+            bevel: self.bevel * factor,
+            ..self
+        }
+    }
 }
 
 impl BackdropBlur {
@@ -111,7 +156,7 @@ impl Window {
         blur_radius: Pixels,
     ) {
         let opacity = self.element_opacity();
-        self.place_backdrop_blur(bounds, corner_radii, blur_radius, opacity);
+        self.place_backdrop_blur(bounds, corner_radii, blur_radius, opacity, Glass::default());
     }
 
     /// Paints a backdrop blur as [`Window::paint_backdrop_blur`] does, but
@@ -129,7 +174,24 @@ impl Window {
         corner_radii: Corners<Pixels>,
         blur_radius: Pixels,
     ) {
-        self.place_backdrop_blur(bounds, corner_radii, blur_radius, 1.);
+        self.place_backdrop_blur(bounds, corner_radii, blur_radius, 1., Glass::default());
+    }
+
+    /// Paints a backdrop blur as [`Window::paint_backdrop_blur_whole`] does, through `glass`:
+    /// the backdrop refracted within the bevel along its edge and a specular rim lit there
+    /// ([`Glass`]). `glass` is in pixels and scaled with the window.
+    ///
+    /// This method should only be called as part of the paint phase of
+    /// element drawing.
+    pub fn paint_glass(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        blur_radius: Pixels,
+        glass: Glass,
+    ) {
+        let glass = glass.scale(self.scale_factor());
+        self.place_backdrop_blur(bounds, corner_radii, blur_radius, 1., glass);
     }
 
     fn place_backdrop_blur(
@@ -138,6 +200,7 @@ impl Window {
         corner_radii: Corners<Pixels>,
         blur_radius: Pixels,
         opacity: f32,
+        glass: Glass,
     ) {
         self.invalidator.debug_assert_paint();
         if blur_radius <= Pixels::ZERO || opacity <= 0. {
@@ -156,6 +219,7 @@ impl Window {
             blur_radius: blur_radius.scale(scale_factor),
             opacity,
             quads_before: 0,
+            glass,
         };
         self.next_frame.scene.insert_backdrop_blur(blur);
     }
@@ -211,13 +275,14 @@ pub(crate) fn replay(scene: &mut Scene, blur: &BackdropBlur) {
 #[cfg(test)]
 pub(crate) fn describe(scene: &Scene, blur: &BackdropBlur) -> String {
     format!(
-        "backdrop blur {} {:?} {:?} {:?} {:?} {}{}",
+        "backdrop blur {} {:?} {:?} {:?} {:?} {} {:?}{}",
         blur.order,
         blur.bounds,
         blur.content_mask,
         blur.corner_radii,
         blur.blur_radius,
         blur.opacity,
+        blur.glass,
         crate::fast::edge_fade::describe(scene, blur.fade),
     )
 }

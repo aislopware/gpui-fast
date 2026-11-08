@@ -656,7 +656,7 @@ pub(crate) struct MacWindowState {
     pub(crate) background_executor: BackgroundExecutor,
     pub(crate) native_window: *mut AnyObject,
     pub(crate) native_view: NonNull<AnyObject>,
-    blurred_view: Option<*mut AnyObject>,
+    blurred_view: Option<(*mut AnyObject, bool)>, // fast::window_backdrop: and whether it is glass
     pub(crate) background_appearance: WindowBackgroundAppearance,
     pub(crate) cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
@@ -1886,27 +1886,14 @@ impl PlatformWindow for MacWindow {
             };
             let _: () = msg_send![this.native_window, setBackgroundColor: &*background_color];
 
-            if background_appearance != WindowBackgroundAppearance::Blurred {
-                if let Some(blur_view) = this.blurred_view {
-                    let _: () = msg_send![blur_view, removeFromSuperview];
-                    this.blurred_view = None;
-                }
-            } else if this.blurred_view.is_none() {
-                let content_view: *mut AnyObject = msg_send![this.native_window, contentView];
-                let frame: NSRect = msg_send![content_view, bounds];
-                let blur_view: *mut AnyObject = msg_send![BLURRED_VIEW_CLASS, alloc];
-                let blur_view: *mut AnyObject = msg_send![blur_view, initWithFrame: frame];
-                let _: () = msg_send![blur_view, setAutoresizingMask: NSAutoresizingMaskOptions::ViewWidthSizable
-                        | NSAutoresizingMaskOptions::ViewHeightSizable];
-
-                let _: () = msg_send![
-                    content_view,
-                    addSubview: blur_view,
-                    positioned: NSWindowOrderingMode::Below,
-                    relativeTo: ptr::null_mut::<AnyObject>()
-                ];
-                this.blurred_view = Some(msg_send![blur_view, autorelease]);
-            }
+            // fast::window_backdrop: the blur or Liquid Glass view behind the content.
+            let (window, class) = (this.native_window, BLURRED_VIEW_CLASS);
+            crate::fast::window_backdrop::update(
+                &mut this.blurred_view,
+                window,
+                background_appearance,
+                class,
+            );
         }
     }
 

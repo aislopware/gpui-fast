@@ -2657,6 +2657,11 @@ pub enum WindowBackgroundAppearance {
     ///
     /// Not always supported.
     Blurred,
+    /// Transparency over the system's glass material: Liquid Glass (`NSGlassEffectView`, regular
+    /// style) filling the window behind its content on macOS 26 and later, which refracts and
+    /// frosts what is behind the window and follows the person's accessibility settings. Where
+    /// there is no glass, as [`Self::Blurred`] (`gpui_macos::fast::window_backdrop`).
+    Glass,
 }
 
 /// The text rendering mode to use for drawing glyphs.

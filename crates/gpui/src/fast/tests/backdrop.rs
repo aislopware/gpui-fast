@@ -747,6 +747,7 @@ fn a_hole_and_a_blur_of_one_order_are_both_met() {
         blur_radius: ScaledPixels(8.),
         opacity: 1.,
         quads_before: 0,
+        glass: Default::default(),
     });
     scene.insert_primitive(crate::Quad {
         bounds: device(0.),
@@ -861,6 +862,7 @@ fn a_blur_reads_the_quads_of_its_order_painted_before_it() {
         blur_radius: ScaledPixels(8.),
         opacity: 1.,
         quads_before: 0,
+        glass: Default::default(),
     });
     quad(&mut scene, device(140., 0., 20., 20.), 2.);
     scene.finish();

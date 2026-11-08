@@ -138,7 +138,7 @@ pub use fast::text_smoothing::TextSmoothing;
 pub use fast::transition::StateTransition;
 pub use fast::value_transition::{ValueTransition, ValueTransitionState};
 pub use fast::{
-    backdrop::BackdropBlur,
+    backdrop::{BackdropBlur, Glass},
     image_mask::ImageAlphaMask,
     layer_mask::{GroupFade, LayerMask, LayerMaskCut},
 };

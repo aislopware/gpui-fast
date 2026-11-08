@@ -510,8 +510,8 @@ mod tests {
     use std::sync::Arc;
 
     use gpui::{
-        BackdropBlur, Bounds, ContentMask, Corners, DevicePixels, EdgeFadeRamps, Edges, Hsla, Quad,
-        ScaledPixels, Scene, point, rgba, size,
+        BackdropBlur, Bounds, ContentMask, Corners, DevicePixels, EdgeFadeRamps, Edges, Glass,
+        Hsla, Quad, ScaledPixels, Scene, point, rgba, size,
     };
     use image::RgbaImage;
     use parking_lot::Mutex;
@@ -553,6 +553,7 @@ mod tests {
             blur_radius: ScaledPixels(sigma),
             opacity: 1.,
             quads_before: 0,
+            glass: Glass::default(),
         }
     }
 
@@ -618,6 +619,63 @@ mod tests {
         assert_eq!(image.get_pixel(119, 140)[0], 0);
         assert_eq!(image.get_pixel(59, 80)[0], 0);
         assert_eq!(image.get_pixel(180, 80)[0], 255);
+    }
+
+    /// Glass reads the backdrop refracted within its bevel and lights a rim there: over a flat
+    /// grey, the top left edge (facing the light) is brighter than the face, the face matches a
+    /// plain blur, and at a step the edge reads from further in than a plain blur does.
+    #[test]
+    fn glass_bends_its_edge_and_lights_its_rim() {
+        let Some(mut renderer) = renderer() else {
+            return;
+        };
+        let glass = Glass {
+            refraction: 12.,
+            bevel: 20.,
+            rim: 0.5,
+            dispersion: 0.,
+        };
+        let panel = sp(40., 40., 120., 80.);
+        let grey = |scene: &mut Scene| {
+            scene.insert_primitive(quad(sp(0., 0., W as f32, H as f32), 0x404040ff));
+        };
+        let mut scene = Scene::default();
+        grey(&mut scene);
+        let mut lit = blur(panel, 4.);
+        lit.corner_radii = Corners::all(ScaledPixels(16.));
+        lit.glass = glass;
+        scene.insert_backdrop_blur(lit);
+        let image = render(&mut renderer, &mut scene);
+        let face = image.get_pixel(100, 80)[0];
+        let edge = image.get_pixel(60, 41)[0];
+        assert!(face.abs_diff(0x40) <= 1, "the face is the backdrop: {face}");
+        assert!(
+            edge > face + 20,
+            "the lit edge is brighter: {edge} over {face}"
+        );
+        // Black left of x = 120, white right of it; the panel's right edge at x = 160 reads
+        // white either way, but its left edge, at x = 40, reads from further in.
+        let mut plain = Scene::default();
+        halves(&mut plain);
+        plain.insert_backdrop_blur(blur(sp(100., 40., 40., 80.), 1.));
+        let plain = render(&mut renderer, &mut plain);
+        let mut bent = Scene::default();
+        halves(&mut bent);
+        let mut through = blur(sp(100., 40., 40., 80.), 1.);
+        through.glass = Glass {
+            refraction: 30.,
+            rim: 0.,
+            ..glass
+        };
+        bent.insert_backdrop_blur(through);
+        let bent = render(&mut renderer, &mut bent);
+        // Just inside the left edge the step is 19 px in: a plain blur reads black there; the
+        // glass, pulling about 20 px in at a pixel into its bevel, reads past the step.
+        let (flat, refracted) = (plain.get_pixel(101, 80)[0], bent.get_pixel(101, 80)[0]);
+        assert!(
+            refracted > flat + 60,
+            "refracted {refracted} over plain {flat}"
+        );
     }
 
     /// What is painted after the blur is drawn over it, sharp; what was
@@ -1018,6 +1076,7 @@ mod tests {
                 blur_radius: ScaledPixels(32.),
                 opacity: 1.,
                 quads_before: 0,
+                glass: Glass::default(),
             });
             scene.insert_primitive(solid(panel, 0x1818182a, 24.));
             rows(scene, panel);

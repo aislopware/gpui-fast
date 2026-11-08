@@ -645,6 +645,7 @@ fn every_quad_over_a_masks_region_is_met_on_its_side_of_the_cuts() {
                     blur_radius: ScaledPixels(4.),
                     opacity: 1.,
                     quads_before: 0,
+                    glass: Default::default(),
                 }),
                 7 | 8 if open.len() < 3 => {
                     let bounds = random_box(&mut rng);
