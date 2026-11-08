@@ -317,10 +317,6 @@ impl A11y {
         update
     }
 
-    pub(crate) fn debug_tree_json(&self) -> Option<String> {
-        self.debug.to_json()
-    }
-
     /// The tree update built for the last frame, if the tree was active then.
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn last_tree_update(&self) -> Option<&TreeUpdate> {
