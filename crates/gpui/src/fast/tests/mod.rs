@@ -73,7 +73,7 @@ mod splice_late_layout;
 mod subscriptions;
 mod support;
 mod surface;
-mod tab_stop;
+mod tab_stops;
 mod test_pixels;
 mod test_window;
 mod text;
