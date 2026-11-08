@@ -55,7 +55,7 @@
 
 use crate::{
     Bounds, ContentMask, Corners, DrawOrder, PaintOperation, Pixels, Point, ScaledPixels, Scene,
-    Window, px,
+    Size, Window, px,
 };
 
 /// A region of the window whose backdrop, everything drawn under it, is
@@ -168,13 +168,15 @@ impl Glass {
         }
     }
 
-    /// The blur behind glass whose shorter side is `short`: light, so the backdrop still reads,
-    /// and softer on larger glass, as the fit measures it (2.1, 4.5, 5.6 and 8 points at 63, 94,
-    /// 118 and 150 points), kept between 1.5 points and 1.78 times the largest measure.
+    /// The blur behind glass of `size`: light, so the backdrop still reads, and softer on larger
+    /// glass, as the fit measures it on square-ish controls (2.1, 4.5, 5.6 and 8 points at 63, 94,
+    /// 118 and 150 points), kept between 1.5 points and 1.78 times the largest measure. Glass is
+    /// measured by the square root of its area, so a wide, short card (a toast) scatters as much
+    /// as a square of the same area and text behind it does not read through.
     #[must_use]
-    pub fn blur_for(short: Pixels) -> Pixels {
+    pub fn blur_for(size: Size<Pixels>) -> Pixels {
         const FIT: [(f32, f32); 4] = [(63., 2.1), (94., 4.5), (118., 5.6), (150., 8.)];
-        let side = short.as_f32();
+        let side = (size.width.as_f32().max(0.) * size.height.as_f32().max(0.)).sqrt();
         let at = FIT
             .windows(2)
             .find(|pair| side <= pair[1].0)
@@ -254,7 +256,7 @@ impl Window {
         corner_radii: Corners<Pixels>,
         glass: Glass,
     ) {
-        let blur = Glass::blur_for(bounds.size.width.min(bounds.size.height));
+        let blur = Glass::blur_for(bounds.size);
         let glass = glass.scale(self.scale_factor());
         self.place_backdrop_blur(bounds, corner_radii, blur, 1., glass);
     }

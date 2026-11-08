@@ -1218,10 +1218,10 @@ mod tests {
             );
         }
         let glass = |scene: &mut Scene, b: Bounds<ScaledPixels>, radius: f32, light: bool| {
-            let short = gpui::px(b.size.width.0.min(b.size.height.0) / S);
+            let points = size(gpui::px(b.size.width.0 / S), gpui::px(b.size.height.0 / S));
             let mut blur = BackdropBlur {
                 content_mask: all,
-                ..blur(b, Glass::blur_for(short).as_f32() * S)
+                ..blur(b, Glass::blur_for(points).as_f32() * S)
             };
             blur.corner_radii = Corners::all(ScaledPixels(radius * S));
             blur.glass = if light { Glass::LIGHT } else { Glass::DARK }.scale(S);
